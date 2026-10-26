@@ -1,9 +1,8 @@
 import XCTest
 @testable import MelonTools
 
-/// Pure low-quota policy: default and reserve thresholds, opt-in hourly
-/// notifications, once-per-window dedupe, reset re-arm, and the legacy
-/// debounce when the provider exposes no reset timestamp.
+/// Pure low-quota policy: thresholds, opt-in hourly notices, one alert per
+/// continuous low period, and reset-notification debounce behavior.
 final class LowQuotaNotificationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 3_000_000)
     private let reset = Date(timeIntervalSince1970: 3_600_000)
@@ -26,8 +25,7 @@ final class LowQuotaNotificationTests: XCTestCase {
             weeklyRemaining: weekly,
             weeklyReset: weeklyReset,
             weeklyReservePercent: weeklyReserve,
-            records: records,
-            now: now
+            records: records
         )
     }
 
@@ -81,7 +79,7 @@ final class LowQuotaNotificationTests: XCTestCase {
         XCTAssertEqual(Set(both.map(\.stateKey)), ["account-a:hourly", "account-a:weekly"])
     }
 
-    func testOneNotificationPerWindow() throws {
+    func testOneNotificationPerContinuousLowPeriod() throws {
         let first = decisions(weekly: 5, weeklyReset: reset)
         let decision = try XCTUnwrap(first.first)
         XCTAssertEqual(decision.windowKey, QuotaNotificationPolicy.windowKey(for: reset))
@@ -95,7 +93,7 @@ final class LowQuotaNotificationTests: XCTestCase {
         XCTAssertTrue(decisions(weekly: 5, weeklyReset: reset, records: records).isEmpty)
     }
 
-    func testNewResetRearmsTheWindow() throws {
+    func testNewResetDoesNotRepeatWhileQuotaRemainsLow() throws {
         let first = try XCTUnwrap(decisions(weekly: 5, weeklyReset: reset).first)
         let records = [
             first.stateKey: QuotaNotificationRecord(
@@ -106,29 +104,61 @@ final class LowQuotaNotificationTests: XCTestCase {
         let nextReset = reset.addingTimeInterval(3600)
         let next = decisions(weekly: 5, weeklyReset: nextReset, records: records)
 
-        XCTAssertEqual(next.map(\.window.rawValue), ["weekly"])
-        XCTAssertNotEqual(next.first?.windowKey, first.windowKey)
+        XCTAssertTrue(next.isEmpty, "a reset timestamp change must not repeat a low-quota alert")
     }
 
-    func testMissingResetUsesTheSixHourDebounce() throws {
+    func testRecoveryAboveThresholdRearmsLowQuotaAlert() throws {
+        let first = try XCTUnwrap(decisions(weekly: 5, weeklyReset: reset).first)
+        let records = [
+            first.stateKey: QuotaNotificationRecord(
+                notifiedAt: now,
+                windowKey: first.windowKey
+            ),
+        ]
+        let recovered = QuotaNotificationPolicy.recordsAfterRecovery(
+            accountId: "account-a",
+            hourlyRemaining: nil,
+            hourlyReservePercent: nil,
+            weeklyRemaining: 100,
+            weeklyReservePercent: nil,
+            records: records
+        )
+
+        XCTAssertNil(recovered[first.stateKey])
+        XCTAssertEqual(decisions(weekly: 5, weeklyReset: reset, records: recovered).count, 1)
+    }
+
+    func testMissingResetDoesNotRepeatWhileQuotaRemainsLow() throws {
         let first = try XCTUnwrap(decisions(weekly: 5, weeklyReset: nil).first)
         XCTAssertEqual(first.windowKey, "")
 
-        let recent = [
+        let records = [
             first.stateKey: QuotaNotificationRecord(
                 notifiedAt: now.addingTimeInterval(-3600),
                 windowKey: ""
             ),
         ]
-        XCTAssertTrue(decisions(weekly: 5, weeklyReset: nil, records: recent).isEmpty)
+        XCTAssertTrue(decisions(weekly: 5, weeklyReset: nil, records: records).isEmpty)
+    }
 
-        let stale = [
-            first.stateKey: QuotaNotificationRecord(
-                notifiedAt: now.addingTimeInterval(-7 * 3600),
-                windowKey: ""
-            ),
+    func testQuotaResetWithoutResetTimestampUsesSixHourDebounce() {
+        let stateKey = "account-a:reset:weekly"
+        let records = [
+            stateKey: QuotaNotificationRecord(notifiedAt: now, windowKey: ""),
         ]
-        XCTAssertEqual(decisions(weekly: 5, weeklyReset: nil, records: stale).count, 1)
+
+        XCTAssertFalse(QuotaNotificationPolicy.shouldNotify(
+            stateKey: stateKey,
+            windowKey: "",
+            records: records,
+            now: now.addingTimeInterval(3600)
+        ))
+        XCTAssertTrue(QuotaNotificationPolicy.shouldNotify(
+            stateKey: stateKey,
+            windowKey: "",
+            records: records,
+            now: now.addingTimeInterval(7 * 3600)
+        ))
     }
 
     func testAccountsKeepIndependentNotificationState() throws {

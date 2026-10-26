@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             updateTimer?.invalidate()
             updateTimer = nil
+            CodexStore.shared.flushSave()
+            QuotaHistoryStore.shared.flush()
             ComposerBridge.shared.shutdownForQuit()
             if UserDefaults.standard.bool(forKey: "gatewayStopOnQuit") {
                 CodexGatewayService.shared.stopSync()

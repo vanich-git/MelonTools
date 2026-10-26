@@ -58,10 +58,21 @@ means "not reported".
 
 ### What is the quota reserve?
 
-You can pause an account when its remaining quota drops below a threshold (for
-example 5% or 10%). The pool then routes to another account. The pause state is
-synced to the gateway auth files, so requests stop using that account on the
-next refresh.
+You can pause an account when its remaining quota drops to a threshold — for
+example 5% or 10%. The comparison is exact: `remaining <= reserve`. There is no
+hidden safety margin.
+
+The pause is saved before the account is disabled in the gateway, so stale
+data cannot silently lift it. The gateway reports quota headers on every
+response; Melon Tools reads them about every 1.5 seconds, so routing stops
+within 1–2 seconds.
+
+A request that was already in flight can finish and push the remainder slightly
+below the threshold. The account card shows the actual value at the stop.
+
+The account returns to the pool only after a fresh reading above the threshold
+or after the affected window resets. Reset probes retry with backoff, so a
+blocked account does not wait for the next slow refresh.
 
 ## Updates
 

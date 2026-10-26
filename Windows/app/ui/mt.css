@@ -202,6 +202,9 @@ button.btn, button.ghost {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* Touch/pen input on Windows convertibles needs an explicit hint;
+     otherwise the first tap can be delayed or dropped. */
+  touch-action: manipulation;
 }
 button.btn { background: var(--gold); color: var(--on-gold); font-weight: 600; }
 button.btn:hover { filter: brightness(1.06); }
@@ -426,6 +429,62 @@ table.diag td:first-child { font-weight: 600; white-space: nowrap; }
   cursor: pointer;
 }
 .onboarding-close:hover { color: var(--text); border-color: var(--gold); }
+
+/* Onboarding is a native <dialog>. It lives in the browser top layer, so no
+   page layer can cover it or swallow its clicks. The card keeps its action
+   row outside the scroll area, which keeps the buttons visible on small or
+   scaled Windows displays. */
+.onboarding-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  z-index: 60;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.onboarding-dialog.is-open { display: flex; }
+.onboarding-dialog::backdrop { background: rgba(10, 10, 12, 0.76); }
+.onboarding-card {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  overflow: hidden;
+  background: linear-gradient(155deg, #2b2b2f 0%, #242427 68%);
+  border-color: rgba(250, 196, 64, 0.32);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.58);
+}
+.onboarding-head { padding: var(--s5) var(--s5) 0; }
+.onboarding-scroll {
+  padding: 0 var(--s5);
+  overflow-y: auto;
+  min-height: 0;
+}
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s3) var(--s5) var(--s5);
+  border-top: 1px solid var(--border);
+  background: rgba(26, 26, 28, 0.42);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
 .notes {
   white-space: pre-wrap;
   font-size: 12px;

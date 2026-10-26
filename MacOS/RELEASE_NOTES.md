@@ -1,4 +1,24 @@
-# Melon Tools 2.3.5
+# Melon Tools 2.3.6
+
+- **Exact quota reserve on macOS and Windows.** Live Codex quota signals are
+  checked about every 1.5 seconds. Routing pauses exactly at the configured
+  threshold, persists the block, and resumes after fresh recovery or a
+  confirmed window reset. The UI shows the actual stop value.
+- **Reliable quota synchronization.** Auth-file sync writes only changes;
+  quota/history persistence is batched, 401 quota requests retry once, and
+  reset probes use backoff.
+- **Responsive Windows onboarding.** The welcome dialog appears before slower
+  startup checks, uses a native modal layer, keeps its actions clickable, and
+  pins the action row while the content scrolls.
+- **Build metadata.** macOS build 23; version metadata is aligned at 2.3.6.
+
+## Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6-win-x64-portable.exe) — single file, no install.
+
+## 2.3.5
 
 - **DeepInfra and Vercel AI Gateway.** Connect with provider API keys and load
   chat models from DeepInfra or language models from Vercel AI Gateway.
@@ -9,12 +29,6 @@
   The remaining key limit keeps its own gauge, and lifetime spend remains separate.
 - **Build metadata.** macOS build 22; version metadata is aligned at 2.3.5 on
   macOS and Windows.
-
-## Downloads
-
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.5.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.5-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.5-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.1
 

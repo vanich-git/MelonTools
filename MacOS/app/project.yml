@@ -32,8 +32,8 @@ targets:
       properties:
         CFBundleDisplayName: Melon Tools
         CFBundleName: Melon Tools
-        CFBundleShortVersionString: "2.3.5"
-        CFBundleVersion: "22"
+        CFBundleShortVersionString: "2.3.6"
+        CFBundleVersion: "23"
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Melon Tools"
@@ -65,8 +65,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.melontools.app
-        MARKETING_VERSION: "2.3.5"
-        CURRENT_PROJECT_VERSION: "22"
+        MARKETING_VERSION: "2.3.6"
+        CURRENT_PROJECT_VERSION: "23"
         GENERATE_INFOPLIST_FILE: "NO"
 
   MelonToolsTests:

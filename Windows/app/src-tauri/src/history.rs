@@ -96,6 +96,18 @@ fn save(history: &History) -> Result<(), String> {
 
 static HISTORY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[derive(Default)]
+struct PendingHistory {
+    records: Vec<(String, Sample)>,
+    scheduled: bool,
+}
+
+static PENDING_HISTORY: std::sync::Mutex<PendingHistory> =
+    std::sync::Mutex::new(PendingHistory {
+        records: Vec::new(),
+        scheduled: false,
+    });
+
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     HISTORY_LOCK
         .lock()
@@ -111,10 +123,45 @@ pub fn record(key: &str, provider: &str, hourly_left: Option<f64>, weekly_left: 
         weekly_left,
         provider: provider.to_string(),
     };
+    let schedule = if let Ok(mut pending) = PENDING_HISTORY.lock() {
+        pending.records.push((key.to_string(), sample));
+        if pending.scheduled {
+            false
+        } else {
+            pending.scheduled = true;
+            true
+        }
+    } else {
+        false
+    };
+    if schedule {
+        // Quota refreshes can update several accounts together. Batch their
+        // samples into one history-file write after the refresh pass.
+        let _ = std::thread::Builder::new()
+            .name("quota-history-flush".to_string())
+            .spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                flush_pending();
+            });
+    }
+}
+
+fn flush_pending() {
+    let records = if let Ok(mut pending) = PENDING_HISTORY.lock() {
+        pending.scheduled = false;
+        std::mem::take(&mut pending.records)
+    } else {
+        Vec::new()
+    };
+    if records.is_empty() {
+        return;
+    }
     let _guard = lock();
     let mut history = load();
     history.version = 1;
-    append_sample(&mut history, key, sample, MAX_SAMPLES);
+    for (key, sample) in records {
+        append_sample(&mut history, &key, sample, MAX_SAMPLES);
+    }
     let _ = save(&history);
 }
 

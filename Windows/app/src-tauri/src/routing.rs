@@ -121,12 +121,19 @@ pub fn resolve(
     (ordered_ids, blocked_ids)
 }
 
-/// Quota freshness helper used by the UI-side view too.
-pub fn quota_is_fresh(updated_ref: Option<f64>) -> bool {
-    match updated_ref {
-        Some(updated) => crate::vault::now_ref() - updated < 1800.0,
-        None => false,
-    }
+/// Quota freshness helper. Passive gateway readings expire sooner than the
+/// provider usage fallback because they only move while requests are flowing.
+pub fn quota_is_fresh(account: &Account) -> bool {
+    let Some(updated) = account.quota_updated_at else {
+        return false;
+    };
+    let max_age = if account.quota_source.as_deref() == Some("gateway") {
+        120.0
+    } else {
+        1800.0
+    };
+    let age = crate::vault::now_ref() - updated;
+    (-5.0..=max_age).contains(&age)
 }
 
 pub fn _unused_reference() -> f64 {

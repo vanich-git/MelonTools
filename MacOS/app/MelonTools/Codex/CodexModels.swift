@@ -27,6 +27,13 @@ struct CodexAccount: Codable, Identifiable, Equatable {
     var quota: CodexQuota?
     var quotaUpdatedAt: Date?
     var quotaError: String?
+    /// Where the latest quota reading came from: `gateway` (live signals) or
+    /// `usage` (the slower `/wham/usage` probe).
+    var quotaSource: String?
+    /// Sticky pause written before the gateway auth file is disabled. The
+    /// planner keeps the account paused while this exists, even if the cached
+    /// quota later looks stale or healthy.
+    var quotaBlock: CodexQuotaBlock?
 
     // Routing preferences (Melon Tools). Optional so vaults written before
     // this feature still decode; nil means “off”.
@@ -62,6 +69,33 @@ struct CodexModelAvailability: Codable, Equatable, Identifiable {
     var creditsWouldEnable: Bool?
 
     var id: String { model }
+}
+
+/// One sticky routing pause. Written before the auth file is disabled, so a
+/// crash or a failed management call cannot silently un-pause the account.
+/// The value is the actual reading that crossed the limit — not the limit
+/// itself — because in-flight requests can stop the account below it.
+struct CodexQuotaBlock: Codable, Equatable {
+    var cause: CodexBlockCause
+    /// Remaining quota at the moment routing stopped, 0...100.
+    var remainingPercent: Double
+    /// The user reserve that was crossed; nil for an exhausted window.
+    var thresholdPercent: Int?
+    /// Reset timestamp of the affected window, when the provider reported it.
+    var resetAt: Date?
+    var blockedAt: Date
+    /// `gateway` (live signals) or `usage` (fallback probe).
+    var source: String?
+
+    /// One-decimal text: 2 stays “2%”, 1.86 becomes “1.9%”.
+    static func percentText(_ value: Double) -> String {
+        if abs(value.rounded() - value) < 0.05 {
+            return "\(Int(value.rounded()))%"
+        }
+        return String(format: "%.1f%%", value)
+    }
+
+    var actualText: String { Self.percentText(remainingPercent) }
 }
 
 struct CodexQuota: Codable, Equatable {

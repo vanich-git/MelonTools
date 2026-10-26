@@ -154,15 +154,9 @@ Optional:
   disabled demo task.
 - **R1.1** version 2.3.0 in project.yml/Info.plist, Cargo.toml/tauri.conf.json,
   Cask, winget and docs; release notes updated.
-- **R1.2** GitHub release `v2.3.0` published with 8 assets (DMG, setup,
-  portable, legacy and four `.sha256` files); downloaded DMG/setup hashes
-  matched the published checksums; Cask/winget hashes match. The automatic
-  tag Release run was cancelled deliberately after the verified local assets
-  were published, matching the prior release procedure. CI and Security on
-  `7b206cc` are green.
 - **Checks:** macOS **167/167**, Windows **150/150**, `node --check` OK,
   `docs-lint` OK, macOS and Windows unsigned builds succeeded, DMG installed
-  on the Mac at 2.3.0 build 20 and launched.
+  on the Mac at 2.3.0 build 20.
 - **Review:** independent reviewer PASS; critical reviewer PASS after fixes.
   Accepted residuals: history-based daily accounting can undercount if history
   is trimmed; PBKDF2 parameters and key/password zeroization are advisory
@@ -179,9 +173,42 @@ by the success toast, and an empty auths directory on a macOS restore failure.
 
 ## Loop
 
-- phase: **PASS**
+- phase: PASS (code and local build); R1.2 GitHub publication pending
 - repair_count: 5
-- release commit/tag: `7b206cc` / `v2.3.0`
-- publication: https://github.com/ivankuprin/MelonTools/releases/tag/v2.3.0
-- next action: none for 2.3.0; remaining 2.4/3.0 product work stays out of
-  scope. Signing/notarization/Authenticode remain externally blocked.
+- next action: commit, tag v2.3.0, publish the local artifacts, verify the
+  release, then mark R1.2 PASS.
+
+## Addendum — exact quota reserve (2026-10-26)
+
+Scope: P0 + P1 fix for reserve enforcement on macOS and Windows. This addendum
+does not change the 2.3.0 release evidence above.
+
+- **P0.1 Live source.** Codex quota headers are read from the gateway
+  management API (`quota.signals`) about every 1.5 seconds. `/wham/usage`
+  remains the slower fallback and the reset probe.
+- **P0.2 Exact threshold.** Routing stops on `remaining <= reserve`. There is
+  no epsilon and no automatic margin. The account card shows the actual stop
+  value, which can be below the threshold when a request was already in flight.
+- **P0.3 Sticky pause.** The block is persisted in the vault before the auth
+  file is disabled. Stale data can neither create nor lift a pause on its own.
+- **P0.4 Fast apply.** A block is applied with
+  `PATCH /v0/management/auth-files/status`, then verified by reading `disabled`
+  back. A failed or unverified patch falls back to the diff-based auth sync.
+- **P0.5 Reset unblock.** A blocked account is probed after its reset time,
+  with exponential backoff. It returns only after a fresh reading above the
+  reserve (or above zero for an exhausted window).
+- **P1.** Diff-based auth sync, normalized payload comparison, serialized
+  vault writes, batched vault saves, debounced quota history, 401 retry,
+  30-second health checks, 2 MB log rotation, and quota source/age in the UI.
+
+Checks on this tree:
+
+- macOS: `xcodebuild ... test` — **180/180**.
+- Windows: `cargo test` — **165/165** (host build; no Windows installer was
+  produced on this Mac).
+- `node --check Windows/app/ui/app.js` — OK.
+
+Residual: the gateway does not cancel streams that are already running when an
+auth is disabled. The exact threshold therefore stops new routing, but an
+in-flight request can still move the gauge below it. This is documented in the
+account settings and FAQ.

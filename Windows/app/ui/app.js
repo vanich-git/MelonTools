@@ -26,13 +26,16 @@ const DICT = {
     current: "текущий", paused: "на паузе", ready: "готов",
     bHourly: "5-часовое окно исчерпано", bWeekly: "недельное окно исчерпано",
     bHourlyReserve: "осталось {r}% ≤ резерва {l}%", bWeeklyReserve: "осталось {r}% ≤ резерва {l}%",
+    bHourlyStopped: "остановлено при {r}% (резерв {l}%)", bWeeklyStopped: "остановлено при {r}% (резерв {l}%)",
+    bHourlyExhaustedStopped: "квота 5 ч исчерпана — остановлено при {r}%", bWeeklyExhaustedStopped: "недельная квота исчерпана — остановлено при {r}%",
+    reserveExact: "Пауза срабатывает точно на этом значении. Запрос, уже начатый до паузы, может опустить остаток немного ниже.",
     poolPauseHourly: "Все аккаунты на паузе по часовому резерву — сброс в {time}",
     poolPauseWeekly: "Все аккаунты на паузе по недельному резерву — сброс в {time}",
     poolPauseMixed: "Все аккаунты на паузе — ближайший сброс в {time}",
     poolPauseExhausted: "Квота исчерпана — сброс в {time}",
     poolPauseLift: "Снять паузу",
     poolPauseConfirm: "Снять паузу по резерву? Квота может опуститься до 0%.",
-    quotaAge: "квота обновлена", never: "никогда", stale: "устарела",
+    quotaAge: "квота обновлена", quotaLive: "live от шлюза", quotaUsage: "данные OpenAI", never: "никогда", stale: "устарела",
     history: "История", historyHint: "Остаток квоты по последним обновлениям.",
     apiSub: "Локальный OpenAI-совместимый шлюз для Codex: пул аккаунтов, апстримы, ключ доступа.",
     endpoint: "Адрес", apiKey: "Ключ", copy: "Копировать", copied: "Скопировано",
@@ -203,13 +206,16 @@ const DICT = {
     current: "current", paused: "paused", ready: "ready",
     bHourly: "5-hour window exhausted", bWeekly: "weekly window exhausted",
     bHourlyReserve: "{r}% left ≤ {l}% reserve", bWeeklyReserve: "{r}% left ≤ {l}% reserve",
+    bHourlyStopped: "stopped at {r}% (reserve {l}%)", bWeeklyStopped: "stopped at {r}% (reserve {l}%)",
+    bHourlyExhaustedStopped: "5h quota exhausted — stopped at {r}%", bWeeklyExhaustedStopped: "weekly quota exhausted — stopped at {r}%",
+    reserveExact: "The pause triggers exactly at this value. A request already in flight can leave a little less.",
     poolPauseHourly: "All accounts are paused by the hourly reserve — resets at {time}",
     poolPauseWeekly: "All accounts are paused by the weekly reserve — resets at {time}",
     poolPauseMixed: "All accounts are paused — nearest reset at {time}",
     poolPauseExhausted: "Quota exhausted — resets at {time}",
     poolPauseLift: "Lift pause",
     poolPauseConfirm: "Lift the reserve pause? Quota may drop to 0%.",
-    quotaAge: "quota updated", never: "never", stale: "stale",
+    quotaAge: "quota updated", quotaLive: "live gateway", quotaUsage: "OpenAI usage", never: "never", stale: "stale",
     history: "History", historyHint: "Quota remaining across recent refreshes.",
     apiSub: "Local OpenAI-compatible gateway for Codex: account pool, upstreams, access key.",
     endpoint: "Base URL", apiKey: "Key", copy: "Copy", copied: "Copied",
@@ -1120,13 +1126,24 @@ function dashboardSchedulerCard(summary) {
   </div>`;
 }
 
+function percentLabel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
+}
+
 function blockText(info) {
   if (!info) return "";
+  const stopped = info.blockedAt !== null && info.blockedAt !== undefined;
   switch (info.code) {
-    case "hourly_exhausted": return t("bHourly");
-    case "weekly_exhausted": return t("bWeekly");
-    case "hourly_reserve": return fmt(t("bHourlyReserve"), { r: Math.round(info.remaining), l: info.limit });
-    case "weekly_reserve": return fmt(t("bWeeklyReserve"), { r: Math.round(info.remaining), l: info.limit });
+    case "hourly_exhausted": return stopped
+      ? fmt(t("bHourlyExhaustedStopped"), { r: percentLabel(info.remaining) })
+      : t("bHourly");
+    case "weekly_exhausted": return stopped
+      ? fmt(t("bWeeklyExhaustedStopped"), { r: percentLabel(info.remaining) })
+      : t("bWeekly");
+    case "hourly_reserve": return fmt(t(stopped ? "bHourlyStopped" : "bHourlyReserve"), { r: percentLabel(info.remaining), l: info.limit });
+    case "weekly_reserve": return fmt(t(stopped ? "bWeeklyStopped" : "bWeeklyReserve"), { r: percentLabel(info.remaining), l: info.limit });
     default: return info.code;
   }
 }
@@ -1519,7 +1536,7 @@ function accountCard(account) {
           ${account.subscriptionActiveUntil ? `<span class="footnote">${esc(subscriptionText(account.subscriptionActiveUntil))}</span>` : ""}
           <span class="footnote">${t("resetsAvailable")}: ${esc(resetsText)}</span>
         </div>
-        <div class="footnote">${t("quotaAge")}: ${esc(ageText(account.quotaUpdatedAt))}${account.quotaError ? " · " + esc(account.quotaError) : ""}</div>
+        <div class="footnote">${t("quotaAge")}: ${esc(ageText(account.quotaUpdatedAt))} · ${t(account.quotaSource === "gateway" ? "quotaLive" : "quotaUsage")}${account.quotaError ? " · " + esc(account.quotaError) : ""}</div>
         ${modelsBlock}
 
         <div class="row">
@@ -1537,6 +1554,7 @@ function accountCard(account) {
           </label>
           <button class="ghost small" onclick="A.saveReserves('${esc(account.id)}')">${t("save")}</button>
         </div>
+        <div class="footnote">${esc(t("reserveExact"))}</div>
 
         <div class="row">
           <button class="btn small" onclick="A.switchAccount('${esc(account.id)}')">${t("makeCurrent")}</button>
@@ -2745,6 +2763,9 @@ const A = {
   },
 
   async refreshStatus() {
+    // The welcome dialog freezes background work on purpose: a full vault
+    // read and page re-render every 5 s is what made the tour stutter.
+    if (onboardingVisible()) return;
     try {
       S.status = await inv("gateway_status");
       S.bridge = await inv("bridge_status");
@@ -2798,27 +2819,47 @@ const A = {
 
   async loadAll() {
     try {
-      S.info = await inv("app_info");
-      S.settings = await inv("settings_get");
+      const [info, settings] = await Promise.all([
+        inv("app_info"),
+        S.settings ? Promise.resolve(S.settings) : inv("settings_get"),
+      ]);
+      S.info = info;
+      S.settings = settings;
       S.lang = (S.settings && S.settings.lang) === "en" ? "en" : "ru";
-      S.accounts = await inv("vault_list");
-      await A.historyLoad();
-      S.status = await inv("gateway_status");
-      S.route = await inv("codex_route_status");
-      S.bridge = await inv("bridge_status");
-      S.routing = await inv("routing_state");
-      S.calls = await inv("gateway_recent_calls", { limit: 8 });
-      S.autostart = await inv("autostart_get");
-      try {
-        S.scheduler = await inv("scheduler_list");
-        S.schedulerAt = Date.now();
-      } catch {
-        S.scheduler = null;
-      }
+      const settled = await Promise.allSettled([
+        inv("vault_list"),
+        inv("quota_history"),
+        inv("gateway_status"),
+        inv("codex_route_status"),
+        inv("bridge_status"),
+        inv("routing_state"),
+        inv("gateway_recent_calls", { limit: 8 }),
+        inv("autostart_get"),
+        inv("scheduler_list"),
+      ]);
+      const value = (index, fallback) => settled[index].status === "fulfilled"
+        ? settled[index].value
+        : fallback;
+      S.accounts = value(0, []);
+      const history = value(1, []);
+      const samples = Array.isArray(history)
+        ? history
+        : Array.isArray(history && history.samples) ? history.samples : [];
+      S.history = samples.filter((sample) => sample && typeof sample.key === "string");
+      S.status = value(2, S.status);
+      S.route = value(3, S.route);
+      S.bridge = value(4, S.bridge);
+      S.routing = value(5, S.routing);
+      S.calls = value(6, []);
+      S.autostart = value(7, false);
+      S.scheduler = value(8, null);
+      if (S.scheduler) S.schedulerAt = Date.now();
     } catch (error) {
-      toast(String(error), true);
+      toast(errorText(error), true);
     }
     render();
+    const health = document.getElementById("onboarding-health");
+    if (health && onboardingVisible()) health.innerHTML = onboardingHealthRows();
   },
 
   gatewayStart() {
@@ -4273,45 +4314,64 @@ function unlockOnboardingScroll() {
 function dismissOnboarding() {
   markOnboardingSeen();
   const modal = document.getElementById("onboarding-modal");
-  if (modal && modal.parentNode) modal.parentNode.removeChild(modal);
+  if (modal) {
+    modal.classList.remove("is-open");
+    if (typeof modal.close === "function" && modal.open) {
+      try {
+        modal.close();
+      } catch {
+        // Already closed by the UA; removing the node still finishes the job.
+      }
+    }
+    if (modal.parentNode) modal.parentNode.removeChild(modal);
+  }
   unlockOnboardingScroll();
 }
 
-// One delegated listener on the modal root. It is bound once per node and
-// survives the innerHTML rewrite below.
-function bindOnboarding(modal) {
-  if (modal._mtOnboardingBound) return;
-  modal._mtOnboardingBound = true;
-  modal.addEventListener("click", (event) => {
-    const target = event.target;
-    // The backdrop is the modal root itself. A click inside the card does
-    // nothing unless it lands on an element that carries an action.
-    if (target === modal) {
-      dismissOnboarding();
-      return;
-    }
-    const action = target && target.closest ? target.closest("[data-onboarding]") : null;
-    if (!action || !modal.contains(action)) return;
-    const name = action.getAttribute("data-onboarding");
-    if (["accounts", "providers", "api", "scheduler", "settings"].includes(name)) {
-      A.onboardingGo(name);
-    } else if (name === "health") {
-      A.onboardingHealthRefresh();
-    } else if (name === "demo") {
-      A.onboardingDemoTask();
-    } else {
-      // "done" and "close" only close — no render.
-      A.onboardingDone();
-    }
-  });
+// The dialog is the only onboarding surface that may receive actions.
+function onboardingVisible() {
+  const modal = document.getElementById("onboarding-modal");
+  return !!modal && modal.classList.contains("is-open");
 }
+
+function handleOnboardingAction(name) {
+  if (!name) return;
+  if (["accounts", "providers", "api", "scheduler", "settings"].includes(name)) {
+    A.onboardingGo(name);
+  } else if (name === "health") {
+    A.onboardingHealthRefresh();
+  } else if (name === "demo") {
+    A.onboardingDemoTask();
+  } else {
+    // "done" and "close" only close — no render.
+    A.onboardingDone();
+  }
+}
+
+// Capture-phase listener on the document, not on the modal node. It fires
+// before any page handler, keeps working after the health block rewrites its
+// rows, and cannot be blocked by a page layer above the dialog.
+document.addEventListener("click", (event) => {
+  const modal = document.getElementById("onboarding-modal");
+  if (!modal || !modal.classList.contains("is-open")) return;
+  const target = event.target;
+  if (target === modal) {
+    event.preventDefault();
+    dismissOnboarding();
+    return;
+  }
+  const action = target && target.closest ? target.closest("[data-onboarding]") : null;
+  if (!action || !modal.contains(action)) return;
+  event.preventDefault();
+  handleOnboardingAction(action.getAttribute("data-onboarding"));
+}, true);
 
 // Esc closes the tour. Registered once on the document, so it keeps working
 // after the modal node is removed and recreated.
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape" && event.key !== "Esc") return;
-  const modal = document.getElementById("onboarding-modal");
-  if (!modal || modal.hidden) return;
+  if (!onboardingVisible()) return;
+  event.preventDefault();
   dismissOnboarding();
 });
 
@@ -4354,14 +4414,17 @@ function showOnboarding() {
   if (onboardingShown) return;
   onboardingShown = true;
   if (onboardingSeen()) return;
+
+  // A native <dialog> is placed in the browser top layer by showModal().
+  // Nothing in the page can cover it, and the page behind it is inert.
+  // The fallback path keeps the same markup for old WebView2 runtimes.
   let modal = document.getElementById("onboarding-modal");
   if (!modal) {
-    modal = document.createElement("div");
+    modal = document.createElement("dialog");
     modal.id = "onboarding-modal";
-    modal.className = "modal";
-    modal.hidden = true;
+    modal.className = "modal onboarding-dialog";
+    modal.setAttribute("aria-labelledby", "onboarding-title");
     document.body.appendChild(modal);
-    bindOnboarding(modal);
   }
   const steps = [
     ["1", "onboardingStep1"],
@@ -4369,8 +4432,8 @@ function showOnboarding() {
     ["3", "onboardingStep3"],
   ];
   modal.innerHTML = `
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
-      <div class="modal-head">
+    <div class="modal-card onboarding-card">
+      <div class="modal-head onboarding-head">
         <div>
           <div class="kicker">melon tools</div>
           <h2 id="onboarding-title">${esc(t("onboardingTitle"))}</h2>
@@ -4378,34 +4441,51 @@ function showOnboarding() {
         <button type="button" class="onboarding-close" data-onboarding="close"
           title="${esc(t("onboardingClose"))}" aria-label="${esc(t("onboardingClose"))}">×</button>
       </div>
-      <div class="subtitle">${esc(t("onboardingWelcome"))}</div>
-      <div class="stack" style="margin:14px 0">
-        ${steps.map(([number, key]) => `<div class="row" style="align-items:flex-start;gap:10px">
-          <span class="pill gold">${number}</span>
-          <span>${esc(t(key))}</span>
-        </div>`).join("")}
-      </div>
-      <div class="card" style="margin:14px 0;padding:12px">
-        <div class="row" style="align-items:center">
-          <strong>${esc(t("onboardingHealth"))}</strong>
-          <span class="footnote" style="margin:0;flex:1">${esc(t("onboardingHealthSub"))}</span>
+      <div class="onboarding-scroll">
+        <div class="subtitle">${esc(t("onboardingWelcome"))}</div>
+        <div class="stack" style="margin:14px 0">
+          ${steps.map(([number, key]) => `<div class="row" style="align-items:flex-start;gap:10px">
+            <span class="pill gold">${number}</span>
+            <span>${esc(t(key))}</span>
+          </div>`).join("")}
         </div>
-        <div id="onboarding-health">${onboardingHealthRows()}</div>
-        <div class="row" style="margin-top:10px">
-          <button type="button" class="ghost small" data-onboarding="health">${esc(t("onboardingRunHealth"))}</button>
-          <button type="button" class="ghost small" data-onboarding="demo">${esc(t("onboardingDemoTask"))}</button>
+        <div class="card" style="margin:14px 0;padding:12px">
+          <div class="row" style="align-items:center">
+            <strong>${esc(t("onboardingHealth"))}</strong>
+            <span class="footnote" style="margin:0;flex:1">${esc(t("onboardingHealthSub"))}</span>
+          </div>
+          <div id="onboarding-health">${onboardingHealthRows()}</div>
+          <div class="row" style="margin-top:10px">
+            <button type="button" class="ghost small" data-onboarding="health">${esc(t("onboardingRunHealth"))}</button>
+            <button type="button" class="ghost small" data-onboarding="demo">${esc(t("onboardingDemoTask"))}</button>
+          </div>
+        </div>
+        <div class="footnote" style="color:var(--warn);border-top:1px solid var(--border);padding-top:10px;margin-bottom:12px">
+          ${esc(t("onboardingDisclaimer"))}
         </div>
       </div>
-      <div class="footnote" style="color:var(--warn);border-top:1px solid var(--border);padding-top:10px">
-        ${esc(t("onboardingDisclaimer"))}
-      </div>
-      <div class="row" style="justify-content:flex-end;margin-top:16px">
+      <div class="onboarding-actions">
         <button type="button" class="ghost small" data-onboarding="accounts">${esc(t("onboardingAccounts"))}</button>
         <button type="button" class="ghost small" data-onboarding="providers">${esc(t("onboardingProviders"))}</button>
         <button type="button" class="btn small" data-onboarding="done">${esc(t("onboardingDone"))}</button>
       </div>
     </div>`;
-  modal.hidden = false;
+  modal.classList.add("is-open");
+  try {
+    if (typeof modal.showModal === "function") {
+      modal.showModal();
+    } else {
+      modal.setAttribute("open", "");
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+    }
+  } catch {
+    // A WebView2 build without <dialog> support still gets the fixed
+    // overlay; the capture-phase handler keeps its buttons alive.
+    modal.setAttribute("open", "");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+  }
   lockOnboardingScroll();
 }
 
@@ -4422,8 +4502,16 @@ function showOnboarding() {
       // opening the window only.
     }
   }
-  await A.loadAll();
+  // Resolve language and show the welcome dialog before slower status probes.
+  // The rest of the boot reads are independent and run in parallel below.
+  try {
+    S.settings = await inv("settings_get");
+    S.lang = (S.settings && S.settings.lang) === "en" ? "en" : "ru";
+  } catch {
+    // Use the default language and keep booting if settings are unavailable.
+  }
   showOnboarding();
+  await A.loadAll();
   // Daily update check: lights the badge only; the window opens on click.
   if (IS_TAURI) {
     inv("update_check", { force: false })
@@ -4435,12 +4523,15 @@ function showOnboarding() {
       })
       .catch(() => {});
   }
-  setInterval(() => A.refreshStatus(), 5000);
+  setInterval(() => {
+    if (!onboardingVisible()) A.refreshStatus();
+  }, 5000);
   // Adaptive quota refresh: the configured interval when idle, ~30 s while
   // the gateway is actually serving — a fixed cadence lets accounts burn
   // through a small reserve between checks.
   setInterval(() => {
     if (!IS_TAURI) return;
+    if (onboardingVisible()) return;
     const now = Date.now();
     const interval = ((S.settings && S.settings.quotaInterval) || 300) * 1000;
     // Codex quota refresh and its notifications run in Rust so tray mode is

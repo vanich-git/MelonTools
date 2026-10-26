@@ -14,6 +14,7 @@ mod dpapi;
 mod engine;
 mod gateway;
 mod history;
+mod live_quota;
 mod instances;
 mod paths;
 mod providers;
@@ -283,6 +284,9 @@ async fn quota_refresh(
     let previous = quota_snapshot();
     let errors = quota::refresh_all(&client, id.as_deref()).await;
     let settings = state.settings();
+    // Reconcile recovered sticky pauses before the UI and toasts read the
+    // account state; otherwise the block lingers until the next live tick.
+    live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
         gateway::sync_accounts(&settings).unwrap_or(0)
     } else {
@@ -1424,9 +1428,25 @@ fn main() {
                     let previous = quota_snapshot();
                     let _ = quota::refresh_all(&client, None).await;
                     let settings = state.settings();
+                    // Clear recovered sticky pauses before the reset toast is
+                    // computed; otherwise the fresh reading is masked by the
+                    // persisted block until the next 1.5-second tick.
+                    live_quota::tick(&settings).await;
                     let _ = gateway::sync_accounts(&settings);
                     check_low_quota(&quota_handle, &state, &previous);
                     check_quota_reset(&quota_handle, &state, &previous);
+                }
+            });
+
+            // Keep passive quota enforcement in the native process. WebView2
+            // timers can be throttled while the app is hidden to the tray.
+            let live_quota_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    let state = live_quota_handle.state::<AppState>();
+                    let settings = state.settings();
+                    live_quota::tick(&settings).await;
                 }
             });
             Ok(())

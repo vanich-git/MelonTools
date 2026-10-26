@@ -52,6 +52,7 @@ final class CodexGatewayService: ObservableObject {
 
     private var process: Process?
     private var healthTimer: Timer?
+    private var startupProbeTask: Task<Void, Never>?
     private var logTailTimer: Timer?
     private var logReadOffset: UInt64 = 0
     private var logRemainder = ""
@@ -262,11 +263,7 @@ final class CodexGatewayService: ObservableObject {
     /// dir; tests pass a temporary directory.
     nonisolated static func syncAccounts(_ accounts: [CodexAccount], priorities: [String: Int], authDir directory: URL) throws {
         let fm = FileManager.default
-        if let names = try? fm.contentsOfDirectory(atPath: directory.path) {
-            for name in ownedAuthFileNames(in: names) {
-                try? fm.removeItem(atPath: directory.appendingPathComponent(name).path)
-            }
-        }
+        var desired: [(name: String, payload: [String: Any], preserveLegacyPause: Bool)] = []
         for account in accounts {
             guard let access = account.tokens.access_token, !access.isEmpty else { continue }
             let expired = account.accessTokenExpiry.map { ISO8601DateFormatter().string(from: $0) } ?? ""
@@ -286,14 +283,58 @@ final class CodexGatewayService: ObservableObject {
             }
             // Accounts the planner pauses — a window is exhausted or the
             // account dropped below the user's reserve — are excluded from
-            // gateway routing until the next quota refresh clears the block.
+            // gateway routing until a fresh reading clears the block.
             if CodexRoutingPlanner.blockReason(account) != nil {
                 payload["disabled"] = true
             }
+            desired.append((
+                name: authFileName(for: account),
+                payload: payload,
+                preserveLegacyPause: account.quotaBlock == nil && !CodexRoutingPlanner.quotaIsFresh(account)
+            ))
+        }
+
+        // Diff the directory instead of deleting every file first. The engine
+        // watches this directory; rewriting unchanged credentials makes it
+        // re-read tokens and can briefly race an in-flight request. Only the
+        // files this sync owns are considered, and only changed ones are
+        // written.
+        let desiredNames = Set(desired.map(\.name))
+        if let names = try? fm.contentsOfDirectory(atPath: directory.path) {
+            for name in ownedAuthFileNames(in: names) where !desiredNames.contains(name) {
+                try? fm.removeItem(atPath: directory.appendingPathComponent(name).path)
+            }
+        }
+        for entry in desired {
+            let fileURL = directory.appendingPathComponent(entry.name)
+            var payload = entry.payload
+            let existingObject = (try? Data(contentsOf: fileURL))
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let existingDisabled = existingObject?["disabled"] as? Bool ?? false
+            if entry.preserveLegacyPause && existingDisabled {
+                payload["disabled"] = true
+            }
+            if let existingObject, jsonPayloadsMatch(existingObject, payload) {
+                continue
+            }
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-            let fileURL = directory.appendingPathComponent(authFileName(for: account))
             try SecureFile.write(data, to: fileURL)
         }
+    }
+
+    /// Compares an auth file with the desired payload. An explicit
+    /// `disabled: false` is equivalent to an absent key, because the
+    /// management API may persist either form.
+    private nonisolated static func jsonPayloadsMatch(_ existing: [String: Any], _ desired: [String: Any]) -> Bool {
+        var normalized = existing
+        if normalized["disabled"] as? Bool == false {
+            normalized.removeValue(forKey: "disabled")
+        }
+        guard let left = try? JSONSerialization.data(withJSONObject: normalized, options: [.sortedKeys]),
+              let right = try? JSONSerialization.data(withJSONObject: desired, options: [.sortedKeys]) else {
+            return false
+        }
+        return left == right
     }
 
     // MARK: - Lifecycle
@@ -369,6 +410,8 @@ final class CodexGatewayService: ObservableObject {
         defer { userInitiatedStop = false }
         healthTimer?.invalidate()
         healthTimer = nil
+        startupProbeTask?.cancel()
+        startupProbeTask = nil
         logTailTimer?.invalidate()
         logTailTimer = nil
         let pid = process?.processIdentifier ?? Self.verifiedPIDFile() ?? adoptedListenerPID()
@@ -388,6 +431,8 @@ final class CodexGatewayService: ObservableObject {
         userInitiatedStop = true
         healthTimer?.invalidate()
         healthTimer = nil
+        startupProbeTask?.cancel()
+        startupProbeTask = nil
         logTailTimer?.invalidate()
         logTailTimer = nil
         let pid = process?.processIdentifier ?? Self.verifiedPIDFile() ?? adoptedListenerPID()
@@ -559,7 +604,7 @@ final class CodexGatewayService: ObservableObject {
         let url = URL(fileURLWithPath: logPath)
         if let attributes = try? fm.attributesOfItem(atPath: logPath),
            let size = attributes[.size] as? NSNumber,
-           size.intValue > 5 * 1024 * 1024 {
+           size.intValue > 2 * 1024 * 1024 {
             let rotated = URL(fileURLWithPath: logPath + ".1")
             try? fm.removeItem(at: rotated)
             try? fm.moveItem(at: url, to: rotated)
@@ -640,6 +685,8 @@ final class CodexGatewayService: ObservableObject {
     }
 
     private func finishWithFailure(_ message: String) {
+        startupProbeTask?.cancel()
+        startupProbeTask = nil
         status = .failed(message)
         lastError = message
     }
@@ -684,7 +731,7 @@ final class CodexGatewayService: ObservableObject {
     private func startHealthCheck() {
         healthTimer?.invalidate()
         var misses = 0
-        healthTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 switch await self.probeHealth() {
@@ -718,6 +765,22 @@ final class CodexGatewayService: ObservableObject {
             }
         }
         healthTimer?.tolerance = 1.0
+        // The 30-second timer alone leaves `status` at `.starting` for up to
+        // half a minute after launch. The live quota guard checks `isRunning`
+        // every 1.5 seconds, so probe quickly until the engine answers.
+        startupProbeTask?.cancel()
+        startupProbeTask = Task { @MainActor [weak self] in
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, !Task.isCancelled else { return }
+                if case .running = self.status { return }
+                if case .ok = await self.probeHealth() {
+                    self.status = .running(baseURL: self.baseURL)
+                    if self.lastError != nil { self.lastError = nil }
+                    return
+                }
+            }
+        }
     }
 
     /// No-op kept for call-site compatibility; health is driven by the timer.

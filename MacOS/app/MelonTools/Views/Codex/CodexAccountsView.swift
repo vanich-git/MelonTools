@@ -295,7 +295,8 @@ struct CodexAccountsView: View {
                         .foregroundStyle(MTTheme.danger)
                         .lineLimit(2)
                 } else if let updated = account.quotaUpdatedAt {
-                    Text(String(format: L("quota updated %@"), ISODate.relative(Self.quotaStampISO.string(from: updated))))
+                    let source = account.quotaSource == "gateway" ? L("live gateway") : L("provider usage")
+                    Text(String(format: L("quota updated %@ · %@"), ISODate.relative(Self.quotaStampISO.string(from: updated)), source))
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textSecondary)
                 }
@@ -355,13 +356,14 @@ struct CodexAccountsView: View {
                     routingChip(L("Backup"), gold: true)
                 }
                 if let reason = blockedReason {
-                    Text(L("Paused by limit"))
+                    Text(reason)
                         .font(MTTheme.mono(9, weight: .semibold))
                         .foregroundStyle(MTTheme.warn)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(MTTheme.warn.opacity(0.14))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .lineLimit(1)
                         .help(reason)
                 }
                 Spacer()
@@ -876,6 +878,9 @@ private struct AccountRoutingSheet: View {
                 limitRow(title: L("5-hour limit"), enabled: $hourlyEnabled, value: $hourly)
                 limitRow(title: L("Weekly limit"), enabled: $weeklyEnabled, value: $weekly)
                 Text(L("When the threshold is reached, the next account takes over automatically; this one returns when its quota recovers."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textSecondary)
+                Text(L("The pause triggers exactly at this value. A request already in flight can leave a little less."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
             }

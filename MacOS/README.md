@@ -16,6 +16,19 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 2.3.6
+
+- **Exact quota reserve.** macOS and Windows read live Codex quota signals every
+  1.5 seconds and pause routing exactly at the selected reserve. The account
+  card shows the actual stop value; a persisted pause clears after fresh quota
+  recovery or a confirmed reset.
+- **More reliable quota routing.** Gateway auth updates are diff-based, vault
+  and quota-history writes are batched, and reset probes retry with backoff.
+- **Windows welcome screen.** The onboarding dialog opens earlier, stays
+  responsive while checks run, keeps its buttons visible, and uses the app's
+  dark-and-gold palette.
+- **Build metadata.** macOS build 23; version metadata is aligned at 2.3.6.
+
 ## What's new in 2.3.5
 
 - **More provider connections.** DeepInfra and Vercel AI Gateway keys and model
@@ -413,7 +426,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.3.5.dmg
+open build/MelonTools-2.3.6.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use
@@ -438,7 +451,7 @@ xcodebuild -project MelonTools.xcodeproj -scheme MelonTools \
 
 # 4. Ad-hoc sign + DMG
 codesign --force --deep --sign - "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
-create-dmg --volname "Melon Tools" "build/MelonTools-2.3.5.dmg" "Melon Tools.app"
+create-dmg --volname "Melon Tools" "build/MelonTools-2.3.6.dmg" "Melon Tools.app"
 ```
 
 ## Layout

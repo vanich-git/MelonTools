@@ -2,6 +2,7 @@
 
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::vault::{self, now_ref, Account, Quota, Tokens, APPLE_REF_UNIX_OFFSET};
 
@@ -105,6 +106,77 @@ fn window_minutes(window: &Value) -> Option<f64> {
         .map(|s| s / 60.0)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveQuotaReading {
+    pub quota: Quota,
+    /// Apple reference seconds, converted from management `observed_at`.
+    pub observed_at: f64,
+}
+
+/// Parse passive quota headers saved by the gateway. The exact reserve check
+/// uses `100 - used_percent` with no epsilon or automatic margin.
+pub fn parse_live_signals(
+    signals: &HashMap<String, String>,
+    observed_at: Option<&str>,
+    fallback_unix: f64,
+) -> Option<LiveQuotaReading> {
+    if signals.is_empty() {
+        return None;
+    }
+    let values: HashMap<String, String> = signals
+        .iter()
+        .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    let mut quota = Quota::default();
+    quota.hourly_remaining_percent = remaining_signal(&values, "x-codex-primary-used-percent");
+    quota.weekly_remaining_percent = remaining_signal(&values, "x-codex-secondary-used-percent");
+    quota.hourly_window_minutes = number_signal(&values, "x-codex-primary-window-minutes");
+    quota.weekly_window_minutes = number_signal(&values, "x-codex-secondary-window-minutes");
+    quota.hourly_reset_at = reset_signal(
+        &values,
+        "x-codex-primary-reset-at",
+        "x-codex-primary-reset-after-seconds",
+        fallback_unix,
+    );
+    quota.weekly_reset_at = reset_signal(
+        &values,
+        "x-codex-secondary-reset-at",
+        "x-codex-secondary-reset-after-seconds",
+        fallback_unix,
+    );
+    quota.hourly_window_present = Some(quota.hourly_remaining_percent.is_some());
+    quota.weekly_window_present = Some(quota.weekly_remaining_percent.is_some());
+    if quota.hourly_remaining_percent.is_none() && quota.weekly_remaining_percent.is_none() {
+        return None;
+    }
+    let observed_unix = observed_at
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|date| date.timestamp_millis() as f64 / 1000.0)
+        .unwrap_or(fallback_unix);
+    Some(LiveQuotaReading {
+        quota,
+        observed_at: observed_unix - APPLE_REF_UNIX_OFFSET,
+    })
+}
+
+fn remaining_signal(values: &HashMap<String, String>, key: &str) -> Option<f64> {
+    let used = values.get(key)?.parse::<f64>().ok()?;
+    Some((100.0 - used).clamp(0.0, 100.0))
+}
+
+fn number_signal(values: &HashMap<String, String>, key: &str) -> Option<f64> {
+    values.get(key)?.parse::<f64>().ok()
+}
+
+fn reset_signal(values: &HashMap<String, String>, at_key: &str, after_key: &str, now: f64) -> Option<f64> {
+    if let Some(at) = number_signal(values, at_key).filter(|value| *value > 0.0) {
+        return Some(at - APPLE_REF_UNIX_OFFSET);
+    }
+    number_signal(values, after_key)
+        .filter(|seconds| *seconds >= 0.0)
+        .map(|seconds| now + seconds - APPLE_REF_UNIX_OFFSET)
+}
+
 pub async fn fetch_usage(
     client: &Client,
     account: &Account,
@@ -155,8 +227,17 @@ pub async fn fetch_usage(
 }
 
 pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), String> {
-    let tokens = ensure_fresh(client, account).await?;
-    match fetch_usage(client, account, &tokens).await {
+    let mut tokens = ensure_fresh(client, account).await?;
+    let mut usage = fetch_usage(client, account, &tokens).await;
+    if matches!(&usage, Err(error) if error.starts_with("usage 401:")) {
+        // Providers can revoke an access token before its JWT expiry. Retry
+        // once with a freshly rotated token instead of leaving the reset
+        // probe stuck until the next long quota interval.
+        tokens = refresh_tokens(client, account).await?;
+        vault::update_tokens(&account.id, &tokens, &chrono::Utc::now().to_rfc3339())?;
+        usage = fetch_usage(client, account, &tokens).await;
+    }
+    match usage {
         Ok((quota, raw)) => {
             // Reset credits (5h-window refills) and model availability ride
             // along with the usage fetch.
@@ -399,8 +480,11 @@ pub fn reset_notification_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        block_window, reset_notification_key, should_notify_quota_reset, subscription_url,
+        block_window, parse_live_signals, reset_notification_key, should_notify_quota_reset,
+        subscription_url,
     };
+    use crate::vault::APPLE_REF_UNIX_OFFSET;
+    use std::collections::HashMap;
 
     #[test]
     fn subscription_url_percent_encodes_account_id() {
@@ -455,5 +539,27 @@ mod tests {
         assert_eq!(block_window("weekly_exhausted"), Some("weekly"));
         assert_eq!(block_window("weekly_reserve"), Some("weekly"));
         assert_eq!(block_window("something_else"), None);
+    }
+
+    #[test]
+    fn parses_live_codex_signals_and_exact_remaining_percent() {
+        let signals = HashMap::from([
+            ("X-Codex-Primary-Used-Percent".to_string(), "98".to_string()),
+            ("X-Codex-Primary-Window-Minutes".to_string(), "300".to_string()),
+            ("X-Codex-Primary-Reset-After-Seconds".to_string(), "120".to_string()),
+            ("X-Codex-Secondary-Used-Percent".to_string(), "27.5".to_string()),
+        ]);
+        let now = 1_800_000_000.0;
+        let reading = parse_live_signals(&signals, None, now).unwrap();
+        assert_eq!(reading.quota.hourly_remaining_percent, Some(2.0));
+        assert_eq!(reading.quota.weekly_remaining_percent, Some(72.5));
+        assert_eq!(reading.quota.hourly_reset_at, Some(now + 120.0 - APPLE_REF_UNIX_OFFSET));
+        assert_eq!(reading.quota.hourly_window_minutes, Some(300.0));
+    }
+
+    #[test]
+    fn ignores_live_signals_without_a_quota_window() {
+        let signals = HashMap::from([("Retry-After".to_string(), "30".to_string())]);
+        assert!(parse_live_signals(&signals, None, 1_800_000_000.0).is_none());
     }
 }

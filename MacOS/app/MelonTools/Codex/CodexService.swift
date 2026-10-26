@@ -331,11 +331,26 @@ enum CodexService {
         return candidates.first { $0 != nil && !$0!.isEmpty } ?? nil
     }
 
-    static func fetchQuota(account: CodexAccount) async throws -> CodexQuota {
+    static func fetchQuota(account: CodexAccount) async throws -> (quota: CodexQuota, tokens: CodexTokens) {
         let tokens = try await freshTokens(for: account)
+        do {
+            return (try await fetchQuota(account: account, tokens: tokens), tokens)
+        } catch CodexError.http(401, _) {
+            // The provider can revoke a token before its JWT expiry. Rotate it
+            // once, then retry the quota request. The caller persists the
+            // returned tokens with the quota so a reset probe does not loop.
+            let refreshed = try await refreshTokens(account)
+            var retryAccount = account
+            retryAccount.tokens = refreshed
+            return (try await fetchQuota(account: retryAccount, tokens: refreshed), refreshed)
+        }
+    }
+
+    private static func fetchQuota(account: CodexAccount, tokens: CodexTokens) async throws -> CodexQuota {
         guard let access = tokens.access_token else { throw CodexError.refreshUnavailable }
 
         var request = URLRequest(url: usageEndpoint)
+        request.timeoutInterval = 12
         request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(originator, forHTTPHeaderField: "originator")

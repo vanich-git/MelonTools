@@ -47,7 +47,7 @@ impl Tokens {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Quota {
     pub hourly_remaining_percent: Option<f64>,
@@ -58,6 +58,22 @@ pub struct Quota {
     pub weekly_window_present: Option<bool>,
     pub hourly_window_minutes: Option<f64>,
     pub weekly_window_minutes: Option<f64>,
+}
+
+/// Sticky routing pause captured before the gateway auth file is disabled.
+/// `remaining` is the actual observed stop value, which can be below the
+/// configured threshold when a request was already in flight.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuotaBlock {
+    pub code: String,
+    pub remaining: f64,
+    pub limit: Option<i64>,
+    /// Apple reference seconds.
+    pub reset_at: Option<f64>,
+    /// Unix seconds.
+    pub blocked_at: f64,
+    pub source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -75,6 +91,8 @@ pub struct Account {
     pub quota: Option<Quota>,
     pub quota_updated_at: Option<f64>,
     pub quota_error: Option<String>,
+    pub quota_source: Option<String>,
+    pub quota_block: Option<QuotaBlock>,
     pub hourly_reserve_percent: Option<i64>,
     pub weekly_reserve_percent: Option<i64>,
     pub preferred_first: Option<bool>,
@@ -94,9 +112,31 @@ impl Account {
     /// Reason this account is paused by the routing planner, if any.
     /// Quota readings older than 30 minutes never block.
     pub fn block_info(&self) -> Option<Value> {
+        if let Some(block) = &self.quota_block {
+            let reserve_enabled = match block.code.as_str() {
+                "hourly_reserve" => self.hourly_reserve_percent.unwrap_or(0) > 0,
+                "weekly_reserve" => self.weekly_reserve_percent.unwrap_or(0) > 0,
+                _ => true,
+            };
+            if reserve_enabled {
+                return Some(json!({
+                    "code": block.code,
+                    "remaining": block.remaining,
+                    "limit": block.limit,
+                    "resetAt": block.reset_at.map(|v| v + APPLE_REF_UNIX_OFFSET),
+                    "blockedAt": block.blocked_at,
+                    "source": block.source,
+                }));
+            }
+        }
         let quota = self.quota.as_ref()?;
         let updated = self.quota_updated_at?;
-        if now_ref() - updated >= 1800.0 {
+        let max_age = if self.quota_source.as_deref() == Some("gateway") {
+            120.0
+        } else {
+            1800.0
+        };
+        if now_ref() - updated >= max_age {
             return None;
         }
         if let Some(r) = quota.hourly_remaining_percent {
@@ -206,6 +246,17 @@ pub fn load_raw() -> Value {
     load_raw_at(&vault_file())
 }
 
+/// Serializes read-modify-write updates. The live quota guard runs every
+/// 1.5 seconds and must never clobber a reserve or token edit saved by the UI
+/// from a snapshot it read a moment earlier.
+static VAULT_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_vault_writes() -> std::sync::MutexGuard<'static, ()> {
+    VAULT_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Same as [`load_raw`] for an explicit path (backup export / tests).
 pub fn load_raw_at(path: &Path) -> Value {
     let raw = std::fs::read_to_string(path).ok();
@@ -297,6 +348,7 @@ pub fn list_views() -> Vec<Value> {
             "hourlyWindowPresent": quota.hourly_window_present.unwrap_or(false),
             "weeklyWindowPresent": quota.weekly_window_present.unwrap_or(false),
             "quotaUpdatedAt": account.quota_updated_at.map(|v| v + APPLE_REF_UNIX_OFFSET),
+            "quotaSource": account.quota_source,
             "quotaError": account.quota_error,
             "hourlyReservePercent": account.hourly_reserve_percent,
             "weeklyReservePercent": account.weekly_reserve_percent,
@@ -313,6 +365,7 @@ pub fn list_views() -> Vec<Value> {
 }
 
 pub fn set_account_field(id: &str, mutate: impl FnOnce(&mut Value)) -> Result<(), String> {
+    let _guard = lock_vault_writes();
     let mut raw = load_raw();
     if let Some(arr) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) {
         for item in arr.iter_mut() {
@@ -371,7 +424,67 @@ pub fn update_quota(id: &str, quota: &Quota, raw_json: &str, extra: Value) -> Re
         item["quota"] = obj;
         item["quotaUpdatedAt"] = json!(now_ref());
         item["quotaError"] = Value::Null;
+        item["quotaSource"] = json!("usage");
     })
+}
+
+/// Merge one passive gateway reading. Missing fields do not erase cached
+/// reset timestamps or window metadata. Returns false when nothing changed,
+/// so a 1.5-second guard does not rewrite the vault for identical signals.
+pub fn update_live_quota(id: &str, quota: &Quota, observed_at: f64) -> Result<bool, String> {
+    let _guard = lock_vault_writes();
+    let mut raw = load_raw();
+    let Some(items) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) else {
+        return Ok(false);
+    };
+    let Some(item) = items
+        .iter_mut()
+        .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))
+    else {
+        return Ok(false);
+    };
+    let mut current = item.get("quota").cloned().unwrap_or_else(|| json!({}));
+    macro_rules! set_if_changed {
+        ($field:literal, $value:expr) => {
+            if let Some(value) = $value {
+                let next = json!(value);
+                if current.get($field) != Some(&next) {
+                    current[$field] = next;
+                }
+            }
+        };
+    }
+    set_if_changed!("hourlyRemainingPercent", quota.hourly_remaining_percent);
+    set_if_changed!("weeklyRemainingPercent", quota.weekly_remaining_percent);
+    set_if_changed!("hourlyResetAt", quota.hourly_reset_at);
+    set_if_changed!("weeklyResetAt", quota.weekly_reset_at);
+    set_if_changed!("hourlyWindowMinutes", quota.hourly_window_minutes);
+    set_if_changed!("weeklyWindowMinutes", quota.weekly_window_minutes);
+    set_if_changed!("hourlyWindowPresent", quota.hourly_window_present);
+    set_if_changed!("weeklyWindowPresent", quota.weekly_window_present);
+    let last_written = item.get("quotaUpdatedAt").and_then(|v| v.as_f64());
+    let recent_write = last_written
+        .map(|stamp| observed_at - stamp < 5.0)
+        .unwrap_or(false);
+    if recent_write && item.get("quotaSource").and_then(|v| v.as_str()) == Some("gateway") {
+        return Ok(false);
+    }
+    item["quota"] = current;
+    item["quotaUpdatedAt"] = json!(observed_at);
+    item["quotaSource"] = json!("gateway");
+    item["quotaError"] = Value::Null;
+    save_raw(&raw)?;
+    Ok(true)
+}
+
+/// Persist or clear a sticky block before changing gateway routing state.
+pub fn set_quota_block(id: &str, block: Option<&QuotaBlock>) -> Result<(), String> {
+    let value = block
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(Value::Null);
+    set_account_field(id, move |item| item["quotaBlock"] = value)
 }
 
 /// Subscription dates / plan discovered from the backend.
@@ -412,6 +525,7 @@ fn apply_quota_error(item: &mut Value, error: &str) {
 }
 
 pub fn delete_account(id: &str) -> Result<(), String> {
+    let _guard = lock_vault_writes();
     let mut raw = load_raw();
     if let Some(arr) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) {
         arr.retain(|item| item.get("id").and_then(|v| v.as_str()) != Some(id));
@@ -420,6 +534,7 @@ pub fn delete_account(id: &str) -> Result<(), String> {
 }
 
 pub fn upsert_from_tokens(tokens: &Tokens) -> Result<String, String> {
+    let _guard = lock_vault_writes();
     let claims = jwt_claims(tokens.id_token.as_deref());
     let account_id = claims.account_id.clone().or(tokens.account_id.clone());
     let mut raw = load_raw();

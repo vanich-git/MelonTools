@@ -132,6 +132,23 @@ final class ClaudeAuthTests: XCTestCase {
         XCTAssertEqual(json["priority"] as? Int, 5)
     }
 
+    func testSyncAccountsKeepsLegacyPauseWhenQuotaIsStale() throws {
+        let dir = try makeTempDir()
+        let tokens = CodexTokens(id_token: "id", access_token: "access-1")
+        var account = CodexAccount(tokens: tokens)
+        account.email = "paused@example.com"
+        account.quotaUpdatedAt = .distantPast
+
+        let name = CodexGatewayService.authFileName(for: account)
+        try Data(#"{"disabled":true}"#.utf8).write(to: dir.appendingPathComponent(name))
+
+        try CodexGatewayService.syncAccounts([account], priorities: [:], authDir: dir)
+
+        let data = try Data(contentsOf: dir.appendingPathComponent(name))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["disabled"] as? Bool, true)
+    }
+
     // MARK: - Gateway config generation (AC6)
 
     private func claudeSource(key: String, enabled: Bool = true, modelEnabled: Bool = true) -> ModelSource {

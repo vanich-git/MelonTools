@@ -60,11 +60,22 @@ enum CodexRoutingStrategy: String, CaseIterable, Identifiable {
 
 /// Why the planner pauses one account. The cause feeds the localized reason
 /// text and the pool-wide pause banner; `blockReason` stays the display form.
-enum CodexBlockCause: Equatable {
-    case hourlyExhausted
-    case weeklyExhausted
-    case hourlyReserve
-    case weeklyReserve
+enum CodexBlockCause: String, Codable, Equatable {
+    case hourlyExhausted = "hourly_exhausted"
+    case weeklyExhausted = "weekly_exhausted"
+    case hourlyReserve = "hourly_reserve"
+    case weeklyReserve = "weekly_reserve"
+
+    var window: QuotaNotificationWindow {
+        switch self {
+        case .hourlyExhausted, .hourlyReserve: return .hourly
+        case .weeklyExhausted, .weeklyReserve: return .weekly
+        }
+    }
+
+    var isReserve: Bool {
+        self == .hourlyReserve || self == .weeklyReserve
+    }
 }
 
 /// Pure routing planner: accounts in, effective order out. No side effects so
@@ -85,29 +96,112 @@ enum CodexRoutingPlanner {
     /// Exhaustion wins over a reserve: a reserve can be lifted, a zero window
     /// cannot.
     static func blockCause(_ account: CodexAccount) -> CodexBlockCause? {
+        // A persisted pause is authoritative. It is cleared by the store only
+        // after a fresh reading above the reserve (or a confirmed reset), so
+        // stale data must never lift it by itself.
+        if let block = account.quotaBlock, reserveStillEnabled(block.cause, account: account) {
+            return block.cause
+        }
         guard let quota = account.quota, quotaIsFresh(account) else { return nil }
+        return quotaBlockCause(
+            quota: quota,
+            hourlyReserve: account.hourlyReservePercent,
+            weeklyReserve: account.weeklyReservePercent,
+            isFresh: true
+        )
+    }
+
+    /// Exact gate over one quota reading. No epsilon and no hidden margin:
+    /// `remaining <= reserve` pauses the account.
+    static func quotaBlockCause(
+        quota: CodexQuota,
+        hourlyReserve: Int?,
+        weeklyReserve: Int?,
+        isFresh: Bool
+    ) -> CodexBlockCause? {
+        guard isFresh else { return nil }
         if let remaining = quota.hourlyRemainingPercent, remaining <= 0 {
             return .hourlyExhausted
         }
         if let remaining = quota.weeklyRemainingPercent, remaining <= 0 {
             return .weeklyExhausted
         }
-        if let hourlyLimit = account.hourlyReservePercent, hourlyLimit > 0,
+        if let hourlyLimit = hourlyReserve, hourlyLimit > 0,
            let remaining = quota.hourlyRemainingPercent, remaining <= Double(hourlyLimit) {
             return .hourlyReserve
         }
-        if let weeklyLimit = account.weeklyReservePercent, weeklyLimit > 0,
+        if let weeklyLimit = weeklyReserve, weeklyLimit > 0,
            let remaining = quota.weeklyRemainingPercent, remaining <= Double(weeklyLimit) {
             return .weeklyReserve
         }
         return nil
     }
 
+    /// A stored reserve pause stops applying when the user removes that
+    /// reserve. Exhaustion blocks stay until quota recovers.
+    private static func reserveStillEnabled(_ cause: CodexBlockCause, account: CodexAccount) -> Bool {
+        switch cause {
+        case .hourlyReserve: return (account.hourlyReservePercent ?? 0) > 0
+        case .weeklyReserve: return (account.weeklyReservePercent ?? 0) > 0
+        case .hourlyExhausted, .weeklyExhausted: return true
+        }
+    }
+
+    /// True when a persisted pause has recovered under a fresh reading. The
+    /// store calls this before it re-enables the gateway auth file.
+    static func blockRecovered(
+        _ block: CodexQuotaBlock,
+        quota: CodexQuota,
+        hourlyReserve: Int?,
+        weeklyReserve: Int?,
+        isFresh: Bool
+    ) -> Bool {
+        guard isFresh else { return false }
+        let remaining: Double?
+        switch block.cause {
+        case .hourlyExhausted, .hourlyReserve:
+            remaining = quota.hourlyRemainingPercent
+        case .weeklyExhausted, .weeklyReserve:
+            remaining = quota.weeklyRemainingPercent
+        }
+        guard let remaining else { return false }
+        let floor: Double
+        switch block.cause {
+        case .hourlyReserve: floor = Double(hourlyReserve ?? 0)
+        case .weeklyReserve: floor = Double(weeklyReserve ?? 0)
+        case .hourlyExhausted, .weeklyExhausted: floor = 0
+        }
+        return remaining > floor
+    }
+
     /// Returns the reason this account is paused, or nil when it may be used.
     /// A limit of 0 (or none) means “no limit”. Quota readings older than
     /// `quotaFreshness` never block — a stale gauge must not park an account.
     static func blockReason(_ account: CodexAccount) -> String? {
-        guard let cause = blockCause(account), let quota = account.quota else { return nil }
+        guard let cause = blockCause(account) else { return nil }
+        // Prefer the persisted reading: it is what actually stopped routing,
+        // even if the live gauge has moved a little since then.
+        if let block = account.quotaBlock, block.cause == cause {
+            switch cause {
+            case .hourlyExhausted:
+                return String(format: L("5-hour quota exhausted — stopped at %@"), block.actualText)
+            case .weeklyExhausted:
+                return String(format: L("weekly quota exhausted — stopped at %@"), block.actualText)
+            case .hourlyReserve:
+                return String(
+                    format: L("5-hour quota stopped at %@ (limit %d%%)"),
+                    block.actualText,
+                    account.hourlyReservePercent ?? block.thresholdPercent ?? 0
+                )
+            case .weeklyReserve:
+                return String(
+                    format: L("weekly quota stopped at %@ (limit %d%%)"),
+                    block.actualText,
+                    account.weeklyReservePercent ?? block.thresholdPercent ?? 0
+                )
+            }
+        }
+        guard let quota = account.quota else { return nil }
         switch cause {
         case .hourlyExhausted:
             return L("5-hour quota exhausted")
@@ -116,11 +210,19 @@ enum CodexRoutingPlanner {
         case .hourlyReserve:
             guard let remaining = quota.hourlyRemainingPercent,
                   let hourlyLimit = account.hourlyReservePercent else { return nil }
-            return String(format: L("5-hour quota left %d%% ≤ %d%%"), Int(remaining.rounded()), hourlyLimit)
+            return String(
+                format: L("5-hour quota left %@ ≤ %d%%"),
+                CodexQuotaBlock.percentText(remaining),
+                hourlyLimit
+            )
         case .weeklyReserve:
             guard let remaining = quota.weeklyRemainingPercent,
                   let weeklyLimit = account.weeklyReservePercent else { return nil }
-            return String(format: L("weekly quota left %d%% ≤ %d%%"), Int(remaining.rounded()), weeklyLimit)
+            return String(
+                format: L("weekly quota left %@ ≤ %d%%"),
+                CodexQuotaBlock.percentText(remaining),
+                weeklyLimit
+            )
         }
     }
 
@@ -129,7 +231,9 @@ enum CodexRoutingPlanner {
 
     static func quotaIsFresh(_ account: CodexAccount) -> Bool {
         guard let updated = account.quotaUpdatedAt else { return false }
-        return Date().timeIntervalSince(updated) < quotaFreshness
+        let maxAge = account.quotaSource == "gateway" ? CodexLiveQuota.maxSignalAge : quotaFreshness
+        let age = Date().timeIntervalSince(updated)
+        return age >= -5 && age <= maxAge
     }
 
     static func resolve(accounts: [CodexAccount], strategy: CodexRoutingStrategy, manualOrder: [String]) -> Resolution {

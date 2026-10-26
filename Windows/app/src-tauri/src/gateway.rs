@@ -2,6 +2,7 @@
 //! process lifecycle and the live request-rate counter.
 
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -283,7 +284,7 @@ fn yaml_escape(value: &str) -> String {
 
 // MARK: - Auth files
 
-fn auth_file_name(account: &Account, index: usize) -> String {
+pub fn auth_file_name(account: &Account, index: usize) -> String {
     let email: String = account
         .email
         .clone()
@@ -324,18 +325,7 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
 
     let dir = paths::auths_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Only the files this sync owns are replaced: engine-written auth files of
-    // other providers (claude-*.json) must survive an account sync.
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if crate::claude::is_codex_auth_file_name(&name) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-
-    let mut written = 0usize;
+    let mut desired = Vec::new();
     for (index, account) in ordered.iter().enumerate() {
         let Some(access) = account.tokens.access_token.clone().filter(|t| !t.is_empty()) else {
             continue;
@@ -367,7 +357,53 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
         if account.is_blocked() {
             payload["disabled"] = json!(true);
         }
-        let file = dir.join(auth_file_name(account, index));
+        desired.push((
+            dir.join(auth_file_name(account, index)),
+            payload,
+            account.quota_block.is_none() && !crate::routing::quota_is_fresh(account),
+        ));
+    }
+
+    // Only the files this sync owns are replaced: engine-written auth files of
+    // other providers (claude-*.json) must survive an account sync. Remove
+    // stale owned files, but leave unchanged credentials in place so the
+    // engine does not reload them during every quota poll.
+    let desired_names: std::collections::HashSet<String> = desired
+        .iter()
+        .filter_map(|(path, _, _)| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .collect();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if crate::claude::is_codex_auth_file_name(&name) && !desired_names.contains(&name) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let mut written = 0usize;
+    for (file, mut payload, preserve_legacy_pause) in desired {
+        let mut current = fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if let Some(Value::Object(object)) = current.as_mut() {
+            if object.get("disabled").and_then(Value::as_bool) == Some(false) {
+                object.remove("disabled");
+            }
+        }
+        if preserve_legacy_pause
+            && current
+                .as_ref()
+                .and_then(|value| value.get("disabled"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            payload["disabled"] = json!(true);
+        }
+        if current.as_ref() == Some(&payload) {
+            written += 1;
+            continue;
+        }
         let payload = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
         // Temp + rename, like config.yaml: the engine must never hot-reload a
         // half-written auth file.
@@ -377,6 +413,129 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
         written += 1;
     }
     Ok(written)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ManagementAuthFile {
+    pub name: String,
+    pub auth_index: Option<String>,
+    pub disabled: bool,
+    pub email: Option<String>,
+    pub provider: Option<String>,
+    pub observed_at: Option<String>,
+    pub signals: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ManagementAuthSnapshot {
+    pub files: Vec<ManagementAuthFile>,
+}
+
+impl ManagementAuthSnapshot {
+    pub fn codex_files(&self) -> Vec<&ManagementAuthFile> {
+        self.files
+            .iter()
+            .filter(|file| {
+                file.provider.as_deref().map(str::to_ascii_lowercase).as_deref() == Some("codex")
+                    || file.name.starts_with("codex-")
+            })
+            .collect()
+    }
+}
+
+/// GET the live auth-file observations. This endpoint is polled by the
+/// quota guard while the gateway runs; keep its timeout short.
+pub async fn management_auth_files(settings: &Settings) -> Result<ManagementAuthSnapshot, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(2500))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(format!("http://127.0.0.1:{}/v0/management/auth-files", settings.port))
+        .header("Authorization", format!("Bearer {}", settings.management_secret))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("management auth-files {}", status.as_u16()));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let observed_at = value.get("observed_at").and_then(Value::as_str).map(String::from);
+    let files = value
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.get("name")?.as_str()?.to_string();
+            let quota = entry.get("quota");
+            let signals = quota
+                .and_then(|quota| quota.get("signals"))
+                .and_then(Value::as_object)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(ManagementAuthFile {
+                name,
+                auth_index: entry.get("auth_index").and_then(Value::as_str).map(String::from),
+                disabled: entry.get("disabled").and_then(Value::as_bool).unwrap_or(false),
+                email: entry.get("email").and_then(Value::as_str).map(String::from),
+                provider: entry.get("provider").and_then(Value::as_str).map(String::from),
+                observed_at: quota
+                    .and_then(|quota| quota.get("observed_at"))
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .or_else(|| observed_at.clone()),
+                signals,
+            })
+        })
+        .collect();
+    Ok(ManagementAuthSnapshot { files })
+}
+
+/// PATCH one auth status and verify it through the management read API.
+pub async fn set_auth_disabled(
+    settings: &Settings,
+    file: &ManagementAuthFile,
+    disabled: bool,
+) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return false;
+    };
+    let mut body = json!({"name": file.name, "disabled": disabled});
+    if let Some(index) = &file.auth_index {
+        body["auth_index"] = json!(index);
+    }
+    let response = client
+        .patch(format!("http://127.0.0.1:{}/v0/management/auth-files/status", settings.port))
+        .header("Authorization", format!("Bearer {}", settings.management_secret))
+        .json(&body)
+        .send()
+        .await;
+    if !matches!(response, Ok(ref response) if response.status().is_success()) {
+        return false;
+    }
+    let Ok(snapshot) = management_auth_files(settings).await else {
+        return false;
+    };
+    snapshot
+        .files
+        .iter()
+        .find(|candidate| {
+            file.auth_index.as_deref().is_some_and(|index| candidate.auth_index.as_deref() == Some(index))
+                || candidate.name == file.name
+        })
+        .is_some_and(|candidate| candidate.disabled == disabled)
 }
 
 // MARK: - Lifecycle
@@ -625,7 +784,7 @@ fn parse_timestamp(line: &str) -> Option<chrono::NaiveDateTime> {
 
 /// The log is rotated on gateway start once it exceeds this size: the engine is
 /// restarted anyway, so the open-handle rename window is safe.
-const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+const LOG_ROTATE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Keeps one backup (`gateway.log.1`). Rotation failure is ignored: the engine
 /// may still hold the handle, and the next fresh start retries.

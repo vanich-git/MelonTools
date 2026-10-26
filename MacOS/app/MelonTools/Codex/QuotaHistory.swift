@@ -104,6 +104,7 @@ final class QuotaHistoryStore: ObservableObject {
 
     private let fileURL: URL
     private var loaded = false
+    private var persistTask: Task<Void, Never>?
 
     init(fileURL: URL = QuotaHistoryStore.defaultFileURL) {
         self.fileURL = fileURL
@@ -118,19 +119,43 @@ final class QuotaHistoryStore: ObservableObject {
         guard !key.isEmpty else { return }
         loadIfNeeded()
         history = QuotaHistory.appending(sample, for: key, to: history)
-        persist()
+        // A bulk refresh appends several samples in a row. Coalesce the file
+        // writes without delaying the in-memory sparkline.
+        schedulePersist()
     }
 
     /// Drop the trend series for a deleted account.
     func remove(_ key: String) {
         loadIfNeeded()
         guard history.removeValue(forKey: key) != nil else { return }
-        persist()
+        persistNow()
     }
 
     func clear() {
         history = [:]
-        persist()
+        persistNow()
+    }
+
+    /// Flush a pending write at app termination.
+    func flush() {
+        persistTask?.cancel()
+        persistTask = nil
+        persistNow()
+    }
+
+    private func schedulePersist() {
+        guard persistTask == nil else { return }
+        persistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persistNow()
+            self?.persistTask = nil
+        }
+    }
+
+    private func persistNow() {
+        guard let data = try? QuotaHistory.encode(history) else { return }
+        try? SecureFile.write(data, to: fileURL)
     }
 
     private func loadIfNeeded() {
@@ -141,10 +166,6 @@ final class QuotaHistoryStore: ObservableObject {
         history = QuotaHistory.pruned(decoded)
     }
 
-    private func persist() {
-        guard let data = try? QuotaHistory.encode(history) else { return }
-        try? SecureFile.write(data, to: fileURL)
-    }
 }
 
 // MARK: - Sparkline

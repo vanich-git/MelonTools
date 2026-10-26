@@ -146,6 +146,8 @@ final class QuotaHistoryTests: XCTestCase {
             QuotaHistorySample(at: Date(timeIntervalSince1970: 200), weekly: 20),
             for: "account-a"
         )
+        // Writes are debounced; a real termination flushes the batch.
+        store.flush()
 
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)

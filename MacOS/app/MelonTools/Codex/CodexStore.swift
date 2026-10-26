@@ -22,8 +22,8 @@ struct QuotaNotificationRecord: Codable, Equatable {
 enum QuotaNotificationPolicy {
     /// Legacy weekly threshold when the account has no weekly reserve.
     static let weeklyDefaultThreshold: Double = 10
-    /// Without a reset timestamp a window cannot be identified, so the
-    /// legacy six-hour debounce remains.
+    /// Quota-reset notifications without a reset timestamp use the legacy
+    /// six-hour debounce. Low-quota notices stay suppressed until recovery.
     static let fallbackDebounce: TimeInterval = 6 * 3600
 
     struct Decision: Equatable {
@@ -34,8 +34,8 @@ enum QuotaNotificationPolicy {
         let stateKey: String
     }
 
-    /// One decision per window that is at or below its threshold and has not
-    /// been announced for the current reset window yet.
+    /// One decision per account/window that is at or below its threshold and
+    /// has not been announced during this continuous low-quota period.
     ///
     /// The hourly window is opt-in through the account reserve: it moves fast
     /// and would be noisy. The weekly window keeps the legacy 10 % default and
@@ -48,8 +48,7 @@ enum QuotaNotificationPolicy {
         weeklyRemaining: Double?,
         weeklyReset: Date?,
         weeklyReservePercent: Int?,
-        records: [String: QuotaNotificationRecord],
-        now: Date = Date()
+        records: [String: QuotaNotificationRecord]
     ) -> [Decision] {
         var result: [Decision] = []
 
@@ -61,18 +60,12 @@ enum QuotaNotificationPolicy {
                remaining: remaining,
                threshold: Double(reserve),
                reset: hourlyReset,
-               records: records,
-               now: now
+               records: records
            ) {
             result.append(decision)
         }
 
-        let weeklyThreshold: Double
-        if let reserve = weeklyReservePercent, reserve > 0 {
-            weeklyThreshold = Double(reserve)
-        } else {
-            weeklyThreshold = weeklyDefaultThreshold
-        }
+        let weeklyThreshold = weeklyThreshold(for: weeklyReservePercent)
         if let remaining = weeklyRemaining,
            let decision = decision(
                accountId: accountId,
@@ -80,8 +73,7 @@ enum QuotaNotificationPolicy {
                remaining: remaining,
                threshold: weeklyThreshold,
                reset: weeklyReset,
-               records: records,
-               now: now
+               records: records
            ) {
             result.append(decision)
         }
@@ -89,9 +81,42 @@ enum QuotaNotificationPolicy {
         return result
     }
 
-    /// True when this window has not been announced yet. A known reset
-    /// timestamp arms a fresh notification for the next window; otherwise the
-    /// legacy time-based debounce applies.
+    /// Remove low-quota markers only after the corresponding window recovers
+    /// above its threshold. A new reset timestamp alone does not re-arm an
+    /// alert while quota remains low.
+    static func recordsAfterRecovery(
+        accountId: String,
+        hourlyRemaining: Double?,
+        hourlyReservePercent: Int?,
+        weeklyRemaining: Double?,
+        weeklyReservePercent: Int?,
+        records: [String: QuotaNotificationRecord]
+    ) -> [String: QuotaNotificationRecord] {
+        var updated = records
+        let hourlyKey = "\(accountId):hourly"
+        if let reserve = hourlyReservePercent, reserve > 0 {
+            if let remaining = hourlyRemaining, remaining > Double(reserve) {
+                updated.removeValue(forKey: hourlyKey)
+            }
+        } else {
+            updated.removeValue(forKey: hourlyKey)
+        }
+
+        let weeklyKey = "\(accountId):weekly"
+        if let remaining = weeklyRemaining,
+           remaining > weeklyThreshold(for: weeklyReservePercent) {
+            updated.removeValue(forKey: weeklyKey)
+        }
+        return updated
+    }
+
+    private static func weeklyThreshold(for reserve: Int?) -> Double {
+        guard let reserve, reserve > 0 else { return weeklyDefaultThreshold }
+        return Double(reserve)
+    }
+
+    /// Reset notifications are limited to one per reset window. If the reset
+    /// timestamp is missing, the legacy time-based debounce applies.
     static func shouldNotify(
         stateKey: String,
         windowKey: String,
@@ -117,18 +142,14 @@ enum QuotaNotificationPolicy {
         remaining: Double,
         threshold: Double,
         reset: Date?,
-        records: [String: QuotaNotificationRecord],
-        now: Date
+        records: [String: QuotaNotificationRecord]
     ) -> Decision? {
         guard remaining <= threshold else { return nil }
         let key = windowKey(for: reset)
         let stateKey = "\(accountId):\(window.rawValue)"
-        guard shouldNotify(
-            stateKey: stateKey,
-            windowKey: key,
-            records: records,
-            now: now
-        ) else { return nil }
+        // Low quota is one alert per continuous low period. Do not re-arm it
+        // just because the provider advanced or changed its reset timestamp.
+        guard records[stateKey] == nil else { return nil }
         return Decision(
             window: window,
             remaining: remaining,
@@ -389,6 +410,9 @@ final class CodexStore: ObservableObject {
         }
         syncPriorityOrder()
         detectCurrent()
+        // Older vaults did not persist the pause itself. Rebuild it from a
+        // still-fresh reading so a stale gauge cannot lift an existing block.
+        if reconcileQuotaBlocks() { save(immediately: true) }
         routingNote = routingNoteText()
     }
 
@@ -495,6 +519,8 @@ final class CodexStore: ObservableObject {
         accounts[index].isBackup = isBackup ? true : nil
         save()
         applyRoutingIfNeeded(reason: L("account settings changed"))
+        // A lowered reserve may make a paused account usable immediately.
+        Task { await self.enforceQuotaGate(snapshot: nil) }
     }
 
     /// Pushes the current order to a running gateway when anything changed.
@@ -517,15 +543,13 @@ final class CodexStore: ObservableObject {
     private func routingSignature(priorities: [String: Int]) -> String {
         let ids = accounts.map(\.id).joined(separator: ",")
         let values = priorities.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
-        // Availability participates in the signature: a quota refresh that
-        // pauses or unpauses an account must reach the gateway even though
-        // the account set and priorities stayed the same. Without this, auth
-        // files kept the old `disabled` flag after the windows reset — the
-        // gateway routed nothing until an unrelated sync happened.
-        let availability = accounts.map { account in
-            account.id + ":" + (CodexRoutingPlanner.blockReason(account) == nil ? "ok" : "off")
+        // Tokens are written into the auth files, so a token refresh must
+        // reach the gateway. Availability is deliberately absent: pauses go
+        // through the management PATCH and must not trigger a full rewrite.
+        let credentials = accounts.map { account in
+            account.id + ":" + (account.lastRefresh ?? "")
         }.joined(separator: ",")
-        return ids + "|" + values + "|" + availability
+        return ids + "|" + values + "|" + credentials
     }
 
     private func routingNoteText() -> String? {
@@ -546,7 +570,27 @@ final class CodexStore: ObservableObject {
         CodexGatewayService.shared.auditLog("\(note) · \(reason)")
     }
 
-    private func save() {
+    private var saveTask: Task<Void, Never>?
+
+    /// Persist the vault. Live quota readings arrive several times per second
+    /// and are coalesced for two seconds; every user action and every block
+    /// transition still writes immediately.
+    private func save(immediately: Bool = true) {
+        if !immediately {
+            guard saveTask == nil else { return }
+            saveTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.flushSave()
+            }
+            return
+        }
+        saveTask?.cancel()
+        saveTask = nil
+        flushSave()
+    }
+
+    func flushSave() {
         let vault = Vault(accounts: accounts, currentAccountId: currentAccountId)
         do {
             let data = try JSONEncoder.pretty.encode(vault)
@@ -814,6 +858,18 @@ final class CodexStore: ObservableObject {
 
     private var quotaTimer: Timer?
     private var quotaRefreshTask: Task<Void, Never>?
+    /// Combine newly-low accounts found by a bulk refresh into one notification.
+    private var isCollectingLowQuotaNotifications = false
+    private var pendingLowQuotaNotifications: [String: String] = [:]
+    /// 1–2 second guard over the gateway's passive quota headers. This is the
+    /// primary source for reserve pauses; `/wham/usage` stays the fallback.
+    private var liveQuotaTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
+    /// Prevents App Nap from coalescing the 1.5-second guard when the window
+    /// is closed. Idle system sleep stays allowed.
+    private var liveQuotaActivity: NSObjectProtocol?
+    private var lastResetProbe: [String: Date] = [:]
+    private var resetProbeFailures: [String: Int] = [:]
 
     /// When the bulk quota refresh last ran — the adaptive scheduler uses it
     /// to throttle itself while the gateway is under load.
@@ -823,15 +879,12 @@ final class CodexStore: ObservableObject {
     func startQuotaScheduler() {
         quotaTimer?.invalidate()
         quotaTimer = nil
+        startLiveQuotaGuard()
         let interval = UserDefaults.standard.object(forKey: "quotaRefreshInterval") as? Int ?? 300
         guard interval > 0 else { return }
-        // A fixed cadence cannot protect a 5% reserve: heavy agent traffic burns
-        // several percent per minute, so a five-minute check lets an account
-        // cross the reserve — and reach 0% — between reads (the pause then
-        // lands late, and Codex shows its "usage limit" banner). Poll every
-        // 30 s and refresh on the configured interval, or much faster while
-        // the gateway is actually serving requests.
-        quotaTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // `/wham/usage` is the slower fallback and reset probe. Reserve
+        // enforcement itself runs on the 1.5-second live guard below.
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 guard CodexGatewayService.shared.isRunning else { return }
@@ -842,7 +895,286 @@ final class CodexStore: ObservableObject {
                 await self.refreshAllQuotas()
             }
         }
-        quotaTimer?.tolerance = 3.0
+        timer.tolerance = 3.0
+        RunLoop.main.add(timer, forMode: .common)
+        quotaTimer = timer
+    }
+
+    /// Starts the live guard once. It is independent of the `/wham/usage`
+    /// interval so turning that interval off cannot silently disable reserves.
+    private func startLiveQuotaGuard() {
+        guard liveQuotaTask == nil else { return }
+        if liveQuotaActivity == nil {
+            liveQuotaActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Live Codex quota enforcement"
+            )
+        }
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.lastResetProbe.removeAll()
+                    self.resetProbeFailures.removeAll()
+                    await self.liveQuotaTick()
+                }
+            }
+        }
+        liveQuotaTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.liveQuotaTick()
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+
+    /// One live pass: merge passive quota headers, reconcile sticky pauses,
+    /// and probe accounts whose reset time has passed.
+    private func liveQuotaTick() async {
+        let gateway = CodexGatewayService.shared
+        guard gateway.isRunning else { return }
+        guard !accounts.isEmpty else { return }
+        let snapshot = await gateway.fetchManagementAuths()
+        if let snapshot {
+            mergeLiveQuota(snapshot)
+        }
+        await enforceQuotaGate(snapshot: snapshot)
+        await probeBlockedResets(snapshot: snapshot)
+    }
+
+    private func mergeLiveQuota(_ snapshot: CodexManagementSnapshot) {
+        let files = snapshot.codexFiles
+        guard !files.isEmpty else { return }
+        var changed = false
+        for index in accounts.indices {
+            let account = accounts[index]
+            guard account.tokens.access_token?.isEmpty == false else { continue }
+            guard let file = liveFile(for: account, in: files),
+                  let signals = file.quota?.signals, !signals.isEmpty else { continue }
+            let observed = file.quota?.observedAt ?? snapshot.observedAt
+            guard let observed else { continue }
+            // A stale passive signal must never overwrite a newer usage read.
+            if let cached = accounts[index].quotaUpdatedAt,
+               observed < cached.addingTimeInterval(-0.5),
+               accounts[index].quotaSource == "usage" {
+                continue
+            }
+            guard let reading = CodexLiveQuota.parse(signals: signals, observedAt: observed) else {
+                continue
+            }
+            accounts[index].quota = CodexLiveQuota.merging(reading, into: accounts[index].quota)
+            accounts[index].quotaUpdatedAt = observed
+            accounts[index].quotaSource = "gateway"
+            accounts[index].quotaError = nil
+            if let plan = reading.quota.planType { accounts[index].planType = plan }
+            changed = true
+        }
+        if changed { save(immediately: false) }
+    }
+
+    private func liveFile(for account: CodexAccount, in files: [CodexManagementAuthFile]) -> CodexManagementAuthFile? {
+        let expected = CodexGatewayService.authFileName(for: account)
+        if let exact = files.first(where: { $0.name == expected }) { return exact }
+        guard let email = account.email?.lowercased(), !email.isEmpty else { return nil }
+        let matches = files.filter { ($0.email ?? "").lowercased() == email }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    /// Creates and clears sticky pauses from the cached readings. Pure state
+    /// changes only; the caller persists them and then touches the gateway.
+    @discardableResult
+    private func reconcileQuotaBlocks(now: Date = Date()) -> Bool {
+        var mutated = false
+        for index in accounts.indices {
+            let account = accounts[index]
+            if let block = account.quotaBlock {
+                if !reserveStillApplies(block.cause, account: account) {
+                    accounts[index].quotaBlock = nil
+                    mutated = true
+                    continue
+                }
+                var effectiveBlock = block
+                switch block.cause {
+                case .hourlyReserve: effectiveBlock.thresholdPercent = account.hourlyReservePercent
+                case .weeklyReserve: effectiveBlock.thresholdPercent = account.weeklyReservePercent
+                case .hourlyExhausted, .weeklyExhausted: break
+                }
+                if effectiveBlock != block {
+                    accounts[index].quotaBlock = effectiveBlock
+                    mutated = true
+                }
+                guard quotaIsActionable(account), let quota = account.quota else { continue }
+                if CodexRoutingPlanner.blockRecovered(
+                    effectiveBlock,
+                    quota: quota,
+                    hourlyReserve: account.hourlyReservePercent,
+                    weeklyReserve: account.weeklyReservePercent,
+                    isFresh: true
+                ) {
+                    accounts[index].quotaBlock = nil
+                    mutated = true
+                    // Another window may still be exhausted (for example, the
+                    // 5-hour reset arrives while the weekly window is at 0).
+                    // Replace the pause instead of enabling for one tick.
+                    if let next = CodexRoutingPlanner.quotaBlockCause(
+                        quota: quota,
+                        hourlyReserve: account.hourlyReservePercent,
+                        weeklyReserve: account.weeklyReservePercent,
+                        isFresh: true
+                    ), let replacement = blockState(account: account, cause: next, quota: quota, now: now) {
+                        accounts[index].quotaBlock = replacement
+                    }
+                }
+                continue
+            }
+            guard quotaIsActionable(account), let quota = account.quota else { continue }
+            guard let cause = CodexRoutingPlanner.quotaBlockCause(
+                quota: quota,
+                hourlyReserve: account.hourlyReservePercent,
+                weeklyReserve: account.weeklyReservePercent,
+                isFresh: true
+            ), let block = blockState(account: account, cause: cause, quota: quota, now: now) else { continue }
+            accounts[index].quotaBlock = block
+            mutated = true
+        }
+        return mutated
+    }
+
+    private func blockState(
+        account: CodexAccount,
+        cause: CodexBlockCause,
+        quota: CodexQuota,
+        now: Date
+    ) -> CodexQuotaBlock? {
+        let remaining: Double?
+        let reset: Date?
+        switch cause {
+        case .hourlyExhausted, .hourlyReserve:
+            remaining = quota.hourlyRemainingPercent
+            reset = quota.hourlyResetAt
+        case .weeklyExhausted, .weeklyReserve:
+            remaining = quota.weeklyRemainingPercent
+            reset = quota.weeklyResetAt
+        }
+        guard let remaining else { return nil }
+        let threshold: Int?
+        switch cause {
+        case .hourlyReserve: threshold = account.hourlyReservePercent
+        case .weeklyReserve: threshold = account.weeklyReservePercent
+        case .hourlyExhausted, .weeklyExhausted: threshold = nil
+        }
+        return CodexQuotaBlock(
+            cause: cause,
+            remainingPercent: remaining,
+            thresholdPercent: threshold,
+            resetAt: reset,
+            blockedAt: now,
+            source: account.quotaSource
+        )
+    }
+
+    /// Applies exact reserve decisions and keeps the gateway's `disabled`
+    /// flags aligned. Blocks are persisted before the auth file changes.
+    private func enforceQuotaGate(snapshot: CodexManagementSnapshot?) async {
+        let gateway = CodexGatewayService.shared
+        guard gateway.isRunning else { return }
+        let mutated = reconcileQuotaBlocks()
+        if mutated { save(immediately: true) }
+
+        let files: [CodexManagementAuthFile]
+        if let snapshot {
+            files = snapshot.codexFiles
+        } else {
+            files = (await gateway.fetchManagementAuths()?.codexFiles) ?? []
+        }
+        guard !files.isEmpty else {
+            if mutated { gateway.syncAccountsLive(accounts, priorities: effectivePriorities()) }
+            return
+        }
+        var fallback = false
+        for account in accounts {
+            guard account.tokens.access_token?.isEmpty == false else { continue }
+            guard let file = liveFile(for: account, in: files) else {
+                if account.quotaBlock != nil { fallback = true }
+                continue
+            }
+            // Preserve a legacy disabled file until a fresh reading proves
+            // that it can be re-enabled. A stale cache must never lift it.
+            let desired = account.quotaBlock != nil
+                || (file.disabled && account.quotaBlock == nil && !quotaIsActionable(account))
+            guard file.disabled != desired else { continue }
+            let ok = await gateway.setManagementAuthDisabled(
+                name: file.name,
+                authIndex: file.authIndex,
+                disabled: desired
+            )
+            if !ok { fallback = true }
+        }
+        if fallback {
+            gateway.syncAccountsLive(accounts, priorities: effectivePriorities())
+            appliedRoutingSignature = routingSignature(priorities: effectivePriorities())
+        }
+    }
+
+    /// `/wham/usage` remains believable for 30 minutes; a passive gateway
+    /// header only for two minutes. Stale data cannot create or lift a pause.
+    private func quotaIsActionable(_ account: CodexAccount) -> Bool {
+        guard let updated = account.quotaUpdatedAt else { return false }
+        if account.quotaSource == "gateway" {
+            return CodexLiveQuota.isFresh(updated)
+        }
+        return Date().timeIntervalSince(updated) < CodexRoutingPlanner.quotaFreshness
+    }
+
+    private func reserveStillApplies(_ cause: CodexBlockCause, account: CodexAccount) -> Bool {
+        switch cause {
+        case .hourlyReserve: return (account.hourlyReservePercent ?? 0) > 0
+        case .weeklyReserve: return (account.weeklyReservePercent ?? 0) > 0
+        case .hourlyExhausted, .weeklyExhausted: return true
+        }
+    }
+
+    /// When the 5-hour window resets, the gateway has no passive header to
+    /// tell us: disabled accounts serve no traffic. Probe `/wham/usage` just
+    /// after the known reset, with backoff, then unblock on a fresh reading.
+    private func probeBlockedResets(snapshot: CodexManagementSnapshot?) async {
+        let now = Date()
+        for account in accounts {
+            let fileDisabled = snapshot.flatMap { snap in
+                liveFile(for: account, in: snap.codexFiles)?.disabled
+            }
+            let mustProbe: Bool
+            if let block = account.quotaBlock {
+                if let reset = block.resetAt {
+                    mustProbe = now >= reset
+                } else {
+                    mustProbe = now.timeIntervalSince(block.blockedAt) >= 60
+                }
+            } else if fileDisabled == true {
+                // A disabled auth file without a persisted block can be a
+                // leftover from an older build. Verify it before enabling.
+                mustProbe = !quotaIsActionable(account)
+            } else {
+                mustProbe = false
+            }
+            guard mustProbe else { continue }
+            let failures = resetProbeFailures[account.id] ?? 0
+            let delay = min(60, 8 * Double(max(1, failures)))
+            if let next = lastResetProbe[account.id], now < next { continue }
+            lastResetProbe[account.id] = now.addingTimeInterval(delay)
+            guard !busyAccountIds.contains(account.id) else { continue }
+            await refreshQuota(for: account.id)
+            if accounts.first(where: { $0.id == account.id })?.quotaError == nil {
+                resetProbeFailures[account.id] = 0
+            } else {
+                resetProbeFailures[account.id] = min(8, failures + 1)
+            }
+        }
     }
 
     func refreshQuota(for accountId: String, forceTokens: Bool = false) async {
@@ -883,7 +1215,12 @@ final class CodexStore: ObservableObject {
                     account.subscriptionActiveUntil = until
                 }
             }
-            var quota = try await CodexService.fetchQuota(account: account)
+            let quotaResult = try await CodexService.fetchQuota(account: account)
+            if account.tokens.access_token != quotaResult.tokens.access_token {
+                account.tokens = quotaResult.tokens
+                account.lastRefresh = ISO8601DateFormatter().string(from: Date())
+            }
+            var quota = quotaResult.quota
             // Subscription end date: the backend value is authoritative and is
             // re-read every 30 minutes — or immediately when a paid plan's
             // stored period has ended (that combination means "renewed, but
@@ -918,6 +1255,7 @@ final class CodexStore: ObservableObject {
             account.quota = quota
             account.quotaUpdatedAt = Date()
             account.quotaError = nil
+            account.quotaSource = "usage"
             if let plan = quota.planType { account.planType = plan }
             if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
                 // Merge only fetched fields: a stale snapshot must not erase
@@ -933,9 +1271,10 @@ final class CodexStore: ObservableObject {
                 merged.quota = account.quota
                 merged.quotaUpdatedAt = account.quotaUpdatedAt
                 merged.quotaError = nil
+                merged.quotaSource = account.quotaSource
                 accounts[idx] = merged
             }
-            save()
+            save(immediately: false)
             QuotaHistoryStore.shared.record(
                 QuotaHistorySample(
                     at: Date(),
@@ -950,6 +1289,9 @@ final class CodexStore: ObservableObject {
                 beforeWeekly: beforeWeekly
             )
             maybeNotifyLowQuota(account)
+            // Clear a recovered pause immediately so the UI and the next
+            // routing read do not wait for the 1.5-second live tick.
+            if reconcileQuotaBlocks() { save(immediately: true) }
             applyRoutingIfNeeded(reason: L("quota refreshed"))
             return
         } catch {
@@ -960,7 +1302,7 @@ final class CodexStore: ObservableObject {
             merged.quotaError = account.quotaError
             accounts[idx] = merged
         }
-        save()
+        save(immediately: false)
         applyRoutingIfNeeded(reason: L("quota refreshed"))
     }
 
@@ -971,8 +1313,13 @@ final class CodexStore: ObservableObject {
             await existing.value
             return
         }
+        isCollectingLowQuotaNotifications = true
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                self.isCollectingLowQuotaNotifications = false
+                self.postPendingLowQuotaNotification()
+            }
             self.lastQuotaRefreshAt = Date()
             for account in self.accounts {
                 await self.refreshQuota(for: account.id, forceTokens: forceTokens)
@@ -985,9 +1332,8 @@ final class CodexStore: ObservableObject {
 
     private static let notificationRecordsKey = "quotaNotificationRecords"
 
-    /// Persisted per account/window bookkeeping. The reset timestamp in
-    /// `windowKey` is what makes a notification “once per window” instead of
-    /// merely “once per six hours”.
+    /// Persisted per account/window bookkeeping. Low-quota markers remain set
+    /// until that window recovers above its threshold.
     private var notificationRecords: [String: QuotaNotificationRecord] {
         get {
             guard let data = UserDefaults.standard.data(forKey: Self.notificationRecordsKey),
@@ -1062,7 +1408,15 @@ final class CodexStore: ObservableObject {
         guard UserDefaults.standard.bool(forKey: "quotaNotifications") else { return }
         guard let quota = account.quota else { return }
 
-        var records = notificationRecords
+        let storedRecords = notificationRecords
+        var records = QuotaNotificationPolicy.recordsAfterRecovery(
+            accountId: account.id,
+            hourlyRemaining: quota.hourlyRemainingPercent,
+            hourlyReservePercent: account.hourlyReservePercent,
+            weeklyRemaining: quota.weeklyRemainingPercent,
+            weeklyReservePercent: account.weeklyReservePercent,
+            records: storedRecords
+        )
         let decisions = QuotaNotificationPolicy.decisions(
             accountId: account.id,
             hourlyRemaining: quota.hourlyRemainingPercent,
@@ -1073,7 +1427,10 @@ final class CodexStore: ObservableObject {
             weeklyReservePercent: account.weeklyReservePercent,
             records: records
         )
-        guard !decisions.isEmpty else { return }
+        guard !decisions.isEmpty else {
+            if records != storedRecords { notificationRecords = records }
+            return
+        }
 
         let now = Date()
         for decision in decisions {
@@ -1086,13 +1443,32 @@ final class CodexStore: ObservableObject {
             case .hourly: windowLabel = L("hourly")
             case .weekly: windowLabel = L("weekly")
             }
-            MTNotificationCenter.post(
-                title: L("Low Codex quota"),
-                body: "\(account.displayName): \(windowLabel) \(Int(decision.remaining.rounded()))%",
-                identifier: "quota-\(decision.stateKey)-\(Int(now.timeIntervalSince1970))"
-            )
+            pendingLowQuotaNotifications[decision.stateKey] =
+                "\(account.displayName): \(windowLabel) \(Int(decision.remaining.rounded()))%"
         }
         notificationRecords = records
+        if !isCollectingLowQuotaNotifications {
+            postPendingLowQuotaNotification()
+        }
+    }
+
+    /// Deliver one summary for all newly-low accounts found in this refresh
+    /// pass. Retain the first few details so the notification stays readable.
+    private func postPendingLowQuotaNotification() {
+        guard !pendingLowQuotaNotifications.isEmpty else { return }
+        let details = pendingLowQuotaNotifications.values.sorted()
+        pendingLowQuotaNotifications.removeAll()
+
+        let visibleDetails = Array(details.prefix(4))
+        var body = visibleDetails.joined(separator: "\n")
+        if details.count > visibleDetails.count {
+            body += "\n\(String(format: L("+%d more"), details.count - visibleDetails.count))"
+        }
+        MTNotificationCenter.post(
+            title: L("Low Codex quota"),
+            body: body,
+            identifier: "low-codex-quota-\(Int(Date().timeIntervalSince1970))"
+        )
     }
 
     // MARK: - Launch in Codex
