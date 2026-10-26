@@ -22,10 +22,10 @@ does fail the release.
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-2.3.6.dmg` | `ee1a1faf94f0f4d33213d983a1066dd401852f606037958c7b93c54d932f2aba` |
-| Windows installer | `MelonTools-2.3.6-setup.exe` | `2e43261c61d39702ac0d8f11991fae310ba34025cdf2b2bda557f3de361bc0de` |
-| Windows portable | `MelonTools-2.3.6-win-x64-portable.exe` | `3a45832288bd14c53d6734237c1d02acadd7766696a5fe2afbcd689a14b6ae01` |
-| Windows legacy alias | `MelonTools-2.3.6-win-x64.exe` | `3a45832288bd14c53d6734237c1d02acadd7766696a5fe2afbcd689a14b6ae01` |
+| macOS DMG | `MelonTools-2.3.6.dmg` | `91c069b443ff9b590817aedc2a7fc951371456127775d87cf4afd79c045f970b` |
+| Windows installer | `MelonTools-2.3.6-setup.exe` | `0c03039a9ba0fbef29016cd3d35a325fd7295d11c84f474913cdc4e89a198507` |
+| Windows portable | `MelonTools-2.3.6-win-x64-portable.exe` | `124c9838b7373389e7f8d5134dc143db00726f7885d42ed89ee7cc94179059c0` |
+| Windows legacy alias | `MelonTools-2.3.6-win-x64.exe` | `124c9838b7373389e7f8d5134dc143db00726f7885d42ed89ee7cc94179059c0` |
 
 All files and their `.sha256` siblings are attached to the GitHub release for
 tag `v2.3.6`. The in-app updater accepts only HTTPS GitHub hosts and verifies
