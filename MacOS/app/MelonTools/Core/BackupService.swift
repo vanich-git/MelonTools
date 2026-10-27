@@ -127,7 +127,7 @@ enum BackupService {
     static let supportedFormatVersions = [legacyFormatVersion, formatVersion]
     /// Product version recorded in the envelope. Bumped with the release
     /// metadata; the Rust implementation writes its own value.
-    static let appVersion = "2.4.1"
+    static let appVersion = "2.4.2"
     static let kdfName = "PBKDF2-HMAC-SHA256"
     static let cipherName = "AES-256-GCM"
     /// New exports. Version 1 used 210 000.

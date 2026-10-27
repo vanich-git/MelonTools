@@ -8,6 +8,7 @@ mod antigravity;
 mod backup;
 mod bridge;
 mod claude;
+mod codex_models;
 mod codex_route;
 mod device_login;
 mod dpapi;
@@ -929,11 +930,12 @@ fn codex_pool_models() -> Value {
     pool_snapshot()
 }
 
-/// Explicit refresh for the picker. Identical to `codex_pool_models`:
-/// `pool_models` re-reads the Codex cache on every call.
+/// Explicit refresh for the picker: fetch the official Codex client catalog,
+/// merge it into the Codex cache, then return the refreshed pool.
 #[tauri::command]
-fn codex_models_refresh() -> Value {
-    pool_snapshot()
+async fn codex_models_refresh() -> Result<Value, String> {
+    codex_models::refresh_models().await?;
+    Ok(pool_snapshot())
 }
 
 /// Saves one account's model allowlist, then re-syncs the engine and the

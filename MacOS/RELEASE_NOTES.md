@@ -1,4 +1,32 @@
-# Melon Tools 2.4.1
+# Melon Tools 2.4.2
+
+Official OpenAI model refresh, plus the 2.4.1 reliability and security fixes.
+
+- **Load models now asks OpenAI.** The Codex account editor calls
+  `https://chatgpt.com/backend-api/codex/models` with the selected account's
+  access token, merges the official `models` array into
+  `~/.codex/models_cache.json`, and regenerates the Codex catalog. Models such
+  as `gpt-6.1-terra` appear without waiting for the Codex app cache to refresh.
+- **Safe cache merge.** Codex-owned metadata (`identity`, `etag`) is preserved;
+  only the model list, fetch timestamp and client version are replaced. The
+  cache is written atomically with restrictive permissions.
+- **Both platforms.** macOS uses `CodexService` / `CodexPoolModelsStore`; Windows
+  uses the `codex_models_refresh` command and the same endpoint/merge logic.
+- **Token handling.** A 401 rotates the access token once and retries; refreshed
+  tokens are persisted on Windows and reused by the normal quota path.
+- **Fallback unchanged.** If OpenAI is unreachable, the local cache and bundled
+  catalog still populate the picker and the error is shown in the editor.
+- **Includes 2.4.1.** Adaptive live quota, incremental rollout reads, compressed
+  macOS engine, scheduler summaries, schema guards, stricter backup KDF, CSP
+  bridge and the other audit fixes.
+
+### Upgrading from 2.4.1
+
+Open **Accounts → Codex account → Load models**. The app fetches the official
+list, shows the new model, and writes it to the Codex catalog. Relaunch the
+Codex app to refresh its picker.
+
+## 2.4.1
 
 Audit fixes for macOS and Windows: lower background load, safer persistence,
 a smaller macOS app, and a reproducible Windows engine.

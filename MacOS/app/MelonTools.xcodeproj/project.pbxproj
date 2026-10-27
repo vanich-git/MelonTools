@@ -70,6 +70,7 @@
 		E7B641E90F70BD1A91F3F232 /* CDPSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65CC3D84764010FEBA404100 /* CDPSession.swift */; };
 		E86D2022AF1C4B1C67F34E1F /* ModelSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0FE92353CF3930D5522680 /* ModelSources.swift */; };
 		FB55B8F81FAF43250E5CF3D9 /* SchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CD2F1E1C6BB70D5F637F283 /* SchedulerTests.swift */; };
+		FB56C88445F19CAB49855BEA /* CodexPoolModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */; };
 		FD07753954102A3079EF335B /* MTAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 535140492A01BCB2D4079865 /* MTAssets.swift */; };
 		FD1B231CB13438110C05CB2B /* CodexAuthFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */; };
 /* End PBXBuildFile section */
@@ -121,6 +122,7 @@
 		747248C3C8AE60381B934643 /* CodexModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModels.swift; sourceTree = "<group>"; };
 		768560461E883B63C28E2ACB /* MTTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MTTheme.swift; sourceTree = "<group>"; };
 		78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDiagnosticsTests.swift; sourceTree = "<group>"; };
+		7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexPoolModelsTests.swift; sourceTree = "<group>"; };
 		7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistory.swift; sourceTree = "<group>"; };
 		8C7DE7781BC232D89855C509 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexControlCard.swift; sourceTree = "<group>"; };
@@ -273,6 +275,7 @@
 				0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */,
 				55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */,
 				47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */,
+				7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */,
 				BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */,
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
@@ -433,6 +436,7 @@
 				41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */,
 				2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */,
 				5F0462D21FD58B3E437252E6 /* CodexModelCatalogTests.swift in Sources */,
+				FB56C88445F19CAB49855BEA /* CodexPoolModelsTests.swift in Sources */,
 				76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */,
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
@@ -681,14 +685,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.1;
+				MARKETING_VERSION = 2.4.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -700,14 +704,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 27;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.1;
+				MARKETING_VERSION = 2.4.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

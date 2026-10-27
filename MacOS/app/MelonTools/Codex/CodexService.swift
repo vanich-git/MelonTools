@@ -17,6 +17,13 @@ enum CodexService {
     static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     static let subscriptionEndpoint = URL(string: "https://chatgpt.com/backend-api/subscriptions")!
     static let resetCreditsEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+    /// Official Codex client model catalog. This is the list the Codex desktop
+    /// app itself uses; it is not the same as the gateway `/v1/models` list.
+    static let modelsEndpoint = URL(string: "https://chatgpt.com/backend-api/codex/models")!
+    /// Keep this in step with the Codex client version used by the app. The
+    /// endpoint uses it to decide which model entries are visible.
+    static let modelsClientVersion = "0.159.0"
+    static let modelsUserAgent = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
     static let userAgent = "Codex Desktop (macOS; arm64)"
     /// The subscriptions route expects the web app's header set (verified in
     /// cockpit-tools): target-path/route + Referer + a browser user agent.
@@ -257,7 +264,61 @@ enum CodexService {
         return (plan, until)
     }
 
-    /// Reset-credit records for the 5-hour window: how many are available and
+    /// GET the official Codex client model catalog and return its `models`
+    /// array. A 401 rotates the access token once, like the quota path.
+    static func fetchModelCatalog(
+        account: CodexAccount
+    ) async throws -> (models: [[String: Any]], tokens: CodexTokens) {
+        let tokens = try await freshTokens(for: account)
+        do {
+            return (try await fetchModelCatalog(account: account, tokens: tokens), tokens)
+        } catch CodexError.http(401, _) {
+            let refreshed = try await refreshTokens(account)
+            var retryAccount = account
+            retryAccount.tokens = refreshed
+            return (
+                try await fetchModelCatalog(account: retryAccount, tokens: refreshed),
+                refreshed
+            )
+        }
+    }
+
+    private static func fetchModelCatalog(
+        account: CodexAccount,
+        tokens: CodexTokens
+    ) async throws -> [[String: Any]] {
+        guard let access = tokens.access_token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !access.isEmpty else {
+            throw CodexError.refreshUnavailable
+        }
+        var components = URLComponents(url: modelsEndpoint, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "client_version", value: modelsClientVersion),
+        ]
+        guard let url = components?.url else {
+            throw CodexError.decoding("models url")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("codex_cli_rs", forHTTPHeaderField: "Originator")
+        request.setValue(modelsUserAgent, forHTTPHeaderField: "User-Agent")
+        if let accountId = safeAccountId(effectiveAccountId(account, tokens: tokens)),
+           !accountId.isEmpty {
+            request.setValue(accountId, forHTTPHeaderField: "Chatgpt-Account-Id")
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try ensureOK(response, data)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = object["models"] as? [[String: Any]],
+              !models.isEmpty else {
+            throw CodexError.decoding("models response has no models")
+        }
+        return models
+    }
+
+    /// Refresh-credit records for the 5-hour window: how many are available and
     /// when the nearest one expires.
     static func fetchResetCredits(account: CodexAccount) async throws -> (available: Int?, nextExpiry: Date?) {
         let tokens = try await freshTokens(for: account)

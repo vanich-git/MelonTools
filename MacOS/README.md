@@ -457,7 +457,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.4.1.dmg
+open build/MelonTools-2.4.2.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

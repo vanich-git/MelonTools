@@ -784,6 +784,8 @@ final class L10n: ObservableObject {
         "Export support bundle…": "Экспортировать диагностику…",
         "Support bundle exported": "Диагностика экспортирована",
         "Support bundle export failed": "Не удалось экспортировать диагностику",
+        "Add a Codex account before loading models.": "Добавьте аккаунт Codex, чтобы загрузить модели.",
+        "Could not load the official model list.": "Не удалось загрузить официальный список моделей.",
     ]
 }
 

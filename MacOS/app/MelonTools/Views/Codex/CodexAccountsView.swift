@@ -1082,9 +1082,19 @@ private struct AccountModelsSheet: View {
                     for model in filteredModels { selected.remove(model.slug) }
                 }
                 Spacer()
-                MTSecondaryButton(title: L("Load models"), systemImage: "arrow.down.circle") {
-                    pool.refresh()
+                MTSecondaryButton(
+                    title: L("Load models"),
+                    systemImage: "arrow.down.circle",
+                    isLoading: pool.isRefreshing
+                ) {
+                    Task { await pool.refreshFromServer(accounts: store.accounts) }
                 }
+            }
+            if let refreshError = pool.refreshError {
+                Text(refreshError)
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             modelList(account)

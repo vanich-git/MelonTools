@@ -23,6 +23,8 @@ final class CodexPoolModelsStore: ObservableObject {
     static let shared = CodexPoolModelsStore()
 
     @Published private(set) var models: [CodexPoolModel] = []
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var refreshError: String?
 
     var slugs: Set<String> { Set(models.map(\.slug)) }
 
@@ -36,6 +38,60 @@ final class CodexPoolModelsStore: ObservableObject {
         let loaded = Self.loadModels()
         if loaded != models { models = loaded }
         CodexModelCatalog.invalidatePoolCaches()
+    }
+
+    /// Fetch the official Codex client model list, merge it into Codex's
+    /// `models_cache.json`, then regenerate the pool. This is what the
+    /// "Load models" button must do: reading the local cache alone can never
+    /// discover a model OpenAI has just released.
+    func refreshFromServer(accounts: [CodexAccount]) async {
+        guard !isRefreshing else { return }
+        guard let account = accounts.first(where: {
+            !($0.tokens.access_token ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            refreshError = L("Add a Codex account before loading models.")
+            return
+        }
+        isRefreshing = true
+        refreshError = nil
+        defer { isRefreshing = false }
+        do {
+            let result = try await CodexService.fetchModelCatalog(account: account)
+            try Self.writeModelsCache(result.models)
+            refresh()
+        } catch {
+            refreshError = L("Could not load the official model list.")
+                + " " + error.localizedDescription
+        }
+    }
+
+    /// Pure merge used by the writer and tests. Codex owns the cache metadata,
+    /// so keep `identity` and `etag` intact and replace only the model list.
+    nonisolated static func mergedCacheObject(
+        existing: [String: Any]?,
+        models: [[String: Any]],
+        fetchedAt: Date = Date()
+    ) -> [String: Any] {
+        var object = existing ?? [:]
+        object["models"] = models
+        object["fetched_at"] = ISO8601DateFormatter().string(from: fetchedAt)
+        object["client_version"] = CodexService.modelsClientVersion
+        return object
+    }
+
+    private static func writeModelsCache(_ models: [[String: Any]]) throws {
+        let directory = CodexModelCatalog.directory
+        let url = URL(fileURLWithPath: directory).appendingPathComponent("models_cache.json")
+        let existing: [String: Any]? = {
+            guard let data = try? Data(contentsOf: url),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return object
+        }()
+        let object = mergedCacheObject(existing: existing, models: models)
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try SecureFile.write(data, to: url)
     }
 
     // MARK: - Loading
