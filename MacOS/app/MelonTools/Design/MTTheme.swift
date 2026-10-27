@@ -95,17 +95,42 @@ enum MTTheme {
 
     // MARK: - Fonts (SF Pro / SF Mono)
 
-    /// Display font for page titles (SF Pro Semibold).
+    /// Maps the compact 8–13 pt design scale to Dynamic Type text styles.
+    /// A fixed `.system(size:)` font ignores the user's preferred text size;
+    /// the semantic style keeps the same visual size at the default setting
+    /// and grows with accessibility sizes. Sizes outside the compact scale
+    /// (titles, metric values) stay explicit and are scaled at the call site
+    /// with `@ScaledMetric` when they need to grow.
+    private static func textStyle(for size: CGFloat) -> Font.TextStyle? {
+        switch size {
+        case ...9: return .caption2
+        case 10: return .caption
+        case 11: return .subheadline
+        case 12: return .callout
+        case 13: return .body
+        default: return nil
+        }
+    }
+
+    /// Display font for page titles (SF Pro Semibold). Large display sizes
+    /// keep their explicit point size; `MTMetricTile` scales its value with
+    /// `@ScaledMetric`.
     static func display(_ size: CGFloat = 28, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .default)
     }
     /// Body font (SF Pro).
     static func body(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default)
+        if let style = textStyle(for: size) {
+            return .system(style, design: .default, weight: weight)
+        }
+        return .system(size: size, weight: weight, design: .default)
     }
     /// Monospace for data, tables, logs (SF Mono).
     static func mono(_ size: CGFloat = 12, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        if let style = textStyle(for: size) {
+            return .system(style, design: .monospaced, weight: weight)
+        }
+        return .system(size: size, weight: weight, design: .monospaced)
     }
 }
 

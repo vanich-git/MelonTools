@@ -26,14 +26,15 @@ targets:
       - path: MelonTools
         excludes:
           - "Info.plist"
+          - "MelonTools.entitlements"
       - path: Resources
     info:
       path: MelonTools/Info.plist
       properties:
         CFBundleDisplayName: Melon Tools
         CFBundleName: Melon Tools
-        CFBundleShortVersionString: "2.4.0"
-        CFBundleVersion: "25"
+        CFBundleShortVersionString: "2.4.1"
+        CFBundleVersion: "26"
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Melon Tools"
@@ -53,9 +54,13 @@ targets:
           GATEWAY_BIN="$SRCROOT/../build/cliproxyapi"
           if [ -f "$GATEWAY_BIN" ]; then
             mkdir -p "$RES/bin"
-            cp "$GATEWAY_BIN" "$RES/bin/cliproxyapi"
-            chmod +x "$RES/bin/cliproxyapi"
-            echo "embedded gateway binary -> $RES/bin/cliproxyapi"
+            # Ship a compressed engine: the universal Go binary is ~139 MB,
+            # the gzip blob is roughly a quarter of that. The app extracts it
+            # into Application Support and verifies this digest before launch.
+            gzip -9 -c "$GATEWAY_BIN" > "$RES/bin/cliproxyapi.gz"
+            shasum -a 256 "$GATEWAY_BIN" | awk '{print $1}' > "$RES/bin/cliproxyapi.sha256"
+            rm -f "$RES/bin/cliproxyapi"
+            echo "embedded compressed gateway -> $RES/bin/cliproxyapi.gz"
           else
             echo "warning: gateway binary missing at $GATEWAY_BIN (build it with build.sh)"
           fi
@@ -64,10 +69,18 @@ targets:
         - MelonToolsTests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.melontools.app
-        MARKETING_VERSION: "2.4.0"
-        CURRENT_PROJECT_VERSION: "25"
+        MARKETING_VERSION: "2.4.1"
+        CURRENT_PROJECT_VERSION: "26"
         GENERATE_INFOPLIST_FILE: "NO"
+        CODE_SIGN_ENTITLEMENTS: MelonTools/MelonTools.entitlements
+      configs:
+        # Keep the installed Release app and a Debug/test host from fighting
+        # over LSMultipleInstancesProhibited: distinct bundle ids allow
+        # `xcodebuild test` while Melon Tools is open.
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.melontools.app.debug
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.melontools.app
 
   MelonToolsTests:
     type: bundle.unit-test

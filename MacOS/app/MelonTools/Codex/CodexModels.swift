@@ -1,5 +1,16 @@
 import Foundation
 
+// MARK: - Persistence schema
+
+/// Version stamped into local JSON stores. A newer file is opened read-only:
+/// silently saving an older model would drop fields the newer build added.
+enum PersistenceSchema {
+    /// Bumped when a stored field's meaning changes, not for additive optional
+    /// fields. Files without the field are version 1.
+    static let current = 2
+    static let oldestReadable = 1
+}
+
 // MARK: - Account model
 
 struct CodexTokens: Codable, Equatable {

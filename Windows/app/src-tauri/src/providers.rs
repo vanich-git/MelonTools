@@ -141,7 +141,7 @@ fn parse_deepinfra_models(value: &Value) -> Vec<ProviderModel> {
             })
         })
         .collect();
-    models.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    models.sort_by_key(|a| a.id.to_lowercase());
     models
 }
 
@@ -236,7 +236,7 @@ fn parse_vercel_models(value: &Value) -> Vec<ProviderModel> {
             })
         })
         .collect();
-    models.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    models.sort_by_key(|a| a.id.to_lowercase());
     models
 }
 

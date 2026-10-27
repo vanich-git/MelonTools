@@ -4,6 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
+# One composer script for both platforms; keep the bundle copy in sync.
+"$ROOT/../scripts/sync-composer.sh" >/dev/null
+
 # v8.0.44 requires Go 1.26.10 (the x509 advisory is fixed there). Pinning the
 # toolchain also prevents a newer local Go from silently building with an
 # older patch level.
@@ -55,8 +58,20 @@ APP="$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
 
 echo "==> 5/6 ad-hoc codesign"
 xattr -cr "$APP"
-codesign --force --deep --sign - "$APP"
-codesign --verify --deep --strict "$APP" && echo "signature ok"
+# Sign the embedded engine first, then the bundle. `--deep` is deprecated and
+# can hide unsigned nested code; explicit signing makes the failure visible.
+ENGINE="$APP/Contents/Resources/bin/cliproxyapi"
+if [ -f "$ENGINE" ]; then
+  codesign --force --options runtime --timestamp=none --sign - "$ENGINE"
+fi
+ENTITLEMENTS="$ROOT/app/MelonTools/MelonTools.entitlements"
+if [ -f "$ENTITLEMENTS" ]; then
+  codesign --force --options runtime --timestamp=none \
+    --entitlements "$ENTITLEMENTS" --sign - "$APP"
+else
+  codesign --force --options runtime --timestamp=none --sign - "$APP"
+fi
+codesign --verify --strict "$APP" && echo "signature ok"
 
 echo "==> 6/6 dmg"
 STAGE="$HOME/Library/Developer/MelonTools/dmg-stage"
@@ -64,7 +79,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/Melon Tools.app"
 xattr -cr "$STAGE/Melon Tools.app"
-codesign --verify --deep --strict "$STAGE/Melon Tools.app" && echo "staged signature ok"
+codesign --verify --strict "$STAGE/Melon Tools.app" && echo "staged signature ok"
 DMG="build/MelonTools-${VERSION}.dmg"
 rm -f "$DMG"
 # Try create-dmg (pretty Finder layout + volume icon). It needs Finder automation

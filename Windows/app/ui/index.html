@@ -17,7 +17,7 @@
     </div>
     <nav id="nav"></nav>
     <div class="sidebar-update">
-      <button class="update-btn" id="update-btn" onclick="A.updateOpen()">
+      <button class="update-btn" id="update-btn" data-action="updateOpen">
         <span id="update-label">Проверить обновление</span>
       </button>
     </div>
@@ -35,13 +35,20 @@
       <div id="update-sub" class="footnote"></div>
       <div id="update-notes" class="notes" style="display:none"></div>
       <div class="row" style="justify-content:flex-end;margin-top:16px">
-        <button class="ghost" id="update-cancel" onclick="A.updateClose()">Отмена</button>
-        <button class="btn" id="update-apply" style="display:none" onclick="A.updateApply()">Обновить</button>
+        <button class="ghost" id="update-cancel" data-action="updateClose">Отмена</button>
+        <button class="btn" id="update-apply" style="display:none" data-action="updateApply">Обновить</button>
       </div>
     </div>
   </div>
   <div id="toast"></div>
   <script src="vendor/qrcode.js"></script>
+  <script src="mt-bridge.js"></script>
+  <script src="mt-state.js"></script>
+  <script src="mt-i18n.js"></script>
+  <script src="mt-utils.js"></script>
+  <script src="mt-api.js"></script>
+  <script src="mt-pages.js"></script>
+  <script src="mt-actions.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

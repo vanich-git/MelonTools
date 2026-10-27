@@ -1,7 +1,7 @@
 # Security model
 
 This document describes what Melon Tools protects, what it does not protect,
-and where trust is anchored. It covers the 2.4.0 macOS and Windows builds.
+and where trust is anchored. It covers the 2.4.1 macOS and Windows builds.
 
 ## Design summary
 
@@ -15,7 +15,7 @@ and where trust is anchored. It covers the 2.4.0 macOS and Windows builds.
   Gateway) and to GitHub for updates.
 - **Verified updates.** The updater accepts HTTPS GitHub hosts only and checks
   the downloaded file's SHA-256 before installing it.
-- **Signing is not yet available.** The 2.4.0 builds are ad-hoc signed (macOS) and the Windows exe/installer are unsigned. This is a distribution-integrity gap, not a runtime
+- **Signing is not yet available.** The 2.4.1 builds are ad-hoc signed (macOS) and the Windows exe/installer are unsigned. This is a distribution-integrity gap, not a runtime
   vulnerability; see [Signing and notarization](#signing-and-notarization).
 
 ## Data at rest
@@ -45,7 +45,16 @@ can read the tokens. **Enable FileVault and protect backups.**
 | `%APPDATA%\MelonTools\gateway\config.yaml` | Gateway config, provider keys, access key | Plaintext required by the engine; protected by the user-profile ACL, not DPAPI |
 | `%APPDATA%\MelonTools\gateway\auths\*.json` | Account auth files used by the engine | User-profile ACL |
 | `%APPDATA%\MelonTools\gateway\gateway.log` | Gateway log | User-profile ACL |
+| `%APPDATA%\MelonTools\engine\cliproxyapi.exe` | Extracted gateway engine | User-profile ACL; SHA-256 is recorded next to it and re-checked before every launch |
+| `%APPDATA%\MelonTools\engine\engine.sha256` | Expected engine digest | User-profile ACL |
 | `%USERPROFILE%\.codex\auth.json`, `config.toml` | Codex login and routing | Windows user-profile ACL; backup `config.toml.melon-backup` |
+
+On macOS the same gateway data lives in
+`~/Library/Application Support/MelonTools/` (`gateway/auths/*.json`,
+`gateway/gateway.log`, `gateway/config.yaml`) and is protected by the user's
+home-directory permissions and the 0600/0700 modes the app writes. The gateway
+engine is extracted there from the signed bundle and its SHA-256 is checked
+before every launch.
 
 DPAPI protects data at rest against another user account and against offline
 copies of the file on a different machine. It does **not** protect against

@@ -6,7 +6,6 @@
 //! the main window to the tray leaves the process and this runner alive.
 
 use std::collections::HashSet;
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -47,11 +46,13 @@ pub const STATUS_ERROR: &str = "error";
 pub const STATUS_CANCELLED: &str = "cancelled";
 pub const STATUS_SKIPPED: &str = "skipped";
 /// Recorded for a user-cancelled run instead of a transport error.
+#[allow(dead_code)]
 pub const CANCELLED_MESSAGE: &str = "Cancelled by user";
 /// Bounds of the optional per-task daily token budget.
 pub const MIN_DAILY_TOKEN_LIMIT: i64 = 1;
 pub const MAX_DAILY_TOKEN_LIMIT: i64 = 1_000_000;
 /// How often an in-flight request checks the cancellation flag.
+#[allow(dead_code)]
 pub const CANCEL_POLL_MS: u64 = 200;
 
 pub fn now_secs() -> i64 {
@@ -233,6 +234,12 @@ pub fn load() -> Store {
 }
 
 fn load_from(target: &std::path::Path) -> Store {
+    if let Some(found) = crate::schema::file_version(target) {
+        if found > crate::schema::CURRENT {
+            crate::schema::note_newer("scheduler", found);
+            return Store::default();
+        }
+    }
     let raw = std::fs::read_to_string(target).ok();
     let mut store: Store = raw
         .as_deref()
@@ -274,12 +281,20 @@ pub fn save(store: &Store) -> Result<(), String> {
 }
 
 fn save_to(target: &std::path::Path, store: &Store) -> Result<(), String> {
+    crate::schema::ensure_writable(target, "scheduler")?;
     if let Some(dir) = target.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let mut clean = store.clone();
     clamp_store(&mut clean);
-    let data = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(&clean).map_err(|e| e.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "schemaVersion".to_string(),
+            serde_json::json!(crate::schema::CURRENT),
+        );
+    }
+    let data = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
     let tmp = paths::tmp_path(target);
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, target).map_err(|e| e.to_string())
@@ -300,12 +315,20 @@ pub fn load_raw_at(target: &std::path::Path) -> Option<Value> {
 /// file atomically. Validation happens before the write so a damaged backup
 /// cannot destroy the live schedule.
 pub fn save_raw_at(target: &std::path::Path, value: &Value) -> Result<(), String> {
+    crate::schema::ensure_writable(target, "scheduler")?;
     serde_json::from_value::<Store>(value.clone())
         .map_err(|error| format!("scheduler: {error}"))?;
+    let mut stored = value.clone();
+    if let Some(object) = stored.as_object_mut() {
+        object.insert(
+            "schemaVersion".to_string(),
+            serde_json::json!(crate::schema::CURRENT),
+        );
+    }
     if let Some(dir) = target.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let data = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    let data = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
     let tmp = paths::tmp_path(target);
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, target).map_err(|e| e.to_string())
@@ -406,10 +429,9 @@ fn parse_offset_seconds(raw: &str) -> Option<i32> {
         .unwrap_or(raw);
     let (sign, body) = if let Some(body) = rest.strip_prefix('+') {
         (1, body)
-    } else if let Some(body) = rest.strip_prefix('-') {
-        (-1, body)
     } else {
-        return None;
+        let body = rest.strip_prefix('-')?;
+        (-1, body)
     };
     let (hours, minutes) = if let Some((hours, minutes)) = body.split_once(':') {
         (hours.parse::<i32>().ok()?, minutes.parse::<i32>().ok()?)
@@ -715,6 +737,190 @@ pub fn view() -> Value {
         "tasks": store.tasks,
         "history": store.history,
     })
+}
+
+/// Task list without the 64 KB `lastResult` body. The scheduler page needs
+/// the editable fields; results are fetched per history entry on demand.
+pub fn tasks_view() -> Value {
+    tasks_view_of(&load())
+}
+
+fn tasks_view_of(store: &Store) -> Value {
+    let tasks: Vec<Value> = store
+        .tasks
+        .iter()
+        .map(|task| {
+            let mut value = serde_json::to_value(task).unwrap_or_else(|_| json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.remove("lastResult");
+            }
+            value
+        })
+        .collect();
+    json!(tasks)
+}
+
+/// Dashboard payload. The old `scheduler_list` returned the full history
+/// (up to ~12.8 MB) every 5 seconds even though the dashboard only needs the
+/// counts and the next run. `result` bodies are intentionally absent here.
+pub fn summary() -> Value {
+    summary_of(&load())
+}
+
+fn summary_of(store: &Store) -> Value {
+    let now = now_secs();
+    let enabled = store.tasks.iter().filter(|task| task.enabled).count();
+    let next_run_at = store
+        .tasks
+        .iter()
+        .filter(|task| task.enabled)
+        .filter_map(|task| task.next_run_at)
+        .min();
+    let due = store
+        .tasks
+        .iter()
+        .filter(|task| task.enabled)
+        .filter(|task| task.next_run_at.map(|at| at <= now).unwrap_or(false))
+        .count();
+    let last_status = store
+        .tasks
+        .iter()
+        .max_by_key(|task| task.last_run_at.unwrap_or(0))
+        .map(|task| task.last_status.clone())
+        .unwrap_or_else(|| "never".to_string());
+    // Dashboard-sized lists: enough for "run next", the last-status line and
+    // the usage card, without any 64 KB result bodies. The scheduler page
+    // still asks for the full store when it opens.
+    let tasks: Vec<Value> = store
+        .tasks
+        .iter()
+        .map(|task| {
+            json!({
+                "id": task.id,
+                "name": task.name,
+                "model": task.model,
+                "enabled": task.enabled,
+                "nextRunAt": task.next_run_at,
+                "lastRunAt": task.last_run_at,
+                "lastStatus": task.last_status,
+                "lastError": task.last_error,
+                "lastDurationMs": task.last_duration_ms,
+                "lastTokens": task.last_tokens,
+            })
+        })
+        .collect();
+    let history: Vec<Value> = store
+        .history
+        .iter()
+        .rev()
+        .take(200)
+        .map(|entry| {
+            json!({
+                "taskId": entry.task_id,
+                "at": entry.at,
+                "status": entry.status,
+                "model": entry.model,
+                "tokens": entry.tokens,
+                "hasError": entry.error.is_some(),
+            })
+        })
+        .collect();
+    json!({
+        "path": path().to_string_lossy(),
+        "taskCount": store.tasks.len(),
+        "enabledCount": enabled,
+        "dueCount": due,
+        "nextRunAt": next_run_at,
+        "lastStatus": last_status,
+        "historyCount": store.history.len(),
+        "running": current_task_id(),
+        "cancelling": CANCEL.load(Ordering::SeqCst),
+        "queued": queued_ids(),
+        "tasks": tasks,
+        "history": history,
+    })
+}
+
+/// One page of history, newest first. The full `result` and `error` fields are
+/// left out; `scheduler_result(id)` returns them on demand.
+pub fn history_page(page: u32, limit: u32) -> Value {
+    history_page_of(&load(), page, limit)
+}
+
+fn history_page_of(store: &Store, page: u32, limit: u32) -> Value {
+    let page = page.max(1) as usize;
+    let limit = limit.clamp(1, 100) as usize;
+    let total = store.history.len();
+    let start = (page - 1).saturating_mul(limit).min(total);
+    let end = start.saturating_add(limit).min(total);
+    let items: Vec<Value> = store
+        .history
+        .iter()
+        .rev()
+        .skip(start)
+        .take(end - start)
+        .map(|entry| {
+            json!({
+                "id": history_id(entry),
+                "taskId": entry.task_id,
+                "at": entry.at,
+                "status": entry.status,
+                "model": entry.model,
+                "durationMs": entry.duration_ms,
+                "tokens": entry.tokens,
+                "hasError": entry.error.is_some(),
+            })
+        })
+        .collect();
+    json!({
+        "items": items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "hasMore": end < total,
+    })
+}
+
+/// Full result body of one history entry, fetched only when the user opens it.
+pub fn result(id: &str) -> Result<Value, String> {
+    result_of(&load(), id)
+}
+
+fn result_of(store: &Store, id: &str) -> Result<Value, String> {
+    let entry = store
+        .history
+        .iter()
+        .find(|entry| history_id(entry) == id)
+        .ok_or_else(|| "history entry not found".to_string())?;
+    Ok(json!({
+        "id": id,
+        "taskId": entry.task_id,
+        "at": entry.at,
+        "status": entry.status,
+        "model": entry.model,
+        "durationMs": entry.duration_ms,
+        "tokens": entry.tokens,
+        "result": entry.result,
+        "error": entry.error,
+    }))
+}
+
+/// Stable synthetic id for entries written before the UI needed one. The
+/// content hash distinguishes two runs of the same task in the same second;
+/// it stays stable when newer history is appended above the entry.
+fn history_id(entry: &HistoryEntry) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in entry
+        .result
+        .as_bytes()
+        .iter()
+        .chain(entry.error.as_deref().unwrap_or("").as_bytes())
+        .chain(entry.status.as_bytes())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{}:{}:{hash:016x}", entry.task_id, entry.at)
 }
 
 fn validate(input: &TaskInput) -> Result<Validated, String> {
@@ -2255,5 +2461,71 @@ mod tests {
             Some(utc_at(2026, 10, 21, 9, 0)),
             "the next run is tomorrow at 09:00"
         );
+    }
+
+    #[test]
+    fn scheduler_summary_omits_history_bodies() {
+        let mut store = Store::default();
+        store.tasks.push(Task {
+            id: "a".to_string(),
+            enabled: true,
+            next_run_at: Some(now_secs() + 60),
+            last_status: "ok".to_string(),
+            ..Task::default()
+        });
+        store.tasks.push(Task {
+            id: "b".to_string(),
+            enabled: false,
+            ..Task::default()
+        });
+        store.history.push(HistoryEntry {
+            task_id: "a".to_string(),
+            at: 1,
+            status: "ok".to_string(),
+            result: "x".repeat(1024),
+            ..HistoryEntry::default()
+        });
+
+        let summary = summary_of(&store);
+        assert_eq!(summary["taskCount"], 2);
+        assert_eq!(summary["enabledCount"], 1);
+        assert_eq!(summary["historyCount"], 1);
+        assert_eq!(summary["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["history"].as_array().unwrap().len(), 1);
+        assert!(summary["tasks"][0].get("lastResult").is_none());
+        assert!(summary["history"][0].get("result").is_none());
+
+        let tasks = tasks_view_of(&store);
+        assert_eq!(tasks.as_array().unwrap().len(), 2);
+        assert!(tasks[0].get("lastResult").is_none());
+        assert!(tasks[0].get("prompt").is_some());
+    }
+
+    #[test]
+    fn scheduler_history_pages_newest_first_without_results() {
+        let mut store = Store::default();
+        for at in 1..=5 {
+            store.history.push(HistoryEntry {
+                task_id: "a".to_string(),
+                at,
+                status: "ok".to_string(),
+                result: format!("body-{at}"),
+                ..HistoryEntry::default()
+            });
+        }
+
+        let first = history_page_of(&store, 1, 2);
+        assert_eq!(first["total"], 5);
+        assert_eq!(first["items"].as_array().unwrap().len(), 2);
+        assert_eq!(first["items"][0]["at"], 5);
+        assert_eq!(first["items"][1]["at"], 4);
+        assert!(first["items"][0].get("result").is_none());
+        assert!(first["hasMore"].as_bool().unwrap());
+
+        let id = first["items"][0]["id"].as_str().unwrap().to_string();
+        let full = result_of(&store, &id).unwrap();
+        assert_eq!(full["result"], "body-5");
+        assert_eq!(history_page_of(&store, 3, 2)["items"][0]["at"], 1);
+        assert!(result_of(&store, "missing").is_err());
     }
 }

@@ -23,7 +23,7 @@
 
 ## Операционные заметки этой сессии (кратко)
 
-- Тесты: `xcodebuild -project app/MelonTools.xcodeproj -scheme MelonTools -configuration Debug -derivedDataPath "$HOME/Library/Developer/MelonTools" test` (12 тестов).
+- Тесты: `xcodebuild -project app/MelonTools.xcodeproj -scheme MelonTools -configuration Debug -derivedDataPath "$HOME/Library/Developer/MelonTools" test` (полный набор; число указано в выводе `Test Suite 'All tests'`).
 - Полная сборка: `./build.sh` (версия читается из `app/project.yml`, DMG → копия в delivery).
 - Установка на мак: ditto из Release-build в `/Applications/Melon Tools.app` + `xattr -dr com.apple.quarantine`.
 - Запущенный процесс: путь содержит пробел (`Melon Tools.app`) — обычный `pgrep MelonTools` не находит; искать паттерн `Tools.app/Contents/MacOS/MelonTools`.

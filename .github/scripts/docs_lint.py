@@ -116,6 +116,47 @@ if cargo_toml.is_file():
 else:
     ERRORS.append("Windows/app/src-tauri/Cargo.toml: missing")
 
+lock_version = None
+cargo_lock = ROOT / "Windows/app/src-tauri/Cargo.lock"
+if cargo_lock.is_file():
+    match = re.search(
+        r'\[\[package\]\]\s*\nname = "melontools"\s*\nversion = "([^"]+)"',
+        cargo_lock.read_text(encoding="utf-8"),
+    )
+    lock_version = match.group(1) if match else None
+    if not lock_version:
+        ERRORS.append("Cargo.lock: melontools package version not found")
+else:
+    ERRORS.append("Windows/app/src-tauri/Cargo.lock: missing")
+
+tauri_version = None
+tauri_conf = ROOT / "Windows/app/src-tauri/tauri.conf.json"
+if tauri_conf.is_file():
+    tauri_version = (json.loads(tauri_conf.read_text(encoding="utf-8")) or {}).get("version")
+    if not tauri_version:
+        ERRORS.append("tauri.conf.json: version is missing")
+
+plist_version = None
+info_plist = ROOT / "MacOS/app/MelonTools/Info.plist"
+if info_plist.is_file():
+    match = re.search(
+        r"<key>CFBundleShortVersionString</key>\s*<string>([^<]+)</string>",
+        info_plist.read_text(encoding="utf-8"),
+    )
+    plist_version = match.group(1) if match else None
+    if not plist_version:
+        ERRORS.append("Info.plist: CFBundleShortVersionString is missing")
+
+release_notes = ROOT / "MacOS/RELEASE_NOTES.md"
+release_notes_version = None
+if release_notes.is_file():
+    match = re.search(r"^# Melon Tools ([0-9][0-9.]*)$", release_notes.read_text(encoding="utf-8"), re.MULTILINE)
+    release_notes_version = match.group(1) if match else None
+    if not release_notes_version:
+        ERRORS.append("MacOS/RELEASE_NOTES.md: first heading has no version")
+else:
+    ERRORS.append("MacOS/RELEASE_NOTES.md: missing")
+
 cask_path = ROOT / "packaging/homebrew/Casks/melon-tools.rb"
 cask_text = cask_path.read_text(encoding="utf-8") if cask_path.is_file() else ""
 cask_version_match = re.search(r'^\s*version\s+"([^"]+)"', cask_text, re.MULTILINE)
@@ -140,6 +181,10 @@ for path in winget_files:
 versions = {
     "MacOS/app/project.yml": project_version,
     "Windows/app/src-tauri/Cargo.toml": cargo_version,
+    "Windows/app/src-tauri/Cargo.lock": lock_version,
+    "Windows/app/src-tauri/tauri.conf.json": tauri_version,
+    "MacOS/app/MelonTools/Info.plist": plist_version,
+    "MacOS/RELEASE_NOTES.md": release_notes_version,
     "Homebrew Cask": cask_version_match.group(1) if cask_version_match else None,
 }
 for name, version in winget_versions.items():
@@ -193,8 +238,32 @@ if readme.is_file():
     for link in ["docs/FAQ.md", "docs/SECURITY-MODEL.md"]:
         if link not in readme_text:
             ERRORS.append(f"README.md: missing documentation link to {link}")
+    if re.search(r"releases/latest/download/MelonTools-[0-9]", readme_text):
+        ERRORS.append("README.md: versioned filename under releases/latest/download is unstable; use a stable alias")
 else:
     ERRORS.append("README.md: missing")
+
+if release_notes.is_file():
+    notes_text = release_notes.read_text(encoding="utf-8")
+    if "releases/latest/download/" in notes_text:
+        ERRORS.append("MacOS/RELEASE_NOTES.md: use releases/download/v<version>/ links for past releases")
+
+# --- Distribution checksum truth -----------------------------------------
+
+import subprocess
+
+checksum_script = ROOT / "scripts/verify_release_checksums.py"
+if checksum_script.is_file():
+    result = subprocess.run(
+        [sys.executable, str(checksum_script)], cwd=ROOT, text=True, capture_output=True
+    )
+    if result.returncode != 0:
+        ERRORS.append(
+            "packaging manifests disagree with checksums:\n"
+            + (result.stderr or result.stdout).strip()
+        )
+else:
+    ERRORS.append("scripts/verify_release_checksums.py: missing")
 
 # --- Result ---------------------------------------------------------------
 

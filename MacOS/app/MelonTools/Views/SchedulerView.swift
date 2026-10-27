@@ -94,7 +94,7 @@ struct SchedulerView: View {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 HStack(spacing: MTTheme.s1) {
                     Image(systemName: "menubar.rectangle")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(MTTheme.body(9, weight: .semibold))
                         .foregroundStyle(MTTheme.textTertiary)
                     Text(L("Keep Melon Tools running in the menu bar for scheduled runs"))
                         .font(MTTheme.mono(9))
@@ -253,8 +253,8 @@ struct SchedulerView: View {
                     editorTarget = EditorTarget(task: task)
                 } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
+                        .font(MTTheme.body(11, weight: .semibold))
+                        .frame(minWidth: 22, minHeight: 22)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(MTTheme.textSecondary)
@@ -264,8 +264,8 @@ struct SchedulerView: View {
                     deleteTarget = task
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
+                        .font(MTTheme.body(11, weight: .semibold))
+                        .frame(minWidth: 22, minHeight: 22)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(MTTheme.danger)
@@ -984,7 +984,7 @@ private struct SchedulerResultSheet: View {
                                         Spacer(minLength: 0)
                                         if selectedIndex == index {
                                             Image(systemName: "checkmark")
-                                                .font(.system(size: 9, weight: .bold))
+                                                .font(MTTheme.body(9, weight: .bold))
                                                 .foregroundStyle(MTTheme.gold)
                                         }
                                     }

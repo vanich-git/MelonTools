@@ -105,7 +105,9 @@ final class ModelSourcesStore: ObservableObject {
     static let vercelBaseURL = "https://ai-gateway.vercel.sh/v1"
     static let vercelCreditsURL = "https://ai-gateway.vercel.sh/v1/credits"
 
-    @Published private(set) var sources: [ModelSource] = []
+    @Published private(set) var sources: [ModelSource] = [] {
+        didSet { priceIndex = nil }
+    }
     @Published var openRouterKey: String = ""
     @Published var openCodeKey: String = ""
     @Published var deepInfraKey: String = ""
@@ -273,6 +275,39 @@ final class ModelSourcesStore: ObservableObject {
     /// Price row for a model name from the Codex picker (display name, alias or
     /// upstream id). Feeds the session-cost estimate.
     ///
+    /// Lowercased alias/id/display lookup, rebuilt whenever `sources` changes.
+    /// Attribute order is preserved by keeping three maps and probing them in
+    /// order: alias, then upstream id, then display name. Building it once
+    /// turns the per-turn `priceRow` into three dictionary lookups.
+    private struct PriceIndex {
+        var aliases: [String: (kind: ModelSource.Kind, model: SourceModel)] = [:]
+        var ids: [String: (kind: ModelSource.Kind, model: SourceModel)] = [:]
+        var displays: [String: (kind: ModelSource.Kind, model: SourceModel)] = [:]
+    }
+
+    private var priceIndex: PriceIndex?
+
+    private func makePriceIndex() -> PriceIndex {
+        var index = PriceIndex()
+        for source in sources where source.enabled {
+            for model in source.models {
+                let alias = model.alias.lowercased()
+                if !alias.isEmpty, index.aliases[alias] == nil {
+                    index.aliases[alias] = (source.kind, model)
+                }
+                let id = model.id.lowercased()
+                if !id.isEmpty, index.ids[id] == nil {
+                    index.ids[id] = (source.kind, model)
+                }
+                let display = model.display.lowercased()
+                if !display.isEmpty, index.displays[display] == nil {
+                    index.displays[display] = (source.kind, model)
+                }
+            }
+        }
+        return index
+    }
+
     /// Attribution order matters: pool models come first (a slug like
     /// `gpt-6.1-sol` is also served by OpenCode — without this check its turns
     /// would be billed to the OpenCode session stats), then the exact gateway
@@ -284,22 +319,9 @@ final class ModelSourcesStore: ObservableObject {
             $0.slug.lowercased() == lowered || $0.name.lowercased() == lowered
         }
         if poolMatches { return nil }
-        for source in sources where source.enabled {
-            if let model = source.models.first(where: { $0.alias.lowercased() == lowered }) {
-                return (source.kind, model)
-            }
-        }
-        for source in sources where source.enabled {
-            if let model = source.models.first(where: { $0.id.lowercased() == lowered }) {
-                return (source.kind, model)
-            }
-        }
-        for source in sources where source.enabled {
-            if let model = source.models.first(where: { $0.display.lowercased() == lowered }) {
-                return (source.kind, model)
-            }
-        }
-        return nil
+        let index = priceIndex ?? makePriceIndex()
+        if priceIndex == nil { priceIndex = index }
+        return index.aliases[lowered] ?? index.ids[lowered] ?? index.displays[lowered]
     }
 
     // MARK: - Mutation helpers

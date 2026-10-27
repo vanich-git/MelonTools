@@ -200,7 +200,9 @@ final class ComposerBridge: ObservableObject {
             .appendingPathComponent("melontools-cdp-\(UUID().uuidString).sh")
         let script = """
         #!/bin/bash
+        set -u
         trap 'rm -f -- "$0"' EXIT
+        APP_PATH=${1:?missing app path}
         PID=\(ProcessInfo.processInfo.processIdentifier)
         for _ in $(seq 1 40); do
           kill -0 "$PID" 2>/dev/null || break
@@ -216,14 +218,16 @@ final class ComposerBridge: ObservableObject {
           /usr/bin/pkill -KILL -f "ChatGPT.app/Contents/MacOS/ChatGPT" 2>/dev/null
           sleep 0.5
         fi
-        /usr/bin/open "\(codexURL.path)"
+        /usr/bin/open "$APP_PATH"
         """
         do {
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = [scriptURL.path]
+            // The path is passed as an argument, never interpolated into the
+            // script. `open "$APP_PATH"` keeps spaces and quotes inert.
+            process.arguments = [scriptURL.path, codexURL.path]
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
@@ -279,6 +283,15 @@ final class ComposerBridge: ObservableObject {
             return
         }
         noDebugPortSeen = nil
+
+        // The port is chosen before Codex binds it; another local process can
+        // win the race and impersonate the CDP endpoint. Verify the listener
+        // belongs to the Codex pid before injecting any script.
+        guard await Self.debugPortOwned(port: port, pid: process.pid) else {
+            status = .failed(L("Codex debug port is used by another process. Relaunch Codex to pick a new port."))
+            log(L("Codex debug port is used by another process — refusing to connect."))
+            return
+        }
 
         let targets = await Self.fetchTargets(port: port)
         guard !targets.isEmpty else {
@@ -733,6 +746,21 @@ final class ComposerBridge: ObservableObject {
         guard let range = command.range(of: "--remote-debugging-port=") else { return nil }
         let digits = command[range.upperBound...].prefix { $0.isNumber }
         return Int(digits)
+    }
+
+    /// True when the process listening on `port` is the Codex pid seen in
+    /// `ps`. `freeDebugPort()` closes its probe socket before Codex starts, so
+    /// a hostile local process can bind the port in that window; the CDP
+    /// endpoint has no authentication and must not be trusted by port alone.
+    static func debugPortOwned(port: Int, pid: Int) async -> Bool {
+        guard let result = try? await ShellService.run(
+            "/usr/sbin/lsof",
+            ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
+        ) else { return false }
+        let owners = result.stdout
+            .split(whereSeparator: { $0 == "\n" || $0 == " " })
+            .compactMap { Int($0) }
+        return owners.contains(pid)
     }
 
     static func fetchTargets(port: Int) async -> [DebugTarget] {

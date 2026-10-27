@@ -6,21 +6,28 @@ import Security
 
 // MARK: - Envelope
 
-/// Portable encrypted backup envelope shared with the future Rust
-/// implementation. The shape is frozen by `formatVersion`:
+/// Portable encrypted backup envelope shared with the Windows implementation.
+/// Version 1 is still readable (PBKDF2 210 000, no AAD). New exports use
+/// version 2:
 ///
 /// ```json
 /// {
 ///   "format": "melon-backup",
-///   "formatVersion": 1,
+///   "formatVersion": 2,
 ///   "appVersion": "2.4.0",
 ///   "createdAt": 1760000000,
-///   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 210000,
+///   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 600000,
 ///            "salt": "<base64 16 bytes>" },
 ///   "cipher": { "name": "AES-256-GCM", "nonce": "<base64 12 bytes>" },
 ///   "payload": "<base64 ciphertext||16-byte tag>"
 /// }
 /// ```
+///
+/// Version 2 authenticates the header through AES-GCM AAD: the canonical
+/// string `format \0 version \0 kdfName \0 iterations \0 saltB64 \0
+/// cipherName \0 nonceB64`. A v2 envelope relabelled as v1, or a header field
+/// changed in transit, fails authentication instead of decrypting under
+/// attacker-chosen parameters.
 struct BackupEnvelope: Codable, Equatable {
     struct KDF: Codable, Equatable {
         var name: String
@@ -96,9 +103,10 @@ struct BackupPayload {
 /// Encrypted backup / export / import.
 ///
 /// The envelope is independent of both app implementations: PBKDF2-HMAC-SHA256
-/// (210 000 iterations, 32-byte key), AES-256-GCM with a random 12-byte nonce,
-/// and a random 16-byte salt. The password exists only in memory and is never
-/// written to the backup, to defaults or to a log.
+/// (600 000 iterations, 32-byte key), AES-256-GCM with a random 12-byte nonce,
+/// a random 16-byte salt, and the header-bound AAD described above. Version 1
+/// backups (210 000 iterations, no AAD) remain readable. The password exists
+/// only in memory and is never written to the backup, to defaults or to a log.
 ///
 /// The payload embeds raw JSON objects so a Rust reader does not have to know
 /// Swift model shapes:
@@ -113,14 +121,20 @@ enum BackupService {
     // MARK: Format constants
 
     static let format = "melon-backup"
-    static let formatVersion = 1
+    /// Version written by this build. Version 1 stays readable.
+    static let formatVersion = 2
+    static let legacyFormatVersion = 1
+    static let supportedFormatVersions = [legacyFormatVersion, formatVersion]
     /// Product version recorded in the envelope. Bumped with the release
     /// metadata; the Rust implementation writes its own value.
-    static let appVersion = "2.4.0"
+    static let appVersion = "2.4.1"
     static let kdfName = "PBKDF2-HMAC-SHA256"
     static let cipherName = "AES-256-GCM"
-    static let iterations = 210_000
-    static let minimumIterations = 210_000
+    /// New exports. Version 1 used 210 000.
+    static let iterations = 600_000
+    static let legacyIterations = 210_000
+    static let minimumIterations = legacyIterations
+    static let minimumVersion2Iterations = 600_000
     static let maximumIterations = 10_000_000
     static let saltLength = 16
     static let nonceLength = 12
@@ -238,7 +252,10 @@ enum BackupService {
         let key = try deriveKey(
             password: password,
             salt: try decodeBase64(envelope.kdf.salt),
-            iterations: try validatedIterations(envelope.kdf.iterations)
+            iterations: try validatedIterations(
+                envelope.kdf.iterations,
+                formatVersion: envelope.formatVersion
+            )
         )
         let payloadData = try decrypt(envelope: envelope, key: key)
         return try restorePayload(payloadData, supportDir: supportDir, defaults: defaults)
@@ -460,26 +477,34 @@ enum BackupService {
         guard !password.isEmpty else { throw BackupError.emptyPassword }
         let salt = try randomBytes(saltLength)
         let nonceData = try randomBytes(nonceLength)
-        let key = try deriveKey(password: password, salt: salt, iterations: iterations)
+        let version = formatVersion
+        let rounds = iterations
+        let key = try deriveKey(password: password, salt: salt, iterations: rounds)
         let sealed: AES.GCM.SealedBox
         do {
             let nonce = try AES.GCM.Nonce(data: nonceData)
-            // No additional authenticated data: the Rust implementation must
-            // pass none as well. The nonce lives in the envelope, so the
-            // payload field is exactly ciphertext||tag.
-            sealed = try AES.GCM.seal(payload, using: key, nonce: nonce)
+            // Version 2 authenticates the header fields that select the key
+            // and cipher. A v1 reader cannot open it, and a v2 file relabelled
+            // as v1 fails this tag check.
+            let aad = additionalAuthenticatedData(
+                formatVersion: version,
+                iterations: rounds,
+                salt: salt,
+                nonce: nonceData
+            )
+            sealed = try AES.GCM.seal(payload, using: key, nonce: nonce, authenticating: aad)
         } catch {
             throw BackupError.cryptoFailure(error.localizedDescription)
         }
         let combined = sealed.ciphertext + sealed.tag
         let envelope = BackupEnvelope(
             format: format,
-            formatVersion: formatVersion,
+            formatVersion: version,
             appVersion: appVersion,
             createdAt: Int(createdAt.timeIntervalSince1970),
             kdf: BackupEnvelope.KDF(
                 name: kdfName,
-                iterations: iterations,
+                iterations: rounds,
                 salt: salt.base64EncodedString()
             ),
             cipher: BackupEnvelope.Cipher(
@@ -527,7 +552,7 @@ enum BackupService {
         guard envelope.format == format else {
             throw BackupError.unsupportedFormat(envelope.format)
         }
-        guard envelope.formatVersion == formatVersion else {
+        guard supportedFormatVersions.contains(envelope.formatVersion) else {
             throw BackupError.unsupportedFormatVersion(envelope.formatVersion)
         }
         guard envelope.kdf.name == kdfName else {
@@ -553,12 +578,41 @@ enum BackupService {
         let tag = combined.suffix(tagLength)
         do {
             let nonce = try AES.GCM.Nonce(data: nonceData)
-            // Counterpart of `seal`: no AAD.
             let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tag)
+            if envelope.formatVersion >= 2 {
+                let aad = additionalAuthenticatedData(
+                    formatVersion: envelope.formatVersion,
+                    iterations: envelope.kdf.iterations,
+                    salt: salt,
+                    nonce: nonceData
+                )
+                return try AES.GCM.open(box, using: key, authenticating: aad)
+            }
+            // Version 1 had no AAD.
             return try AES.GCM.open(box, using: key)
         } catch {
             throw BackupError.wrongPasswordOrCorrupt
         }
+    }
+
+    /// Canonical header bytes used as AES-GCM AAD. Base64 keeps the fields
+    /// unambiguous; the NUL separator cannot occur in any of them.
+    static func additionalAuthenticatedData(
+        formatVersion: Int,
+        iterations: Int,
+        salt: Data,
+        nonce: Data
+    ) -> Data {
+        let parts = [
+            format,
+            String(formatVersion),
+            kdfName,
+            String(iterations),
+            salt.base64EncodedString(),
+            cipherName,
+            nonce.base64EncodedString(),
+        ]
+        return Data(parts.joined(separator: "\u{0}").utf8)
     }
 
     /// Internal (not private) so `BackupTests` can pin the PBKDF2 output to a
@@ -590,6 +644,17 @@ enum BackupService {
 
     private static func validatedIterations(_ value: Int) throws -> Int {
         guard value >= minimumIterations, value <= maximumIterations else {
+            throw BackupError.invalidKDFParameters
+        }
+        return value
+    }
+
+    /// Version-aware floor: a v2 envelope must not ask a reader to use the
+    /// weaker legacy work factor. A v1 envelope keeps its 210 000 floor so old
+    /// backups still open.
+    private static func validatedIterations(_ value: Int, formatVersion: Int) throws -> Int {
+        let minimum = formatVersion >= 2 ? minimumVersion2Iterations : minimumIterations
+        guard value >= minimum, value <= maximumIterations else {
             throw BackupError.invalidKDFParameters
         }
         return value

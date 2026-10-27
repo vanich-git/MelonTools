@@ -1,15 +1,15 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **2.4.0**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **2.4.1**.
 
-Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
+Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.1-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
 **WebView2 Runtime**. Файл не подписан Authenticode, поэтому Windows может
 показать предупреждение. SHA-256 опубликован рядом с файлом; в PowerShell
 проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-2.4.0-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-2.4.1-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
@@ -76,7 +76,7 @@ Vault можно перенести с macOS: скопируйте
   чипами»** на странице API делает это автоматически. Состояние моста
   (подключён/нет и причина) видно в карточке «Интеграция с Codex».
 
-## Текущие ограничения Windows-порта
+## Текущие ограничения Windows-приложения
 
 - **Оценка стоимости**: сумма в чипах и карточках рассчитывается по токенам и
   тарифу выбранной модели; если тариф неизвестен, цена не показывается.
@@ -87,7 +87,7 @@ Vault можно перенести с macOS: скопируйте
 
 Для установщика нужен NSIS: `brew install makensis`.
 
-## Сборка из исходников (macOS или Windows)
+## Кросс-сборка из macOS или сборка на Windows
 
 Исходники: `app/` (`ui/` — фронтенд без сборки, `src-tauri/` — Rust).
 
@@ -100,15 +100,30 @@ brew install lld llvm
 ./build-windows.sh
 ```
 
-На Windows установите Rust и Tauri CLI, затем выполните `cargo tauri build` из
-`app/`. Сборка использует включённый в репозиторий сжатый движок шлюза.
+На Windows установите Rust (toolchain из CI), затем соберите exe и установщик
+штатными шагами:
+
+```powershell
+cd Windows/app/src-tauri
+cargo build --release --locked
+cd ../..
+makensis /DVERSION=2.4.1 /DSOURCE_EXE=..\dist\MelonTools-2.4.1-win-x64-portable.exe installer\MelonTools.nsi
+```
+
+`cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий
+`installer/MelonTools.nsi`, который вызывает `makensis` после `cargo build
+--release`. CI делает то же самое (`.github/workflows/release.yml`). Сборка
+использует включённый в репозиторий сжатый движок шлюза.
 
 ## Технические детали
 
 - Движок: CLIProxyAPI (Go), собран под `windows/amd64`, конфиг 1:1 с macOS-версией
   (`fill-first`, retry 3, disabled-флаг для пауз). Движок **встроен в exe** в
-  сжатом виде (zlib, ~23 МБ) и распаковывается в `%APPDATA%\MelonTools\engine\`
-  при первом запуске или после обновления версии.
+  сжатом виде (zlib, ~24.2 МБ; ~74.5 МБ после распаковки) и распаковывается в `%APPDATA%\MelonTools\engine\`
+  при первом запуске или после обновления версии. Blob воспроизводится из
+  пина `1f917e77c4562623aa49e9804d999524151a2f96` (`v8.0.44`, Go 1.26.10)
+  скриптом `Windows/scripts/build-engine.sh`; CI сверяет SHA-256 с
+  `Windows/app/resources/engine-provenance.json`.
 - Фронтенд: ванильный HTML/CSS/JS, дизайн-токены перенесены из `MTTheme.swift`
   (палитра, отступы, карточки, золото).
 - Сеть: reqwest (native-tls → schannel на Windows), без OpenSSL.

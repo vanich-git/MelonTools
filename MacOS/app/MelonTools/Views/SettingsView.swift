@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var backupNotice: String?
     @State private var backupNoticeIsError = false
     @State private var backupRefresh = 0
+    @State private var supportNotice: String?
     @State private var pendingImportURL: URL?
 
     var body: some View {
@@ -221,6 +222,22 @@ struct SettingsView: View {
                     Text(String(format: L("The live scheduler, settings, accounts and auth files will be replaced by “%@”."), url.lastPathComponent))
                 }
 
+                MTCard(title: L("Support bundle"), systemImage: "ladybug") {
+                    VStack(alignment: .leading, spacing: MTTheme.s3) {
+                        Text(L("Export a redacted diagnostics file: versions, gateway state, log tails and file sizes. Tokens and keys are removed."))
+                            .font(MTTheme.mono(10))
+                            .foregroundStyle(MTTheme.textSecondary)
+                        MTSecondaryButton(title: L("Export support bundle…"), systemImage: "square.and.arrow.up") {
+                            exportSupportBundle()
+                        }
+                        if let supportNotice {
+                            Text(supportNotice)
+                                .font(MTTheme.mono(10))
+                                .foregroundStyle(MTTheme.textSecondary)
+                        }
+                    }
+                }
+
                 MTCard(title: L("About"), systemImage: "info.circle") {
                     HStack(alignment: .center, spacing: MTTheme.s3) {
                         Image(nsImage: MelonAssets.logo)
@@ -300,6 +317,23 @@ struct SettingsView: View {
         } catch {
             backupNoticeIsError = true
             backupNotice = L("Backup export failed") + ": \(error.localizedDescription)"
+        }
+    }
+
+    private func exportSupportBundle() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "MelonTools-support-\(Self.backupDateFormatter.string(from: Date())).json"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let destination = url.pathExtension.lowercased() == "json"
+            ? url
+            : url.appendingPathExtension("json")
+        do {
+            try SupportBundleService.export(to: destination)
+            supportNotice = L("Support bundle exported") + " — " + destination.lastPathComponent
+        } catch {
+            supportNotice = L("Support bundle export failed") + ": \(error.localizedDescription)"
         }
     }
 

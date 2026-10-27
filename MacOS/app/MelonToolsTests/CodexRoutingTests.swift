@@ -339,4 +339,20 @@ final class LRUCacheTests: XCTestCase {
         XCTAssertEqual(cache.count, 12)
         XCTAssertEqual(cache.keys, Array(28..<40))
     }
+
+    func testSharedRoutingPriorityFixture() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../../../shared/fixtures/routing.json")
+        let data = try Data(contentsOf: url)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let ids = try XCTUnwrap(object["orderedIds"] as? [String])
+        let expected = try XCTUnwrap(object["priorities"] as? [String: Int])
+        XCTAssertEqual(CodexRoutingPlanner.priorities(from: ids), expected)
+
+        let ranks = try XCTUnwrap(object["planRank"] as? [String: Int])
+        for (plan, rank) in ranks {
+            XCTAssertEqual(CodexRoutingPlanner.planRank(plan), rank, plan)
+        }
+    }
 }

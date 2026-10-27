@@ -122,6 +122,22 @@ enum CodexLiveQuota {
         return merged
     }
 
+    /// Compare only the fields owned by passive headers. `fetchedAt`,
+    /// `rawJSON` and model availability change on every read and must not
+    /// invalidate every observing SwiftUI view.
+    static func liveValuesDiffer(_ lhs: CodexQuota?, _ rhs: CodexQuota?) -> Bool {
+        guard let lhs, let rhs else { return lhs != nil || rhs != nil }
+        return lhs.planType != rhs.planType
+            || lhs.hourlyRemainingPercent != rhs.hourlyRemainingPercent
+            || lhs.weeklyRemainingPercent != rhs.weeklyRemainingPercent
+            || lhs.hourlyResetAt != rhs.hourlyResetAt
+            || lhs.weeklyResetAt != rhs.weeklyResetAt
+            || lhs.hourlyWindowMinutes != rhs.hourlyWindowMinutes
+            || lhs.weeklyWindowMinutes != rhs.weeklyWindowMinutes
+            || lhs.hourlyWindowPresent != rhs.hourlyWindowPresent
+            || lhs.weeklyWindowPresent != rhs.weeklyWindowPresent
+    }
+
     private static func signalLookup(_ signals: [String: String]) -> [String: String] {
         var lookup: [String: String] = [:]
         for (key, value) in signals {

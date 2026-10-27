@@ -2,6 +2,7 @@
 //! provider usage endpoint is only the fallback and reset probe.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,27 @@ use crate::vault::{self, Account, Quota, QuotaBlock, APPLE_REF_UNIX_OFFSET};
 
 const LIVE_MAX_AGE: f64 = 120.0;
 const USAGE_MAX_AGE: f64 = 1800.0;
+/// Live readings are written once per this interval unless a block changes.
+/// The previous code rewrote the whole vault (and DPAPI tokens) every 1.5 s.
+const PERSIST_INTERVAL: Duration = Duration::from_secs(45);
+
+static LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PERSIST: OnceLock<Mutex<Instant>> = OnceLock::new();
+static PENDING_QUOTAS: OnceLock<Mutex<HashMap<String, (Quota, f64)>>> = OnceLock::new();
+
+fn last_persist() -> &'static Mutex<Instant> {
+    LAST_PERSIST.get_or_init(|| Mutex::new(Instant::now() - PERSIST_INTERVAL))
+}
+
+fn pending_quotas() -> &'static Mutex<HashMap<String, (Quota, f64)>> {
+    PENDING_QUOTAS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Last completed live-guard tick, exposed to `gateway_status` so a regression
+/// in this loop is visible without a profiler.
+pub fn last_tick_ms() -> u64 {
+    LAST_TICK_MS.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct ResetProbeState {
@@ -28,16 +50,26 @@ fn reset_probes() -> &'static Mutex<HashMap<String, ResetProbeState>> {
 /// One guard cycle. The caller runs this on a 1.5-second tokio interval in a
 /// native task, so WebView timer throttling cannot stop quota enforcement.
 pub async fn tick(settings: &Settings) {
+    let started = Instant::now();
+    // One snapshot per tick. `reconcile_and_apply` used to read the vault two
+    // more times (plus once inside the reset-probe scan) on every tick.
+    let accounts = vault::accounts();
     let snapshot = gateway::management_auth_files(settings).await.ok();
-    reconcile_and_apply(settings, snapshot.as_ref()).await;
+    let (accounts, updates, block_updates) =
+        reconcile_and_apply(settings, accounts, snapshot.as_ref()).await;
 
-    let due = due_reset_probes(snapshot.as_ref());
+    queue_quota_updates(updates);
+    if !block_updates.is_empty() {
+        flush_quota_updates(Some(&block_updates));
+    } else {
+        flush_quota_updates(None);
+    }
+
+    let due = due_reset_probes(&accounts, snapshot.as_ref());
     for id in due {
         let settings = settings.clone();
+        let account = accounts.iter().find(|account| account.id == id).cloned();
         tokio::spawn(async move {
-            let account = vault::accounts()
-                .into_iter()
-                .find(|account| account.id == id);
             let result = if let (Some(account), Ok(client)) = (account, crate::quota::client()) {
                 crate::quota::refresh_one(&client, &account).await
             } else {
@@ -45,21 +77,81 @@ pub async fn tick(settings: &Settings) {
             };
             record_probe_result(&id, result.is_ok());
             let snapshot = gateway::management_auth_files(&settings).await.ok();
-            reconcile_and_apply(&settings, snapshot.as_ref()).await;
+            let accounts = vault::accounts();
+            let (_, updates, block_updates) =
+                reconcile_and_apply(&settings, accounts, snapshot.as_ref()).await;
+            queue_quota_updates(updates);
+            if !block_updates.is_empty() {
+                flush_quota_updates(Some(&block_updates));
+            } else {
+                flush_quota_updates(None);
+            }
         });
+    }
+    LAST_TICK_MS.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+}
+
+fn queue_quota_updates(updates: Vec<(String, Quota, f64)>) {
+    if updates.is_empty() {
+        return;
+    }
+    if let Ok(mut pending) = pending_quotas().lock() {
+        for (id, quota, observed_at) in updates {
+            pending.insert(id, (quota, observed_at));
+        }
     }
 }
 
-async fn reconcile_and_apply(settings: &Settings, snapshot: Option<&ManagementAuthSnapshot>) {
+/// Persist queued readings at most every [`PERSIST_INTERVAL`]. Block changes
+/// pass `blocks` and force an immediate write: routing must pause before the
+/// next request, while a percent display can wait.
+fn flush_quota_updates(blocks: Option<&[(String, Option<QuotaBlock>)]>) {
+    let due = blocks.is_some()
+        || last_persist()
+            .lock()
+            .map(|last| last.elapsed() >= PERSIST_INTERVAL)
+            .unwrap_or(false);
+    if !due {
+        return;
+    }
+    let updates: Vec<(String, Quota, f64)> = pending_quotas()
+        .lock()
+        .map(|mut pending| {
+            pending
+                .drain()
+                .map(|(id, (quota, at))| (id, quota, at))
+                .collect()
+        })
+        .unwrap_or_default();
+    if updates.is_empty() && blocks.map_or(true, |blocks| blocks.is_empty()) {
+        return;
+    }
+    if vault::apply_live_updates(&updates, blocks.unwrap_or(&[])).is_ok() {
+        if let Ok(mut last) = last_persist().lock() {
+            *last = Instant::now();
+        }
+    }
+}
+
+async fn reconcile_and_apply(
+    settings: &Settings,
+    mut accounts: Vec<Account>,
+    snapshot: Option<&ManagementAuthSnapshot>,
+) -> (
+    Vec<Account>,
+    Vec<(String, Quota, f64)>,
+    Vec<(String, Option<QuotaBlock>)>,
+) {
     let now_ref = vault::now_ref();
     let now_unix = now_ref + APPLE_REF_UNIX_OFFSET;
     let files = snapshot
         .map(ManagementAuthSnapshot::codex_files)
         .unwrap_or_default();
-    let mut changed_block = false;
+    let mut updates: Vec<(String, Quota, f64)> = Vec::new();
+    let mut block_updates: Vec<(String, Option<QuotaBlock>)> = Vec::new();
 
-    for (index, mut account) in vault::accounts().into_iter().enumerate() {
-        let file = auth_file(&account, index, &files);
+    for (index, account) in accounts.iter_mut().enumerate() {
+        let file = auth_file(account, index, &files);
         if let Some(file) = file {
             if let Some(reading) = crate::quota::parse_live_signals(
                 &file.signals,
@@ -77,28 +169,28 @@ async fn reconcile_and_apply(settings: &Settings, snapshot: Option<&ManagementAu
                         .map(|cached| reading.observed_at < cached - 0.5)
                         .unwrap_or(false)
                         && account.quota_source.as_deref() == Some("usage");
-                    if stale_for_cache {
-                        continue;
+                    if !stale_for_cache {
+                        merge_reading(account, &reading.quota, reading.observed_at);
+                        updates.push((
+                            account.id.clone(),
+                            reading.quota.clone(),
+                            reading.observed_at,
+                        ));
                     }
-                    merge_reading(&mut account, &reading.quota, reading.observed_at);
-                    let _ =
-                        vault::update_live_quota(&account.id, &reading.quota, reading.observed_at);
                 }
             }
         }
 
         let old_block = account.quota_block.clone();
-        account.quota_block = reconcile_block(&account, now_ref, now_unix);
+        account.quota_block = reconcile_block(account, now_ref, now_unix);
         if old_block != account.quota_block {
-            let _ = vault::set_quota_block(&account.id, account.quota_block.as_ref());
-            changed_block = true;
+            block_updates.push((account.id.clone(), account.quota_block.clone()));
         }
     }
 
     // Apply the small status patch first. A failed or unverified patch falls
     // back to the diff-based auth sync; unrelated credentials stay untouched.
-    let accounts = vault::accounts();
-    let mut fallback = snapshot.is_none() && changed_block;
+    let mut fallback = snapshot.is_none() && !block_updates.is_empty();
     if snapshot.is_some() {
         for (index, account) in accounts.iter().enumerate() {
             let Some(file) = auth_file(account, index, &files) else {
@@ -122,6 +214,7 @@ async fn reconcile_and_apply(settings: &Settings, snapshot: Option<&ManagementAu
     if fallback {
         let _ = gateway::sync_accounts(settings);
     }
+    (accounts, updates, block_updates)
 }
 
 fn merge_reading(account: &mut Account, reading: &Quota, observed_at: f64) {
@@ -284,8 +377,10 @@ fn auth_file<'a>(
     files.iter().copied().find(|file| file.name == expected)
 }
 
-fn due_reset_probes(snapshot: Option<&ManagementAuthSnapshot>) -> Vec<String> {
-    let accounts = vault::accounts();
+fn due_reset_probes(
+    accounts: &[Account],
+    snapshot: Option<&ManagementAuthSnapshot>,
+) -> Vec<String> {
     let files = snapshot
         .map(ManagementAuthSnapshot::codex_files)
         .unwrap_or_default();

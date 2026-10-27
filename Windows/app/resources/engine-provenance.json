@@ -1,0 +1,23 @@
+{
+  "engine": "CLIProxyAPI",
+  "sourceCommit": "1f917e77c4562623aa49e9804d999524151a2f96",
+  "sourceTag": "v8.0.44",
+  "goToolchain": "go1.26.10",
+  "goModSha256": "d1f8a503d1a038c2c7cdb083317ab3f13d05bf72e4c75c8f1dc668e23ded4ba3",
+  "goSumSha256": "de5646044e8e71e3d06e42e22c502e115a33e096b95b3bf5b5b5797798bfb4fe",
+  "build": {
+    "command": "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags \"-s -w\" -o <out> ./cmd/server",
+    "compression": "zlib level 9",
+    "dependencyBump": "github.com/klauspost/compress v1.17.4 -> v1.18.7"
+  },
+  "compressed": {
+    "file": "cliproxyapi.exe.z",
+    "bytes": 24244153,
+    "sha256": "8663b001807fd4dec2b78ad886d033d9a1e31d0145ded7b2f87078908d286e95"
+  },
+  "payload": {
+    "file": "cliproxyapi.exe",
+    "bytes": 74461184,
+    "sha256": "174c78a3d6a55355edc411a8d1cb4f44b859baada4ed2f13c51975aec475dd2d"
+  }
+}

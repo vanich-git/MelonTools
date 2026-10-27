@@ -770,6 +770,20 @@ final class L10n: ObservableObject {
         "Quota updated": "Квота обновлена",
         "No quota data": "Нет данных о квоте",
         "The service returned an empty model list.": "Сервис вернул пустой список моделей.",
+        "Task failed": "Задача завершилась с ошибкой",
+        "The service did not answer healthy requests.": "Сервис не отвечает на проверки состояния.",
+        "Working directory does not exist.": "Рабочая папка не существует.",
+        "This vault was written by a newer Melon Tools. Update the app before editing accounts.": "Хранилище записано более новой версией Melon Tools. Обновите приложение, прежде чем менять аккаунты.",
+        "Chips removed from the Codex app. Relaunch Codex to close the debug port.": "Чипы удалены из Codex. Перезапустите Codex, чтобы закрыть отладочный порт.",
+        "Composer chips are off — launching the Codex app without a debug port.": "Чипы композера выключены — Codex запускается без отладочного порта.",
+        "Launched the Codex app without a debug port.": "Codex запущен без отладочного порта.",
+        "Codex debug port is used by another process. Relaunch Codex to pick a new port.": "Отладочный порт Codex занят другим процессом. Перезапустите Codex, чтобы выбрать новый порт.",
+        "Codex debug port is used by another process — refusing to connect.": "Отладочный порт Codex занят другим процессом — подключение отклонено.",
+        "Support bundle": "Диагностический пакет",
+        "Export a redacted diagnostics file: versions, gateway state, log tails and file sizes. Tokens and keys are removed.": "Экспорт обезличенного файла диагностики: версии, состояние шлюза, хвосты логов и размеры файлов. Токены и ключи удаляются.",
+        "Export support bundle…": "Экспортировать диагностику…",
+        "Support bundle exported": "Диагностика экспортирована",
+        "Support bundle export failed": "Не удалось экспортировать диагностику",
     ]
 }
 

@@ -56,6 +56,7 @@ fn is_reserved(value: &str) -> bool {
     is_protected(value) || value.starts_with(PREFIX_PLAIN)
 }
 
+#[allow(dead_code)]
 fn wrap(prefix: &str, encrypted: &[u8]) -> String {
     format!(
         "{}{}",
@@ -105,6 +106,7 @@ fn decode_plain_if_tagged(text: Zeroizing<String>) -> Result<String, Undecryptab
 
 /// Encrypt with an injectable backend. Production uses DPAPI; tests use a
 /// reversible fake to verify the v1/v2 formats, entropy and migration.
+#[allow(dead_code)]
 pub(crate) fn protect_with(
     value: &str,
     encrypt: impl Fn(&[u8], &[u8]) -> Option<Zeroizing<Vec<u8>>>,

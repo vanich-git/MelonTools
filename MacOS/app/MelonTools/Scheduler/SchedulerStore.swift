@@ -139,6 +139,8 @@ final class SchedulerStore: ObservableObject {
     private let poolGuard: ((SchedulerTask) -> Bool)?
     private var timer: Timer?
     private var loaded = false
+    /// A newer build wrote scheduler.json; keep it untouched.
+    private var readOnly = false
     /// Handle of the one in-flight run, so `cancelCurrent()` can stop it.
     private var activeRun: Task<Bool, Never>?
 
@@ -220,10 +222,20 @@ final class SchedulerStore: ObservableObject {
 
     func load(now: Date = Date()) {
         loaded = true
+        readOnly = false
         guard let data = SecureFile.read(fileURL) else {
             tasks = []
             history = []
             persistenceError = nil
+            return
+        }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let version = object["schemaVersion"] as? Int,
+           version > PersistenceSchema.current {
+            readOnly = true
+            tasks = []
+            history = []
+            persistenceError = "This scheduler file was written by a newer Melon Tools. Update the app before editing tasks."
             return
         }
         do {
@@ -271,6 +283,7 @@ final class SchedulerStore: ObservableObject {
     }
 
     private func save() {
+        guard !readOnly else { return }
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

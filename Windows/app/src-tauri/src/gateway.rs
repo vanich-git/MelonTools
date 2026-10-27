@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::paths;
@@ -23,9 +23,37 @@ impl Gateway {
             child: Mutex::new(None),
         }
     }
+
+    /// True when a child process we spawned is still alive. Adopted engines
+    /// have no child handle; the caller combines this with the watchdog flag.
+    pub fn child_running(&self) -> bool {
+        let Ok(mut guard) = self.child.lock() else {
+            return false;
+        };
+        let Some(child) = guard.as_mut() else {
+            return false;
+        };
+        matches!(child.try_wait(), Ok(None))
+    }
 }
 
 const SIDECAR_NAMES: [&str; 2] = ["cliproxyapi-x86_64-pc-windows-msvc.exe", "cliproxyapi.exe"];
+
+/// One client for local management and health calls. The 1.5 s guard used to
+/// build a fresh `reqwest::Client` (with its own connection pool) per tick.
+static GATEWAY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn gateway_client() -> Option<&'static reqwest::Client> {
+    if let Some(client) = GATEWAY_CLIENT.get() {
+        return Some(client);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let _ = GATEWAY_CLIENT.set(client);
+    GATEWAY_CLIENT.get()
+}
 
 pub fn resolve_sidecar() -> Option<PathBuf> {
     resolve_sidecar_checked().ok()
@@ -501,10 +529,7 @@ impl ManagementAuthSnapshot {
 /// GET the live auth-file observations. This endpoint is polled by the
 /// quota guard while the gateway runs; keep its timeout short.
 pub async fn management_auth_files(settings: &Settings) -> Result<ManagementAuthSnapshot, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(2500))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = gateway_client().ok_or_else(|| "management client unavailable".to_string())?;
     let response = client
         .get(format!(
             "http://127.0.0.1:{}/v0/management/auth-files",
@@ -581,10 +606,7 @@ pub async fn set_auth_disabled(
     file: &ManagementAuthFile,
     disabled: bool,
 ) -> bool {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    else {
+    let Some(client) = gateway_client() else {
         return false;
     };
     let mut body = json!({"name": file.name, "disabled": disabled});
@@ -624,12 +646,8 @@ pub async fn set_auth_disabled(
 // MARK: - Lifecycle
 
 pub async fn health(port: u16, api_key: &str) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(client) = gateway_client() else {
+        return false;
     };
     match client
         .get(format!("http://127.0.0.1:{}/v1/models", port))
@@ -915,7 +933,7 @@ fn log_tail(cap: usize) -> String {
 }
 
 /// Drops the first, partially read line of a bounded tail.
-pub(crate) fn tail_bytes<'a>(bytes: &'a [u8], truncated: bool) -> &'a [u8] {
+pub(crate) fn tail_bytes(bytes: &[u8], truncated: bool) -> &[u8] {
     if !truncated {
         return bytes;
     }
@@ -1314,5 +1332,20 @@ mod tests {
         assert_eq!(tail_bytes(data, false), data.as_slice());
         // A single over-long line is kept (bounded by the read cap).
         assert_eq!(tail_bytes(b"one huge line", true), b"one huge line");
+    }
+
+    #[test]
+    fn shared_routing_priority_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/fixtures/routing.json")).unwrap();
+        let ids = fixture["orderedIds"].as_array().unwrap();
+        let expected = fixture["priorities"].as_object().unwrap();
+        for (index, id) in ids.iter().enumerate() {
+            let id = id.as_str().unwrap();
+            assert_eq!(
+                priority_for(ids.len(), index),
+                expected[id].as_u64().unwrap() as usize
+            );
+        }
     }
 }

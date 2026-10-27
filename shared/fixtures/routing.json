@@ -1,0 +1,6 @@
+{
+  "description": "Shared routing priority contract: the first ordered account gets the highest gateway priority.",
+  "orderedIds": ["first", "second", "third"],
+  "priorities": { "first": 3, "second": 2, "third": 1 },
+  "planRank": { "free": 0, "go": 1, "plus": 2, "prolite": 3, "pro": 4, "team": 5, "enterprise": 6 }
+}

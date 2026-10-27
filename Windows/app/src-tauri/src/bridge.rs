@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::paths;
 use crate::vault;
 
-const INJECTED_SCRIPT: &str = include_str!("../../resources/composer-chips.js");
+const INJECTED_SCRIPT: &str = include_str!("../../../../shared/composer-chips.js");
 
 pub struct BridgeState {
     pub status: Mutex<Value>,
@@ -224,7 +224,7 @@ impl Session {
             }
         });
         self.ws
-            .send(Message::Text(request.to_string().into()))
+            .send(Message::Text(request.to_string()))
             .await
             .map_err(|e| e.to_string())?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -922,6 +922,7 @@ fn session_cost(session: &Value, settings: &crate::settings::Settings) -> Option
 }
 
 /// Path of the Codex home, exposed for the UI.
+#[allow(dead_code)]
 pub fn codex_home_display() -> String {
     paths::codex_home().to_string_lossy().to_string()
 }
@@ -950,10 +951,11 @@ fn codex_exe_candidates() -> Vec<std::path::PathBuf> {
 }
 
 fn find_codex_exe() -> Option<std::path::PathBuf> {
-    for candidate in codex_exe_candidates() {
-        if candidate.exists() {
-            return Some(candidate);
-        }
+    if let Some(candidate) = codex_exe_candidates()
+        .into_iter()
+        .find(|candidate| candidate.exists())
+    {
+        return Some(candidate);
     }
     #[cfg(windows)]
     {

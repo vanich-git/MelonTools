@@ -40,7 +40,7 @@ struct MTCard<Content: View>: View {
                 HStack(spacing: MTTheme.s2) {
                     if let systemImage {
                         Image(systemName: systemImage)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.callout.weight(.semibold))
                             .foregroundStyle(MTTheme.gold)
                     }
                     Text(title)
@@ -133,7 +133,7 @@ struct MTPrimaryButton: View {
                         .controlSize(.small)
                         .tint(MTTheme.onGold)
                 } else if let systemImage {
-                    Image(systemName: systemImage).font(.system(size: 11, weight: .semibold))
+                    Image(systemName: systemImage).font(.subheadline.weight(.semibold))
                 }
                 Text(title)
             }
@@ -155,7 +155,7 @@ struct MTSecondaryButton: View {
                 if isLoading {
                     ProgressView().controlSize(.small)
                 } else if let systemImage {
-                    Image(systemName: systemImage).font(.system(size: 11, weight: .semibold))
+                    Image(systemName: systemImage).font(.subheadline.weight(.semibold))
                 }
                 Text(title)
             }
@@ -240,6 +240,8 @@ struct MTMetricTile: View {
     var valueColor: Color? = nil
     var reservesMeterSpace: Bool = false
 
+    @ScaledMetric(relativeTo: .title2) private var valueSize: CGFloat = 20
+
     var body: some View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             Text(title.uppercased())
@@ -247,7 +249,7 @@ struct MTMetricTile: View {
                 .tracking(0.8)
                 .foregroundStyle(MTTheme.textTertiary)
             Text(value)
-                .font(MTTheme.display(20, weight: .semibold))
+                .font(MTTheme.display(valueSize, weight: .semibold))
                 .foregroundStyle(valueColor ?? MTTheme.textPrimary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -276,10 +278,12 @@ struct MTEmptyState: View {
     let title: String
     var subtitle: String? = nil
 
+    @ScaledMetric(relativeTo: .largeTitle) private var iconSize: CGFloat = 30
+
     var body: some View {
         VStack(spacing: MTTheme.s2) {
             Image(systemName: systemImage)
-                .font(.system(size: 30, weight: .light))
+                .font(.system(size: iconSize, weight: .light))
                 .foregroundStyle(MTTheme.gold.opacity(0.75))
             Text(title)
                 .font(MTTheme.body(13, weight: .medium))

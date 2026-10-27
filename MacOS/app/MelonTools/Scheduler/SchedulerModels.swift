@@ -289,6 +289,8 @@ struct SchedulerHistoryEntry: Codable, Equatable {
 struct SchedulerFile: Codable, Equatable {
     var tasks: [SchedulerTask] = []
     var history: [SchedulerHistoryEntry] = []
+    /// Missing in files written before 2.4.1; decoded as 1.
+    var schemaVersion: Int? = PersistenceSchema.current
 }
 
 /// Gateway endpoint and key the runner authenticates with.

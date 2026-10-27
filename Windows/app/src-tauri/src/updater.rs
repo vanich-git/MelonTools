@@ -37,7 +37,7 @@ fn is_asset_name(name: &str) -> bool {
 
 /// Picks the preferred Windows asset: portable first, legacy second. The NSIS
 /// installer is deliberately never selected for self-update.
-fn pick_asset<'a>(assets: &'a [serde_json::Value]) -> Option<&'a serde_json::Value> {
+fn pick_asset(assets: &[serde_json::Value]) -> Option<&serde_json::Value> {
     for suffix in ["-win-x64-portable.exe", "-win-x64.exe"] {
         if let Some(asset) = assets.iter().find(|asset| {
             asset

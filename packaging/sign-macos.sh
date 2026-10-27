@@ -80,12 +80,34 @@ EOF
   exit 1
 fi
 
+# Store notarization credentials once in a throwaway keychain profile, then
+# submit by profile name so the password is not repeated in every argv.
+NOTARY_PROFILE="melon-notary-$$"
+cleanup_notary() {
+  xcrun notarytool delete-credentials "$NOTARY_PROFILE" >/dev/null 2>&1 || true
+}
+trap cleanup_notary EXIT
+xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+  --apple-id "$APPLE_ID" \
+  --team-id "$APPLE_TEAM_ID" \
+  --password "$APPLE_APP_PASSWORD" >/dev/null
+
 echo "==> signing $APP"
 echo "    identity: $IDENTITY"
 
 sign_path() {
   /usr/bin/codesign --force --options runtime --timestamp \
     --sign "$IDENTITY" "$1"
+}
+
+sign_app() {
+  local entitlements="${1:-}"
+  if [ -n "$entitlements" ] && [ -f "$entitlements" ]; then
+    /usr/bin/codesign --force --options runtime --timestamp \
+      --entitlements "$entitlements" --sign "$IDENTITY" "$APP"
+  else
+    sign_path "$APP"
+  fi
 }
 
 # Sign nested executable code first (gateway sidecar and app entry point), then
@@ -101,14 +123,20 @@ for dir in \
   done < <(find "$dir" -type f -perm -111 -print0)
 done
 
-sign_path "$APP"
+ENTITLEMENTS="${ENTITLEMENTS:-$(cd "$(dirname "$0")/.." && pwd)/MacOS/app/MelonTools/MelonTools.entitlements}"
+if [ -f "$ENTITLEMENTS" ]; then
+  echo "    entitlements: $ENTITLEMENTS"
+  sign_app "$ENTITLEMENTS"
+else
+  sign_path "$APP"
+fi
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 echo "==> signature verified"
 
 if [ -n "$OUT_DMG" ]; then
   echo "==> re-creating the DMG from the signed app"
   STAGE="$(mktemp -d "${TMPDIR:-/tmp}/melontools-sign.XXXXXX")"
-  trap 'rm -rf "$STAGE"' EXIT
+  trap 'rm -rf "$STAGE"; cleanup_notary' EXIT
   # Stage the bundle under its user-facing name, matching build.sh and the
   # Homebrew Cask ("Melon Tools.app"), not the product file name.
   ditto "$APP" "$STAGE/Melon Tools.app"
@@ -121,22 +149,18 @@ if [ -n "$OUT_DMG" ]; then
   NOTARY_TARGET="$OUT_DMG"
   echo "==> submitting $NOTARY_TARGET to Apple"
   xcrun notarytool submit "$NOTARY_TARGET" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_PASSWORD" \
+    --keychain-profile "$NOTARY_PROFILE" \
     --wait
   xcrun stapler staple "$NOTARY_TARGET"
   xcrun stapler validate "$NOTARY_TARGET"
   echo "==> signed and notarized: $NOTARY_TARGET"
 else
   ZIP="$(mktemp "${TMPDIR:-/tmp}/melontools-notary.XXXXXX.zip")"
-  trap 'rm -f "$ZIP"' EXIT
+  trap 'rm -f "$ZIP"; cleanup_notary' EXIT
   ditto -c -k --keepParent "$APP" "$ZIP"
   echo "==> submitting a temporary zip to Apple"
   xcrun notarytool submit "$ZIP" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_PASSWORD" \
+    --keychain-profile "$NOTARY_PROFILE" \
     --wait
   rm -f "$ZIP"
   xcrun stapler staple "$APP"

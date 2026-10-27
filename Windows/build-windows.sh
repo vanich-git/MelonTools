@@ -18,6 +18,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
+"$ROOT/../scripts/sync-composer.sh" >/dev/null
+
 export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:$PATH"
 # The gateway source requires Go 1.26.10; keep local cross-builds on the same
 # toolchain the release DMG uses.

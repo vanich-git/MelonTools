@@ -1,0 +1,29 @@
+{
+  "description": "Shared live-quota signal contract used by the macOS and Windows tests.",
+  "cases": [
+    {
+      "name": "primary and secondary windows",
+      "signals": {
+        "X-Codex-Primary-Used-Percent": "98",
+        "X-Codex-Primary-Window-Minutes": "300",
+        "X-Codex-Primary-Reset-After-Seconds": "120",
+        "X-Codex-Secondary-Used-Percent": "27.5"
+      },
+      "expected": {
+        "hourlyRemaining": 2,
+        "hourlyWindowMinutes": 300,
+        "weeklyRemaining": 72.5
+      }
+    },
+    {
+      "name": "percent is clamped and unrelated headers are ignored",
+      "signals": {
+        "Retry-After": "30",
+        "X-Codex-Primary-Used-Percent": "120"
+      },
+      "expected": {
+        "hourlyRemaining": 0
+      }
+    }
+  ]
+}

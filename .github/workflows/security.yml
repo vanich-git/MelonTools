@@ -17,7 +17,8 @@ permissions:
 jobs:
   cargo-audit:
     name: Cargo audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -34,9 +35,33 @@ jobs:
         working-directory: Windows/app/src-tauri
         run: cargo audit
 
+  govulncheck:
+    name: govulncheck (pinned engine source)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.10"
+          cache: false
+
+      - name: Fetch the pinned gateway source
+        run: ./MacOS/scripts/fetch-sources.sh
+
+      - name: Run govulncheck
+        working-directory: MacOS/_sources/CLIProxyAPI
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
   codeql:
     name: CodeQL (JavaScript)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
@@ -55,10 +80,43 @@ jobs:
       - name: Analyze
         uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
 
+  codeql-swift:
+    name: CodeQL (Swift)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CODE_SIGNING_ALLOWED: "NO"
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pinned XcodeGen
+        run: ./.github/scripts/install-xcodegen.sh
+
+      - name: Generate the Xcode project
+        working-directory: MacOS/app
+        run: xcodegen generate
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+        with:
+          languages: swift
+
+      - name: Build for CodeQL
+        uses: github/codeql-action/autobuild@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3
+
   dependency-review:
     name: Dependency review
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write

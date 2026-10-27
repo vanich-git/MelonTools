@@ -19,6 +19,7 @@ use crate::paths;
 /// Pinned engine commit id, kept for provenance. The extraction cache key is
 /// derived from the embedded payload hash (`payload_key`), so a rebuilt engine
 /// can never be silently ignored.
+#[allow(dead_code)]
 const ENGINE_VERSION: &str = "1f917e77";
 
 /// Cache key derived from the embedded payload itself. A rebuilt engine can

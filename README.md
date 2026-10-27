@@ -3,8 +3,8 @@
   <h1>Melon Tools</h1>
   <p>A desktop companion for Codex accounts, model providers, and scheduled model tasks on macOS and Windows.</p>
   <p>
-    <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0.dmg"><strong>Download for macOS</strong></a>
-    · <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe"><strong>Download for Windows</strong></a>
+    <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools.dmg"><strong>Download for macOS</strong></a>
+    · <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe"><strong>Download for Windows</strong></a>
     · <a href="MacOS/README.md">Documentation</a>
     · <a href="MacOS/RELEASE_NOTES.md">Release notes</a>
     · <a href="https://github.com/ivankuprin/MelonTools/issues">Report an issue</a>
@@ -54,17 +54,17 @@ The macOS app includes the complete Codex integration, model providers and the t
 
 ### macOS
 
-Download [MelonTools for macOS](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0.dmg), open the DMG, and drag **Melon Tools.app** to **Applications**. The universal app supports Apple Silicon and Intel Macs running macOS 14 or later. It is ad-hoc signed and not notarized; use **right-click → Open** if Gatekeeper blocks the first launch.
+Download [MelonTools for macOS](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools.dmg), open the DMG, and drag **Melon Tools.app** to **Applications**. The universal app supports Apple Silicon and Intel Macs running macOS 14 or later. It is ad-hoc signed and not notarized; use **right-click → Open** if Gatekeeper blocks the first launch.
 
 ### Windows
 
-Download the [Melon Tools Windows installer (x64)](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-setup.exe) and choose any writable install folder, or run the [portable single-file build](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe) without installing. WebView2 Runtime is required. The installer creates Start Menu and optional desktop shortcuts and registers an uninstaller in Windows Settings; your data stays in `%APPDATA%\MelonTools` when you uninstall. The installer and the portable build are not Authenticode-signed, so SmartScreen may show "Windows protected your PC" — choose **More info → Run anyway** after verifying the download. A warning-free launch requires a code-signing certificate (BLOCKED until provided). Verify the portable build with the [SHA-256 checksum](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe.sha256). See [Windows documentation](Windows/README.md) for supported features and setup details.
+Download the [Melon Tools Windows installer (x64)](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-setup.exe) and choose any writable install folder, or run the [portable single-file build](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe) without installing. WebView2 Runtime is required. The installer creates Start Menu and optional desktop shortcuts and registers an uninstaller in Windows Settings; your data stays in `%APPDATA%\MelonTools` when you uninstall. The installer and the portable build are not Authenticode-signed, so SmartScreen may show "Windows protected your PC" — choose **More info → Run anyway** after verifying the download. A warning-free launch requires a code-signing certificate (BLOCKED until provided). Verify the portable build with the [SHA-256 checksum](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe.sha256). See [Windows documentation](Windows/README.md) for supported features and setup details.
 
 Codex CLI and the Codex desktop app are optional integrations.
 
 ## Build from source
 
-Prerequisites: Xcode 27+, XcodeGen and Go 1.22+. `create-dmg` is optional.
+Prerequisites: Xcode 27+, XcodeGen and Go 1.26.10. `create-dmg` is optional.
 
 ```bash
 ./MacOS/scripts/fetch-sources.sh
@@ -72,6 +72,8 @@ Prerequisites: Xcode 27+, XcodeGen and Go 1.22+. `create-dmg` is optional.
 ```
 
 The fetch script checks out the pinned CLIProxyAPI source into the ignored `MacOS/_sources/` directory. The build creates a universal app and DMG under `MacOS/build/`.
+
+Before building on an exFAT volume, run `./scripts/doctor.sh`. It reports AppleDouble sidecars, a non-monotonic git index and unexpected executable bits without modifying anything.
 
 Run the unit tests with:
 

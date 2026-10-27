@@ -193,8 +193,10 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 - **Quiet idle.** The 5s gateway health probe no longer publishes when
   nothing changed, and gateway/bridge log tails are internal state — no
   observer is invalidated by log traffic.
-- **Universal build.** The embedded gateway engine now ships as a universal
-  binary (arm64 + x86_64) — the DMG runs on both Apple Silicon and Intel
+- **Universal, compressed engine.** The embedded gateway engine ships as a
+  gzip-compressed universal binary (arm64 + x86_64), so the app bundle stays
+  small; on first launch it is extracted into Application Support and verified
+  by SHA-256 before every run. The DMG runs on both Apple Silicon and Intel
   Macs (macOS 14+).
 
 ## What's new in 1.4.3 «Donate & smooth GUI»
@@ -443,7 +445,7 @@ Re-implemented from scratch on top of the official OAuth/API endpoints:
 | Component    | Why                                   | How to get              |
 |--------------|---------------------------------------|-------------------------|
 | macOS 14+    | App baseline                          | —                       |
-| Apple Silicon| arm64 build                           | —                       |
+| Universal    | arm64 + x86_64 in one build           | —                       |
 | Codex CLI    | Instances (optional)                  | `npm i -g @openai/codex`|
 | Codex app    | Composer Chips (optional)             | openai.com/codex        |
 
@@ -455,7 +457,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.4.0.dmg
+open build/MelonTools-2.4.1.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use
@@ -465,22 +467,22 @@ The app is ad-hoc signed (personal build, not notarized). On first launch use
 Individual steps:
 
 ```bash
-# 1. Gateway engine (Go, arm64, stripped)
-cd _sources/CLIProxyAPI
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" \
-  -o ../../build/cliproxyapi ./cmd/server
+# Full pipeline: gateway (universal), icon, xcodegen, Release build, ad-hoc
+# signing and DMG. There is no arm64-only recipe: the embedded gateway must
+# carry both slices for Intel Macs.
+./build.sh
 
-# 2. Icon
-#    scripts/assets/source-appicon.png → sips + iconutil (see build.sh)
-
-# 3. App (build products stay in ~/Library — they never appear in Launchpad)
+# Xcode-only inner loop (expects build/cliproxyapi to exist):
 cd app && xcodegen generate
 xcodebuild -project MelonTools.xcodeproj -scheme MelonTools \
-  -configuration Release -derivedDataPath "$HOME/Library/Developer/MelonTools" build
+  -configuration Release -derivedDataPath "$HOME/Library/Developer/MelonTools" \
+  CODE_SIGNING_ALLOWED=NO build
 
-# 4. Ad-hoc sign + DMG
-codesign --force --deep --sign - "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
-create-dmg --volname "Melon Tools" "build/MelonTools-2.4.0.dmg" "Melon Tools.app"
+# Manual signing order: engine first, then the app (never --deep):
+codesign --force --options runtime --timestamp=none --sign - \
+  "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app/Contents/Resources/bin/cliproxyapi"
+codesign --force --options runtime --timestamp=none --sign - \
+  "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
 ```
 
 ## Layout

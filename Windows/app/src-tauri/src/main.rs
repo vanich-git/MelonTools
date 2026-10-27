@@ -21,6 +21,7 @@ mod providers;
 mod quota;
 mod routing;
 mod scheduler;
+mod schema;
 mod settings;
 mod updater;
 mod vault;
@@ -52,6 +53,10 @@ pub struct Watchdog {
     pub user_stopped: bool,
     #[serde(skip)]
     pub misses: u32,
+    /// Last watchdog health probe; used to stop the 1.5 s quota loop while an
+    /// adopted engine is down.
+    #[serde(skip)]
+    pub health_ok: bool,
     pub restarts: u32,
     pub last_restart: Option<String>,
 }
@@ -62,6 +67,7 @@ impl AppState {
     }
 }
 
+#[cfg(windows)]
 fn hidden_command(_command: &mut std::process::Command) {
     #[cfg(windows)]
     {
@@ -97,12 +103,17 @@ fn settings_view(settings: &settings::Settings) -> Result<Value, String> {
     let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
     if let Some(object) = value.as_object_mut() {
         object.insert("managementSecret".to_string(), json!(""));
+        object.insert(
+            "schemaError".to_string(),
+            json!(settings.schema_error.clone().or_else(schema::error)),
+        );
     }
     Ok(value)
 }
 
 #[tauri::command]
 async fn settings_set(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     settings: settings::Settings,
 ) -> Result<Value, String> {
@@ -138,6 +149,9 @@ async fn settings_set(
         *guard = merged.clone();
     }
     bridge::invalidate_providers(&state.bridge);
+    if old.lang != merged.lang {
+        let _ = refresh_tray_menu(&app, &merged.lang);
+    }
     if was_running && old.port != merged.port {
         let _ = stop_gateway(state.inner()).await;
         let _ = start_gateway(state.inner()).await;
@@ -155,6 +169,8 @@ async fn gateway_status(state: State<'_, AppState>) -> Result<Value, String> {
         "running": running,
         "port": settings.port,
         "requestsLastMinute": gateway::requests_last_minute(),
+        "liveQuotaTickMs": live_quota::last_tick_ms(),
+        "schemaError": schema::error(),
         "sidecarFound": gateway::resolve_sidecar().is_some(),
         "dataDir": paths::appdata_dir().to_string_lossy(),
         "logPath": paths::log_path().to_string_lossy(),
@@ -163,6 +179,76 @@ async fn gateway_status(state: State<'_, AppState>) -> Result<Value, String> {
             .lock()
             .map(|w| w.clone())
             .unwrap_or_default(),
+    }))
+}
+
+#[tauri::command]
+async fn support_bundle(state: State<'_, AppState>) -> Result<Value, String> {
+    let settings = state.settings();
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    let accounts = vault::list_views();
+    let blocked = accounts
+        .iter()
+        .filter(|account| {
+            account
+                .get("blocked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    let quota_errors = accounts
+        .iter()
+        .filter(|account| {
+            account
+                .get("quotaError")
+                .map(|v| !v.is_null())
+                .unwrap_or(false)
+        })
+        .count();
+    let scheduler = scheduler::summary();
+    let log = paths::log_path();
+    let config = paths::config_path();
+    let watchdog = state.watchdog.lock().map(|w| w.clone()).unwrap_or_default();
+    Ok(json!({
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "app": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+        "gateway": {
+            "running": running,
+            "port": settings.port,
+            "requestsLastMinute": gateway::requests_last_minute(),
+            "liveQuotaTickMs": live_quota::last_tick_ms(),
+            "watchdog": watchdog,
+            "logBytes": std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0),
+            "configBytes": std::fs::metadata(&config).map(|m| m.len()).unwrap_or(0),
+        },
+        "settings": {
+            "lang": settings.lang,
+            "quotaInterval": settings.quota_interval,
+            "routingStrategy": settings.routing_strategy,
+            "notifications": settings.notifications,
+            "schemaVersion": settings.schema_version,
+        },
+        "accounts": {
+            "count": accounts.len(),
+            "blocked": blocked,
+            "quotaErrors": quota_errors,
+        },
+        "scheduler": {
+            "taskCount": scheduler.get("taskCount").cloned().unwrap_or(json!(0)),
+            "historyCount": scheduler.get("historyCount").cloned().unwrap_or(json!(0)),
+            "enabledCount": scheduler.get("enabledCount").cloned().unwrap_or(json!(0)),
+        },
+        "paths": {
+            "dataDir": paths::appdata_dir().to_string_lossy(),
+            "codexHome": paths::codex_home().to_string_lossy(),
+            "enginePath": engine::engine_path().to_string_lossy(),
+            "schedulerPath": scheduler::path().to_string_lossy(),
+        },
+        "schemaError": schema::error(),
     }))
 }
 
@@ -181,6 +267,7 @@ async fn start_gateway(state: &AppState) -> Result<String, String> {
         guard.supervised = true;
         guard.user_stopped = false;
         guard.misses = 0;
+        guard.health_ok = true;
         // A manual start resets the restart budget: the user asked for it.
         guard.restarts = 0;
     }
@@ -193,6 +280,7 @@ async fn stop_gateway(state: &AppState) -> Result<String, String> {
     if let Ok(mut guard) = state.watchdog.lock() {
         guard.user_stopped = true;
         guard.supervised = false;
+        guard.health_ok = false;
     }
     Ok(result)
 }
@@ -942,6 +1030,29 @@ async fn scheduler_list() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn scheduler_summary() -> Result<Value, String> {
+    Ok(scheduler::summary())
+}
+
+#[tauri::command]
+async fn scheduler_tasks() -> Result<Value, String> {
+    Ok(scheduler::tasks_view())
+}
+
+#[tauri::command]
+async fn scheduler_history(page: Option<u32>, limit: Option<u32>) -> Result<Value, String> {
+    Ok(scheduler::history_page(
+        page.unwrap_or(1),
+        limit.unwrap_or(50),
+    ))
+}
+
+#[tauri::command]
+async fn scheduler_result(id: String) -> Result<Value, String> {
+    scheduler::result(&id)
+}
+
+#[tauri::command]
 async fn scheduler_save(task: scheduler::TaskInput) -> Result<Value, String> {
     scheduler::upsert(task)
 }
@@ -1060,9 +1171,9 @@ async fn autostart_get() -> Result<bool, String> {
 
 #[tauri::command]
 async fn autostart_set(enabled: bool) -> Result<bool, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut command = std::process::Command::new("reg");
         if enabled {
             let value = format!("\"{}\"", exe.to_string_lossy());
@@ -1091,7 +1202,10 @@ async fn autostart_set(enabled: bool) -> Result<bool, String> {
         Ok(output.status.success())
     }
     #[cfg(not(windows))]
-    Ok(false)
+    {
+        let _ = enabled;
+        Ok(false)
+    }
 }
 
 // MARK: - Updater (GitHub releases)
@@ -1376,8 +1490,12 @@ async fn watchdog_check(state: &AppState) {
     if gateway::health(settings.port, &settings.api_key).await {
         if let Ok(mut guard) = state.watchdog.lock() {
             guard.misses = 0;
+            guard.health_ok = true;
         }
         return;
+    }
+    if let Ok(mut guard) = state.watchdog.lock() {
+        guard.health_ok = false;
     }
     let missed = misses + 1;
     if let Ok(mut guard) = state.watchdog.lock() {
@@ -1394,6 +1512,7 @@ async fn watchdog_check(state: &AppState) {
         guard.misses = 0;
         guard.restarts += 1;
         if outcome.is_ok() {
+            guard.health_ok = true;
             guard.last_restart = Some(chrono::Utc::now().to_rfc3339());
         }
     }
@@ -1504,9 +1623,69 @@ fn handle_tray_menu(app: &tauri::AppHandle, menu_id: &str) {
     }
 }
 
+fn tray_labels(lang: &str) -> [&'static str; 5] {
+    if lang == "en" {
+        [
+            "Show",
+            "Scheduler",
+            "Run next task",
+            "Pause / Resume API",
+            "Quit",
+        ]
+    } else {
+        [
+            "Показать",
+            "Планировщик",
+            "Выполнить следующую задачу",
+            "Пауза / Возобновить API",
+            "Выход",
+        ]
+    }
+}
+
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    lang: &str,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let [show, scheduler, run_next, api, quit] = tray_labels(lang);
+    let show_item = tauri::menu::MenuItem::with_id(app, "show", show, true, None::<&str>)?;
+    let scheduler_item =
+        tauri::menu::MenuItem::with_id(app, "scheduler", scheduler, true, None::<&str>)?;
+    let run_item = tauri::menu::MenuItem::with_id(app, "run-next", run_next, true, None::<&str>)?;
+    let api_item = tauri::menu::MenuItem::with_id(app, "api-toggle", api, true, None::<&str>)?;
+    let quit_item = tauri::menu::MenuItem::with_id(app, "quit", quit, true, None::<&str>)?;
+    tauri::menu::Menu::with_items(
+        app,
+        &[
+            &show_item,
+            &scheduler_item,
+            &run_item,
+            &api_item,
+            &quit_item,
+        ],
+    )
+}
+
+/// Rebuild the tray menu after a language switch. Menu labels are native
+/// objects created once at startup; without this an English UI kept the
+/// Russian tray.
+fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id("main-tray") else {
+        return Ok(());
+    };
+    tray.set_menu(Some(build_tray_menu(app, lang)?))
+}
+
 fn main() {
+    // Installer uninstall hook: restore Codex's config while the exe still
+    // exists, so a removed app does not leave Codex pointed at a dead port.
+    if std::env::args().any(|arg| arg == "--restore-codex-route") {
+        let _ = codex_route::remove();
+        return;
+    }
     ensure_single_instance();
     let initial_settings = settings::load();
+    let initial_lang = initial_settings.lang.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -1517,46 +1696,13 @@ fn main() {
             watchdog: Mutex::new(Watchdog::default()),
             update: Mutex::new(None),
         })
-        .setup(|app| {
+        .setup(move |app| {
             // System tray: window, scheduler navigation, run-next, API
-            // pause/resume and quit.
-            let show_item =
-                tauri::menu::MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
-            let scheduler_item = tauri::menu::MenuItem::with_id(
-                app,
-                "scheduler",
-                "Планировщик",
-                true,
-                None::<&str>,
-            )?;
-            let run_item = tauri::menu::MenuItem::with_id(
-                app,
-                "run-next",
-                "Выполнить следующую задачу",
-                true,
-                None::<&str>,
-            )?;
-            let api_item = tauri::menu::MenuItem::with_id(
-                app,
-                "api-toggle",
-                "Пауза / Возобновить API",
-                true,
-                None::<&str>,
-            )?;
-            let quit_item =
-                tauri::menu::MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(
-                app,
-                &[
-                    &show_item,
-                    &scheduler_item,
-                    &run_item,
-                    &api_item,
-                    &quit_item,
-                ],
-            )?;
+            // pause/resume and quit. Labels follow the saved UI language and
+            // are rebuilt by `settings_set` when it changes.
+            let menu = build_tray_menu(app.handle(), &initial_lang)?;
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
-            tauri::tray::TrayIconBuilder::new()
+            tauri::tray::TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .menu(&menu)
                 .tooltip("Melon Tools")
@@ -1593,6 +1739,7 @@ fn main() {
                             guard.supervised = true;
                             guard.user_stopped = false;
                             guard.misses = 0;
+                            guard.health_ok = true;
                         }
                     }
                 }
@@ -1669,6 +1816,22 @@ fn main() {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     let state = live_quota_handle.state::<AppState>();
+                    // Do not poll the management API while the engine is
+                    // stopped. `child_running` covers engines we spawned;
+                    // `watchdog.supervised` covers an adopted engine.
+                    let supervised = state
+                        .watchdog
+                        .lock()
+                        .map(|watchdog| watchdog.supervised && !watchdog.user_stopped)
+                        .unwrap_or(false);
+                    let healthy = state
+                        .watchdog
+                        .lock()
+                        .map(|watchdog| watchdog.health_ok)
+                        .unwrap_or(false);
+                    if !state.gw.child_running() && !(supervised && healthy) {
+                        continue;
+                    }
                     let settings = state.settings();
                     live_quota::tick(&settings).await;
                 }
@@ -1686,6 +1849,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            support_bundle,
             settings_get,
             settings_set,
             gateway_status,
@@ -1722,6 +1886,10 @@ fn main() {
             bridge_status,
             bridge_launch_codex,
             scheduler_list,
+            scheduler_summary,
+            scheduler_tasks,
+            scheduler_history,
+            scheduler_result,
             scheduler_save,
             scheduler_delete,
             scheduler_run_now,

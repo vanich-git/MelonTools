@@ -75,10 +75,20 @@ if (-not $signtoolPath) {
 Write-Host "==> signing $File"
 Write-Host "    signtool: $signtoolPath"
 
-& $signtoolPath sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-  /f $env:WINDOWS_CERT_PFX /p $env:WINDOWS_CERT_PASSWORD $File
-if ($LASTEXITCODE -ne 0) {
-  throw "signtool sign failed with exit code $LASTEXITCODE."
+# Import the PFX into the current-user store so the password never appears in
+# signtool's argv (process lists and CI logs). Sign by certificate thumbprint,
+# then remove the temporary certificate.
+$secure = ConvertTo-SecureString -String $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+$imported = @(Import-PfxCertificate -FilePath $env:WINDOWS_CERT_PFX `
+  -CertStoreLocation Cert:\CurrentUser\My -Password $secure)[0]
+try {
+  & $signtoolPath sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+    /sha1 $imported.Thumbprint $File
+  if ($LASTEXITCODE -ne 0) {
+    throw "signtool sign failed with exit code $LASTEXITCODE."
+  }
+} finally {
+  Remove-Item -LiteralPath ("Cert:\CurrentUser\My\" + $imported.Thumbprint) -Force -ErrorAction SilentlyContinue
 }
 
 & $signtoolPath verify /pa /v $File

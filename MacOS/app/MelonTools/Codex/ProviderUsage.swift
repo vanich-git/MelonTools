@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import os
 
 /// Provider-side statistics for the composer chips.
 ///
@@ -654,20 +655,171 @@ enum SessionUsageReader {
 
     // MARK: - Reading
 
-    private static func readSync(threadUUID: String?) -> SessionUsageSnapshot? {
-        // The exact thread is known: read the whole rollout so the estimate
-        // covers every turn (long sessions do not fit into a fixed tail).
-        if let uuid = threadUUID, !uuid.isEmpty, let url = fileURL(forThread: uuid) {
-            if let hit = cachedSnapshot(for: url) {
-                var matched = hit
-                matched.matchedThread = true
-                return matched
+    private static let signposter = OSSignposter(
+        subsystem: "dev.melontools.app",
+        category: "ProviderUsage"
+    )
+    private static let logger = Logger(
+        subsystem: "dev.melontools.app",
+        category: "ProviderUsage"
+    )
+
+    /// Incremental state for one rollout. `offset` always points just past the
+    /// last complete line that was parsed, so a partial append is read again
+    /// on the next tick instead of being parsed twice.
+    private struct RolloutReadState {
+        var offset: UInt64
+        var snapshot: SessionUsageSnapshot
+        var model: String?
+        var checkedAt: Date
+    }
+
+    private static var rolloutStates: [String: RolloutReadState] = [:]
+
+    private static func storeRolloutState(_ state: RolloutReadState, for path: String) {
+        cacheLock.lock()
+        // The composer follows one thread; a handful of extra slots cover
+        // recent transitions without growing the dictionary forever.
+        if rolloutStates.count > 12 { rolloutStates.removeAll(keepingCapacity: true) }
+        rolloutStates[path] = state
+        cacheLock.unlock()
+    }
+
+    private static func incrementalSnapshot(for url: URL) -> SessionUsageSnapshot? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attrs[.size] as? NSNumber)?.uint64Value else { return nil }
+        let path = url.path
+        cacheLock.lock()
+        let cached = rolloutStates[path]
+        cacheLock.unlock()
+        let now = Date()
+
+        // Appended data, or an unchanged file. While the thread is idle the
+        // composer asks every 5 s; return the in-memory copy for 10 s instead
+        // of re-statting and re-reading the same bytes.
+        if let cached, size >= cached.offset, size - cached.offset <= 32 * 1024 * 1024 {
+            if size == cached.offset {
+                if now.timeIntervalSince(cached.checkedAt) < 10 { return cached.snapshot }
+                storeRolloutState(
+                    RolloutReadState(
+                        offset: cached.offset,
+                        snapshot: cached.snapshot,
+                        model: cached.model,
+                        checkedAt: now
+                    ),
+                    for: path
+                )
+                return cached.snapshot
             }
-            // Cap the exact-thread read; the composer tick is every 5 s and a
-            // 128 MB parse per tick would stall the main actor. The estimate
-            // already marks truncated windows as scaled.
-            if var snapshot = parseTail(of: url, maxBytes: 32 * 1024 * 1024) {
-                snapshot.matchedThread = true
+            guard let data = readBytes(url, from: cached.offset, to: size),
+                  let newline = data.lastIndex(of: 0x0A) else {
+                return cached.snapshot
+            }
+            let consumed = UInt64(data.distance(from: data.startIndex, to: newline) + 1)
+            let result = parseIncrementalLines(
+                Data(data[..<newline]),
+                model: cached.model,
+                snapshot: cached.snapshot
+            )
+            storeRolloutState(
+                RolloutReadState(
+                    offset: cached.offset + consumed,
+                    snapshot: result,
+                    model: result.model,
+                    checkedAt: now
+                ),
+                for: path
+            )
+            return result
+        }
+
+        // First read, truncation, rotation, or an unusually large append.
+        let started = CFAbsoluteTimeGetCurrent()
+        guard var snapshot = parseTail(of: url, maxBytes: 32 * 1024 * 1024) else { return nil }
+        snapshot.matchedThread = true
+        storeRolloutState(
+            RolloutReadState(offset: size, snapshot: snapshot, model: snapshot.model, checkedAt: now),
+            for: path
+        )
+        logger.debug(
+            "exact rollout parsed: \(size, privacy: .public) bytes in \(CFAbsoluteTimeGetCurrent() - started, privacy: .public) s"
+        )
+        return snapshot
+    }
+
+    private static func readBytes(_ url: URL, from offset: UInt64, to size: UInt64) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: Int(size - offset))
+        } catch {
+            return nil
+        }
+    }
+
+    /// Parse only the newly appended complete lines, continuing the previous
+    /// model and turn counters. A `turn_context` without a following
+    /// `token_count` still advances the cache so it is not parsed again.
+    private static func parseIncrementalLines(
+        _ data: Data,
+        model initialModel: String?,
+        snapshot initial: SessionUsageSnapshot
+    ) -> SessionUsageSnapshot {
+        let tokensMarker = Data("token_count".utf8)
+        let contextMarker = Data("turn_context".utf8)
+        var result = initial
+        result.matchedThread = true
+        var model = initialModel
+        var turns = initial.turns
+        var turnUsage = initial.turnUsage
+
+        func applyModel() {
+            if let model { result.model = model }
+        }
+
+        for line in data.split(separator: 0x0A) {
+            let slice = Data(line)
+            let hasTokens = slice.range(of: tokensMarker) != nil
+            let hasTurn = slice.range(of: contextMarker) != nil
+            guard hasTokens || hasTurn else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: slice) as? [String: Any] else { continue }
+            if hasTurn, let payload = object["payload"] as? [String: Any], let value = payload["model"] as? String {
+                model = value
+                applyModel()
+                continue
+            }
+            guard let payload = object["payload"] as? [String: Any],
+                  (payload["type"] as? String) == "token_count",
+                  let info = payload["info"] as? [String: Any] else { continue }
+            turns += 1
+            result.model = model
+            result.last = usage(info["last_token_usage"])
+            result.total = usage(info["total_token_usage"])
+            result.contextWindow = info["model_context_window"] as? Int ?? result.contextWindow
+            if let stamp = object["timestamp"] as? String {
+                result.updatedAt = isoFormatter.date(from: stamp) ?? result.updatedAt
+            }
+            turnUsage.append(SessionTurnUsage(model: model, tokens: result.last))
+        }
+
+        applyModel()
+        result.turns = turns
+        if turnUsage.count > 2400 {
+            turnUsage.removeFirst(turnUsage.count - 2400)
+        }
+        result.turnUsage = turnUsage
+        return result
+    }
+
+    private static func readSync(threadUUID: String?) -> SessionUsageSnapshot? {
+        // The exact thread is known: read the rollout incrementally. Codex
+        // appends one JSON line per event; re-reading and re-parsing up to
+        // 32 MB every 5 s is what this cache exists to avoid.
+        if let uuid = threadUUID, !uuid.isEmpty, let url = fileURL(forThread: uuid) {
+            let state = signposter.beginInterval("ExactSessionRead")
+            defer { signposter.endInterval("ExactSessionRead", state) }
+            if let snapshot = incrementalSnapshot(for: url) {
                 storeCache(snapshot, for: url)
                 return snapshot
             }

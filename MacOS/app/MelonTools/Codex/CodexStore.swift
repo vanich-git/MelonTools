@@ -388,19 +388,36 @@ final class CodexStore: ObservableObject {
     struct Vault: Codable {
         var accounts: [CodexAccount]
         var currentAccountId: String?
+        /// Missing in files written before 2.4.1; decoded as 1.
+        var schemaVersion: Int? = PersistenceSchema.current
     }
+
+    /// Set when a newer build wrote the vault. Opening it read-only avoids
+    /// silently dropping fields this build does not know.
+    @Published private(set) var vaultReadOnly = false
 
     func load() {
         let url = URL(fileURLWithPath: vaultPath)
+        vaultReadOnly = false
         if FileManager.default.fileExists(atPath: vaultPath) {
             do {
                 let data = try Data(contentsOf: url)
+                if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let version = object["schemaVersion"] as? Int,
+                   version > PersistenceSchema.current {
+                    vaultReadOnly = true
+                    lastMessage = L("This vault was written by a newer Melon Tools. Update the app before editing accounts.")
+                    return
+                }
                 let vault = try JSONDecoder().decode(Vault.self, from: data)
                 accounts = vault.accounts
                 currentAccountId = vault.currentAccountId
             } catch {
                 // Never let a corrupt file be overwritten by an empty save:
-                // back it up so the tokens are recoverable.
+                // back it up so the tokens are recoverable. Keep the newest
+                // few quarantines only; an unreadable vault must not leave
+                // hundreds of full token copies on disk forever.
+                Self.pruneCorruptBackups(in: url.deletingLastPathComponent())
                 let backup = url.deletingLastPathComponent()
                     .appendingPathComponent("accounts.corrupt.\(Int(Date().timeIntervalSince1970)).json")
                 try? FileManager.default.moveItem(at: url, to: backup)
@@ -414,6 +431,25 @@ final class CodexStore: ObservableObject {
         // still-fresh reading so a stale gauge cannot lift an existing block.
         if reconcileQuotaBlocks() { save(immediately: true) }
         routingNote = routingNoteText()
+    }
+
+    /// Keep at most three quarantined vaults and drop files older than 30
+    /// days. Quarantines hold every account token, so unbounded growth is a
+    /// data-retention problem, not just disk usage.
+    private static func pruneCorruptBackups(in dir: URL) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        var files: [(url: URL, modified: Date)] = []
+        for name in names where name.hasPrefix("accounts.corrupt.") && name.hasSuffix(".json") {
+            let url = dir.appendingPathComponent(name)
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            files.append((url, modified))
+        }
+        files.sort { $0.modified > $1.modified }
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 3600)
+        for (index, file) in files.enumerated() where index >= 3 || file.modified < cutoff {
+            try? fm.removeItem(at: file.url)
+        }
     }
 
     // MARK: - Account priorities (routing order)
@@ -577,6 +613,9 @@ final class CodexStore: ObservableObject {
     }
 
     private var saveTask: Task<Void, Never>?
+    /// Identifies the current delayed-save task. An old cancelled task must not
+    /// clear the pointer of a newer one when its `defer` finally runs.
+    private var saveGeneration = 0
 
     /// Persist the vault. Live quota readings arrive several times per second
     /// and are coalesced for two seconds; every user action and every block
@@ -584,7 +623,16 @@ final class CodexStore: ObservableObject {
     private func save(immediately: Bool = true) {
         if !immediately {
             guard saveTask == nil else { return }
+            saveGeneration += 1
+            let generation = saveGeneration
             saveTask = Task { @MainActor [weak self] in
+                defer {
+                    // M1: without this reset, every later delayed save exits
+                    // through the guard above and the vault is never flushed.
+                    if self?.saveGeneration == generation {
+                        self?.saveTask = nil
+                    }
+                }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled else { return }
                 self?.flushSave()
@@ -593,10 +641,12 @@ final class CodexStore: ObservableObject {
         }
         saveTask?.cancel()
         saveTask = nil
+        saveGeneration += 1
         flushSave()
     }
 
     func flushSave() {
+        guard !vaultReadOnly else { return }
         let vault = Vault(accounts: accounts, currentAccountId: currentAccountId)
         do {
             let data = try JSONEncoder.pretty.encode(vault)
@@ -948,6 +998,8 @@ final class CodexStore: ObservableObject {
     /// Prevents App Nap from coalescing the 1.5-second guard when the window
     /// is closed. Idle system sleep stays allowed.
     private var liveQuotaActivity: NSObjectProtocol?
+    /// Throttles vault writes from the 1.5 s live guard.
+    private var lastLiveQuotaSaveAt: Date = .distantPast
     private var lastResetProbe: [String: Date] = [:]
     private var resetProbeFailures: [String: Int] = [:]
 
@@ -984,12 +1036,6 @@ final class CodexStore: ObservableObject {
     /// interval so turning that interval off cannot silently disable reserves.
     private func startLiveQuotaGuard() {
         guard liveQuotaTask == nil else { return }
-        if liveQuotaActivity == nil {
-            liveQuotaActivity = ProcessInfo.processInfo.beginActivity(
-                options: .userInitiatedAllowingIdleSystemSleep,
-                reason: "Live Codex quota enforcement"
-            )
-        }
         if wakeObserver == nil {
             wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification,
@@ -1008,8 +1054,41 @@ final class CodexStore: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.liveQuotaTick()
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: self.nextLiveQuotaDelay())
             }
+        }
+    }
+
+    /// 1.5 s only while the gateway is serving traffic or an account is close
+    /// to a reserve. Idle menu-bar use must not wake the CPU 40 times a minute.
+    private func nextLiveQuotaDelay() -> UInt64 {
+        let gateway = CodexGatewayService.shared
+        guard gateway.isRunning else { return 15_000_000_000 }
+        if gateway.requestsLastMinute > 0 { return 1_500_000_000 }
+        if accounts.contains(where: { $0.quotaBlock != nil }) { return 1_500_000_000 }
+        for account in accounts {
+            guard let quota = account.quota else { continue }
+            let hourly = quota.hourlyRemainingPercent ?? 100
+            let weekly = quota.weeklyRemainingPercent ?? 100
+            let hourlyReserve = Double(account.hourlyReservePercent ?? 0)
+            let weeklyReserve = Double(account.weeklyReservePercent ?? 10)
+            if hourlyReserve > 0 && hourly <= hourlyReserve + 5 { return 1_500_000_000 }
+            if weekly <= weeklyReserve + 5 { return 1_500_000_000 }
+        }
+        return 15_000_000_000
+    }
+
+    /// App Nap is only held off while the fast path is actually needed.
+    private func updateLiveQuotaActivity(active: Bool) {
+        if active {
+            guard liveQuotaActivity == nil else { return }
+            liveQuotaActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Live Codex quota enforcement"
+            )
+        } else if let activity = liveQuotaActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            liveQuotaActivity = nil
         }
     }
 
@@ -1017,6 +1096,7 @@ final class CodexStore: ObservableObject {
     /// and probe accounts whose reset time has passed.
     private func liveQuotaTick() async {
         let gateway = CodexGatewayService.shared
+        updateLiveQuotaActivity(active: gateway.isRunning && nextLiveQuotaDelay() == 1_500_000_000)
         guard gateway.isRunning else { return }
         guard !accounts.isEmpty else { return }
         let snapshot = await gateway.fetchManagementAuths()
@@ -1031,6 +1111,7 @@ final class CodexStore: ObservableObject {
         let files = snapshot.codexFiles
         guard !files.isEmpty else { return }
         var changed = false
+        let now = Date()
         for index in accounts.indices {
             let account = accounts[index]
             guard account.tokens.access_token?.isEmpty == false else { continue }
@@ -1047,14 +1128,35 @@ final class CodexStore: ObservableObject {
             guard let reading = CodexLiveQuota.parse(signals: signals, observedAt: observed) else {
                 continue
             }
-            accounts[index].quota = CodexLiveQuota.merging(reading, into: accounts[index].quota)
-            accounts[index].quotaUpdatedAt = observed
-            accounts[index].quotaSource = "gateway"
-            accounts[index].quotaError = nil
-            if let plan = reading.quota.planType { accounts[index].planType = plan }
-            changed = true
+            let merged = CodexLiveQuota.merging(reading, into: account.quota)
+            let valuesChanged = CodexLiveQuota.liveValuesDiffer(merged, account.quota)
+            let planChanged = reading.quota.planType != nil && reading.quota.planType != account.planType
+            // Publishing @Published accounts invalidates every observing view.
+            // Only touch it when a displayed value or the freshness stamp
+            // actually moved. The 30 s freshness refresh keeps stale-signal
+            // checks working without a 1.5 s UI redraw.
+            let stampDue = account.quotaUpdatedAt.map {
+                now.timeIntervalSince($0) >= 30
+            } ?? true
+            if valuesChanged || planChanged || stampDue {
+                if valuesChanged { accounts[index].quota = merged }
+                if stampDue || valuesChanged { accounts[index].quotaUpdatedAt = observed }
+                accounts[index].quotaSource = "gateway"
+                accounts[index].quotaError = nil
+                if let plan = reading.quota.planType { accounts[index].planType = plan }
+                changed = true
+            }
         }
-        if changed { save(immediately: false) }
+        if changed { persistLiveQuotaIfDue(now: now) }
+    }
+
+    /// Live readings arrive every 1.5 s while traffic is active. Persisting
+    /// every tick rewrites the whole vault and its DPAPI/file layer; 30 s is
+    /// enough to survive a crash. Block transitions still write immediately.
+    private func persistLiveQuotaIfDue(now: Date = Date()) {
+        guard now.timeIntervalSince(lastLiveQuotaSaveAt) >= 30 else { return }
+        lastLiveQuotaSaveAt = now
+        save(immediately: false)
     }
 
     private func liveFile(for account: CodexAccount, in files: [CodexManagementAuthFile]) -> CodexManagementAuthFile? {

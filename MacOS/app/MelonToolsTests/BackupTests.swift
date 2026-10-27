@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import MelonTools
 
@@ -73,7 +74,7 @@ final class BackupTests: XCTestCase {
         XCTAssertFalse(payloadText.contains("melon-gateway-key"))
         XCTAssertFalse(payloadText.contains("melon-mgmt-secret"))
 
-        let backupURL = root.appendingPathComponent("melon-backup-2.4.0.melon")
+        let backupURL = root.appendingPathComponent("melon-backup-2.4.1.melon")
         let exportSummary = try BackupService.export(
             to: backupURL,
             password: password,
@@ -215,6 +216,51 @@ final class BackupTests: XCTestCase {
         )
     }
 
+    /// Version 1 used PBKDF2 210 000 and no AAD. The new writer must still
+    /// open those files; otherwise the upgrade silently strands old backups.
+    func testReadsVersion1BackupsWithoutAAD() throws {
+        let salt = Data(repeating: 0x11, count: 16)
+        let nonceData = Data(repeating: 0x22, count: 12)
+        let key = try BackupService.deriveKey(
+            password: password,
+            salt: salt,
+            iterations: 210_000
+        )
+        let sealed = try AES.GCM.seal(
+            Data("{}".utf8),
+            using: key,
+            nonce: try AES.GCM.Nonce(data: nonceData)
+        )
+        let combined = sealed.ciphertext + sealed.tag
+        let envelope: [String: Any] = [
+            "format": BackupService.format,
+            "formatVersion": 1,
+            "appVersion": "2.3.7",
+            "createdAt": 1_700_000_000,
+            "kdf": [
+                "name": BackupService.kdfName,
+                "iterations": 210_000,
+                "salt": salt.base64EncodedString(),
+            ],
+            "cipher": [
+                "name": BackupService.cipherName,
+                "nonce": nonceData.base64EncodedString(),
+            ],
+            "payload": combined.base64EncodedString(),
+        ]
+        let url = root.appendingPathComponent("v1.melon")
+        try writeJSON(envelope, to: url)
+
+        let summary = try BackupService.import(
+            from: url,
+            password: password,
+            supportDir: supportDir,
+            defaults: defaults
+        )
+        XCTAssertEqual(summary.accounts, 0)
+        XCTAssertEqual(summary.authFiles, 0)
+    }
+
     // MARK: - Wrong password
 
     func testWrongPasswordFailsWithoutTouchingLiveFiles() throws {
@@ -282,11 +328,40 @@ final class BackupTests: XCTestCase {
 
         let unsupportedVersionURL = root.appendingPathComponent("version.melon")
         try copy(backupURL, to: unsupportedVersionURL)
-        try mutateEnvelope(at: unsupportedVersionURL) { $0["formatVersion"] = 2 }
+        try mutateEnvelope(at: unsupportedVersionURL) { $0["formatVersion"] = 3 }
         XCTAssertThrowsError(
             try BackupService.import(from: unsupportedVersionURL, password: password, supportDir: supportDir, defaults: defaults)
         ) { error in
-            guard case BackupService.BackupError.unsupportedFormatVersion(2) = error else {
+            guard case BackupService.BackupError.unsupportedFormatVersion(3) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        // A v2 envelope relabelled as v1 must fail authentication, not fall
+        // back to the no-AAD v1 path.
+        let downgradedURL = root.appendingPathComponent("downgraded.melon")
+        try copy(backupURL, to: downgradedURL)
+        try mutateEnvelope(at: downgradedURL) { $0["formatVersion"] = 1 }
+        XCTAssertThrowsError(
+            try BackupService.import(from: downgradedURL, password: password, supportDir: supportDir, defaults: defaults)
+        ) { error in
+            guard case BackupService.BackupError.wrongPasswordOrCorrupt = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        // Changing a header field that is bound as AAD is detected.
+        let tamperedKDFURL = root.appendingPathComponent("tampered-kdf.melon")
+        try copy(backupURL, to: tamperedKDFURL)
+        try mutateEnvelope(at: tamperedKDFURL) { object in
+            var kdf = object["kdf"] as? [String: Any] ?? [:]
+            kdf["iterations"] = 700_000
+            object["kdf"] = kdf
+        }
+        XCTAssertThrowsError(
+            try BackupService.import(from: tamperedKDFURL, password: password, supportDir: supportDir, defaults: defaults)
+        ) { error in
+            guard case BackupService.BackupError.wrongPasswordOrCorrupt = error else {
                 return XCTFail("unexpected error: \(error)")
             }
         }
@@ -404,11 +479,11 @@ final class BackupTests: XCTestCase {
         )
         XCTAssertEqual(envelope["format"] as? String, BackupService.format)
         XCTAssertEqual(envelope["formatVersion"] as? Int, BackupService.formatVersion)
-        XCTAssertEqual(envelope["appVersion"] as? String, "2.4.0")
+        XCTAssertEqual(envelope["appVersion"] as? String, "2.4.1")
 
         let kdf = try XCTUnwrap(envelope["kdf"] as? [String: Any])
         XCTAssertEqual(kdf["name"] as? String, "PBKDF2-HMAC-SHA256")
-        XCTAssertEqual(kdf["iterations"] as? Int, 210_000)
+        XCTAssertEqual(kdf["iterations"] as? Int, 600_000)
         let salt = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(kdf["salt"] as? String)))
         XCTAssertEqual(salt.count, 16)
 

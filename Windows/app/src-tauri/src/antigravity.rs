@@ -133,6 +133,7 @@ pub fn newest_auth_file_in(dir: &Path) -> Option<AuthFile> {
 }
 
 /// Auth files in the live gateway auth dir.
+#[allow(dead_code)]
 pub fn auth_files() -> Vec<AuthFile> {
     auth_files_in(&paths::auths_dir())
 }

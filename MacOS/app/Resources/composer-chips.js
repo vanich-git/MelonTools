@@ -397,7 +397,10 @@
   refreshButton.type = 'button';
   refreshButton.title = LABELS.refresh;
   refreshButton.appendChild(icon(['M21 12a9 9 0 1 1-2.64-6.36', 'M21 3v6h-6'], 13));
-  container.appendChild(refreshButton);
+  // The refresh button needs the __melonSend CDP binding. macOS exposes it;
+  // the Windows bridge does not yet, so hide the button there instead of
+  // showing a control that silently does nothing.
+  if (typeof window.__melonSend === 'function') container.appendChild(refreshButton);
 
   // ---------------------------------------------------------------- data
 

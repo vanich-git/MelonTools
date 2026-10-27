@@ -65,6 +65,7 @@ pub fn serialize(history: &History) -> Result<String, String> {
 
 /// Malformed or missing files degrade to an empty history instead of
 /// discarding the next sample.
+#[allow(dead_code)]
 pub fn parse(raw: &str) -> History {
     serde_json::from_str(raw).unwrap_or_default()
 }
@@ -221,6 +222,7 @@ pub fn should_notify(
 }
 
 /// Pure claim helper: record the notification when `should_notify` says yes.
+#[allow(clippy::too_many_arguments)]
 fn claim_in(
     history: &mut History,
     key: &str,

@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 /// Manages the local Codex API gateway (CLIProxyAPI sidecar) — a single shared service.
 ///
@@ -188,12 +189,16 @@ final class CodexGatewayService: ObservableObject {
     var logPath: String { Self.gatewayDir.appendingPathComponent("gateway.log").path }
     var pidPath: String { Self.gatewayDir.appendingPathComponent("gateway.pid").path }
 
-    /// Locate the sidecar binary: app bundle resources → dev build → PATH.
+    /// Locate the sidecar binary: app bundle resources → extracted embedded
+    /// engine → dev build → PATH.
     static func locateBinary() -> String? {
         let fm = FileManager.default
         var candidates: [String] = []
         if let resourceURL = Bundle.main.resourceURL {
             candidates.append(resourceURL.appendingPathComponent("bin/cliproxyapi").path)
+        }
+        if let extracted = ensureEmbeddedEngine() {
+            candidates.append(extracted.path)
         }
         // Dev fallback — only meaningful on the author's machine, but harmless
         // elsewhere (the path simply will not exist).
@@ -202,6 +207,87 @@ final class CodexGatewayService: ObservableObject {
         #endif
         if let onPath = ShellService.which("cliproxyapi") { candidates.append(onPath) }
         return candidates.first { fm.isExecutableFile(atPath: $0) }
+    }
+
+    /// Extract the compressed universal engine into Application Support once
+    /// per bundle version. The bundle stays ~24 MB instead of ~139 MB, and the
+    /// extracted copy is re-hashed before every launch so a tampered or
+    /// half-written engine is replaced instead of executed.
+    static func ensureEmbeddedEngine() -> URL? {
+        if let cached = cachedEmbeddedEngine { return cached }
+        guard !AppRuntime.isTesting,
+              let resourceURL = Bundle.main.resourceURL else { return nil }
+        let url = extractEngine(
+            gzURL: resourceURL.appendingPathComponent("bin/cliproxyapi.gz"),
+            hashURL: resourceURL.appendingPathComponent("bin/cliproxyapi.sha256"),
+            targetDirectory: gatewayDir.appendingPathComponent("bin", isDirectory: true)
+        )
+        cachedEmbeddedEngine = url
+        return url
+    }
+
+    private static var cachedEmbeddedEngine: URL?
+
+    /// Extract and verify one compressed engine. Internal so the extraction
+    /// path is covered by a unit test with a small gzip payload.
+    static func extractEngine(gzURL: URL, hashURL: URL, targetDirectory: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: gzURL.path),
+              let hashText = try? String(contentsOf: hashURL, encoding: .utf8),
+              let expected = hashText.split(whereSeparator: { $0.isWhitespace }).first.map(String.init),
+              expected.count == 64 else { return nil }
+
+        try? fm.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: targetDirectory.path)
+        let target = targetDirectory.appendingPathComponent("cliproxyapi")
+
+        if sha256Hex(at: target) == expected {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
+            return target
+        }
+
+        // Decompress to a hidden sibling, hash it, then rename atomically.
+        let temp = targetDirectory.appendingPathComponent(".cliproxyapi.\(UUID().uuidString).tmp")
+        guard fm.createFile(atPath: temp.path, contents: nil, attributes: [.posixPermissions: 0o700]) else {
+            return nil
+        }
+        defer { try? fm.removeItem(at: temp) }
+        do {
+            let output = try FileHandle(forWritingTo: temp)
+            defer { try? output.close() }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
+            process.arguments = ["-dc", gzURL.path]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  sha256Hex(at: temp) == expected else {
+                return nil
+            }
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temp.path)
+            _ = try? fm.removeItem(at: target)
+            try fm.moveItem(at: temp, to: target)
+            return target
+        } catch {
+            return nil
+        }
+    }
+
+    private static func sha256Hex(at url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        do {
+            while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+        } catch {
+            return nil
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Config generation

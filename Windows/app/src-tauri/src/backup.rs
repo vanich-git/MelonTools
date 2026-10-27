@@ -6,20 +6,21 @@
 //! ```json
 //! {
 //!   "format": "melon-backup",
-//!   "formatVersion": 1,
+//!   "formatVersion": 2,
 //!   "appVersion": "2.4.0",
 //!   "createdAt": 1760000000,
-//!   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 210000,
+//!   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 600000,
 //!            "salt": "<base64 16 bytes>" },
 //!   "cipher": { "name": "AES-256-GCM", "nonce": "<base64 12 bytes>" },
 //!   "payload": "<base64 ciphertext||16-byte tag>"
 //! }
 //! ```
 //!
-//! PBKDF2-HMAC-SHA256 (210 000 rounds) derives a 32-byte key; AES-256-GCM is
-//! used without additional authenticated data, so the payload field is exactly
-//! `ciphertext || tag`, like CryptoKit writes it. The password exists only in
-//! memory and is never persisted or logged.
+//! Version 2 uses PBKDF2-HMAC-SHA256 (600 000 rounds) and authenticates the
+//! header as AES-GCM AAD: `format \0 version \0 kdfName \0 iterations \0
+//! saltB64 \0 cipherName \0 nonceB64`. Version 1 files (210 000 rounds, no
+//! AAD) remain readable. The password exists only in memory and is never
+//! persisted or logged.
 //!
 //! The decrypted payload embeds raw JSON objects, so neither implementation
 //! has to know the other one's model shapes:
@@ -37,7 +38,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
 use rand::rngs::OsRng;
@@ -50,14 +51,17 @@ use zeroize::Zeroizing;
 use crate::{paths, scheduler, settings, vault};
 
 pub const FORMAT: &str = "melon-backup";
-pub const FORMAT_VERSION: u32 = 1;
+/// Written by this build. Version 1 remains readable.
+pub const FORMAT_VERSION: u32 = 2;
+pub const LEGACY_FORMAT_VERSION: u32 = 1;
 /// Product version recorded in the envelope. Kept as a literal because the
 /// portable format is shared with the matching macOS build.
-pub const APP_VERSION: &str = "2.4.0";
+pub const APP_VERSION: &str = "2.4.1";
 pub const KDF_NAME: &str = "PBKDF2-HMAC-SHA256";
 pub const CIPHER_NAME: &str = "AES-256-GCM";
-pub const ITERATIONS: u32 = 210_000;
+pub const ITERATIONS: u32 = 600_000;
 pub const MIN_ITERATIONS: u32 = 210_000;
+pub const MIN_VERSION2_ITERATIONS: u32 = 600_000;
 pub const MAX_ITERATIONS: u32 = 10_000_000;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -472,11 +476,48 @@ fn validate_vault(value: &Value) -> Result<(), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "the backup payload is damaged: vault is not a JSON object".to_string())?;
-    match object.get("accounts") {
-        Some(Value::Array(_)) => Ok(()),
-        Some(_) => Err("the backup payload is damaged: vault accounts is not an array".to_string()),
-        None => Err("the backup payload is damaged: vault has no accounts array".to_string()),
+    let accounts = match object.get("accounts") {
+        Some(Value::Array(accounts)) => accounts,
+        Some(_) => {
+            return Err("the backup payload is damaged: vault accounts is not an array".to_string())
+        }
+        None => {
+            return Err("the backup payload is damaged: vault has no accounts array".to_string())
+        }
+    };
+    // Account ids are rendered into data attributes and used as file keys.
+    // A quote or control character here is the first half of a stored-XSS
+    // chain (backup import -> UI -> Tauri IPC). Reject the whole backup.
+    let mut seen = std::collections::HashSet::with_capacity(accounts.len());
+    for (index, account) in accounts.iter().enumerate() {
+        let account = account.as_object().ok_or_else(|| {
+            format!("the backup payload is damaged: account {index} is not an object")
+        })?;
+        let id = account.get("id").and_then(Value::as_str).ok_or_else(|| {
+            format!("the backup payload is damaged: account {index} has no string id")
+        })?;
+        if !is_safe_account_id(id) {
+            return Err(format!(
+                "the backup payload is damaged: account {index} has an unsafe id"
+            ));
+        }
+        if !seen.insert(id) {
+            return Err(format!(
+                "the backup payload is damaged: duplicate account id {id}"
+            ));
+        }
     }
+    Ok(())
+}
+
+/// Account ids are opaque to the backend, but they must stay safe for HTML
+/// attributes, JSON keys and log lines. UUIDs and the legacy ids fit.
+fn is_safe_account_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Names that may never be joined to the auths directory. Mirrors
@@ -578,9 +619,17 @@ fn seal(payload: &[u8], password: &str, created_at: i64) -> Result<String, Strin
     let key = derive_key(password, &salt, ITERATIONS);
     let cipher = Aes256Gcm::new_from_slice(key.as_slice())
         .map_err(|_| "backup encryption failed".to_string())?;
-    // No AAD: the payload field is exactly ciphertext || 16-byte tag.
+    let salt_b64 = base64::engine::general_purpose::STANDARD.encode(salt);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
+    let aad = additional_authenticated_data(FORMAT_VERSION, ITERATIONS, &salt_b64, &nonce_b64);
     let sealed = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), payload)
+        .encrypt(
+            Nonce::from_slice(&nonce_bytes),
+            Payload {
+                msg: payload,
+                aad: &aad,
+            },
+        )
         .map_err(|_| "backup encryption failed".to_string())?;
 
     let envelope = Envelope {
@@ -591,15 +640,30 @@ fn seal(payload: &[u8], password: &str, created_at: i64) -> Result<String, Strin
         kdf: Kdf {
             name: KDF_NAME.to_string(),
             iterations: ITERATIONS,
-            salt: base64::engine::general_purpose::STANDARD.encode(salt),
+            salt: salt_b64,
         },
         cipher: CipherSpec {
             name: CIPHER_NAME.to_string(),
-            nonce: base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
+            nonce: nonce_b64,
         },
         payload: base64::engine::general_purpose::STANDARD.encode(sealed),
     };
     serde_json::to_string_pretty(&envelope).map_err(|e| format!("backup envelope: {e}"))
+}
+
+/// Canonical bytes bound into the AES-GCM tag for v2, matching the Swift
+/// `additionalAuthenticatedData`. Fields are base64 so the NUL separator can
+/// never be ambiguous.
+fn additional_authenticated_data(
+    format_version: u32,
+    iterations: u32,
+    salt_b64: &str,
+    nonce_b64: &str,
+) -> Vec<u8> {
+    format!(
+        "{FORMAT}\0{format_version}\0{KDF_NAME}\0{iterations}\0{salt_b64}\0{CIPHER_NAME}\0{nonce_b64}"
+    )
+    .into_bytes()
 }
 
 fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
@@ -615,7 +679,8 @@ fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
     if envelope.format != FORMAT {
         return Err(format!("unsupported backup format: {}", envelope.format));
     }
-    if envelope.format_version != FORMAT_VERSION {
+    if envelope.format_version != LEGACY_FORMAT_VERSION && envelope.format_version != FORMAT_VERSION
+    {
         return Err(format!(
             "unsupported backup format version {}. Update Melon Tools.",
             envelope.format_version
@@ -633,7 +698,12 @@ fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
             envelope.cipher.name
         ));
     }
-    if !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&envelope.kdf.iterations) {
+    let minimum = if envelope.format_version >= 2 {
+        MIN_VERSION2_ITERATIONS
+    } else {
+        MIN_ITERATIONS
+    };
+    if !(minimum..=MAX_ITERATIONS).contains(&envelope.kdf.iterations) {
         return Err(INVALID_PARAMETERS.to_string());
     }
 
@@ -655,9 +725,29 @@ fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
     let key = derive_key(password, &salt, envelope.kdf.iterations);
     let cipher = Aes256Gcm::new_from_slice(key.as_slice())
         .map_err(|_| "backup decryption failed".to_string())?;
-    cipher
-        .decrypt(Nonce::from_slice(&nonce), combined.as_slice())
-        .map_err(|_| WRONG_PASSWORD.to_string())
+    let nonce = Nonce::from_slice(&nonce);
+    if envelope.format_version >= 2 {
+        let aad = additional_authenticated_data(
+            envelope.format_version,
+            envelope.kdf.iterations,
+            &envelope.kdf.salt,
+            &envelope.cipher.nonce,
+        );
+        cipher
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: combined.as_slice(),
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| WRONG_PASSWORD.to_string())
+    } else {
+        // Version 1 had no AAD.
+        cipher
+            .decrypt(nonce, combined.as_slice())
+            .map_err(|_| WRONG_PASSWORD.to_string())
+    }
 }
 
 fn derive_key(password: &str, salt: &[u8], iterations: u32) -> Zeroizing<[u8; KEY_LEN]> {
@@ -952,7 +1042,7 @@ mod tests {
         let envelope: Value = serde_json::from_slice(&backup).unwrap();
         assert_eq!(envelope["format"], FORMAT);
         assert_eq!(envelope["formatVersion"], FORMAT_VERSION);
-        assert_eq!(envelope["appVersion"], "2.4.0");
+        assert_eq!(envelope["appVersion"], "2.4.1");
         assert_eq!(envelope["createdAt"], CREATED_AT);
         assert_eq!(envelope["kdf"]["name"], KDF_NAME);
         assert_eq!(envelope["kdf"]["iterations"], ITERATIONS);
@@ -1175,5 +1265,25 @@ mod tests {
             hex,
             "381d4dfbe8e6687fab5beab3ae936d2b1c7f9fa082552ac90842cc2da2578eba"
         );
+    }
+
+    #[test]
+    fn vault_rejects_ids_that_would_break_out_of_a_data_attribute() {
+        let hostile = json!({
+            "accounts": [{
+                "id": "');alert(1);//",
+                "tokens": {}
+            }]
+        });
+        let error = validate_vault(&hostile).unwrap_err();
+        assert!(error.contains("unsafe id"), "{error}");
+
+        let valid = json!({
+            "accounts": [{
+                "id": "8f14e45f-ea1c-4b3d-9c2a-1234567890ab",
+                "tokens": {}
+            }]
+        });
+        validate_vault(&valid).unwrap();
     }
 }

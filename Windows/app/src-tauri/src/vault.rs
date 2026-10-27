@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::{dpapi, paths};
 
@@ -269,6 +270,11 @@ fn lock_vault_writes() -> std::sync::MutexGuard<'static, ()> {
 
 /// Same as [`load_raw`] for an explicit path (backup export / tests).
 pub fn load_raw_at(path: &Path) -> Value {
+    if let Some(found) = crate::schema::file_version(path) {
+        if found > crate::schema::CURRENT {
+            crate::schema::note_newer("vault", found);
+        }
+    }
     let raw = std::fs::read_to_string(path).ok();
     let mut value = raw
         .as_deref()
@@ -291,11 +297,33 @@ pub fn save_raw(value: &Value) -> Result<(), String> {
     save_raw_at(&vault_file(), value)
 }
 
+/// Deserialized account cache. The 1.5 s live guard used to read and parse
+/// the vault three or four times per tick; every write invalidates this, so a
+/// UI edit is visible on the next read.
+static ACCOUNTS_CACHE: OnceLock<Mutex<Option<Vec<Account>>>> = OnceLock::new();
+
+fn accounts_cache() -> &'static Mutex<Option<Vec<Account>>> {
+    ACCOUNTS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn invalidate_accounts_cache() {
+    if let Ok(mut cache) = accounts_cache().lock() {
+        *cache = None;
+    }
+}
+
 /// Same as [`save_raw`] for an explicit path (backup import / tests).
 pub fn save_raw_at(path: &Path, value: &Value) -> Result<(), String> {
+    crate::schema::ensure_writable(path, "vault")?;
     // Vault tokens are encrypted on disk only; callers keep plaintext values
     // in memory (the gateway config and Codex auth files need them).
     let mut stored = value.clone();
+    if let Some(object) = stored.as_object_mut() {
+        object.insert(
+            "schemaVersion".to_string(),
+            serde_json::json!(crate::schema::CURRENT),
+        );
+    }
     protect_tokens(&mut stored)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -303,19 +331,31 @@ pub fn save_raw_at(path: &Path, value: &Value) -> Result<(), String> {
     let data = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
     let tmp = paths::tmp_path(path);
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    invalidate_accounts_cache();
+    Ok(())
 }
 
 pub fn accounts() -> Vec<Account> {
+    if let Ok(cache) = accounts_cache().lock() {
+        if let Some(value) = cache.as_ref() {
+            return value.clone();
+        }
+    }
     let raw = load_raw();
-    raw.get("accounts")
+    let accounts: Vec<Account> = raw
+        .get("accounts")
         .and_then(|a| a.as_array())
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| serde_json::from_value::<Account>(v.clone()).ok())
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Ok(mut cache) = accounts_cache().lock() {
+        *cache = Some(accounts.clone());
+    }
+    accounts
 }
 
 /// Views for the UI: quotas converted to Unix seconds, block info resolved.
@@ -510,53 +550,99 @@ pub fn update_quota(id: &str, quota: &Quota, raw_json: &str, extra: Value) -> Re
 /// Merge one passive gateway reading. Missing fields do not erase cached
 /// reset timestamps or window metadata. Returns false when nothing changed,
 /// so a 1.5-second guard does not rewrite the vault for identical signals.
+#[allow(dead_code)]
 pub fn update_live_quota(id: &str, quota: &Quota, observed_at: f64) -> Result<bool, String> {
+    apply_live_updates(&[(id.to_string(), quota.clone(), observed_at)], &[])
+}
+
+/// Apply a batch of passive quota readings and block changes in one vault
+/// read/write. The live guard ticks every 1.5 s; writing each account on each
+/// tick rewrote the file (and DPAPI tokens) dozens of times per minute.
+///
+/// `updates` is `(account id, quota, observed_at)`; `blocks` is
+/// `(account id, Option<QuotaBlock>)`. Returns true when the file changed.
+pub fn apply_live_updates(
+    updates: &[(String, Quota, f64)],
+    blocks: &[(String, Option<QuotaBlock>)],
+) -> Result<bool, String> {
+    if updates.is_empty() && blocks.is_empty() {
+        return Ok(false);
+    }
     let _guard = lock_vault_writes();
     let mut raw = load_raw();
     let Some(items) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) else {
         return Ok(false);
     };
-    let Some(item) = items
-        .iter_mut()
-        .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))
-    else {
-        return Ok(false);
-    };
-    let mut current = item.get("quota").cloned().unwrap_or_else(|| json!({}));
-    macro_rules! set_if_changed {
-        ($field:literal, $value:expr) => {
-            if let Some(value) = $value {
-                let next = json!(value);
-                if current.get($field) != Some(&next) {
-                    current[$field] = next;
-                }
-            }
+    let mut changed = false;
+
+    for (id, quota, observed_at) in updates {
+        let Some(item) = items
+            .iter_mut()
+            .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        else {
+            continue;
         };
+        let mut current = item.get("quota").cloned().unwrap_or_else(|| json!({}));
+        macro_rules! set_if_changed {
+            ($field:literal, $value:expr) => {
+                if let Some(value) = $value {
+                    let next = json!(value);
+                    if current.get($field) != Some(&next) {
+                        current[$field] = next;
+                        changed = true;
+                    }
+                }
+            };
+        }
+        set_if_changed!("hourlyRemainingPercent", quota.hourly_remaining_percent);
+        set_if_changed!("weeklyRemainingPercent", quota.weekly_remaining_percent);
+        set_if_changed!("hourlyResetAt", quota.hourly_reset_at);
+        set_if_changed!("weeklyResetAt", quota.weekly_reset_at);
+        set_if_changed!("hourlyWindowMinutes", quota.hourly_window_minutes);
+        set_if_changed!("weeklyWindowMinutes", quota.weekly_window_minutes);
+        set_if_changed!("hourlyWindowPresent", quota.hourly_window_present);
+        set_if_changed!("weeklyWindowPresent", quota.weekly_window_present);
+        let last_written = item.get("quotaUpdatedAt").and_then(|v| v.as_f64());
+        let recent_write = last_written
+            .map(|stamp| observed_at - stamp < 5.0)
+            .unwrap_or(false);
+        if recent_write && item.get("quotaSource").and_then(|v| v.as_str()) == Some("gateway") {
+            continue;
+        }
+        item["quota"] = current;
+        item["quotaUpdatedAt"] = json!(observed_at);
+        item["quotaSource"] = json!("gateway");
+        item["quotaError"] = Value::Null;
+        changed = true;
     }
-    set_if_changed!("hourlyRemainingPercent", quota.hourly_remaining_percent);
-    set_if_changed!("weeklyRemainingPercent", quota.weekly_remaining_percent);
-    set_if_changed!("hourlyResetAt", quota.hourly_reset_at);
-    set_if_changed!("weeklyResetAt", quota.weekly_reset_at);
-    set_if_changed!("hourlyWindowMinutes", quota.hourly_window_minutes);
-    set_if_changed!("weeklyWindowMinutes", quota.weekly_window_minutes);
-    set_if_changed!("hourlyWindowPresent", quota.hourly_window_present);
-    set_if_changed!("weeklyWindowPresent", quota.weekly_window_present);
-    let last_written = item.get("quotaUpdatedAt").and_then(|v| v.as_f64());
-    let recent_write = last_written
-        .map(|stamp| observed_at - stamp < 5.0)
-        .unwrap_or(false);
-    if recent_write && item.get("quotaSource").and_then(|v| v.as_str()) == Some("gateway") {
-        return Ok(false);
+
+    for (id, block) in blocks {
+        let value = block
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(Value::Null);
+        let Some(item) = items
+            .iter_mut()
+            .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        else {
+            continue;
+        };
+        if item.get("quotaBlock") != Some(&value) {
+            item["quotaBlock"] = value;
+            changed = true;
+        }
     }
-    item["quota"] = current;
-    item["quotaUpdatedAt"] = json!(observed_at);
-    item["quotaSource"] = json!("gateway");
-    item["quotaError"] = Value::Null;
-    save_raw(&raw)?;
-    Ok(true)
+
+    if changed {
+        save_raw(&raw)?;
+    }
+    Ok(changed)
 }
 
 /// Persist or clear a sticky block before changing gateway routing state.
+#[allow(dead_code)]
 pub fn set_quota_block(id: &str, block: Option<&QuotaBlock>) -> Result<(), String> {
     let value = block
         .map(serde_json::to_value)
@@ -625,15 +711,14 @@ pub fn upsert_from_tokens(tokens: &Tokens) -> Result<String, String> {
     let existing_index = raw
         .get("accounts")
         .and_then(|a| a.as_array())
-        .map(|arr| {
+        .and_then(|arr| {
             arr.iter().position(|item| {
                 let item_account = item.get("accountId").and_then(|v| v.as_str());
                 let item_email = item.get("email").and_then(|v| v.as_str());
                 (item_account.is_some() && item_account == account_id.as_deref())
                     || (item_email.is_some() && item_email == claims.email.as_deref())
             })
-        })
-        .flatten();
+        });
 
     let tokens_value = serde_json::to_value(tokens).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();

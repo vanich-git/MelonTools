@@ -284,9 +284,18 @@ final class CodexInstanceStore: ObservableObject {
         guard let account else { return }
         let auth = CodexAuthFile.make(from: account)
         let data = try auth.encoded()
-        let authPath = (instance.homePath as NSString).appendingPathComponent("auth.json")
-        try data.write(to: URL(fileURLWithPath: authPath), options: [.atomic])
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authPath)
+        let authURL = URL(fileURLWithPath: (instance.homePath as NSString).appendingPathComponent("auth.json"))
+        // The CODEX_HOME directory holds a live token file. Create it 0700 and
+        // let SecureFile write 0600 atomically; chmod-after-write leaves a
+        // window where another local user could read the token.
+        let directory = authURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try SecureFile.write(data, to: authURL)
     }
 
     /// Launch `codex` in Terminal with CODEX_HOME pointed at the instance dir.

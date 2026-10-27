@@ -19,6 +19,7 @@
 		24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */; };
 		26D63B83406600AF7980DB04 /* SchedulerRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65439F46A80ADE0BE55882F /* SchedulerRunner.swift */; };
 		2B2E8EF3471108C45AE900AF /* UpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E8EF91D2DDDB89B093FB19 /* UpdaterTests.swift */; };
+		2BD81C9F013C460DE76A06D9 /* SupportBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81A70B58EDF35609B3D9463 /* SupportBundleTests.swift */; };
 		2D9F397A2C9D715C88CD4E94 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C7DE7781BC232D89855C509 /* SettingsView.swift */; };
 		2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */; };
 		2FA012E7000545B4077ADD23 /* ShellService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6122C219EB9D610DECD893A7 /* ShellService.swift */; };
@@ -27,10 +28,12 @@
 		354D55EF6C9BD92B2C75635B /* CodexConfigRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DB835AB1985DF1F56805B6 /* CodexConfigRoute.swift */; };
 		3DEFB14E9053148102B0EFDE /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0ED55431DF119F7A8C5174 /* CodexStore.swift */; };
 		3EC5FC54DCC7A79071678844 /* AntigravityAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94A12DE6C0489C0163639BCE /* AntigravityAuthTests.swift */; };
+		41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */; };
 		42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */; };
 		4BC7623A3A5BCA4E228E4392 /* CodexInstancesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B4ECC496C0A6AE2F7D50CE /* CodexInstancesView.swift */; };
 		4C8C3F023C25F1DF12763050 /* SchedulerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D15F8FA7DF957DF6B33B6EB /* SchedulerView.swift */; };
 		4DE9BB4AB391848035938DF9 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD5F2D4313079608CA034CD /* MainView.swift */; };
+		4EBA788CCE70CB343CFA09B1 /* SupportBundleService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */; };
 		4F103A33DCF7EFC587975B08 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9360724A6B2BF9E4758C7D38 /* OnboardingView.swift */; };
 		52D4C99653D19EE1DBB6B831 /* CodexRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C69B678951C7A01AABD656 /* CodexRouting.swift */; };
 		53F69D34EBFC29C6CA1E7760 /* QuotaHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */; };
@@ -84,6 +87,7 @@
 /* Begin PBXFileReference section */
 		0743C522162285FF400C341E /* ProviderUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsage.swift; sourceTree = "<group>"; };
 		09A2F2F1B47F5293A84E8487 /* MelonToolsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MelonToolsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexGatewayEngineTests.swift; sourceTree = "<group>"; };
 		126A58DE87AE4967867A4491 /* AntigravityAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityAuthService.swift; sourceTree = "<group>"; };
 		16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowQuotaNotificationTests.swift; sourceTree = "<group>"; };
 		185C46A347C8DBA9271F1A57 /* ProviderDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDiagnostics.swift; sourceTree = "<group>"; };
@@ -112,6 +116,7 @@
 		651DED2BFF8134A5713FB28A /* UpdaterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterStore.swift; sourceTree = "<group>"; };
 		65CC3D84764010FEBA404100 /* CDPSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CDPSession.swift; sourceTree = "<group>"; };
 		6715DEB6E92A8B2500D0403F /* MelonTools.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MelonTools.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleService.swift; sourceTree = "<group>"; };
 		72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistoryTests.swift; sourceTree = "<group>"; };
 		747248C3C8AE60381B934643 /* CodexModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModels.swift; sourceTree = "<group>"; };
 		768560461E883B63C28E2ACB /* MTTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MTTheme.swift; sourceTree = "<group>"; };
@@ -132,6 +137,7 @@
 		B00D2E62FCC1AB51BFF6509B /* LoopbackServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackServer.swift; sourceTree = "<group>"; };
 		B1C69B678951C7A01AABD656 /* CodexRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRouting.swift; sourceTree = "<group>"; };
 		B5D5481EBF3A71A36794564E /* composer-chips.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "composer-chips.js"; sourceTree = "<group>"; };
+		B81A70B58EDF35609B3D9463 /* SupportBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleTests.swift; sourceTree = "<group>"; };
 		BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRoutingTests.swift; sourceTree = "<group>"; };
 		C1DAD6CCDB82CBCEB8A2405C /* BackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupService.swift; sourceTree = "<group>"; };
 		C1EE785A557ED470937D1D38 /* CodexComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexComposerView.swift; sourceTree = "<group>"; };
@@ -264,6 +270,7 @@
 				DB1BB95213E754D8D3EF63DA /* BackupTests.swift */,
 				2F826140BEDB6A5D7ABAE63A /* ClaudeAuthTests.swift */,
 				3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */,
+				0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */,
 				55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */,
 				47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */,
 				BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */,
@@ -271,6 +278,7 @@
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
 				72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */,
 				4CD2F1E1C6BB70D5F637F283 /* SchedulerTests.swift */,
+				B81A70B58EDF35609B3D9463 /* SupportBundleTests.swift */,
 				D9E8EF91D2DDDB89B093FB19 /* UpdaterTests.swift */,
 			);
 			path = MelonToolsTests;
@@ -293,6 +301,7 @@
 				C1DAD6CCDB82CBCEB8A2405C /* BackupService.swift */,
 				9E4F7622B54B974672276242 /* SecureFile.swift */,
 				6122C219EB9D610DECD893A7 /* ShellService.swift */,
+				6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */,
 				E8FB7C6A30E71A442B95A2E9 /* TerminalLauncher.swift */,
 				651DED2BFF8134A5713FB28A /* UpdaterStore.swift */,
 			);
@@ -408,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nGATEWAY_BIN=\"$SRCROOT/../build/cliproxyapi\"\nif [ -f \"$GATEWAY_BIN\" ]; then\n  mkdir -p \"$RES/bin\"\n  cp \"$GATEWAY_BIN\" \"$RES/bin/cliproxyapi\"\n  chmod +x \"$RES/bin/cliproxyapi\"\n  echo \"embedded gateway binary -> $RES/bin/cliproxyapi\"\nelse\n  echo \"warning: gateway binary missing at $GATEWAY_BIN (build it with build.sh)\"\nfi\n";
+			shellScript = "set -euo pipefail\nRES=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nGATEWAY_BIN=\"$SRCROOT/../build/cliproxyapi\"\nif [ -f \"$GATEWAY_BIN\" ]; then\n  mkdir -p \"$RES/bin\"\n  # Ship a compressed engine: the universal Go binary is ~139 MB,\n  # the gzip blob is roughly a quarter of that. The app extracts it\n  # into Application Support and verifies this digest before launch.\n  gzip -9 -c \"$GATEWAY_BIN\" > \"$RES/bin/cliproxyapi.gz\"\n  shasum -a 256 \"$GATEWAY_BIN\" | awk '{print $1}' > \"$RES/bin/cliproxyapi.sha256\"\n  rm -f \"$RES/bin/cliproxyapi\"\n  echo \"embedded compressed gateway -> $RES/bin/cliproxyapi.gz\"\nelse\n  echo \"warning: gateway binary missing at $GATEWAY_BIN (build it with build.sh)\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -421,6 +430,7 @@
 				6B4D1C41EB09C3A285A8ED8A /* BackupTests.swift in Sources */,
 				0A6FD711E033E51224DD1A5E /* ClaudeAuthTests.swift in Sources */,
 				FD1B231CB13438110C05CB2B /* CodexAuthFileTests.swift in Sources */,
+				41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */,
 				2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */,
 				5F0462D21FD58B3E437252E6 /* CodexModelCatalogTests.swift in Sources */,
 				76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */,
@@ -428,6 +438,7 @@
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
 				798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */,
 				FB55B8F81FAF43250E5CF3D9 /* SchedulerTests.swift in Sources */,
+				2BD81C9F013C460DE76A06D9 /* SupportBundleTests.swift in Sources */,
 				2B2E8EF3471108C45AE900AF /* UpdaterTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -479,6 +490,7 @@
 				148321B5F77267CFE9A2D46B /* SecureFile.swift in Sources */,
 				2D9F397A2C9D715C88CD4E94 /* SettingsView.swift in Sources */,
 				2FA012E7000545B4077ADD23 /* ShellService.swift in Sources */,
+				4EBA788CCE70CB343CFA09B1 /* SupportBundleService.swift in Sources */,
 				70092A4A70BBD78D1B57CAED /* TerminalLauncher.swift in Sources */,
 				A77D820996E3E1B0B11ECCB4 /* UpdateSheet.swift in Sources */,
 				E5762C94A819547E61D66FFE /* UpdaterStore.swift in Sources */,
@@ -667,16 +679,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
+				MARKETING_VERSION = 2.4.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -685,15 +698,16 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.0;
+				MARKETING_VERSION = 2.4.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

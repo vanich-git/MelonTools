@@ -1002,4 +1002,23 @@ final class SchedulerTests: XCTestCase {
             values: ["repo": "melon", "branch": "main"]
         ))
     }
+
+    func testNewerSchemaIsReadOnlyAndNotOverwritten() throws {
+        let payload: [String: Any] = [
+            "schemaVersion": PersistenceSchema.current + 1,
+            "tasks": [],
+            "history": [],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        try SecureFile.write(data, to: fileURL)
+
+        let store = SchedulerStore(fileURL: fileURL, notifications: .disabled)
+        store.load()
+        XCTAssertTrue(store.tasks.isEmpty)
+        XCTAssertEqual(store.persistenceError?.contains("newer Melon Tools"), true)
+
+        store.stop()
+        let after = try Data(contentsOf: fileURL)
+        XCTAssertEqual(after, data, "a newer scheduler file must stay byte-identical")
+    }
 }

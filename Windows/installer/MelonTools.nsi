@@ -10,6 +10,9 @@
 Unicode true
 
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "WordFunc.nsh"
+!insertmacro VersionCompare
 
 !ifndef VERSION
   !error "VERSION is required: pass /DVERSION=<x.y.z>"
@@ -69,13 +72,32 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Melon Tools"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_LANGUAGE "English"
+!insertmacro MUI_LANGUAGE "Russian"
+!define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
+!define MUI_LANGDLL_REGISTRY_KEY "${APP_REG_KEY}"
+!define MUI_LANGDLL_REGISTRY_VALUENAME "InstallerLanguage"
+!define MUI_LANGDLL_ALLLANGUAGES
 
 Function .onInit
   SetShellVarContext current
+  ; Refuse to downgrade silently: an older installer would overwrite a newer
+  ; exe and leave the data schema in a half-supported state.
+  ReadRegStr $0 HKCU "${UNINSTALL_REG_KEY}" "DisplayVersion"
+  ${If} $0 != ""
+    ${VersionCompare} "$0" "${VERSION}" $1
+    ${If} $1 == 1
+      MessageBox MB_ICONSTOP|MB_OK \
+        "A newer Melon Tools ($0) is already installed. Uninstall it first if you really want to downgrade."
+      Abort
+    ${EndIf}
+  ${EndIf}
+  !insertmacro MUI_LANGDLL_DISPLAY
 FunctionEnd
 
 Function un.onInit
   SetShellVarContext current
+  ; Reuse the language selected by the installer (MUI stores it in HKCU).
+  !insertmacro MUI_UNGETLANGUAGE
 FunctionEnd
 
 ; Directory page verification: accept any path the current user can write to.
@@ -141,6 +163,10 @@ Section "Uninstall"
 
   ; A running app would keep the exe locked and leave a ghost install.
   nsExec::ExecToLog 'taskkill /IM MelonTools.exe /F'
+  ; Restore Codex's original config before the exe disappears; otherwise the
+  ; app is gone but Codex still points at a dead local port.
+  nsExec::ExecToLog '"$INSTDIR\MelonTools.exe" --restore-codex-route'
+  Sleep 500
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "MelonTools"
 
   Delete "$INSTDIR\MelonTools.exe"

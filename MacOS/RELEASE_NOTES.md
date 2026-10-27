@@ -1,4 +1,39 @@
-# Melon Tools 2.4.0
+# Melon Tools 2.4.1
+
+Audit fixes for macOS and Windows: lower background load, safer persistence,
+a smaller macOS app, and a reproducible Windows engine.
+
+- **Quota guard without the 1.5-second churn.** Live quota is adaptive,
+  diff-based, persists at most every 30–45 s, reuses one HTTP client and takes
+  one vault snapshot per tick. It stops when the gateway is not running.
+- **Incremental rollout reads.** The macOS composer parses only appended
+  rollout lines instead of re-reading up to 32 MB every 5 s.
+- **Smaller macOS app.** The universal gateway is embedded gzip-compressed
+  (~45 MB vs ~139 MB), extracted into Application Support and SHA-256 checked
+  before launch. The installed app is about 63 MB instead of ~156 MB.
+- **Scheduler payloads.** Windows dashboard polls a compact summary; history is
+  paged without result bodies and full results load on demand. macOS deferred
+  heavy startup work until after the first frame.
+- **Security.** Windows backup import validates account ids; the UI has no
+  inline handlers, uses a command-whitelisted Tauri bridge and a strict CSP;
+  backup format v2 uses PBKDF2 600k with header-bound AES-GCM AAD; instance
+  `auth.json` writes are atomic 0600; CDP port ownership is verified.
+- **Schema safety.** Vault/settings/scheduler stores carry `schemaVersion`;
+  files from a newer build open read-only instead of losing fields.
+- **Windows engine reproducibility.** The embedded CLIProxyAPI blob was rebuilt
+  from pin `1f917e77` with Go 1.26.10; compressed and payload hashes match the
+  provenance file and CI reproduces them.
+- **Release hygiene.** Draft releases, pinned XcodeGen/NSIS, checksum/manifest
+  verification, SBOM/provenance, CodeQL Swift, clippy `-D warnings`, and a
+  support-bundle export on both platforms.
+
+## Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-win-x64-portable.exe) — single file, no install.
+
+## 2.4.0
 
 - **Per-account Codex models.** Every Codex account has its own model
   checkboxes. The app keeps one common pool of selected models, so a model
@@ -19,9 +54,9 @@
 
 ## Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.7
 
@@ -41,9 +76,9 @@
 
 ## Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.6
 

@@ -118,4 +118,47 @@ final class CodexLiveQuotaTests: XCTestCase {
         )
         XCTAssertEqual(reading?.quota.hourlyRemainingPercent, 0)
     }
+
+    func testLiveValueDiffIgnoresFetchMetadata() {
+        var before = CodexQuota()
+        before.hourlyRemainingPercent = 50
+        before.weeklyRemainingPercent = 80
+        before.fetchedAt = observedAt
+        var after = before
+        after.fetchedAt = observedAt.addingTimeInterval(2)
+        after.rawJSON = #"{"unrelated":true}"#
+
+        XCTAssertFalse(CodexLiveQuota.liveValuesDiffer(after, before))
+        XCTAssertFalse(CodexLiveQuota.liveValuesDiffer(nil, nil))
+        XCTAssertTrue(CodexLiveQuota.liveValuesDiffer(after, nil))
+
+        after.hourlyRemainingPercent = 49
+        XCTAssertTrue(CodexLiveQuota.liveValuesDiffer(after, before))
+    }
+
+    /// Same fixture consumed by the Rust test. A parsing change on one platform
+    /// must be reflected in shared/fixtures/quota-signals.json.
+    func testSharedQuotaFixture() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../../../shared/fixtures/quota-signals.json")
+        let data = try Data(contentsOf: url)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let cases = try XCTUnwrap(object["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for entry in cases {
+            let signals = try XCTUnwrap(entry["signals"] as? [String: String])
+            let expected = try XCTUnwrap(entry["expected"] as? [String: Any])
+            let reading = CodexLiveQuota.parse(signals: signals, observedAt: observedAt)
+            if let hourly = (expected["hourlyRemaining"] as? NSNumber)?.doubleValue {
+                XCTAssertEqual(reading?.quota.hourlyRemainingPercent, hourly, entry["name"] as? String ?? "")
+            }
+            if let weekly = (expected["weeklyRemaining"] as? NSNumber)?.doubleValue {
+                XCTAssertEqual(reading?.quota.weeklyRemainingPercent, weekly, entry["name"] as? String ?? "")
+            }
+            if let minutes = (expected["hourlyWindowMinutes"] as? NSNumber)?.intValue {
+                XCTAssertEqual(reading?.quota.hourlyWindowMinutes, minutes, entry["name"] as? String ?? "")
+            }
+        }
+    }
 }

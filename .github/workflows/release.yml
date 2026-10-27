@@ -23,13 +23,9 @@ permissions:
 jobs:
   macos:
     name: macOS DMG
-    runs-on: macos-latest
-    env:
-      APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
-      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
     outputs:
       version: ${{ steps.version.outputs.version }}
       signed: ${{ steps.sign.outputs.signed }}
@@ -52,18 +48,41 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Check macOS signing secrets
+        id: signing
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$APPLE_CERT_P12" ] && [ -n "$APPLE_CERT_PASSWORD" ] \
+             && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing secrets are missing; the DMG will be ad-hoc signed."
+          fi
+
+      - name: Install pinned XcodeGen
+        run: ./.github/scripts/install-xcodegen.sh
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          # The pinned CLIProxyAPI source declares `go 1.26.0`.
-          go-version: "1.26"
+          # The pinned CLIProxyAPI source declares `go 1.26.0`; use the patch
+          # level from MacOS/README.md and the engine provenance file.
+          go-version: "1.26.10"
           cache: false
 
       - name: Fetch the pinned gateway source
         run: ./MacOS/scripts/fetch-sources.sh
+
+      - name: Generate the Xcode project
+        working-directory: MacOS/app
+        run: xcodegen generate
 
       - name: Run macOS tests
         run: |
@@ -83,7 +102,7 @@ jobs:
       # Signing is optional. The job must not fail when the repository has no
       # Apple secrets yet: it then publishes the usual ad-hoc signed DMG.
       - name: Import the Apple signing certificate
-        if: env.APPLE_CERT_P12 != '' && env.APPLE_CERT_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != ''
+        if: steps.signing.outputs.enabled == 'true'
         env:
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
@@ -97,6 +116,7 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security find-identity -v -p codesigning "$KEYCHAIN"
@@ -104,7 +124,7 @@ jobs:
 
       - name: Sign and notarize the DMG
         id: sign
-        if: env.APPLE_CERT_P12 != '' && env.APPLE_CERT_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != ''
+        if: steps.signing.outputs.enabled == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -139,10 +159,9 @@ jobs:
 
   windows:
     name: Windows executable
-    runs-on: windows-latest
-    env:
-      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX }}
-      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    runs-on: windows-2025
+    timeout-minutes: 75
+    environment: release
     outputs:
       version: ${{ steps.version.outputs.version }}
       signed: ${{ steps.sign.outputs.signed }}
@@ -152,6 +171,20 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
+
+      - name: Check Windows signing secrets
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERT_PFX_BASE64 -and $env:WINDOWS_CERT_PASSWORD) {
+            "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "::warning::Windows signing secrets are missing; the executable will be unsigned."
+          }
 
       - name: Resolve and verify the version
         id: version
@@ -199,7 +232,7 @@ jobs:
 
       - name: Sign the executable
         id: sign
-        if: env.WINDOWS_CERT_PFX_BASE64 != '' && env.WINDOWS_CERT_PASSWORD != ''
+        if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         env:
           WINDOWS_CERT_PFX: ${{ runner.temp }}\melontools-cert.pfx
@@ -230,7 +263,7 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
-            choco install nsis -y --no-progress
+            choco install nsis --version=3.11 -y --no-progress
             $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           }
           if (-not (Test-Path $makensis)) { throw "makensis not found" }
@@ -245,10 +278,12 @@ jobs:
           Get-Item $setup | Format-List Name,Length
 
       - name: Sign the installer
-        if: env.WINDOWS_CERT_PFX_BASE64 != '' && env.WINDOWS_CERT_PASSWORD != ''
+        if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         env:
           WINDOWS_CERT_PFX: ${{ runner.temp }}\melontools-cert.pfx
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
           try {
@@ -289,21 +324,100 @@ jobs:
             Windows/dist/MelonTools-*-setup.exe.sha256
           if-no-files-found: error
 
+  sbom:
+    name: CycloneDX SBOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate the SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: melontools.cdx.json
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: melontools.cdx.json
+          if-no-files-found: error
+
   publish:
     name: Publish the GitHub release
     permissions:
       contents: write
-    needs: [macos, windows]
-    runs-on: ubuntu-latest
+      id-token: write
+      attestations: write
+    needs: [macos, windows, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
     steps:
+      - name: Check out the requested tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Refuse to overwrite a published release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft' 2>/dev/null || echo missing)"
+          if [ "$state" = "false" ]; then
+            echo "Release $RELEASE_TAG is already published; refusing to replace its assets." >&2
+            echo "Delete the release first or publish a new version." >&2
+            exit 1
+          fi
+
       - name: Download the build artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-assets
           merge-multiple: true
 
+      - name: Download the SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sbom
+          path: release-assets
+
       - name: List the release assets
         run: ls -l release-assets
+
+      - name: Build one SHA256SUMS file
+        working-directory: release-assets
+        env:
+          V: ${{ needs.macos.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Stable, unversioned aliases for README "latest" links. The
+          # versioned files remain the auditable, release-notes targets.
+          cp "MelonTools-$V.dmg" MelonTools.dmg
+          cp "MelonTools-$V-setup.exe" MelonTools-setup.exe
+          cp "MelonTools-$V-win-x64-portable.exe" MelonTools-win-x64-portable.exe
+          cp "MelonTools-$V-win-x64.exe" MelonTools-win-x64.exe
+          for stable in MelonTools.dmg MelonTools-setup.exe MelonTools-win-x64-portable.exe MelonTools-win-x64.exe; do
+            sha256sum -- "$stable" > "$stable.sha256"
+          done
+          sha256sum -- *.dmg *.exe | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Verify artifacts against the distribution manifests
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_checksums.py \
+            --artifacts release-assets \
+            --sha256sums release-assets/SHA256SUMS \
+            --version "${{ needs.macos.outputs.version }}"
 
       - name: Verify every expected asset
         run: |
@@ -317,7 +431,8 @@ jobs:
             "MelonTools-$V-win-x64-portable.exe" \
             "MelonTools-$V-win-x64-portable.exe.sha256" \
             "MelonTools-$V-win-x64.exe" \
-            "MelonTools-$V-win-x64.exe.sha256"; do
+            "MelonTools-$V-win-x64.exe.sha256" \
+            "SHA256SUMS"; do
             test -f "release-assets/$name" || { echo "missing $name" >&2; exit 1; }
           done
 
@@ -344,8 +459,19 @@ jobs:
               echo ""
             fi
             echo "Full changelog: [MacOS/RELEASE_NOTES.md](https://github.com/ivankuprin/MelonTools/blob/main/MacOS/RELEASE_NOTES.md)."
+            echo ""
+            echo "### SHA-256"
+            echo ""
+            echo '```'
+            cat release-assets/SHA256SUMS
+            echo '```'
           } > release-notes.md
           cat release-notes.md
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-assets/*
 
       - name: Create or update the release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -355,3 +481,7 @@ jobs:
           body_path: release-notes.md
           files: release-assets/*
           fail_on_unmatched_files: true
+          # A human promotes the draft after checking the assets and hashes.
+          # Backfills must never become "latest".
+          draft: true
+          make_latest: false

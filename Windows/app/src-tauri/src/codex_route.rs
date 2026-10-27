@@ -96,9 +96,9 @@ pub fn upsert_route(in_text: &str, base_url: &str, token: &str) -> String {
     let header = first_header(&lines);
     let provider_line = format!("model_provider = \"{}\"", PROVIDER_ID);
     let mut replaced = false;
-    for index in 0..header {
-        if provider_value(&lines[index]).is_some() {
-            lines[index] = provider_line.clone();
+    for line in lines.iter_mut().take(header) {
+        if provider_value(line).is_some() {
+            *line = provider_line.clone();
             replaced = true;
             break;
         }
@@ -149,21 +149,20 @@ pub fn upsert_top_level_key(in_text: &str, key: &str, value: &str) -> String {
     let ends = in_text.ends_with('\n');
     let mut lines = to_lines(in_text);
     let header = first_header(&lines);
-    let line = format!("{} = \"{}\"", key, value);
-    for index in 0..header {
-        if raw_value(&lines[index], key).is_some() {
-            lines[index] = line;
+    let replacement = format!("{} = \"{}\"", key, value);
+    for line in lines.iter_mut().take(header) {
+        if raw_value(line, key).is_some() {
+            *line = replacement.clone();
             return normalized(lines, ends);
         }
     }
-    let mut insert_at = 0;
-    for index in 0..header {
-        if provider_value(&lines[index]).is_some() {
-            insert_at = index + 1;
-            break;
-        }
-    }
-    lines.insert(insert_at, line);
+    let insert_at = lines
+        .iter()
+        .take(header)
+        .position(|line| provider_value(line).is_some())
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    lines.insert(insert_at, replacement);
     normalized(lines, ends)
 }
 
@@ -249,13 +248,10 @@ pub fn status() -> Value {
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     let lines = to_lines(&current);
     let header = first_header(&lines);
-    let mut provider = None;
-    for index in 0..header {
-        if let Some(value) = provider_value(&lines[index]) {
-            provider = Some(value);
-            break;
-        }
-    }
+    let provider = lines
+        .iter()
+        .take(header)
+        .find_map(|line| provider_value(line));
     let catalog = paths::codex_home().join(CATALOG_FILE);
     json!({
         "configPath": path.to_string_lossy(),
@@ -274,7 +270,7 @@ pub fn prettify(alias: &str) -> String {
     let tail = alias.rsplit('/').next().unwrap_or(alias);
     let mut words: Vec<String> = Vec::new();
     let mut previous_numeric = false;
-    for word in tail.split(|c| c == '-' || c == '_') {
+    for word in tail.split(['-', '_']) {
         if word.is_empty() {
             continue;
         }

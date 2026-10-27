@@ -71,6 +71,11 @@ pub struct Settings {
     pub quota_reset_notified: Vec<String>,
     /// Unix seconds of the last update check (auto-check is daily).
     pub last_update_check: Option<i64>,
+    /// Persisted format version. Missing in files written before 2.4.1.
+    pub schema_version: u32,
+    /// Set when a newer build owns the file; never serialized.
+    #[serde(skip)]
+    pub schema_error: Option<String>,
 }
 
 impl Default for Settings {
@@ -105,6 +110,8 @@ impl Default for Settings {
             dashboard_show_scheduler: true,
             quota_reset_notified: Vec::new(),
             last_update_check: None,
+            schema_version: crate::schema::CURRENT,
+            schema_error: None,
         }
     }
 }
@@ -147,6 +154,13 @@ pub fn load_from(path: &std::path::Path) -> Settings {
             Settings::default()
         });
     unprotect_secrets(&mut s);
+    if let Some(found) = crate::schema::file_version(path) {
+        if found > crate::schema::CURRENT {
+            crate::schema::note_newer("settings", found);
+            s.schema_error = crate::schema::error();
+            return s;
+        }
+    }
     if s.port == 0 {
         s.port = 18317;
     }
@@ -176,9 +190,12 @@ pub fn save(s: &Settings) -> Result<(), String> {
 
 /// Same as [`save`] for an explicit path (backup import / tests).
 pub fn save_to(path: &std::path::Path, s: &Settings) -> Result<(), String> {
+    crate::schema::ensure_writable(path, "settings")?;
     // Secrets are encrypted on disk only; the in-memory Settings stays
     // plaintext for the engine config and management calls.
     let mut stored = s.clone();
+    stored.schema_version = crate::schema::CURRENT;
+    stored.schema_error = None;
     protect_secrets(&mut stored)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;

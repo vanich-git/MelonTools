@@ -19,3 +19,13 @@ _sources/
 # Local agent notes may contain machine-specific paths
 MacOS/AGENTS.md
 MacOS/specs/
+
+# Signing material and local secrets must never enter git
+*.p12
+*.pfx
+*.cer
+*.key
+*.mobileprovision
+.env
+.env.*
+!.env.example

@@ -44,11 +44,13 @@ pub fn settings_path() -> PathBuf {
 }
 
 /// Portable model-source definitions (shared with the macOS layout).
+#[allow(dead_code)]
 pub fn model_sources_path() -> PathBuf {
     appdata_dir().join("model-sources.json")
 }
 
 /// Timestamp of the last successful backup export.
+#[allow(dead_code)]
 pub fn backup_state_path() -> PathBuf {
     appdata_dir().join("backup-state.json")
 }
