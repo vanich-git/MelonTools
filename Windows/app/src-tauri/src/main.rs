@@ -1160,10 +1160,10 @@ async fn autostart_get() -> Result<bool, String> {
             "MelonTools",
         ]);
         hidden_command(&mut command);
-        return Ok(command
+        Ok(command
             .output()
             .map(|o| o.status.success())
-            .unwrap_or(false));
+            .unwrap_or(false))
     }
     #[cfg(not(windows))]
     Ok(false)

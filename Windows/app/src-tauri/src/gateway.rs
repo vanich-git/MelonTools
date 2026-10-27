@@ -787,11 +787,7 @@ pub(crate) fn parse_tasklist_pids(output: &str) -> Vec<u32> {
 /// Image-name identity check: tasklist may report a bare name or a path.
 #[cfg(any(windows, test))]
 pub(crate) fn image_starts_with(image: &str, prefix: &str) -> bool {
-    let base = image
-        .rsplit(|c| c == '\\' || c == '/')
-        .next()
-        .unwrap_or(image)
-        .trim();
+    let base = image.rsplit(['\\', '/']).next().unwrap_or(image).trim();
     base.to_ascii_lowercase()
         .starts_with(&prefix.to_ascii_lowercase())
 }
