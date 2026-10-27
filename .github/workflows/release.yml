@@ -269,8 +269,9 @@ jobs:
           if (-not (Test-Path $makensis)) { throw "makensis not found" }
           $source = "Windows/dist/MelonTools-$version-win-x64-portable.exe"
           if (-not (Test-Path $source)) { Get-ChildItem Windows -Recurse -Filter "*portable*" | Format-Table FullName; throw "portable exe missing before makensis" }
+          $source = (Resolve-Path $source).Path
           Push-Location Windows
-          & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=..\dist\MelonTools-$version-win-x64-portable.exe" "installer\MelonTools.nsi"
+          & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=$source" "installer\MelonTools.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           Pop-Location
           $setup = "Windows/dist/MelonTools-$version-setup.exe"

@@ -164,7 +164,8 @@ jobs:
             choco install nsis --version=3.11 -y --no-progress
             $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           }
-          & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=../dist/MelonTools-$version-win-x64-portable.exe" "installer/MelonTools.nsi"
+          $source = (Resolve-Path "dist/MelonTools-$version-win-x64-portable.exe").Path
+          & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=$source" "installer/MelonTools.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           if (-not (Test-Path "dist/MelonTools-$version-setup.exe")) { throw "installer missing" }
 
