@@ -104,7 +104,11 @@ pub fn auth_files_in(dir: &Path) -> Vec<AuthFile> {
 pub fn newest_of(files: &[AuthFile]) -> Option<AuthFile> {
     files
         .iter()
-        .max_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.name.cmp(&b.name)))
+        .max_by(|a, b| {
+            a.modified
+                .cmp(&b.modified)
+                .then_with(|| a.name.cmp(&b.name))
+        })
         .cloned()
 }
 
@@ -147,10 +151,7 @@ impl Management {
         // The engine accepts either header; both are sent so the app is robust
         // against middleware variants.
         self.client
-            .request(
-                method,
-                format!("http://127.0.0.1:{}{}", self.port, path),
-            )
+            .request(method, format!("http://127.0.0.1:{}{}", self.port, path))
             .header("Authorization", format!("Bearer {}", self.secret))
             .header("X-Management-Key", self.secret.clone())
             .header("Accept", "application/json")
@@ -190,13 +191,10 @@ impl Management {
             .map_err(|_| "шлюз не отвечает — запустите его и повторите".to_string())?;
         let body = Self::body_json(&text);
         if status != 200 {
-            return Err(format!(
-                "шлюз отклонил вход ({})",
-                status
-            ));
+            return Err(format!("шлюз отклонил вход ({})", status));
         }
-        let (url, state) = parse_auth_url(&body)
-            .ok_or_else(|| "шлюз не вернул ссылку входа".to_string())?;
+        let (url, state) =
+            parse_auth_url(&body).ok_or_else(|| "шлюз не вернул ссылку входа".to_string())?;
         Ok(json!({ "url": url, "state": state }))
     }
 
@@ -213,8 +211,8 @@ impl Management {
             return Err(format!("шлюз отклонил запрос статуса ({})", status));
         }
         let value = Self::body_json(&text);
-        let state_name = parse_status(&value)
-            .ok_or_else(|| "шлюз не вернул статус входа".to_string())?;
+        let state_name =
+            parse_status(&value).ok_or_else(|| "шлюз не вернул статус входа".to_string())?;
         Ok(json!({ "status": state_name }))
     }
 
@@ -249,7 +247,10 @@ impl Management {
                 "/v8/management/credentials/refresh".to_string(),
                 Some(json!({ "name": name })),
             ),
-            None => ("/v8/management/credentials/refresh?all=true".to_string(), None),
+            None => (
+                "/v8/management/credentials/refresh?all=true".to_string(),
+                None,
+            ),
         };
         let (status, _) = self.call(reqwest::Method::POST, &path, body).await?;
         Ok(json!({ "ok": (200..300).contains(&status) }))
@@ -412,8 +413,7 @@ fn epoch_to_rfc3339(seconds: f64) -> Option<String> {
     if !(1_000_000_000.0..4_000_000_000.0).contains(&seconds) {
         return None;
     }
-    chrono::DateTime::from_timestamp(seconds as i64, 0)
-        .map(|dt| dt.to_rfc3339())
+    chrono::DateTime::from_timestamp(seconds as i64, 0).map(|dt| dt.to_rfc3339())
 }
 
 /// Percent-encodes a query value (state tokens, file names).
@@ -443,9 +443,7 @@ pub async fn usage_snapshot(settings: &Settings) -> Option<UsageSnapshot> {
                 let _ = management.refresh(Some(&file.name)).await;
                 tokio::time::sleep(Duration::from_millis(1200)).await;
             }
-            let fresh = newest_auth_file()?
-                .access_token
-                .filter(|t| !t.is_empty())?;
+            let fresh = newest_auth_file()?.access_token.filter(|t| !t.is_empty())?;
             fetch_usage(&client, &fresh).await.ok().flatten()
         }
         Err(_) => None,
@@ -454,10 +452,7 @@ pub async fn usage_snapshot(settings: &Settings) -> Option<UsageSnapshot> {
 
 /// `Err(status)` for 401/403 (the caller may refresh and retry), `Ok(None)`
 /// for any other non-200 answer, `Ok(Some(..))` on a usable payload.
-async fn fetch_usage(
-    client: &reqwest::Client,
-    token: &str,
-) -> Result<Option<UsageSnapshot>, u16> {
+async fn fetch_usage(client: &reqwest::Client, token: &str) -> Result<Option<UsageSnapshot>, u16> {
     let response = client
         .get(USAGE_URL)
         .header("Authorization", format!("Bearer {}", token))
@@ -486,11 +481,8 @@ mod tests {
     use std::fs;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "melon-claude-test-{}-{}",
-            std::process::id(),
-            tag
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("melon-claude-test-{}-{}", std::process::id(), tag));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         dir
@@ -498,11 +490,19 @@ mod tests {
 
     #[test]
     fn auth_file_predicates_split_codex_and_claude() {
-        assert!(is_codex_auth_file_name("codex-user@example.com-abc12345.json"));
-        assert!(!is_codex_auth_file_name("claude-1a2b3c4d-user@example.com.json"));
-        assert!(is_claude_auth_file_name("claude-1a2b3c4d-user@example.com.json"));
+        assert!(is_codex_auth_file_name(
+            "codex-user@example.com-abc12345.json"
+        ));
+        assert!(!is_codex_auth_file_name(
+            "claude-1a2b3c4d-user@example.com.json"
+        ));
+        assert!(is_claude_auth_file_name(
+            "claude-1a2b3c4d-user@example.com.json"
+        ));
         // The old cleanup matched every *.json — these must never be owned.
-        assert!(!is_codex_auth_file_name("claude-1a2b3c4d-user@example.com.json"));
+        assert!(!is_codex_auth_file_name(
+            "claude-1a2b3c4d-user@example.com.json"
+        ));
         assert!(!is_codex_auth_file_name("codex-user.json.bak"));
         assert!(!is_claude_auth_file_name("codex-user@example.com.json"));
         assert!(is_claude_model_id("claude-opus-5-5"));
@@ -565,7 +565,10 @@ mod tests {
         a.modified = None;
         let mut b = newer.clone();
         b.modified = None;
-        assert_eq!(newest_of(&[a, b]).unwrap().name, "claude-zzzz9999-new@example.com.json");
+        assert_eq!(
+            newest_of(&[a, b]).unwrap().name,
+            "claude-zzzz9999-new@example.com.json"
+        );
         assert!(newest_of(&[]).is_none());
     }
 
@@ -665,7 +668,9 @@ mod tests {
     fn usage_stays_none_without_usable_data() {
         assert!(parse_usage(&json!({})).is_none());
         assert!(parse_usage(&json!({"five_hour": {}, "seven_day": {}})).is_none());
-        assert!(parse_usage(&json!({"limits": [{"kind": "weekly_scoped", "percent": 5}]})).is_none());
+        assert!(
+            parse_usage(&json!({"limits": [{"kind": "weekly_scoped", "percent": 5}]})).is_none()
+        );
     }
 
     #[test]
@@ -698,7 +703,10 @@ mod tests {
         assert_eq!(url, "https://claude.ai/oauth/authorize?x=1");
         assert_eq!(state.as_deref(), Some("abc"));
         assert!(parse_auth_url(&json!({"status": "ok"})).is_none());
-        assert_eq!(parse_status(&json!({"status": "wait"})).as_deref(), Some("wait"));
+        assert_eq!(
+            parse_status(&json!({"status": "wait"})).as_deref(),
+            Some("wait")
+        );
         assert!(parse_status(&json!({})).is_none());
     }
 

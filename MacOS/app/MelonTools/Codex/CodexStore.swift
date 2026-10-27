@@ -549,7 +549,13 @@ final class CodexStore: ObservableObject {
         let credentials = accounts.map { account in
             account.id + ":" + (account.lastRefresh ?? "")
         }.joined(separator: ",")
-        return ids + "|" + values + "|" + credentials
+        // Per-account model filters are written as `excluded_models`, so a
+        // selection change must reach the auth files too.
+        let models = accounts.map { account in
+            let selection = account.selectedModels?.sorted().joined(separator: "+") ?? "*"
+            return "\(account.id):\(selection)"
+        }.joined(separator: ",")
+        return ids + "|" + values + "|" + credentials + "|" + models
     }
 
     private func routingNoteText() -> String? {
@@ -598,6 +604,79 @@ final class CodexStore: ObservableObject {
         } catch {
             lastMessage = L("Save failed") + ": \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Model selection (per account)
+
+    /// Pool models this account may route. A `nil` stored selection means the
+    /// whole visible pool (legacy vaults).
+    func effectiveSelectedModels(for account: CodexAccount) -> Set<String> {
+        CodexPoolModelsStore.effectiveSelection(
+            for: account,
+            poolSlugs: CodexPoolModelsStore.shared.slugs
+        )
+    }
+
+    /// Saves the checked models of one account. Returns an error text, or
+    /// `nil` on success. An empty selection is rejected: the account must keep
+    /// at least one model.
+    @discardableResult
+    func updateAccountModels(_ account: CodexAccount, selected: Set<String>) -> String? {
+        guard let index = accounts.firstIndex(where: { $0.id == account.id }) else {
+            return L("Account not found.")
+        }
+        let pool = CodexPoolModelsStore.shared.slugs
+        guard let valid = CodexPoolModelsStore.validatedSelection(selected, poolSlugs: pool) else {
+            return String(format: L("Select at least one model for %@."), accounts[index].displayName)
+        }
+        accounts[index].selectedModels = valid.sorted()
+        applyModelSelection()
+        return nil
+    }
+
+    /// Global enable/disable: adds or removes one pool model on every account.
+    /// The whole operation is rejected when any account would be left with no
+    /// model; the error names those accounts.
+    @discardableResult
+    func setPoolModel(_ slug: String, enabled: Bool) -> String? {
+        let pool = CodexPoolModelsStore.shared.slugs
+        guard pool.contains(slug) else {
+            return String(format: L("Unknown model: %@"), slug)
+        }
+        guard !accounts.isEmpty else { return nil }
+        let plan = CodexPoolModelsStore.poolTogglePlan(
+            slug: slug,
+            enabled: enabled,
+            accounts: accounts,
+            poolSlugs: pool
+        )
+        guard plan.emptyAccounts.isEmpty else {
+            return String(
+                format: L("Cannot change %@: %@ would have no models."),
+                slug,
+                plan.emptyAccounts.joined(separator: ", ")
+            )
+        }
+        // A successful global toggle materializes explicit lists everywhere.
+        for index in accounts.indices {
+            guard let selection = plan.selections[accounts[index].id] else { continue }
+            accounts[index].selectedModels = selection.sorted()
+        }
+        applyModelSelection()
+        return nil
+    }
+
+    /// Persists the selection, writes the gateway auth files (they carry
+    /// `excluded_models`) and regenerates the Codex model catalog.
+    func applyModelSelection() {
+        save()
+        let gateway = CodexGatewayService.shared
+        let priorities = effectivePriorities()
+        gateway.syncAccountsLive(accounts, priorities: priorities, poolSlugs: CodexPoolModelsStore.shared.slugs)
+        if gateway.isRunning {
+            appliedRoutingSignature = routingSignature(priorities: priorities)
+        }
+        ModelSourcesStore.shared.syncCatalogIfNeeded()
     }
 
     // MARK: - Import
@@ -673,6 +752,7 @@ final class CodexStore: ObservableObject {
             merged.weeklyReservePercent = old.weeklyReservePercent
             merged.preferredFirst = old.preferredFirst
             merged.isBackup = old.isBackup
+            merged.selectedModels = old.selectedModels
             merged.subscriptionUpdatedAt = old.subscriptionUpdatedAt
             accounts[idx] = merged
         } else {
@@ -1500,7 +1580,7 @@ final class CodexStore: ObservableObject {
         records = records.filter { !$0.key.hasPrefix(prefix) }
         notificationRecords = records
         save()
-        applyRoutingIfNeeded(reason: L("account removed"))
+        applyModelSelection()
     }
 
     func setNote(_ account: CodexAccount, note: String) {

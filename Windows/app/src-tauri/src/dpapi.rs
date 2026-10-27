@@ -74,9 +74,8 @@ fn decode_payload(encoded: &str) -> Result<Vec<u8>, Undecryptable> {
 /// The copy is zeroized when the caller drops it.
 fn escape_reserved(value: &str) -> Zeroizing<String> {
     if is_reserved(value) {
-        let encoded = Zeroizing::new(
-            base64::engine::general_purpose::STANDARD.encode(value.as_bytes()),
-        );
+        let encoded =
+            Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(value.as_bytes()));
         Zeroizing::new(format!("{}{}", PREFIX_PLAIN, encoded.as_str()))
     } else {
         Zeroizing::new(value.to_string())
@@ -210,8 +209,7 @@ mod win {
         if output.pbData.is_null() {
             return Zeroizing::new(Vec::new());
         }
-        let bytes =
-            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         std::ptr::write_bytes(output.pbData, 0, output.cbData as usize);
         LocalFree(output.pbData as *mut core::ffi::c_void);
         Zeroizing::new(bytes)
@@ -294,7 +292,9 @@ mod tests {
         if trailer != entropy.unwrap_or(&[]) {
             return None;
         }
-        Some(Zeroizing::new(cipher.iter().map(|byte| byte ^ XOR).collect()))
+        Some(Zeroizing::new(
+            cipher.iter().map(|byte| byte ^ XOR).collect(),
+        ))
     }
 
     fn legacy_v1(secret: &str) -> String {
@@ -336,10 +336,16 @@ mod tests {
     fn v2_roundtrip_uses_entropy() {
         let stored = protect_with("sk-v2-token", fake_encrypt).unwrap();
         assert!(stored.starts_with(PREFIX_V2));
-        assert_eq!(unprotect_with(&stored, fake_decrypt).unwrap(), "sk-v2-token");
+        assert_eq!(
+            unprotect_with(&stored, fake_decrypt).unwrap(),
+            "sk-v2-token"
+        );
 
         let raw = decode_payload(stored.strip_prefix(PREFIX_V2).unwrap()).unwrap();
-        assert!(fake_decrypt(&raw, None).is_none(), "v2 must require entropy");
+        assert!(
+            fake_decrypt(&raw, None).is_none(),
+            "v2 must require entropy"
+        );
         assert!(fake_decrypt(&raw, Some(b"wrong")).is_none());
         assert!(fake_decrypt(&raw, Some(ENTROPY)).is_some());
     }

@@ -2,11 +2,13 @@
 //! `%USERPROFILE%\.codex\config.toml` (line-based editing, ported from the
 //! macOS app) plus the model catalog the Codex picker reads.
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::paths;
+use crate::vault::Account;
 
 pub const PROVIDER_ID: &str = "melon_local_access";
 const PROVIDER_NAME: &str = "Melon Tools API";
@@ -205,11 +207,7 @@ pub fn apply(port: u16, api_key: &str) -> Result<(), String> {
             let _ = std::fs::copy(&path, &backup);
         }
     }
-    let mut updated = upsert_route(
-        &current,
-        &format!("http://127.0.0.1:{}/v1", port),
-        api_key,
-    );
+    let mut updated = upsert_route(&current, &format!("http://127.0.0.1:{}/v1", port), api_key);
     if catalog_path().exists() {
         updated = upsert_top_level_key(&updated, "model_catalog_json", CATALOG_FILE);
     } else {
@@ -319,9 +317,16 @@ pub fn vision_capable(model_id: &str, owned_by: Option<&str>) -> bool {
     if tail.starts_with("gpt-oss-") {
         return false;
     }
-    if ["dall-e", "flux", "stable-diffusion", "imagen", "gpt-image", "embed"]
-        .iter()
-        .any(|marker| tail.contains(marker))
+    if [
+        "dall-e",
+        "flux",
+        "stable-diffusion",
+        "imagen",
+        "gpt-image",
+        "embed",
+    ]
+    .iter()
+    .any(|marker| tail.contains(marker))
     {
         return false;
     }
@@ -365,10 +370,7 @@ pub fn vision_capable(model_id: &str, owned_by: Option<&str>) -> bool {
 fn glm_vision_suffix(tail: &str) -> bool {
     tail.split('-').skip(1).any(|part| {
         part == "v"
-            || (part.ends_with('v')
-                && part[..part.len() - 1]
-                    .chars()
-                    .any(|c| c.is_ascii_digit()))
+            || (part.ends_with('v') && part[..part.len() - 1].chars().any(|c| c.is_ascii_digit()))
     })
 }
 
@@ -424,7 +426,9 @@ pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> 
 /// still maps everything unknown to `openai` — wiring it up is a follow-up).
 #[allow(dead_code)]
 pub fn provider_tag(slug: &str) -> &'static str {
-    third_party_band(slug).map(|(tag, _)| tag).unwrap_or("openai")
+    third_party_band(slug)
+        .map(|(tag, _)| tag)
+        .unwrap_or("openai")
 }
 
 const PRIVATE_CATALOG_KEYS: &[&str] = &[
@@ -476,34 +480,57 @@ struct ModelsCache {
     template: Value,
 }
 
-/// Parses the cache into a by-slug map plus a fallback entry for gateway ids
-/// the cache does not know. The cache file stores `models` as an array; a
-/// slug-keyed object is also accepted for older/newer layouts.
-fn models_cache_from_value(value: &Value) -> Option<ModelsCache> {
+/// Ordered entries of the Codex model cache. The file stores `models` as an
+/// array; a slug-keyed object is also accepted for older/newer layouts (keys
+/// are sorted so the pool order stays stable). Private metadata is kept: the
+/// catalog schema injection reads `base_instructions`/`model_messages` from
+/// these entries.
+fn models_cache_entries(value: &Value) -> Vec<Value> {
     let raw = value.get("models").unwrap_or(value);
-    let mut entries: Vec<(String, Value)> = Vec::new();
+    let mut entries: Vec<Value> = Vec::new();
     match raw {
         Value::Array(items) => {
             for item in items {
-                if let Some(slug) = item.get("slug").and_then(Value::as_str) {
-                    let mut entry = item.clone();
-                    entry["slug"] = json!(slug);
-                    entries.push((slug.to_string(), entry));
-                }
+                let Some(slug) = item
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .filter(|slug| !slug.is_empty())
+                else {
+                    continue;
+                };
+                let mut entry = item.clone();
+                entry["slug"] = json!(slug);
+                entries.push(entry);
             }
         }
         Value::Object(map) => {
-            for (slug, item) in map {
-                if !item.is_object() {
+            let mut slugs: Vec<&String> = map.keys().collect();
+            slugs.sort();
+            for slug in slugs {
+                let item = &map[slug];
+                if !item.is_object() || slug.is_empty() {
                     continue;
                 }
                 let mut entry = item.clone();
                 entry["slug"] = json!(slug);
-                entries.push((slug.clone(), entry));
+                entries.push(entry);
             }
         }
-        _ => return None,
+        _ => {}
     }
+    entries
+}
+
+/// Parses the cache into a by-slug map plus a fallback entry for gateway ids
+/// the cache does not know.
+fn models_cache_from_value(value: &Value) -> Option<ModelsCache> {
+    let entries: Vec<(String, Value)> = models_cache_entries(value)
+        .into_iter()
+        .filter_map(|entry| {
+            let slug = entry.get("slug").and_then(Value::as_str)?.to_string();
+            Some((slug, entry))
+        })
+        .collect();
     if entries.is_empty() {
         return None;
     }
@@ -596,6 +623,262 @@ fn inject_catalog_schema(models: &mut [Value], cache: Option<&ModelsCache>) {
     }
 }
 
+// MARK: - Account model pool
+
+/// Priority used when a cache entry does not carry one (schema default).
+const DEFAULT_POOL_PRIORITY: i64 = 50;
+
+/// One selectable model of the shared Codex account pool. Mirrors the macOS
+/// `CodexPoolModel` shape the picker consumes.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolModel {
+    pub slug: String,
+    pub display: String,
+    pub context_length: Option<u64>,
+    pub priority: i64,
+}
+
+fn bundled_base_catalog() -> Result<Value, String> {
+    serde_json::from_str(include_str!("../../resources/BaseModelCatalog.json"))
+        .map_err(|e| e.to_string())
+}
+
+/// The `models` array of a catalog value, as independent clones.
+fn catalog_models(value: &Value) -> Vec<Value> {
+    value
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn bundled_base_entries() -> Vec<Value> {
+    bundled_base_catalog()
+        .map(|value| catalog_models(&value))
+        .unwrap_or_default()
+}
+
+/// A catalog entry the picker may list and the user may select. Missing
+/// `visibility` means `list` (the schema default); anything else is an
+/// internal route and is never selectable.
+fn is_visible_pool_entry(entry: &Value) -> bool {
+    entry
+        .get("visibility")
+        .and_then(Value::as_str)
+        .unwrap_or("list")
+        == "list"
+}
+
+fn entry_slug(entry: &Value) -> Option<&str> {
+    entry
+        .get("slug")
+        .and_then(Value::as_str)
+        .filter(|slug| !slug.is_empty())
+}
+
+/// Visible pool entries: bundled `list` entries first, then visible cache-only
+/// entries Codex discovered. A duplicate slug keeps the bundled entry.
+fn merge_pool_entries(base: &[Value], cache: &[Value]) -> Vec<Value> {
+    let mut merged: Vec<Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for entry in base.iter().chain(cache.iter()) {
+        if !is_visible_pool_entry(entry) {
+            continue;
+        }
+        let Some(slug) = entry_slug(entry) else {
+            continue;
+        };
+        if seen.insert(slug.to_string()) {
+            merged.push(entry.clone());
+        }
+    }
+    merged
+}
+
+/// Internal base rows (`visibility != "list"`) stay in the generated catalog
+/// so Codex keeps its hidden routes, but they are never offered as choices.
+fn hidden_base_entries(base: &[Value]) -> Vec<Value> {
+    base.iter()
+        .filter(|entry| !is_visible_pool_entry(entry))
+        .cloned()
+        .collect()
+}
+
+/// Hidden cache-only rows (`visibility != "list"`) that Codex discovered but
+/// the bundled base does not own. The bundled base stays authoritative for a
+/// slug it already carries, and a repeated cache slug appears only once.
+fn hidden_cache_entries(base: &[Value], cache: &[Value]) -> Vec<Value> {
+    let mut seen: HashSet<String> = base
+        .iter()
+        .filter_map(entry_slug)
+        .map(String::from)
+        .collect();
+    let mut hidden: Vec<Value> = Vec::new();
+    for entry in cache {
+        let Some(slug) = entry_slug(entry) else {
+            continue;
+        };
+        let is_new = seen.insert(slug.to_string());
+        if is_new && !is_visible_pool_entry(entry) {
+            hidden.push(entry.clone());
+        }
+    }
+    hidden
+}
+
+/// Slugs reach the UI inside `onclick`/`onchange` attribute strings, so only
+/// the ASCII characters real model ids use are accepted. A tampered cache file
+/// cannot break out of the JavaScript string this way.
+fn is_safe_pool_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+}
+
+fn pool_model_from_entry(entry: &Value) -> Option<PoolModel> {
+    let slug = entry_slug(entry)?;
+    if !is_safe_pool_slug(slug) {
+        return None;
+    }
+    let slug = slug.to_string();
+    let display = entry
+        .get("display_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|display| !display.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| slug.clone());
+    Some(PoolModel {
+        slug,
+        display,
+        context_length: entry.get("context_window").and_then(Value::as_u64),
+        priority: entry
+            .get("priority")
+            .and_then(Value::as_i64)
+            .unwrap_or(DEFAULT_POOL_PRIORITY),
+    })
+}
+
+/// Pool models from explicit base and cache entries, ordered by priority,
+/// display name and slug like the macOS picker.
+fn pool_models_in(base: &[Value], cache: &[Value]) -> Vec<PoolModel> {
+    let mut models: Vec<PoolModel> = merge_pool_entries(base, cache)
+        .iter()
+        .filter_map(pool_model_from_entry)
+        .collect();
+    models.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| {
+                left.display
+                    .to_lowercase()
+                    .cmp(&right.display.to_lowercase())
+            })
+            .then_with(|| left.slug.cmp(&right.slug))
+    });
+    models
+}
+
+/// Visible pool models for the picker: bundled `BaseModelCatalog.json` `list`
+/// entries merged with the visible models Codex discovered.
+pub fn pool_models() -> Vec<PoolModel> {
+    let base = bundled_base_entries();
+    let cache = load_models_cache()
+        .map(|value| models_cache_entries(&value))
+        .unwrap_or_default();
+    pool_models_in(&base, &cache)
+}
+
+fn visible_pool_slugs_in(base: &[Value], cache: &[Value]) -> HashSet<String> {
+    merge_pool_entries(base, cache)
+        .iter()
+        .filter_map(entry_slug)
+        .map(String::from)
+        .collect()
+}
+
+/// Slugs of the visible pool (the only models an account may select).
+pub fn visible_pool_slugs() -> HashSet<String> {
+    let base = bundled_base_entries();
+    let cache = load_models_cache()
+        .map(|value| models_cache_entries(&value))
+        .unwrap_or_default();
+    visible_pool_slugs_in(&base, &cache)
+}
+
+/// Pool models an account may route. `None` selection means the whole visible
+/// pool (legacy vaults); an explicit list is an allowlist. Slugs outside the
+/// pool are ignored — they cannot appear in the picker anyway.
+pub fn effective_selected_models(account: &Account, all: &HashSet<String>) -> HashSet<String> {
+    let Some(selected) = &account.selected_models else {
+        return all.clone();
+    };
+    let mut effective: HashSet<String> = HashSet::new();
+    for value in selected {
+        let slug = value.trim();
+        if !slug.is_empty() && all.contains(slug) {
+            effective.insert(slug.to_string());
+        }
+    }
+    effective
+}
+
+/// Union of every account's effective selection: the common picker pool. No
+/// accounts means the whole visible pool. A union emptied by stale explicit
+/// lists also falls back to the full pool so the picker cannot become
+/// unusable.
+pub fn selected_pool_slugs_in(accounts: &[Account], all: &HashSet<String>) -> HashSet<String> {
+    if accounts.is_empty() {
+        return all.clone();
+    }
+    let mut union: HashSet<String> = HashSet::new();
+    for account in accounts {
+        union.extend(effective_selected_models(account, all));
+    }
+    if union.is_empty() {
+        all.clone()
+    } else {
+        union
+    }
+}
+
+/// Union of the account selections against the live visible pool.
+pub fn selected_pool_slugs(accounts: &[Account]) -> HashSet<String> {
+    selected_pool_slugs_in(accounts, &visible_pool_slugs())
+}
+
+/// Visible pool slugs the gateway must not route to this account. Sorted so
+/// the auth file payload stays stable between syncs.
+pub fn excluded_models_for(account: &Account, all: &HashSet<String>) -> Vec<String> {
+    let effective = effective_selected_models(account, all);
+    let mut excluded: Vec<String> = all.difference(&effective).cloned().collect();
+    excluded.sort();
+    excluded
+}
+
+/// Keeps hidden entries and visible entries the union selects. Entries
+/// without a slug stay: they cannot be filtered safely.
+fn filtered_pool_entries(entries: &[Value], selected: Option<&HashSet<String>>) -> Vec<Value> {
+    let Some(selected) = selected else {
+        return entries.to_vec();
+    };
+    entries
+        .iter()
+        .filter(|entry| {
+            if !is_visible_pool_entry(entry) {
+                return true;
+            }
+            match entry_slug(entry) {
+                Some(slug) => selected.contains(slug),
+                None => true,
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 /// Builds one provider catalog entry from the bundled base template. Image
 /// input is written explicitly: a plain clone would keep the template's
 /// modalities for every provider model, which is what made Codex reject pasted
@@ -653,10 +936,7 @@ fn provider_display_name(tag: &str) -> &str {
 /// OpenCode and Antigravity (for example Gemini 3.5 Flash Lite) would
 /// otherwise render once and steal the other provider's slot. Qualify only
 /// colliding names with the provider so both rows stay selectable.
-fn append_unique_catalog_entries(
-    models: &mut Vec<Value>,
-    pending: Vec<(Value, String)>,
-) -> usize {
+fn append_unique_catalog_entries(models: &mut Vec<Value>, pending: Vec<(Value, String)>) -> usize {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for entry in models.iter() {
         if let Some(name) = entry.get("display_name").and_then(Value::as_str) {
@@ -683,53 +963,16 @@ fn append_unique_catalog_entries(
     custom
 }
 
-/// Regenerates `%~/.codex/melon-model-catalog.json`: the bundled base entries
-/// (account-pool models) plus one cloned entry per gateway model that is not
-/// in the pool list (opencode/*, openrouter/*). Returns the custom count.
-pub async fn sync_catalog(
-    client: &reqwest::Client,
-    port: u16,
-    api_key: &str,
-) -> Result<usize, String> {
-    let base: Value =
-        serde_json::from_str(include_str!("../../resources/BaseModelCatalog.json"))
-            .map_err(|e| e.to_string())?;
-    let mut models: Vec<Value> = base
-        .get("models")
-        .and_then(|m| m.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for model in &mut models {
-        strip_private_catalog_metadata(model);
-    }
-    if models.is_empty() {
-        return Err("базовый каталог пуст".to_string());
-    }
-    let pool_slugs: HashSet<String> = models
-        .iter()
-        .filter_map(|m| m.get("slug").and_then(|s| s.as_str()).map(String::from))
-        .collect();
-    let template = models
-        .iter()
-        .find(|m| m.get("slug").and_then(|v| v.as_str()) == Some("gpt-6.1-sol"))
-        .or_else(|| models.iter().find(|m| m.get("context_window").is_some()))
-        .cloned()
-        .ok_or_else(|| "нет шаблонной записи".to_string())?;
-
-    let list: Value = client
-        .get(format!("http://127.0.0.1:{}/v1/models", port))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut entries: Vec<Value> = list
-        .get("data")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
+/// Appends one catalog entry per gateway model outside the pool
+/// (opencode/*, openrouter/*, deepinfra/*, vercel/*, Claude, Antigravity).
+/// Every pool slug — selected or not — keeps its name, so a third-party model
+/// can never shadow an account-pool route. Returns the custom count.
+fn append_third_party_catalog_entries(
+    models: &mut Vec<Value>,
+    template: &Value,
+    mut entries: Vec<Value>,
+    pool_slugs: &HashSet<String>,
+) -> usize {
     // Ownership-aware: when the same id is served by both Claude and
     // Antigravity, the Antigravity entry wins the band.
     entries.sort_by_key(|entry| !crate::antigravity::is_antigravity_model_entry(entry));
@@ -785,14 +1028,106 @@ pub async fn sync_catalog(
             }
         };
         let owned_by = entry.get("owned_by").and_then(|v| v.as_str());
-        let generated = custom_catalog_entry(&template, &id, owned_by, band, index);
+        let generated = custom_catalog_entry(template, &id, owned_by, band, index);
         pending.push((generated, provider_display_name(tag).to_string()));
     }
-    let custom = append_unique_catalog_entries(&mut models, pending);
+    append_unique_catalog_entries(models, pending)
+}
 
-    // The bundled entries were stripped of private metadata above; restore the
+/// Assembles the generated catalog: visible pool entries selected by the
+/// account union, hidden base routes, then third-party models. The template
+/// and the shadow-protection slug set come from the full pool, not the
+/// filtered output.
+fn build_catalog_models(
+    base_entries: &[Value],
+    cache_entries: &[Value],
+    gateway_entries: Vec<Value>,
+    selected: Option<&HashSet<String>>,
+) -> Result<(Vec<Value>, usize), String> {
+    if base_entries.is_empty() {
+        return Err("базовый каталог пуст".to_string());
+    }
+    let mut entries = merge_pool_entries(base_entries, cache_entries);
+    entries.extend(hidden_base_entries(base_entries));
+    entries.extend(hidden_cache_entries(base_entries, cache_entries));
+    // Every pool slug — visible or hidden — reserves its name, selected or
+    // not, so a third-party model can never shadow an account-pool route.
+    let pool_slugs: HashSet<String> = entries
+        .iter()
+        .filter_map(entry_slug)
+        .map(String::from)
+        .collect();
+    for entry in &mut entries {
+        strip_private_catalog_metadata(entry);
+    }
+    let template = entries
+        .iter()
+        .find(|entry| entry_slug(entry) == Some("gpt-6.1-sol"))
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|entry| entry.get("context_window").is_some())
+        })
+        .cloned()
+        .ok_or_else(|| "нет шаблонной записи".to_string())?;
+    let mut models = filtered_pool_entries(&entries, selected);
+    let custom =
+        append_third_party_catalog_entries(&mut models, &template, gateway_entries, &pool_slugs);
+    Ok((models, custom))
+}
+
+/// Regenerates `%~/.codex/melon-model-catalog.json`: the visible account-pool
+/// models selected by at least one account, the hidden base routes, plus one
+/// cloned entry per gateway model outside the pool. Returns the custom count.
+pub async fn sync_catalog(
+    client: &reqwest::Client,
+    port: u16,
+    api_key: &str,
+) -> Result<usize, String> {
+    // The common pool is the union of every account's selection; no accounts
+    // means every visible model.
+    let selected = selected_pool_slugs(&crate::vault::accounts());
+    sync_catalog_with_selection(client, port, api_key, Some(&selected)).await
+}
+
+async fn sync_catalog_with_selection(
+    client: &reqwest::Client,
+    port: u16,
+    api_key: &str,
+    selected: Option<&HashSet<String>>,
+) -> Result<usize, String> {
+    let base = bundled_base_catalog()?;
+    let base_entries = catalog_models(&base);
+    if base_entries.is_empty() {
+        return Err("базовый каталог пуст".to_string());
+    }
+    let cache_value = load_models_cache();
+    let cache_entries = cache_value
+        .as_ref()
+        .map(models_cache_entries)
+        .unwrap_or_default();
+
+    let list: Value = client
+        .get(format!("http://127.0.0.1:{}/v1/models", port))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let gateway_entries: Vec<Value> = list
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (mut models, custom) =
+        build_catalog_models(&base_entries, &cache_entries, gateway_entries, selected)?;
+
+    // Pool entries were stripped of private metadata above; restore the
     // schema-required fields from the Codex cache (best effort).
-    let cache = load_models_cache().and_then(|value| models_cache_from_value(&value));
+    let cache = cache_value.as_ref().and_then(models_cache_from_value);
     inject_catalog_schema(&mut models, cache.as_ref());
 
     let payload = json!({ "models": models });
@@ -810,21 +1145,34 @@ pub async fn sync_catalog(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_unique_catalog_entries, custom_catalog_entry, inject_catalog_schema,
-        models_cache_from_value, prettify, provider_display_name, provider_tag,
+        append_unique_catalog_entries, build_catalog_models, custom_catalog_entry,
+        effective_selected_models, entry_slug, excluded_models_for, inject_catalog_schema,
+        merge_pool_entries, models_cache_entries, models_cache_from_value, pool_models_in,
+        prettify, provider_display_name, provider_tag, selected_pool_slugs_in,
         strip_private_catalog_metadata, third_party_band, third_party_band_for_model,
-        vision_capable,
+        visible_pool_slugs_in, vision_capable,
     };
+    use crate::vault::Account;
     use serde_json::{json, Value};
+    use std::collections::HashSet;
 
     #[test]
     fn claude_ids_get_band_500_and_the_claude_tag() {
         assert_eq!(third_party_band("claude-opus-5-5"), Some(("Claude", 500)));
-        assert_eq!(third_party_band("claude-haiku-4-5-20251001"), Some(("Claude", 500)));
+        assert_eq!(
+            third_party_band("claude-haiku-4-5-20251001"),
+            Some(("Claude", 500))
+        );
         assert_eq!(provider_tag("claude-opus-5-5"), "Claude");
         // The existing bands stay untouched.
-        assert_eq!(third_party_band("opencode/glm-5.3"), Some(("opencode", 100)));
-        assert_eq!(third_party_band("openrouter/x-ai/grok-4.7"), Some(("openrouter", 200)));
+        assert_eq!(
+            third_party_band("opencode/glm-5.3"),
+            Some(("opencode", 100))
+        );
+        assert_eq!(
+            third_party_band("openrouter/x-ai/grok-4.7"),
+            Some(("openrouter", 200))
+        );
         // Account-pool ids are not published by this path.
         assert_eq!(third_party_band("gpt-6.1-sol"), None);
         assert_eq!(provider_tag("gpt-6.1-sol"), "openai");
@@ -874,7 +1222,10 @@ mod tests {
         );
 
         // The existing bands stay untouched.
-        assert_eq!(third_party_band("opencode/glm-5.3"), Some(("opencode", 100)));
+        assert_eq!(
+            third_party_band("opencode/glm-5.3"),
+            Some(("opencode", 100))
+        );
         assert_eq!(
             third_party_band("openrouter/x-ai/grok-4.7"),
             Some(("openrouter", 200))
@@ -991,7 +1342,9 @@ mod tests {
         assert!(value.get("base_instructions").is_none());
         assert!(value["nested"].get("policy").is_none());
         assert_eq!(value["nested"]["safe"], true);
-        assert!(value["nested"]["items"][0].get("timeout_instructions").is_none());
+        assert!(value["nested"]["items"][0]
+            .get("timeout_instructions")
+            .is_none());
     }
 
     #[test]
@@ -1006,7 +1359,10 @@ mod tests {
         assert!(vision_capable("qwen2.5-vl-72b-instruct", None));
         assert!(vision_capable("gpt-4o-mini", None));
         assert!(vision_capable("gpt-5.1", None));
-        assert!(vision_capable("openrouter/meta-llama/llama-3.2-11b-vision", None));
+        assert!(vision_capable(
+            "openrouter/meta-llama/llama-3.2-11b-vision",
+            None
+        ));
         assert!(vision_capable("mistralai/pixtral-large", None));
         assert!(vision_capable("glm-4.5v", None));
     }
@@ -1166,5 +1522,260 @@ mod tests {
             models[0]["experimental_supported_tools"],
             json!(["send_user_message_async", "clock"])
         );
+    }
+
+    fn pool_account(selection: Option<Vec<&str>>) -> Account {
+        let mut account = Account::default();
+        account.id = "pool-account".to_string();
+        account.selected_models =
+            selection.map(|slugs| slugs.into_iter().map(String::from).collect());
+        account
+    }
+
+    fn slugs_of(entries: &[Value]) -> Vec<&str> {
+        entries.iter().filter_map(entry_slug).collect()
+    }
+
+    /// Fixture base catalog: two visible routes plus one hidden internal route.
+    fn fixture_pool_base() -> Vec<Value> {
+        vec![
+            json!({
+                "slug": "gpt-6.1-sol",
+                "display_name": "GPT-6.1 Sol",
+                "context_window": 272_000,
+                "priority": 0
+            }),
+            json!({
+                "slug": "claude-haiku-4-5-20251001",
+                "display_name": "Claude Haiku 4.5",
+                "context_window": 200_000,
+                "priority": 8
+            }),
+            json!({
+                "slug": "claude-opus-5-5",
+                "display_name": "Claude Opus 5.5",
+                "visibility": "hide",
+                "context_window": 200_000
+            }),
+        ]
+    }
+
+    /// Fixture cache: a duplicate slug, a cache-only visible row, a hidden row.
+    fn fixture_pool_cache() -> Vec<Value> {
+        vec![
+            json!({"slug": "gpt-6.1-sol", "display_name": "Cache Sol"}),
+            json!({
+                "slug": "gpt-6.1-cache-only",
+                "display_name": "Cache Only",
+                "priority": 9
+            }),
+            json!({
+                "slug": "gpt-image-2.5",
+                "display_name": "Cache Hidden",
+                "visibility": "hide"
+            }),
+        ]
+    }
+
+    #[test]
+    fn merged_pool_prefers_bundled_entries_and_keeps_cache_only_models() {
+        let base = fixture_pool_base();
+        let cache = fixture_pool_cache();
+
+        let merged = merge_pool_entries(&base, &cache);
+
+        // The bundled row wins the duplicate slug; the cache-only row is added.
+        assert_eq!(
+            slugs_of(&merged),
+            vec![
+                "gpt-6.1-sol",
+                "claude-haiku-4-5-20251001",
+                "gpt-6.1-cache-only"
+            ]
+        );
+        assert_eq!(merged[0]["display_name"], json!("GPT-6.1 Sol"));
+
+        // Hidden base and hidden cache rows are never offered as choices.
+        let visible = visible_pool_slugs_in(&base, &cache);
+        let expected: HashSet<String> = [
+            "gpt-6.1-sol",
+            "claude-haiku-4-5-20251001",
+            "gpt-6.1-cache-only",
+        ]
+        .iter()
+        .map(|slug| slug.to_string())
+        .collect();
+        assert_eq!(visible, expected);
+
+        let ordered: Vec<String> = pool_models_in(&base, &cache)
+            .into_iter()
+            .map(|model| model.slug)
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                "gpt-6.1-sol",
+                "claude-haiku-4-5-20251001",
+                "gpt-6.1-cache-only"
+            ]
+        );
+    }
+
+    #[test]
+    fn account_selection_helpers_follow_the_visible_pool() {
+        let visible: HashSet<String> = [
+            "gpt-6.1-sol",
+            "claude-haiku-4-5-20251001",
+            "gpt-6.1-cache-only",
+        ]
+        .iter()
+        .map(|slug| slug.to_string())
+        .collect();
+        let legacy = pool_account(None);
+        let restricted = pool_account(Some(vec![
+            " gpt-6.1-sol ",
+            "claude-haiku-4-5-20251001",
+            "unknown-model",
+        ]));
+        let restricted_effective: HashSet<String> = ["gpt-6.1-sol", "claude-haiku-4-5-20251001"]
+            .iter()
+            .map(|slug| slug.to_string())
+            .collect();
+
+        assert_eq!(effective_selected_models(&legacy, &visible), visible);
+        assert_eq!(
+            effective_selected_models(&restricted, &visible),
+            restricted_effective
+        );
+
+        // No accounts means the whole pool; an explicit list is an allowlist.
+        assert_eq!(selected_pool_slugs_in(&[], &visible), visible);
+        assert_eq!(selected_pool_slugs_in(&[legacy], &visible), visible);
+        assert_eq!(
+            selected_pool_slugs_in(&[restricted.clone()], &visible),
+            restricted_effective
+        );
+
+        // Exclusions are the visible pool minus the selection, sorted.
+        assert_eq!(
+            excluded_models_for(&restricted, &visible),
+            vec!["gpt-6.1-cache-only"]
+        );
+        assert!(excluded_models_for(&pool_account(None), &visible).is_empty());
+    }
+
+    #[test]
+    fn catalog_build_filters_visible_entries_and_keeps_hidden_routes() {
+        let base = fixture_pool_base();
+        let selected: HashSet<String> = ["gpt-6.1-sol".to_string()].into_iter().collect();
+
+        let (models, custom) =
+            build_catalog_models(&base, &[], Vec::new(), Some(&selected)).expect("catalog");
+
+        // The unselected visible row is dropped; the hidden route always stays.
+        assert_eq!(slugs_of(&models), vec!["gpt-6.1-sol", "claude-opus-5-5"]);
+        assert_eq!(custom, 0);
+    }
+
+    #[test]
+    fn catalog_build_keeps_hidden_cache_only_entries_once() {
+        let base = fixture_pool_base();
+        let cache = vec![
+            json!({
+                "slug": "gpt-image-2.5",
+                "display_name": "Cache Hidden",
+                "visibility": "hide"
+            }),
+            json!({
+                "slug": "gpt-image-2.5",
+                "display_name": "Cache Hidden Duplicate",
+                "visibility": "hide"
+            }),
+            json!({
+                "slug": "claude-opus-5-5",
+                "display_name": "Cache Hidden Base Duplicate",
+                "visibility": "hide"
+            }),
+            json!({"slug": "gpt-6.1-cache-only", "display_name": "Cache Only"}),
+        ];
+        let selected: HashSet<String> =
+            ["gpt-6.1-sol".to_string(), "gpt-6.1-cache-only".to_string()]
+                .into_iter()
+                .collect();
+
+        let (models, custom) =
+            build_catalog_models(&base, &cache, Vec::new(), Some(&selected)).expect("catalog");
+
+        // The hidden cache-only row survives next to the hidden base route.
+        assert_eq!(
+            slugs_of(&models),
+            vec![
+                "gpt-6.1-sol",
+                "gpt-6.1-cache-only",
+                "claude-opus-5-5",
+                "gpt-image-2.5"
+            ]
+        );
+        assert_eq!(custom, 0);
+        // The duplicate hidden cache slug is not repeated.
+        assert_eq!(
+            models
+                .iter()
+                .filter(|entry| entry_slug(entry) == Some("gpt-image-2.5"))
+                .count(),
+            1
+        );
+        // The bundled hidden base row stays authoritative over the cache copy.
+        let opus: Vec<&Value> = models
+            .iter()
+            .filter(|entry| entry_slug(entry) == Some("claude-opus-5-5"))
+            .collect();
+        assert_eq!(opus.len(), 1);
+        assert_eq!(opus[0]["display_name"], json!("Claude Opus 5.5"));
+    }
+
+    #[test]
+    fn pool_models_skip_unsafe_slugs() {
+        let base = vec![
+            json!({"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol"}),
+            json!({"slug": "evil');alert(1)//", "display_name": "Injected"}),
+            json!({"slug": "evil slug", "display_name": "Spaced"}),
+        ];
+        let cache = vec![
+            json!({"slug": "opencode/glm-5.3", "display_name": "GLM"}),
+            json!({"slug": "gpt-6.1-sol", "display_name": "Cache Duplicate"}),
+        ];
+
+        let mut slugs: Vec<String> = pool_models_in(&base, &cache)
+            .into_iter()
+            .map(|model| model.slug)
+            .collect();
+        slugs.sort();
+
+        // Only the ids made of the safe ASCII set survive.
+        assert_eq!(slugs, vec!["gpt-6.1-sol", "opencode/glm-5.3"]);
+    }
+
+    #[test]
+    fn catalog_build_reserves_hidden_and_unselected_pool_slugs() {
+        let base = fixture_pool_base();
+        let selected: HashSet<String> = ["gpt-6.1-sol".to_string()].into_iter().collect();
+        // These ids carry a third-party band, so only the pool reservation keeps
+        // them out of the generated third-party entries.
+        let gateway_entries = vec![
+            json!({"id": "opencode/glm-5.3", "owned_by": "opencode"}),
+            json!({"id": "claude-haiku-4-5-20251001", "owned_by": "anthropic"}),
+            json!({"id": "claude-opus-5-5", "owned_by": "anthropic"}),
+        ];
+
+        let (models, custom) =
+            build_catalog_models(&base, &[], gateway_entries, Some(&selected)).expect("catalog");
+
+        // Both the unselected visible slug and the hidden slug keep their rows.
+        assert_eq!(
+            slugs_of(&models),
+            vec!["gpt-6.1-sol", "claude-opus-5-5", "opencode/glm-5.3"]
+        );
+        assert_eq!(custom, 1);
     }
 }

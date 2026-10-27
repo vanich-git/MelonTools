@@ -16,6 +16,22 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 2.4.0
+
+- **Per-account Codex models.** Each Codex account has its own model
+  checkboxes. Selections share one common pool, and hidden or internal routes
+  stay preserved because they are never offered as choices.
+- **`excluded_models` routing.** Account choices are written as
+  `excluded_models` in the Codex auth files, so the gateway sends a model only
+  to accounts that allow it.
+- **Predictable picker.** The Codex picker shows the selection after the Codex
+  app is relaunched.
+- **macOS and Windows parity.** Both platforms apply the same per-account
+  filters and build the same pool of selected models.
+- **Build metadata.** macOS build 25; version metadata is aligned at 2.4.0 on
+  macOS and Windows. Release checksums are regenerated from the 2.4.0
+  artifacts.
+
 ## What's new in 2.3.7
 
 - **Windows routing order fixed.** The first account in the planner now gets
@@ -439,7 +455,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.3.7.dmg
+open build/MelonTools-2.4.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use
@@ -464,7 +480,7 @@ xcodebuild -project MelonTools.xcodeproj -scheme MelonTools \
 
 # 4. Ad-hoc sign + DMG
 codesign --force --deep --sign - "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
-create-dmg --volname "Melon Tools" "build/MelonTools-2.3.7.dmg" "Melon Tools.app"
+create-dmg --volname "Melon Tools" "build/MelonTools-2.4.0.dmg" "Melon Tools.app"
 ```
 
 ## Layout

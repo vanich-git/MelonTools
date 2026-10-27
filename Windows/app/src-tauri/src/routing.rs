@@ -28,11 +28,7 @@ fn quota_score(account: &Account) -> f64 {
 }
 
 fn plan_rank(account: &Account) -> i32 {
-    let plan = account
-        .plan_type
-        .clone()
-        .unwrap_or_default()
-        .to_lowercase();
+    let plan = account.plan_type.clone().unwrap_or_default().to_lowercase();
     match plan.as_str() {
         "free" => 0,
         "go" => 1,
@@ -84,8 +80,16 @@ pub fn resolve(
         }
 
         if strategy != "custom" {
-            let left_preferred = if lhs.preferred_first.unwrap_or(false) { 0 } else { 1 };
-            let right_preferred = if rhs.preferred_first.unwrap_or(false) { 0 } else { 1 };
+            let left_preferred = if lhs.preferred_first.unwrap_or(false) {
+                0
+            } else {
+                1
+            };
+            let right_preferred = if rhs.preferred_first.unwrap_or(false) {
+                0
+            } else {
+                1
+            };
             if left_preferred != right_preferred {
                 return left_preferred.cmp(&right_preferred);
             }
@@ -93,8 +97,14 @@ pub fn resolve(
 
         match strategy {
             "custom" => {
-                let left = manual_index.get(lhs.id.as_str()).copied().unwrap_or(usize::MAX);
-                let right = manual_index.get(rhs.id.as_str()).copied().unwrap_or(usize::MAX);
+                let left = manual_index
+                    .get(lhs.id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                let right = manual_index
+                    .get(rhs.id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
                 left.cmp(&right)
             }
             "quotaLowFirst" => quota_score(lhs)

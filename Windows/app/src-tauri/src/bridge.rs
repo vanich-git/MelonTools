@@ -189,14 +189,14 @@ fn pick_target(targets: &[Value]) -> Option<&Value> {
         .iter()
         .find(|t| {
             let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            (url.contains("index.html") || url.starts_with("app://")) && !url.contains("avatar-overlay")
+            (url.contains("index.html") || url.starts_with("app://"))
+                && !url.contains("avatar-overlay")
         })
         .or_else(|| targets.first())
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Session {
     ws: Ws,
@@ -272,18 +272,42 @@ fn labels(lang: &str) -> Value {
         ("context", "Контекст", "Context"),
         ("session", "Сессия", "Session"),
         ("spent", "Потрачено", "Spent"),
-        ("sessionSpend", "Расход сессии (оценка)", "Session spend (estimate)"),
-        ("estimatedFrom", "Оценка по токенам и цене модели.", "Estimated from tokens and the model price."),
-        ("noPricing", "Нет данных о цене модели.", "No pricing data for this model."),
-        ("scaledNote", "Старые ходы вне окна чтения; оценка масштабирована.", "Older turns are outside the read window; the estimate is scaled."),
+        (
+            "sessionSpend",
+            "Расход сессии (оценка)",
+            "Session spend (estimate)",
+        ),
+        (
+            "estimatedFrom",
+            "Оценка по токенам и цене модели.",
+            "Estimated from tokens and the model price.",
+        ),
+        (
+            "noPricing",
+            "Нет данных о цене модели.",
+            "No pricing data for this model.",
+        ),
+        (
+            "scaledNote",
+            "Старые ходы вне окна чтения; оценка масштабирована.",
+            "Older turns are outside the read window; the estimate is scaled.",
+        ),
         ("purchased", "Куплено", "Purchased"),
         ("creditsSpent", "Кредиты потрачены", "Credits spent"),
         ("available", "Доступно", "Available"),
         ("keyLimit", "Лимит ключа", "Key limit"),
         ("lifetime", "За всё время", "Lifetime"),
         ("keyUsage", "Расход ключа", "Key usage"),
-        ("creditsNote", "Кредиты и лимит ключа — за всё время.", "Credits and the key limit are lifetime figures."),
-        ("sessionNoData", "Данные сессии появятся при работе модели этого провайдера.", "Session data appears when a thread runs this provider's models."),
+        (
+            "creditsNote",
+            "Кредиты и лимит ключа — за всё время.",
+            "Credits and the key limit are lifetime figures.",
+        ),
+        (
+            "sessionNoData",
+            "Данные сессии появятся при работе модели этого провайдера.",
+            "Session data appears when a thread runs this provider's models.",
+        ),
         ("remaining", "Остаток", "Remaining"),
         ("sessionModel", "Модель сессии", "Session model"),
         ("keyRemaining", "Остаток ключа", "Key remaining"),
@@ -468,10 +492,7 @@ async fn picker_models(state: &BridgeState, port: u16, api_key: &str) -> Vec<Val
 /// Provider metrics for the chips popover (cached for five minutes).
 /// OpenRouter and Vercel expose account APIs; DeepInfra has no balance
 /// endpoint, so its entry carries the cached model count only.
-async fn providers_metrics(
-    state: &BridgeState,
-    settings: &crate::settings::Settings,
-) -> Value {
+async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Settings) -> Value {
     let openrouter_key = settings.openrouter_key.trim();
     let vercel_key = settings.vercel_key.trim();
     let deepinfra_key = settings.deepinfra_key.trim();
@@ -554,7 +575,10 @@ async fn providers_metrics(
 pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
     let lang = settings.lang.as_str();
     let Some(debug_port) = find_debug_port_cached(state) else {
-        set_status(state, json!({"attached": false, "reason": "codex_not_running"}));
+        set_status(
+            state,
+            json!({"attached": false, "reason": "codex_not_running"}),
+        );
         return;
     };
     let targets = match fetch_targets(client(), debug_port).await {
@@ -569,11 +593,17 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
         }
     };
     let Some(target) = pick_target(&targets) else {
-        set_status(state, json!({"attached": false, "reason": "no_pages", "debugPort": debug_port}));
+        set_status(
+            state,
+            json!({"attached": false, "reason": "no_pages", "debugPort": debug_port}),
+        );
         return;
     };
     let Some(ws_url) = target.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) else {
-        set_status(state, json!({"attached": false, "reason": "no_ws_url", "debugPort": debug_port}));
+        set_status(
+            state,
+            json!({"attached": false, "reason": "no_ws_url", "debugPort": debug_port}),
+        );
         return;
     };
     // Never follow a target that points the CDP session at a remote host or
@@ -622,7 +652,9 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
     let mut model: Option<String> = None;
     let mut thread_id: Option<String> = None;
     if let Ok(Some(text)) = session
-        .evaluate("window.__melonChipsContext ? JSON.stringify(window.__melonChipsContext()) : null")
+        .evaluate(
+            "window.__melonChipsContext ? JSON.stringify(window.__melonChipsContext()) : null",
+        )
         .await
     {
         if let Some(text) = text.as_str() {
@@ -643,8 +675,9 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
 
     let mut payload = status_payload(state, settings, model.clone()).await;
     payload["active"]["threadId"] = json!(thread_id.clone());
-    if let Some(mut session_usage) =
-        thread_id.as_deref().and_then(|id| session_usage_cached(state, id))
+    if let Some(mut session_usage) = thread_id
+        .as_deref()
+        .and_then(|id| session_usage_cached(state, id))
     {
         if let Some(cost) = session_cost(&session_usage, settings) {
             session_usage["cost"] = cost;
@@ -713,10 +746,7 @@ fn read_session_usage(path: &std::path::Path) -> Option<Value> {
                 }
             }
         }
-        if model.is_none()
-            && line.contains("\"model\"")
-            && line.contains("turn_context")
-        {
+        if model.is_none() && line.contains("\"model\"") && line.contains("turn_context") {
             if let Ok(value) = serde_json::from_str::<Value>(line) {
                 if let Some(found) = find_key(&value, "model") {
                     model = found.as_str().map(String::from);
@@ -743,9 +773,7 @@ fn session_usage_cached(state: &BridgeState, thread_id: &str) -> Option<Value> {
         guard
             .as_ref()
             .filter(|(thread, path, at)| {
-                thread == thread_id
-                    && path.exists()
-                    && at.elapsed() < Duration::from_secs(20)
+                thread == thread_id && path.exists() && at.elapsed() < Duration::from_secs(20)
             })
             .map(|(_, path, _)| path.clone())
     });
@@ -853,10 +881,7 @@ fn provider_pricing<'a>(
 /// Estimate the thread cost from the total token counters. The rollout parser
 /// keeps the newest total, so the last turn's model prices the whole thread —
 /// the same approximation the macOS bridge makes when it has only a tail.
-fn session_cost(
-    session: &Value,
-    settings: &crate::settings::Settings,
-) -> Option<Value> {
+fn session_cost(session: &Value, settings: &crate::settings::Settings) -> Option<Value> {
     let total = session.get("total")?;
     let model = session.get("model").and_then(Value::as_str)?;
     let (tag, pricing) = provider_pricing(settings, model)?;
@@ -867,9 +892,8 @@ fn session_cost(
     let cached = get("cached").min(input);
     let fresh = (input - cached).max(0);
     let cache_read = pricing.cache_read_per_token.unwrap_or(prompt);
-    let usd = fresh as f64 * prompt
-        + cached as f64 * cache_read
-        + get("output") as f64 * completion;
+    let usd =
+        fresh as f64 * prompt + cached as f64 * cache_read + get("output") as f64 * completion;
     let turns = session
         .get("turns")
         .and_then(Value::as_i64)

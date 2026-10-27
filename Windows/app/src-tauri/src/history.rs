@@ -102,11 +102,10 @@ struct PendingHistory {
     scheduled: bool,
 }
 
-static PENDING_HISTORY: std::sync::Mutex<PendingHistory> =
-    std::sync::Mutex::new(PendingHistory {
-        records: Vec::new(),
-        scheduled: false,
-    });
+static PENDING_HISTORY: std::sync::Mutex<PendingHistory> = std::sync::Mutex::new(PendingHistory {
+    records: Vec::new(),
+    scheduled: false,
+});
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     HISTORY_LOCK
@@ -208,9 +207,7 @@ pub fn should_notify(
     if current > threshold {
         return false;
     }
-    let crossed = previous
-        .map(|value| value > threshold)
-        .unwrap_or(true);
+    let crossed = previous.map(|value| value > threshold).unwrap_or(true);
     if !crossed {
         return false;
     }
@@ -238,13 +235,9 @@ fn claim_in(
     if !should_notify(previous, current, threshold, window, state, now, cooldown) {
         return false;
     }
-    history.notified.insert(
-        key.to_string(),
-        NotifiedState {
-            at: now,
-            window,
-        },
-    );
+    history
+        .notified
+        .insert(key.to_string(), NotifiedState { at: now, window });
     true
 }
 

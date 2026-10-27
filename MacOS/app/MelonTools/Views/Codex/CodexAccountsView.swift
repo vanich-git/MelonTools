@@ -84,6 +84,9 @@ struct CodexAccountsView: View {
         .sheet(item: $routingAccount) { account in
             AccountRoutingSheet(account: account)
         }
+        .sheet(item: $modelsAccount) { account in
+            AccountModelsSheet(accountId: account.id)
+        }
         .confirmationDialog(L("Delete selected accounts?"), isPresented: $confirmDeleteSelection, titleVisibility: .visible) {
             Button(L("Delete"), role: .destructive) { deleteSelected() }
             Button(L("Cancel"), role: .cancel) {}
@@ -168,6 +171,15 @@ struct CodexAccountsView: View {
     }
 
     @State private var routingAccount: CodexAccount?
+    @State private var modelsAccount: CodexAccount?
+
+    /// Pool size for the per-account “Models” button tooltip.
+    private var poolModelCount: Int { CodexPoolModelsStore.shared.models.count }
+
+    /// Pool models this account may route right now.
+    private func modelsSelectedCount(_ account: CodexAccount) -> Int {
+        store.effectiveSelectedModels(for: account).count
+    }
 
     private var controls: some View {
         HStack(spacing: MTTheme.s3) {
@@ -317,6 +329,24 @@ struct CodexAccountsView: View {
                     MTSecondaryButton(title: L("Launch in Codex"), systemImage: "arrow.up.forward.app") {
                         store.launchInCodex(account)
                     }
+                    Button {
+                        modelsAccount = account
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(L("Models"))
+                                .font(MTTheme.mono(9, weight: .semibold))
+                        }
+                        .foregroundStyle(MTTheme.textSecondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(MTTheme.cardSoft.opacity(0.6))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .contentShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(format: L("Selected %d of %d"), modelsSelectedCount(account), poolModelCount))
                     Spacer()
                     Button {
                         deleteTarget = account
@@ -849,6 +879,7 @@ private struct MiniAPICard: View {
 /// weekly windows, “always first”, “backup”.
 private struct AccountRoutingSheet: View {
     @ObservedObject private var store = CodexStore.shared
+    @ObservedObject private var pool = CodexPoolModelsStore.shared
     let account: CodexAccount
 
     @Environment(\.dismiss) private var dismiss
@@ -859,6 +890,7 @@ private struct AccountRoutingSheet: View {
     @State private var preferred = false
     @State private var backup = false
     @State private var initialized = false
+    @State private var showModels = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: MTTheme.s4) {
@@ -909,6 +941,28 @@ private struct AccountRoutingSheet: View {
                     .foregroundStyle(MTTheme.textSecondary)
             }
 
+            Rectangle()
+                .fill(MTTheme.borderColor.opacity(0.6))
+                .frame(height: 1)
+
+            VStack(alignment: .leading, spacing: MTTheme.s2) {
+                HStack(spacing: MTTheme.s3) {
+                    Text(L("Models"))
+                        .font(MTTheme.body(12, weight: .semibold))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    Text(String(format: L("Selected %d of %d"), store.effectiveSelectedModels(for: account).count, pool.models.count))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                    Spacer()
+                    MTSecondaryButton(title: L("Models"), systemImage: "square.grid.2x2") {
+                        showModels = true
+                    }
+                }
+                Text(L("Codex models subtitle"))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textSecondary)
+            }
+
             HStack(spacing: MTTheme.s2) {
                 Spacer()
                 MTSecondaryButton(title: L("Cancel")) { dismiss() }
@@ -927,6 +981,9 @@ private struct AccountRoutingSheet: View {
         .padding(MTTheme.s5)
         .frame(width: 520)
         .background(MTTheme.background)
+        .sheet(isPresented: $showModels) {
+            AccountModelsSheet(accountId: account.id)
+        }
         .onAppear {
             guard !initialized else { return }
             initialized = true
@@ -958,6 +1015,196 @@ private struct AccountRoutingSheet: View {
                 }
                 .padding(.leading, MTTheme.s4)
             }
+        }
+    }
+}
+
+// MARK: - Per-account model selection sheet
+
+/// Which pool models one account may route. The account is re-resolved from
+/// the store on every render, so a vault reload mid-sheet cannot save against
+/// a stale copy. An empty selection can be built in the UI but never saved —
+/// `CodexStore.updateAccountModels` rejects it.
+private struct AccountModelsSheet: View {
+    let accountId: String
+
+    @ObservedObject private var store = CodexStore.shared
+    @ObservedObject private var pool = CodexPoolModelsStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var selected: Set<String> = []
+    @State private var search = ""
+    @State private var error: String?
+    @State private var initialized = false
+
+    var body: some View {
+        Group {
+            if let account = store.accounts.first(where: { $0.id == accountId }) {
+                editor(account)
+            } else {
+                VStack(alignment: .leading, spacing: MTTheme.s4) {
+                    Text(L("Account not found."))
+                        .font(MTTheme.body(12))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    HStack {
+                        Spacer()
+                        MTSecondaryButton(title: L("Close")) { dismiss() }
+                    }
+                }
+                .padding(MTTheme.s5)
+                .frame(width: 560)
+                .background(MTTheme.background)
+            }
+        }
+    }
+
+    private func editor(_ account: CodexAccount) -> some View {
+        VStack(alignment: .leading, spacing: MTTheme.s4) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: L("Models · %@"), account.displayName))
+                    .font(MTTheme.display(20))
+                    .foregroundStyle(MTTheme.textPrimary)
+                Text(L("Codex models subtitle"))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: MTTheme.s2) {
+                TextField(L("Search"), text: $search)
+                    .textFieldStyle(.roundedBorder)
+                    .font(MTTheme.mono(11))
+                    .frame(maxWidth: 260)
+                MTSecondaryButton(title: L("Select all")) {
+                    for model in filteredModels { selected.insert(model.slug) }
+                }
+                MTSecondaryButton(title: L("Clear")) {
+                    for model in filteredModels { selected.remove(model.slug) }
+                }
+                Spacer()
+                MTSecondaryButton(title: L("Load models"), systemImage: "arrow.down.circle") {
+                    pool.refresh()
+                }
+            }
+
+            modelList(account)
+
+            Text(L("Relaunch Codex to refresh the model picker."))
+                .font(MTTheme.mono(10))
+                .foregroundStyle(MTTheme.textTertiary)
+
+            if let error {
+                Text(error)
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.danger)
+                    .textSelection(.enabled)
+            } else if selected.isEmpty {
+                Text(L("At least one model must stay selected."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.warn)
+            }
+
+            HStack(spacing: MTTheme.s2) {
+                Spacer()
+                MTSecondaryButton(title: L("Cancel")) { dismiss() }
+                MTPrimaryButton(title: L("Save"), systemImage: "checkmark") {
+                    if let message = store.updateAccountModels(account, selected: selected) {
+                        error = message
+                    } else {
+                        dismiss()
+                    }
+                }
+                .disabled(selected.isEmpty)
+            }
+        }
+        .padding(MTTheme.s5)
+        .frame(width: 560)
+        .background(MTTheme.background)
+        .onAppear {
+            guard !initialized else { return }
+            initialized = true
+            selected = store.effectiveSelectedModels(for: account)
+        }
+    }
+
+    // MARK: Rows
+
+    private func modelList(_ account: CodexAccount) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(filteredModels) { model in
+                    modelRow(model, account: account)
+                }
+            }
+            .padding(.vertical, MTTheme.s1)
+        }
+        .frame(height: 320)
+        .background(MTTheme.cardBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                .strokeBorder(MTTheme.borderColor.opacity(0.6), lineWidth: 0.75)
+        )
+    }
+
+    /// Pure-SwiftUI checkbox mark: real Toggles host an AppKit control per
+    /// row and jank a long lazy list (same reasoning as the pool list on the
+    /// Model Sources page).
+    private func modelRow(_ model: CodexPoolModel, account: CodexAccount) -> some View {
+        let isOn = selected.contains(model.slug)
+        return Button {
+            if isOn {
+                selected.remove(model.slug)
+            } else {
+                selected.insert(model.slug)
+            }
+        } label: {
+            HStack(spacing: MTTheme.s2) {
+                Image(systemName: isOn ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isOn ? MTTheme.gold : MTTheme.textTertiary)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.display)
+                        .font(MTTheme.body(12))
+                        .foregroundStyle(MTTheme.textPrimary)
+                        .lineLimit(1)
+                    if model.display != model.slug {
+                        Text(model.slug)
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: MTTheme.s2)
+                if let available = availability(for: model.slug, in: account) {
+                    MTStatusPill(text: available ? L("available") : L("unavailable"), status: available ? .ok : .absent)
+                }
+                if let context = model.contextLength, context > 0 {
+                    Text(context >= 1000 ? "\(context / 1000)K" : "\(context)")
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+            }
+            .padding(.horizontal, MTTheme.s3)
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.display)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// Availability from the last `wham/usage` reading; `nil` when the quota
+    /// has no per-model data for this slug.
+    private func availability(for slug: String, in account: CodexAccount) -> Bool? {
+        account.quota?.modelAvailability?.first(where: { $0.model == slug })?.available
+    }
+
+    private var filteredModels: [CodexPoolModel] {
+        let trimmed = search.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return pool.models }
+        return pool.models.filter {
+            $0.slug.localizedCaseInsensitiveContains(trimmed) || $0.display.localizedCaseInsensitiveContains(trimmed)
         }
     }
 }

@@ -137,7 +137,11 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         .as_deref()
         .and_then(|text| serde_json::from_str(text).ok())
         .unwrap_or_else(|| {
-            if raw.as_deref().map(|text| !text.trim().is_empty()).unwrap_or(false) {
+            if raw
+                .as_deref()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+            {
                 let _ = paths::quarantine(path);
             }
             Settings::default()
@@ -382,8 +386,7 @@ mod tests {
 
     #[test]
     fn legacy_settings_get_21_defaults_and_keep_explicit_values() {
-        let s: Settings =
-            serde_json::from_str(r#"{"port":19000,"notifyLowQuota":false}"#).unwrap();
+        let s: Settings = serde_json::from_str(r#"{"port":19000,"notifyLowQuota":false}"#).unwrap();
         assert_eq!(s.port, 19000);
         assert!(!s.notify_low_quota);
         assert!(s.notifications);

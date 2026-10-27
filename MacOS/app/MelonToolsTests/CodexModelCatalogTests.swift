@@ -647,6 +647,276 @@ final class CodexModelCatalogTests: XCTestCase {
         )
         XCTAssertNotEqual(generated["base_instructions"] as? String, "private instruction fixture")
     }
+
+    // MARK: - Account pool selection
+
+    private func poolAccount(_ email: String, selection: [String]?) -> CodexAccount {
+        var account = CodexAccount(tokens: CodexTokens())
+        account.email = email
+        account.selectedModels = selection
+        return account
+    }
+
+    /// The merged pool prefers the bundled `list` entry on a duplicate slug,
+    /// appends cache-only visible models and never offers hidden rows.
+    func testMergedPoolPrefersBundledEntriesAndKeepsCacheOnlyModels() {
+        let base: [[String: Any]] = [
+            ["slug": "gpt-6-sol", "display_name": "Bundled Name", "priority": 2],
+            ["slug": "gpt-image-2.5", "display_name": "Hidden", "visibility": "hide"],
+        ]
+        let cache: [[String: Any]] = [
+            ["slug": "gpt-6-sol", "display_name": "Cache Name", "context_window": 400_000],
+            ["slug": "cache-only", "display_name": "Cache Only", "priority": 9],
+            ["slug": "cache-hidden", "display_name": "Cache Hidden", "visibility": "hide"],
+        ]
+
+        let merged = CodexModelCatalog.mergedPoolEntries(base: base, cache: cache)
+
+        XCTAssertEqual(merged.compactMap { $0["slug"] as? String }, ["gpt-6-sol", "cache-only"])
+        XCTAssertEqual(merged.first?["display_name"] as? String, "Bundled Name")
+    }
+
+    /// Internal routes Codex adds only to its cache must survive `sync`: the
+    /// helper returns hidden cache-only rows, never visible ones, and it drops
+    /// duplicates plus every slug that is already in the output.
+    func testHiddenCacheEntriesKeepInternalRoutesWithoutDuplicates() {
+        let cache: [[String: Any]] = [
+            ["slug": "gpt-6-sol", "display_name": "Cache Visible"],
+            ["slug": "cache-visible", "display_name": "Cache Visible Only"],
+            ["slug": "cache-hidden", "display_name": "Cache Hidden", "visibility": "hide"],
+            ["slug": "cache-hidden", "display_name": "Cache Hidden Copy", "visibility": "hide"],
+            ["slug": "base-hidden", "display_name": "Base Hidden", "visibility": "hide"],
+            ["slug": "", "display_name": "Empty Slug", "visibility": "hide"],
+        ]
+
+        let hidden = CodexModelCatalog.hiddenCacheEntries(
+            in: cache,
+            excluding: ["gpt-6-sol", "base-hidden"]
+        )
+
+        XCTAssertEqual(hidden.compactMap { $0["slug"] as? String }, ["cache-hidden"])
+        XCTAssertEqual(hidden.first?["display_name"] as? String, "Cache Hidden")
+    }
+
+    /// The account union filters visible pool rows; hidden rows always stay so
+    /// Codex keeps its internal routes.
+    func testAccountUnionFiltersVisiblePoolEntriesAndKeepsHiddenOnes() {
+        let base: [[String: Any]] = [
+            ["slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "priority": 0],
+            ["slug": "gpt-6-sol", "display_name": "GPT-6 Sol", "priority": 2],
+            ["slug": "gpt-image-2.5", "display_name": "GPT Image 2.5", "visibility": "hide", "priority": 1000],
+        ]
+
+        let generated = CodexModelCatalog.generatedEntries(
+            base: base,
+            sources: [],
+            defaults: nil,
+            selectedPoolSlugs: ["gpt-6-sol"]
+        )
+
+        XCTAssertEqual(
+            generated.entries.compactMap { $0["slug"] as? String },
+            ["gpt-6-sol", "gpt-image-2.5"]
+        )
+    }
+
+    /// A pool slug that no account selected still reserves its name: a
+    /// third-party model with the same alias must not take the row over.
+    func testUnselectedPoolSlugStillBlocksThirdPartyShadowing() {
+        let base: [[String: Any]] = [
+            ["slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "priority": 0],
+            ["slug": "gpt-6-sol", "display_name": "GPT-6 Sol", "priority": 2],
+        ]
+        let source = ModelSource(
+            id: "opencode",
+            kind: .openCode,
+            title: "OpenCode",
+            baseURL: "",
+            apiKey: "key",
+            enabled: true,
+            models: [
+                SourceModel(
+                    id: "gpt-6-sol",
+                    display: "GPT-6 Sol",
+                    contextLength: nil,
+                    enabled: true,
+                    alias: "gpt-6-sol"
+                ),
+                SourceModel(
+                    id: "gpt-5.5",
+                    display: "GPT-5.5",
+                    contextLength: nil,
+                    enabled: true,
+                    alias: "opencode/gpt-5.5"
+                ),
+            ]
+        )
+
+        let generated = CodexModelCatalog.generatedEntries(
+            base: base,
+            sources: [source],
+            defaults: nil,
+            selectedPoolSlugs: ["gpt-6.1-sol"]
+        )
+
+        XCTAssertEqual(generated.custom, 1)
+        XCTAssertEqual(
+            generated.entries.compactMap { $0["slug"] as? String },
+            ["gpt-6.1-sol", "opencode/gpt-5.5"]
+        )
+    }
+
+    /// The composer index follows the same union, so a hidden pool row is
+    /// never attributed to a provider; `nil` keeps the legacy full list.
+    func testPickerIndexFollowsAccountUnion() throws {
+        let all = CodexModelCatalog.basePickerModels()
+        try XCTSkipIf(all.isEmpty, "bundled pool catalog is unavailable")
+        let kept = try XCTUnwrap(all.first?.slug)
+        let source = ModelSource(
+            id: "openrouter",
+            kind: .openRouter,
+            title: "OpenRouter",
+            baseURL: "",
+            apiKey: "key",
+            enabled: true,
+            models: [SourceModel(
+                id: "vision-model",
+                display: "Vision Model",
+                contextLength: nil,
+                enabled: true,
+                alias: "openrouter/vision-model"
+            )]
+        )
+
+        let filtered = CodexModelCatalog.pickerIndex(
+            sources: [source],
+            selectedPoolSlugs: [kept]
+        )
+        XCTAssertEqual(
+            filtered.filter { $0.provider == "openai" }.map(\.slug),
+            [kept]
+        )
+        XCTAssertTrue(filtered.contains { $0.slug == "openrouter/vision-model" })
+
+        XCTAssertEqual(CodexModelCatalog.pickerIndex(sources: []).count, all.count)
+    }
+
+    /// `selectedModels == nil` means every visible pool model; an explicit
+    /// list is honored (unknown slugs are dropped) and an empty list is
+    /// rejected.
+    func testPoolSelectionSemantics() {
+        let pool: Set<String> = ["gpt-a", "gpt-b", "gpt-c"]
+        var account = CodexAccount(tokens: CodexTokens())
+
+        XCTAssertEqual(
+            CodexPoolModelsStore.effectiveSelection(for: account, poolSlugs: pool),
+            pool
+        )
+        XCTAssertEqual(CodexPoolModelsStore.unionSelection(accounts: [], poolSlugs: pool), pool)
+        XCTAssertEqual(
+            CodexPoolModelsStore.unionSelection(accounts: [account], poolSlugs: pool),
+            pool
+        )
+
+        account.selectedModels = ["gpt-a", "gone"]
+        XCTAssertEqual(
+            CodexPoolModelsStore.effectiveSelection(for: account, poolSlugs: pool),
+            ["gpt-a"]
+        )
+        XCTAssertEqual(
+            CodexPoolModelsStore.unionSelection(accounts: [account], poolSlugs: pool),
+            ["gpt-a"]
+        )
+        XCTAssertEqual(
+            CodexPoolModelsStore.excludedSlugs(for: account, poolSlugs: pool),
+            ["gpt-b", "gpt-c"]
+        )
+
+        XCTAssertNil(CodexPoolModelsStore.validatedSelection([], poolSlugs: pool))
+        XCTAssertNil(CodexPoolModelsStore.validatedSelection(["gone"], poolSlugs: pool))
+        XCTAssertEqual(
+            CodexPoolModelsStore.validatedSelection(["gpt-a", "gone"], poolSlugs: pool),
+            ["gpt-a"]
+        )
+
+        // A stale explicit list that points at no visible model falls back to
+        // the full pool for the picker instead of leaving it unusable.
+        account.selectedModels = ["gone"]
+        XCTAssertEqual(
+            CodexPoolModelsStore.unionSelection(accounts: [account], poolSlugs: pool),
+            pool
+        )
+    }
+
+    /// A global disable is rejected when it would leave an account with no
+    /// model; the plan names that account.
+    func testGlobalDisableRejectsAccountLeftWithoutModels() {
+        let pool: Set<String> = ["gpt-a", "gpt-b"]
+        let solo = poolAccount("solo@example.com", selection: ["gpt-a"])
+        let full = poolAccount("full@example.com", selection: nil)
+
+        let rejected = CodexPoolModelsStore.poolTogglePlan(
+            slug: "gpt-a",
+            enabled: false,
+            accounts: [solo, full],
+            poolSlugs: pool
+        )
+        XCTAssertEqual(rejected.emptyAccounts, ["solo@example.com"])
+        XCTAssertEqual(rejected.selections[solo.id], [])
+        XCTAssertEqual(rejected.selections[full.id], ["gpt-b"])
+
+        let allowed = CodexPoolModelsStore.poolTogglePlan(
+            slug: "gpt-b",
+            enabled: false,
+            accounts: [solo, full],
+            poolSlugs: pool
+        )
+        XCTAssertTrue(allowed.emptyAccounts.isEmpty)
+        XCTAssertEqual(allowed.selections[solo.id], ["gpt-a"])
+        XCTAssertEqual(allowed.selections[full.id], ["gpt-a"])
+    }
+
+    /// The gateway auth payload excludes the visible pool models the account
+    /// did not select, and omits the key when nothing is excluded.
+    func testGatewayAuthFilesCarryExcludedModels() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("melon-pool-auth-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+
+        var account = CodexAccount(tokens: CodexTokens(access_token: "access-1"))
+        account.email = "filtered@example.com"
+        account.selectedModels = ["gpt-6-sol"]
+        let pool: Set<String> = ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.5"]
+
+        try CodexGatewayService.syncAccounts(
+            [account],
+            priorities: [:],
+            authDir: directory,
+            poolSlugs: pool
+        )
+
+        let name = CodexGatewayService.authFileName(for: account)
+        func payload() throws -> [String: Any] {
+            let data = try Data(contentsOf: directory.appendingPathComponent(name))
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        XCTAssertEqual(
+            try payload()["excluded_models"] as? [String],
+            ["gpt-5.5", "gpt-6.1-sol"]
+        )
+
+        // A full selection excludes nothing: the key must be absent, not `[]`.
+        account.selectedModels = nil
+        try CodexGatewayService.syncAccounts(
+            [account],
+            priorities: [:],
+            authDir: directory,
+            poolSlugs: pool
+        )
+        XCTAssertNil(try payload()["excluded_models"])
+    }
 }
 
 private struct ModelSourcesFixture: Codable {

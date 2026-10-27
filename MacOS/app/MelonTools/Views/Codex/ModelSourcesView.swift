@@ -9,6 +9,7 @@ struct CodexProvidersView: View {
     @ObservedObject private var gateway = CodexGatewayService.shared
     @ObservedObject private var sources = ModelSourcesStore.shared
     @ObservedObject private var store = CodexStore.shared
+    @ObservedObject private var pool = CodexPoolModelsStore.shared
     @ObservedObject private var usage = ProviderUsageStore.shared
     @ObservedObject private var quotaHistory = QuotaHistoryStore.shared
     @ObservedObject private var claudeAuth = ClaudeAuthService.shared
@@ -18,6 +19,8 @@ struct CodexProvidersView: View {
 
     @State private var route: ProviderRoute?
     @State private var searches: [String: String] = [:]
+    @State private var poolSearch = ""
+    @State private var poolError: String?
     @State private var confirmClaudeDisconnect = false
     @State private var confirmAntigravityDisconnect = false
     @State private var antigravityIssue: AntigravityAuthService.VerificationIssue?
@@ -30,6 +33,7 @@ struct CodexProvidersView: View {
         case vercel
         case claude
         case antigravity
+        case codexPool
 
         var id: String { rawValue }
 
@@ -41,6 +45,7 @@ struct CodexProvidersView: View {
             case .vercel: return "Vercel"
             case .claude: return "Claude"
             case .antigravity: return "Antigravity"
+            case .codexPool: return "Codex"
             }
         }
 
@@ -52,6 +57,7 @@ struct CodexProvidersView: View {
             case .vercel: return "triangle"
             case .claude: return "sparkles"
             case .antigravity: return "globe.americas"
+            case .codexPool: return "person.2"
             }
         }
     }
@@ -250,8 +256,17 @@ struct CodexProvidersView: View {
                     healthStat(L("Failed"), count: poolHealth.failed, status: .error)
                     healthStat(L("Paused"), count: poolHealth.paused, status: .warn)
                 }
-                MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
-                    selection = .codexAccounts
+                Text(String(format: L("Models in pool: %d of %d"), poolUnionCount, pool.models.count))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textSecondary)
+                HStack(spacing: MTTheme.s3) {
+                    MTSecondaryButton(title: L("Accounts"), systemImage: "person.2") {
+                        selection = .codexAccounts
+                    }
+                    MTSecondaryButton(title: L("Models"), systemImage: "square.grid.2x2") {
+                        route = .codexPool
+                    }
+                    Spacer(minLength: 0)
                 }
             }
         }
@@ -272,6 +287,46 @@ struct CodexProvidersView: View {
             return (quota.hourlyRemainingPercent ?? 1) <= 0 || (quota.weeklyRemainingPercent ?? 1) <= 0
         }.count
         return (max(0, total - failed - paused), failed, paused)
+    }
+
+    // MARK: - Pool model selection
+
+    /// Slugs every account supports (checked rows of the pool page). With no
+    /// accounts nothing is checked, so the rows start from an empty state.
+    private var poolSupportedSlugs: Set<String> {
+        guard !store.accounts.isEmpty else { return [] }
+        return Set(pool.models.map(\.slug)).filter { slug in
+            store.accounts.allSatisfy { account in
+                store.effectiveSelectedModels(for: account).contains(slug)
+            }
+        }
+    }
+
+    /// How many accounts support one pool slug.
+    private func poolSupportCount(_ slug: String) -> Int {
+        store.accounts.filter { account in
+            store.effectiveSelectedModels(for: account).contains(slug)
+        }.count
+    }
+
+    private var poolUnionCount: Int {
+        CodexPoolModelsStore.unionSelection(
+            accounts: store.accounts,
+            poolSlugs: pool.slugs
+        ).count
+    }
+
+    private var filteredPoolModels: [CodexPoolModel] {
+        let query = poolSearch.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return pool.models }
+        return pool.models.filter {
+            $0.slug.localizedCaseInsensitiveContains(query) || $0.display.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func togglePoolModel(_ slug: String) {
+        let enable = !poolSupportedSlugs.contains(slug)
+        poolError = store.setPoolModel(slug, enabled: enable)
     }
 
     private func quotaRow(title: String, fraction: Double?) -> some View {
@@ -854,6 +909,8 @@ struct CodexProvidersView: View {
             claudeSettings
         case .antigravity:
             antigravitySettings
+        case .codexPool:
+            codexPoolSettings
         }
         applyCard
     }
@@ -866,6 +923,7 @@ struct CodexProvidersView: View {
         case .vercel: return L("Language models served by the Vercel AI Gateway with your gateway key.")
         case .claude: return L("Connect your Claude subscription or paste an Anthropic API key.")
         case .antigravity: return L("Connect your Google account to use Antigravity models.")
+        case .codexPool: return L("Codex models subtitle")
         }
     }
 
@@ -1106,6 +1164,139 @@ struct CodexProvidersView: View {
         }
     }
 
+    // MARK: - Board: Codex pool models
+
+    /// Global per-model toggles across the account pool. One switch writes
+    /// every account at once; an account that would end with no model blocks
+    /// the whole change (see `CodexStore.setPoolModel`).
+    private var codexPoolSettings: some View {
+        MTCard(title: L("Codex models"), systemImage: ProviderRoute.codexPool.systemImage) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(spacing: MTTheme.s2) {
+                    Text(String(format: L("Models in pool: %d of %d"), poolUnionCount, pool.models.count))
+                        .font(MTTheme.mono(10, weight: .semibold))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    Spacer(minLength: MTTheme.s2)
+                    MTSecondaryButton(title: L("Load models"), systemImage: "arrow.down.circle") {
+                        pool.refresh()
+                    }
+                }
+                Text(L("New models are off until you check them."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
+                Text(L("Relaunch Codex to refresh the model picker."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
+                if let error = poolError {
+                    Text(error)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.danger)
+                        .textSelection(.enabled)
+                }
+                HStack(spacing: MTTheme.s2) {
+                    SelectAllControls(
+                        search: $poolSearch,
+                        placeholder: L("Search"),
+                        onSelectAll: { query in
+                            for model in filteredPool(matching: query) {
+                                if !poolSupportedSlugs.contains(model.slug) {
+                                    poolError = store.setPoolModel(model.slug, enabled: true)
+                                    if poolError != nil { break }
+                                }
+                            }
+                        },
+                        onClear: { query in
+                            for model in filteredPool(matching: query) {
+                                if poolSupportedSlugs.contains(model.slug) {
+                                    poolError = store.setPoolModel(model.slug, enabled: false)
+                                    if poolError != nil { break }
+                                }
+                            }
+                        }
+                    )
+                }
+                poolModelList
+            }
+        }
+    }
+
+    private var poolModelList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(filteredPoolModels) { model in
+                    poolModelRow(model)
+                }
+            }
+            .padding(.vertical, MTTheme.s1)
+        }
+        .frame(height: 320)
+        .background(MTTheme.cardBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                .strokeBorder(MTTheme.borderColor.opacity(0.6), lineWidth: 0.75)
+        )
+    }
+
+    /// Tri-state row: checked when every account supports the model, mixed
+    /// when only some do, unchecked when none does.
+    private func poolModelRow(_ model: CodexPoolModel) -> some View {
+        let total = store.accounts.count
+        let support = poolSupportCount(model.slug)
+        return HStack(spacing: MTTheme.s2) {
+            poolCheckbox(all: total > 0 && support == total, some: support > 0)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(model.display)
+                    .font(MTTheme.body(12))
+                    .foregroundStyle(MTTheme.textPrimary)
+                    .lineLimit(1)
+                if model.display != model.slug {
+                    Text(model.slug)
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.textTertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: MTTheme.s2)
+            if let context = model.contextLength, context > 0 {
+                Text(context >= 1000 ? "\(context / 1000)K" : "\(context)")
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textSecondary)
+            }
+            Text(String(format: L("%d of %d accounts"), support, total))
+                .font(MTTheme.mono(9))
+                .foregroundStyle(MTTheme.textSecondary)
+        }
+        .padding(.horizontal, MTTheme.s3)
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onTapGesture { togglePoolModel(model.slug) }
+        .focusable()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(model.display)
+        .accessibilityValue("\(support)/\(total)")
+        .accessibilityAddTraits(.isButton)
+        .onKeyPress(.space) {
+            togglePoolModel(model.slug)
+            return .handled
+        }
+    }
+
+    /// Pure-SwiftUI tri-state mark: one AppKit checkbox per row makes a long
+    /// lazy list janky (same reasoning as `checkbox` in the model lists).
+    private func poolCheckbox(all: Bool, some: Bool) -> some View {
+        Image(systemName: all ? "checkmark.square.fill" : (some ? "minus.square.fill" : "square"))
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(all || some ? MTTheme.gold : MTTheme.textTertiary)
+    }
+
+    private func filteredPool(matching query: String) -> [CodexPoolModel] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return pool.models }
+        return pool.models.filter {
+            $0.slug.localizedCaseInsensitiveContains(trimmed) || $0.display.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
     private var connectClaudeButton: some View {
         MTPrimaryButton(title: L("Connect Claude"), systemImage: "link", isLoading: claudeAuth.login.isBusy) {
             Task { await claudeAuth.startLogin() }
@@ -1284,6 +1475,9 @@ struct CodexProvidersView: View {
                 Text(L("Selected models will appear in the Codex picker after a relaunch."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
+                Text(String(format: L("Models in pool: %d of %d"), poolUnionCount, pool.models.count))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
                 if let note = sources.note {
                     Text(note)
                         .font(MTTheme.mono(10))

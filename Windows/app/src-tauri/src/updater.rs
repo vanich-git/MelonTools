@@ -199,10 +199,7 @@ fn client_no_redirect(timeout: Duration) -> Result<reqwest::Client, String> {
 
 /// Fetches a URL without automatic redirects: every hop must stay inside the
 /// allowlist, so a redirect from a trusted host cannot smuggle us elsewhere.
-async fn get_following_allowed(
-    url: &str,
-    timeout: Duration,
-) -> Result<reqwest::Response, String> {
+async fn get_following_allowed(url: &str, timeout: Duration) -> Result<reqwest::Response, String> {
     let client = client_no_redirect(timeout)?;
     let mut current = url.to_string();
     for _ in 0..4 {
@@ -401,7 +398,10 @@ pub fn spawn_swapper(new_exe: &Path, current_exe: &Path, pid: u32) -> Result<Pat
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     format!("{:x}-{}", nanos, std::process::id())
 }
 
@@ -454,7 +454,10 @@ mod tests {
     #[test]
     fn sha256_sidecar_parsing() {
         let hash = "a".repeat(64);
-        assert_eq!(parse_sha256(&format!("{}  file.exe\n", hash)), Some(hash.clone()));
+        assert_eq!(
+            parse_sha256(&format!("{}  file.exe\n", hash)),
+            Some(hash.clone())
+        );
         assert_eq!(parse_sha256(&hash), Some(hash));
         assert_eq!(parse_sha256("nope file.exe"), None);
         assert_eq!(parse_sha256(""), None);
@@ -494,7 +497,9 @@ mod tests {
             assert!(cached_from_check(&payload).is_none(), "accepted {url}");
         }
         assert!(!asset_host_allowed("http://github.com/a"));
-        assert!(asset_host_allowed("https://objects.githubusercontent.com/a"));
+        assert!(asset_host_allowed(
+            "https://objects.githubusercontent.com/a"
+        ));
     }
 
     #[test]
@@ -509,7 +514,9 @@ mod tests {
             serde_json::json!({"name": "MelonTools-2.0.3-win-x64-portable.exe"}),
         ];
         assert_eq!(
-            pick_asset(&assets).and_then(|a| a.get("name")).and_then(|v| v.as_str()),
+            pick_asset(&assets)
+                .and_then(|a| a.get("name"))
+                .and_then(|v| v.as_str()),
             Some("MelonTools-2.0.3-win-x64-portable.exe")
         );
     }

@@ -82,7 +82,7 @@ final class ComposerBridge: ObservableObject {
     private var pageContext: (model: String?, threadID: String?) = (nil, nil)
     /// Display name → provider index for the picker grouping.
     private var pickerModels: [CodexModelCatalog.PickerModel] = []
-    private var sourcesSubscription: AnyCancellable?
+    private var pickerSubscriptions: [AnyCancellable] = []
     /// Last automatic relaunch that tried to bring the debug port back.
     private var lastAutoManagedRelaunch: Date?
     /// The pid first seen without a debug port, and when. A quitting app
@@ -95,12 +95,35 @@ final class ComposerBridge: ObservableObject {
     private init() {
         autoRetryEnabled = UserDefaults.standard.object(forKey: Self.autoRetryKey) as? Bool ?? true
         enabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
-        pickerModels = CodexModelCatalog.pickerIndex(sources: ModelSourcesStore.shared.sources)
-        sourcesSubscription = ModelSourcesStore.shared.$sources
-            .receive(on: RunLoop.main)
-            .sink { [weak self] sources in
-                self?.pickerModels = CodexModelCatalog.pickerIndex(sources: sources)
-            }
+        refreshPickerModels()
+        // Provider attribution must follow model-source edits, account filter
+        // edits and a pool reload (“Load models”). `receive(on:)` defers the
+        // read past the `@Published` willSet, so the handler sees the new state.
+        pickerSubscriptions = [
+            ModelSourcesStore.shared.$sources
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in self?.refreshPickerModels() },
+            CodexStore.shared.$accounts
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in self?.refreshPickerModels() },
+            CodexPoolModelsStore.shared.$models
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in self?.refreshPickerModels() },
+        ]
+    }
+
+    /// Rebuilds the picker index with the same account union the generated
+    /// catalog uses, so a hidden pool row can never be attributed to a
+    /// third-party provider.
+    private func refreshPickerModels() {
+        let pool = CodexPoolModelsStore.shared
+        // Created before the bundled catalog could be read (for example in a
+        // test host): try once, then keep whatever the pool reports.
+        if pool.models.isEmpty { pool.refresh() }
+        pickerModels = CodexModelCatalog.pickerIndex(
+            sources: ModelSourcesStore.shared.sources,
+            selectedPoolSlugs: ModelSourcesStore.currentPoolUnion()
+        )
     }
 
     // MARK: - Lifecycle

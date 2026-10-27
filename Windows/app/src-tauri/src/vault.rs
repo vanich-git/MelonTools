@@ -8,6 +8,7 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::{dpapi, paths};
@@ -97,6 +98,11 @@ pub struct Account {
     pub weekly_reserve_percent: Option<i64>,
     pub preferred_first: Option<bool>,
     pub is_backup: Option<bool>,
+    /// Account-level model filter, like the OpenCode/OpenRouter connections.
+    /// `None` (legacy vaults) means every visible pool model; an explicit list
+    /// is the only set this account may route. The union of all accounts is
+    /// the common pool the Codex picker offers.
+    pub selected_models: Option<Vec<String>>,
     /// Set when a stored token could not be decrypted; the account must be
     /// re-added (the tokens are cleared instead of passed through).
     pub needs_relogin: Option<bool>,
@@ -104,9 +110,9 @@ pub struct Account {
 
 impl Account {
     pub fn display_name(&self) -> String {
-        self.email.clone().unwrap_or_else(|| {
-            self.id.chars().take(8).collect()
-        })
+        self.email
+            .clone()
+            .unwrap_or_else(|| self.id.chars().take(8).collect())
     }
 
     /// Reason this account is paused by the routing planner, if any.
@@ -153,7 +159,9 @@ impl Account {
             if limit > 0 {
                 if let Some(r) = quota.hourly_remaining_percent {
                     if r <= limit as f64 {
-                        return Some(json!({"code": "hourly_reserve", "remaining": r, "limit": limit}));
+                        return Some(
+                            json!({"code": "hourly_reserve", "remaining": r, "limit": limit}),
+                        );
                     }
                 }
             }
@@ -162,7 +170,9 @@ impl Account {
             if limit > 0 {
                 if let Some(r) = quota.weekly_remaining_percent {
                     if r <= limit as f64 {
-                        return Some(json!({"code": "weekly_reserve", "remaining": r, "limit": limit}));
+                        return Some(
+                            json!({"code": "weekly_reserve", "remaining": r, "limit": limit}),
+                        );
                     }
                 }
             }
@@ -264,7 +274,11 @@ pub fn load_raw_at(path: &Path) -> Value {
         .as_deref()
         .and_then(|text| serde_json::from_str::<Value>(text).ok())
         .unwrap_or_else(|| {
-            if raw.as_deref().map(|text| !text.trim().is_empty()).unwrap_or(false) {
+            if raw
+                .as_deref()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+            {
                 let _ = paths::quarantine(path);
             }
             json!({"accounts": [], "currentAccountId": Value::Null})
@@ -354,6 +368,7 @@ pub fn list_views() -> Vec<Value> {
             "weeklyReservePercent": account.weekly_reserve_percent,
             "preferredFirst": account.preferred_first.unwrap_or(false),
             "isBackup": account.is_backup.unwrap_or(false),
+            "selectedModels": account.selected_models,
             "needsRelogin": account.needs_relogin.unwrap_or(false),
             "hasTokens": account.tokens.access_token.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
             "resetCreditsAvailable": reset_available,
@@ -365,17 +380,84 @@ pub fn list_views() -> Vec<Value> {
 }
 
 pub fn set_account_field(id: &str, mutate: impl FnOnce(&mut Value)) -> Result<(), String> {
+    set_account_field_at(&vault_file(), id, mutate)
+}
+
+/// Same as [`set_account_field`] for an explicit path (tests).
+pub fn set_account_field_at(
+    path: &Path,
+    id: &str,
+    mutate: impl FnOnce(&mut Value),
+) -> Result<(), String> {
     let _guard = lock_vault_writes();
-    let mut raw = load_raw();
+    let mut raw = load_raw_at(path);
     if let Some(arr) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) {
         for item in arr.iter_mut() {
             if item.get("id").and_then(|v| v.as_str()) == Some(id) {
                 mutate(item);
-                return save_raw(&raw);
+                return save_raw_at(path, &raw);
             }
         }
     }
     Err(format!("account not found: {}", id))
+}
+
+/// Drops slugs the pool does not offer, duplicate entries and blank strings.
+/// The caller's order is kept so an explicit account list stays readable.
+pub fn filter_selected_models(selected: &[String], visible: &HashSet<String>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut filtered: Vec<String> = Vec::new();
+    for value in selected {
+        let slug = value.trim();
+        if slug.is_empty() || !visible.contains(slug) || !seen.insert(slug.to_string()) {
+            continue;
+        }
+        filtered.push(slug.to_string());
+    }
+    filtered
+}
+
+/// Saves the account's explicit model list. Unknown and hidden slugs are
+/// dropped; an empty result is rejected so an account always keeps a model.
+pub fn set_account_models(id: &str, selected: Vec<String>) -> Result<Vec<String>, String> {
+    let visible = crate::codex_route::visible_pool_slugs();
+    set_account_models_at(&vault_file(), id, &selected, &visible)
+}
+
+/// Same as [`set_account_models`] for an explicit vault path and pool.
+pub fn set_account_models_at(
+    path: &Path,
+    id: &str,
+    selected: &[String],
+    visible: &HashSet<String>,
+) -> Result<Vec<String>, String> {
+    let filtered = filter_selected_models(selected, visible);
+    if filtered.is_empty() {
+        return Err("выберите хотя бы одну модель из пула".to_string());
+    }
+    let saved = filtered.clone();
+    set_account_field_at(path, id, move |item| {
+        item["selectedModels"] = json!(saved);
+    })?;
+    Ok(filtered)
+}
+
+/// Rewrites `selectedModels` on several accounts in one vault write, so a
+/// global pool toggle is all-or-nothing.
+pub fn set_all_account_selected_models(lists: &HashMap<String, Vec<String>>) -> Result<(), String> {
+    let _guard = lock_vault_writes();
+    let mut raw = load_raw();
+    if let Some(items) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) {
+        for item in items.iter_mut() {
+            let Some(id) = item.get("id").and_then(Value::as_str).map(String::from) else {
+                continue;
+            };
+            if let Some(list) = lists.get(&id) {
+                item["selectedModels"] = json!(list);
+            }
+        }
+    }
+    save_raw(&raw)
 }
 
 pub fn update_tokens(id: &str, tokens: &Tokens, last_refresh: &str) -> Result<(), String> {
@@ -400,10 +482,7 @@ fn clear_relogin(item: &mut Value) {
 
 pub fn update_quota(id: &str, quota: &Quota, raw_json: &str, extra: Value) -> Result<(), String> {
     set_account_field(id, move |item| {
-        let mut obj = item
-            .get("quota")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let mut obj = item.get("quota").cloned().unwrap_or_else(|| json!({}));
         obj["hourlyRemainingPercent"] = json!(quota.hourly_remaining_percent);
         obj["weeklyRemainingPercent"] = json!(quota.weekly_remaining_percent);
         obj["hourlyResetAt"] = json!(quota.hourly_reset_at);
@@ -488,7 +567,11 @@ pub fn set_quota_block(id: &str, block: Option<&QuotaBlock>) -> Result<(), Strin
 }
 
 /// Subscription dates / plan discovered from the backend.
-pub fn update_subscription(id: &str, plan: Option<&str>, until: Option<&str>) -> Result<(), String> {
+pub fn update_subscription(
+    id: &str,
+    plan: Option<&str>,
+    until: Option<&str>,
+) -> Result<(), String> {
     let plan = plan.map(String::from);
     let until = until.map(String::from);
     set_account_field(id, move |item| {
@@ -753,7 +836,10 @@ mod tests {
         {
             // Host fallback keeps plaintext, exactly like the first save on a
             // platform without DPAPI.
-            assert_eq!(raw["accounts"][0]["tokens"]["access_token"], "access-secret");
+            assert_eq!(
+                raw["accounts"][0]["tokens"]["access_token"],
+                "access-secret"
+            );
         }
 
         unprotect_tokens(&mut raw);
@@ -771,8 +857,14 @@ mod tests {
     fn legacy_plaintext_vault_is_read_unchanged() {
         let mut raw = vault_with_tokens();
         unprotect_tokens(&mut raw);
-        assert_eq!(raw["accounts"][0]["tokens"]["access_token"], "access-secret");
-        assert_eq!(raw["accounts"][0]["tokens"]["refresh_token"], "refresh-secret");
+        assert_eq!(
+            raw["accounts"][0]["tokens"]["access_token"],
+            "access-secret"
+        );
+        assert_eq!(
+            raw["accounts"][0]["tokens"]["refresh_token"],
+            "refresh-secret"
+        );
         assert!(raw["accounts"][0].get("needsRelogin").is_none());
     }
 
@@ -834,8 +926,14 @@ mod tests {
             "reserved token was stored raw: {stored}"
         );
         unprotect_tokens(&mut raw);
-        assert_eq!(raw["accounts"][0]["tokens"]["access_token"], "dpapi:literal");
-        assert_eq!(raw["accounts"][0]["tokens"]["refresh_token"], "plain:literal");
+        assert_eq!(
+            raw["accounts"][0]["tokens"]["access_token"],
+            "dpapi:literal"
+        );
+        assert_eq!(
+            raw["accounts"][0]["tokens"]["refresh_token"],
+            "plain:literal"
+        );
         assert!(raw["accounts"][0].get("needsRelogin").is_none());
     }
 
@@ -858,7 +956,11 @@ mod tests {
 
     #[test]
     fn non_account_shapes_are_ignored() {
-        for mut raw in [json!({}), json!({"accounts": "nope"}), json!({"accounts": []})] {
+        for mut raw in [
+            json!({}),
+            json!({"accounts": "nope"}),
+            json!({"accounts": []}),
+        ] {
             let before = raw.clone();
             protect_tokens(&mut raw).unwrap();
             unprotect_tokens(&mut raw);

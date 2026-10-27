@@ -255,14 +255,32 @@ final class CodexGatewayService: ObservableObject {
 
     /// Write each vault account as a CLIProxyAPI codex auth file.
     /// `priorities` maps account ids to a routing priority (higher = used sooner).
-    func syncAccounts(_ accounts: [CodexAccount], priorities: [String: Int] = [:]) throws {
-        try Self.syncAccounts(accounts, priorities: priorities, authDir: Self.authDir)
+    /// `poolSlugs` is the visible pool; the payload lists the models the
+    /// account must not receive. `nil` reads the pool from disk.
+    func syncAccounts(
+        accounts: [CodexAccount],
+        priorities: [String: Int] = [:],
+        poolSlugs: Set<String>? = nil
+    ) throws {
+        try Self.syncAccounts(
+            accounts,
+            priorities: priorities,
+            authDir: Self.authDir,
+            poolSlugs: poolSlugs
+        )
     }
 
     /// Static core of the sync — the instance wrapper passes the live auth
     /// dir; tests pass a temporary directory.
-    nonisolated static func syncAccounts(_ accounts: [CodexAccount], priorities: [String: Int], authDir directory: URL) throws {
+    nonisolated static func syncAccounts(
+        _ accounts: [CodexAccount],
+        priorities: [String: Int],
+        authDir directory: URL,
+        poolSlugs: Set<String>? = nil
+    ) throws {
         let fm = FileManager.default
+        // The union is for the picker; routing exclusions are per account.
+        let pool = poolSlugs ?? CodexModelCatalog.visiblePoolSnapshot()
         var desired: [(name: String, payload: [String: Any], preserveLegacyPause: Bool)] = []
         for account in accounts {
             guard let access = account.tokens.access_token, !access.isEmpty else { continue }
@@ -280,6 +298,12 @@ final class CodexGatewayService: ObservableObject {
             ]
             if let priority = priorities[account.id], priority > 0 {
                 payload["priority"] = priority
+            }
+            // The engine routes a pool model only to accounts that allow it.
+            // An empty exclusion list is omitted, not written as `[]`.
+            let excluded = CodexPoolModelsStore.excludedSlugs(for: account, poolSlugs: pool)
+            if !excluded.isEmpty {
+                payload["excluded_models"] = excluded.sorted()
             }
             // Accounts the planner pauses — a window is exhausted or the
             // account dropped below the user's reserve — are excluded from
@@ -358,7 +382,7 @@ final class CodexGatewayService: ObservableObject {
             case .ok:
                 // Keep the adopted gateway aligned with the current vault and order.
                 try? writeConfig()
-                try? syncAccounts(accounts, priorities: priorities)
+                try? syncAccounts(accounts: accounts, priorities: priorities)
                 adopted = true
                 if let adoptedPID = adoptedListenerPID() {
                     writePIDFile(adoptedPID)
@@ -396,7 +420,7 @@ final class CodexGatewayService: ObservableObject {
         }
         do {
             try writeConfig()
-            try syncAccounts(accounts, priorities: priorities)
+            try syncAccounts(accounts: accounts, priorities: priorities)
         } catch {
             finishWithFailure(L("Config write failed") + ": " + error.localizedDescription)
             return
@@ -460,9 +484,15 @@ final class CodexGatewayService: ObservableObject {
     }
 
     /// Re-sync account files without stopping (the gateway hot-reloads the auth dir).
-    func syncAccountsLive(_ accounts: [CodexAccount], priorities: [String: Int] = [:]) {
+    /// `poolSlugs` is the visible pool the auth payloads exclude from; `nil`
+    /// falls back to the pool on disk.
+    func syncAccountsLive(
+        _ accounts: [CodexAccount],
+        priorities: [String: Int] = [:],
+        poolSlugs: Set<String>? = nil
+    ) {
         do {
-            try syncAccounts(accounts, priorities: priorities)
+            try syncAccounts(accounts: accounts, priorities: priorities, poolSlugs: poolSlugs)
             auditLog("accounts synced (\(accounts.count))")
         } catch {
             auditLog("account sync failed: \(error.localizedDescription)")
@@ -486,7 +516,7 @@ final class CodexGatewayService: ObservableObject {
             syncAccountsLive(accounts, priorities: priorities)
         } else {
             do {
-                try syncAccounts(accounts, priorities: priorities)
+                try syncAccounts(accounts: accounts, priorities: priorities)
             } catch {
                 lastError = L("Config write failed") + ": " + error.localizedDescription
                 return
@@ -506,7 +536,7 @@ final class CodexGatewayService: ObservableObject {
         case other(String)
     }
 
-    static var codexConfigPath: String {
+    nonisolated static var codexConfigPath: String {
         NSString(string: "~/.codex/config.toml").expandingTildeInPath
     }
 

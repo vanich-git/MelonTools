@@ -238,7 +238,11 @@ fn load_from(target: &std::path::Path) -> Store {
         .as_deref()
         .and_then(|text| serde_json::from_str(text).ok())
         .unwrap_or_else(|| {
-            if raw.as_deref().map(|text| !text.trim().is_empty()).unwrap_or(false) {
+            if raw
+                .as_deref()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+            {
                 let _ = paths::quarantine(target);
             }
             Store::default()
@@ -372,18 +376,19 @@ enum TaskZone {
 /// instead of silently running in the wrong zone.
 fn normalize_time_zone(value: Option<&str>) -> Result<Option<String>, String> {
     let raw = value.unwrap_or("").trim();
-    if raw.is_empty()
-        || raw.eq_ignore_ascii_case("local")
-        || raw.eq_ignore_ascii_case("system")
-    {
+    if raw.is_empty() || raw.eq_ignore_ascii_case("local") || raw.eq_ignore_ascii_case("system") {
         return Ok(None);
     }
     let upper = raw.to_ascii_uppercase();
     if upper == "UTC" || upper == "GMT" || upper == "Z" {
         return Ok(Some("UTC".to_string()));
     }
-    let seconds = parse_offset_seconds(&upper)
-        .ok_or_else(|| format!("часовой пояс: используйте System, UTC или смещение вида +03:00 (получено «{}»)", raw))?;
+    let seconds = parse_offset_seconds(&upper).ok_or_else(|| {
+        format!(
+            "часовой пояс: используйте System, UTC или смещение вида +03:00 (получено «{}»)",
+            raw
+        )
+    })?;
     let sign = if seconds < 0 { '-' } else { '+' };
     let abs = seconds.unsigned_abs();
     Ok(Some(format!(
@@ -430,10 +435,9 @@ fn task_zone(value: Option<&str>) -> Result<TaskZone, String> {
         Some(normalized) => {
             let seconds = parse_offset_seconds(&normalized)
                 .ok_or_else(|| "часовой пояс: некорректное смещение".to_string())?;
-            Ok(TaskZone::Fixed(
-                FixedOffset::east_opt(seconds)
-                    .ok_or_else(|| "часовой пояс: смещение вне диапазона".to_string())?,
-            ))
+            Ok(TaskZone::Fixed(FixedOffset::east_opt(seconds).ok_or_else(
+                || "часовой пояс: смещение вне диапазона".to_string(),
+            )?))
         }
     }
 }
@@ -544,7 +548,10 @@ fn parse_cron_field(
             return Err(format!("cron: лишний «/» в поле «{}»", label));
         }
         if step == 0 {
-            return Err(format!("cron: шаг в поле «{}» должен быть больше нуля", label));
+            return Err(format!(
+                "cron: шаг в поле «{}» должен быть больше нуля",
+                label
+            ));
         }
         let value = |text: &str| -> Result<u32, String> {
             let upper = text.to_ascii_uppercase();
@@ -1168,12 +1175,7 @@ fn notify_outcome(
         return;
     }
     let (title, body) = notification_text(settings.lang == "en", task_name, outcome);
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// The first 120 characters of the result (success) or error (failure).
@@ -1357,7 +1359,10 @@ fn git_context(directory: &str) -> String {
     let mut text = String::new();
     let commands: [(&str, &[&str]); 3] = [
         ("status --short", &["status", "--short"]),
-        ("log -5 --oneline", &["log", "-5", "--oneline", "--decorate"]),
+        (
+            "log -5 --oneline",
+            &["log", "-5", "--oneline", "--decorate"],
+        ),
         ("diff --stat", &["diff", "--stat"]),
     ];
     for (label, args) in commands {
@@ -1430,9 +1435,7 @@ pub fn outcome_from_response(code: u16, text: &str) -> Outcome {
         result: content.to_string(),
         error: None,
         duration_ms: 0,
-        tokens: value
-            .pointer("/usage/total_tokens")
-            .and_then(Value::as_i64),
+        tokens: value.pointer("/usage/total_tokens").and_then(Value::as_i64),
     }
 }
 
@@ -1491,16 +1494,23 @@ pub fn model_group(id: &str) -> &'static str {
 /// Ids grouped by prefix, order fixed, empty groups omitted. The id itself is
 /// never rewritten: the task stores exactly what `/v1/models` returned.
 pub fn model_groups(ids: &[String]) -> Vec<Value> {
-    ["gateway", "claude", "opencode", "openrouter", "deepinfra", "vercel"]
-        .iter()
-        .filter_map(|group| {
-            let bucket: Vec<&String> = ids
-                .iter()
-                .filter(|id| model_group(id.as_str()) == *group)
-                .collect();
-            (!bucket.is_empty()).then(|| json!({ "id": group, "ids": bucket }))
-        })
-        .collect()
+    [
+        "gateway",
+        "claude",
+        "opencode",
+        "openrouter",
+        "deepinfra",
+        "vercel",
+    ]
+    .iter()
+    .filter_map(|group| {
+        let bucket: Vec<&String> = ids
+            .iter()
+            .filter(|id| model_group(id.as_str()) == *group)
+            .collect();
+        (!bucket.is_empty()).then(|| json!({ "id": group, "ids": bucket }))
+    })
+    .collect()
 }
 
 pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
@@ -1675,7 +1685,10 @@ mod tests {
             tasks: vec![future, disabled, due, never],
             history: Vec::new(),
         };
-        assert_eq!(due_task(&store, now).map(|task| task.id.as_str()), Some("due"));
+        assert_eq!(
+            due_task(&store, now).map(|task| task.id.as_str()),
+            Some("due")
+        );
         assert!(due_task(&store, now - 120).is_none());
     }
 
@@ -1729,7 +1742,10 @@ mod tests {
 
         // The finished task is no longer due; the other one waits for the next
         // tick instead of firing alongside it.
-        assert_eq!(due_task(&store, now).map(|task| task.id.as_str()), Some("b"));
+        assert_eq!(
+            due_task(&store, now).map(|task| task.id.as_str()),
+            Some("b")
+        );
         assert!(store.tasks[0].next_run_at.unwrap() > now);
         assert_eq!(store.history.len(), 1);
     }
@@ -1887,7 +1903,10 @@ mod tests {
     fn endpoint_and_request_body_match_the_contract() {
         assert_eq!(TICK_SECS, 30);
         assert_eq!(RUN_TIMEOUT_SECS, 300);
-        assert_eq!(endpoint(18317), "http://127.0.0.1:18317/v1/chat/completions");
+        assert_eq!(
+            endpoint(18317),
+            "http://127.0.0.1:18317/v1/chat/completions"
+        );
 
         let task = task("a");
         let body = request_body(&task);
@@ -1907,7 +1926,10 @@ mod tests {
         let id = new_uuid();
         assert_eq!(id.len(), 36);
         let parts: Vec<&str> = id.split('-').collect();
-        assert_eq!(parts.iter().map(|part| part.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert_eq!(
+            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
         assert_eq!(&parts[2][0..1], "4");
         assert!(matches!(&parts[3][0..1], "8" | "9" | "a" | "b"));
         assert_ne!(id, new_uuid());
@@ -1950,10 +1972,7 @@ mod tests {
             ids_of("deepinfra"),
             vec!["deepinfra/deepseek-ai/DeepSeek-V4"]
         );
-        assert_eq!(
-            ids_of("vercel"),
-            vec!["vercel/anthropic/claude-sonnet-4.6"]
-        );
+        assert_eq!(ids_of("vercel"), vec!["vercel/anthropic/claude-sonnet-4.6"]);
         assert_eq!(groups[0]["id"], "gateway");
         assert_eq!(model_group("claude-opus-5-5"), "claude");
     }
@@ -1981,8 +2000,14 @@ mod tests {
 
         let raw = std::fs::read_to_string(&target).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(parsed.get("tasks").and_then(|value| value.as_array()).is_some());
-        assert!(parsed.get("history").and_then(|value| value.as_array()).is_some());
+        assert!(parsed
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .is_some());
+        assert!(parsed
+            .get("history")
+            .and_then(|value| value.as_array())
+            .is_some());
         assert!(raw.contains("\"nextRunAt\""), "camelCase on disk");
 
         let back = load_from(&target);
@@ -1990,7 +2015,10 @@ mod tests {
         assert_eq!(back.tasks[0].interval_minutes, 45);
         assert_eq!(back.tasks[0].last_status, "ok");
         assert_eq!(back.tasks[0].last_result, "pong");
-        assert!(back.tasks[1].next_run_at.is_some(), "enabled task is scheduled");
+        assert!(
+            back.tasks[1].next_run_at.is_some(),
+            "enabled task is scheduled"
+        );
         assert_eq!(back.history.len(), 1);
 
         // The tmp sibling is renamed, never left next to the store.
@@ -2055,8 +2083,8 @@ mod tests {
     fn cron_weekdays_and_names_skip_the_weekend() {
         // Saturday 24 October 2026, 12:00 UTC.
         let saturday = utc_at(2026, 10, 24, 12, 0);
-        let next = next_run_for("cron", 60, Some("0 9 * * MON-FRI"), Some("UTC"), saturday)
-            .unwrap();
+        let next =
+            next_run_for("cron", 60, Some("0 9 * * MON-FRI"), Some("UTC"), saturday).unwrap();
         assert_eq!(next, utc_at(2026, 10, 26, 9, 0), "Monday 09:00");
     }
 
@@ -2074,7 +2102,9 @@ mod tests {
         let schedule = parse_cron("5,10-20/5 8 * * *").unwrap();
         assert_eq!(schedule.minutes, vec![5, 10, 15, 20]);
         assert_eq!(schedule.hours, vec![8]);
-        let next = schedule.next_fire(TaskZone::Fixed(FixedOffset::east_opt(0).unwrap()), now).unwrap();
+        let next = schedule
+            .next_fire(TaskZone::Fixed(FixedOffset::east_opt(0).unwrap()), now)
+            .unwrap();
         assert_eq!(next, utc_at(2026, 10, 20, 8, 10));
     }
 
@@ -2098,7 +2128,10 @@ mod tests {
         let now = utc_at(2026, 10, 20, 5, 0); // 08:00 in +03:00
         let next = next_run_for("cron", 60, Some("0 9 * * *"), Some("+03:00"), now).unwrap();
         assert_eq!(next, utc_at(2026, 10, 20, 6, 0));
-        assert_eq!(normalize_time_zone(Some("UTC+3")).unwrap().as_deref(), Some("+03:00"));
+        assert_eq!(
+            normalize_time_zone(Some("UTC+3")).unwrap().as_deref(),
+            Some("+03:00")
+        );
         assert_eq!(normalize_time_zone(Some("local")).unwrap(), None);
     }
 

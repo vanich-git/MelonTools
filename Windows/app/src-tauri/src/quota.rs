@@ -168,7 +168,12 @@ fn number_signal(values: &HashMap<String, String>, key: &str) -> Option<f64> {
     values.get(key)?.parse::<f64>().ok()
 }
 
-fn reset_signal(values: &HashMap<String, String>, at_key: &str, after_key: &str, now: f64) -> Option<f64> {
+fn reset_signal(
+    values: &HashMap<String, String>,
+    at_key: &str,
+    after_key: &str,
+    now: f64,
+) -> Option<f64> {
     if let Some(at) = number_signal(values, at_key).filter(|value| *value > 0.0) {
         return Some(at - APPLE_REF_UNIX_OFFSET);
     }
@@ -245,7 +250,9 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
             if let Some(models) = model_availability(&raw) {
                 extra.insert("modelAvailability".to_string(), models);
             }
-            if let Ok((available, next_expiry)) = fetch_reset_credits(client, account, &tokens).await {
+            if let Ok((available, next_expiry)) =
+                fetch_reset_credits(client, account, &tokens).await
+            {
                 if let Some(available) = available {
                     extra.insert("resetCreditsAvailable".to_string(), json!(available));
                 }
@@ -275,11 +282,8 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
                 .unwrap_or(f64::INFINITY);
             if account.subscription_active_until.is_none() || subscription_age >= 1800.0 {
                 if let Ok((plan, until)) = fetch_subscription(client, account, &tokens).await {
-                    let _ = vault::update_subscription(
-                        &account.id,
-                        plan.as_deref(),
-                        until.as_deref(),
-                    );
+                    let _ =
+                        vault::update_subscription(&account.id, plan.as_deref(), until.as_deref());
                 }
             }
             Ok(())
@@ -340,11 +344,16 @@ async fn fetch_reset_credits(
         .get("available_count")
         .and_then(|v| v.as_i64())
         .or_else(|| value.get("availableCount").and_then(|v| v.as_i64()))
-        .or_else(|| nested.and_then(|d| d.get("available_count")).and_then(|v| v.as_i64()));
-    let records = value
-        .get("credits")
-        .and_then(|v| v.as_array())
-        .or_else(|| nested.and_then(|d| d.get("credits")).and_then(|v| v.as_array()));
+        .or_else(|| {
+            nested
+                .and_then(|d| d.get("available_count"))
+                .and_then(|v| v.as_i64())
+        });
+    let records = value.get("credits").and_then(|v| v.as_array()).or_else(|| {
+        nested
+            .and_then(|d| d.get("credits"))
+            .and_then(|v| v.as_array())
+    });
     let mut next_expiry: Option<f64> = None;
     if let Some(records) = records {
         for record in records {
@@ -545,15 +554,27 @@ mod tests {
     fn parses_live_codex_signals_and_exact_remaining_percent() {
         let signals = HashMap::from([
             ("X-Codex-Primary-Used-Percent".to_string(), "98".to_string()),
-            ("X-Codex-Primary-Window-Minutes".to_string(), "300".to_string()),
-            ("X-Codex-Primary-Reset-After-Seconds".to_string(), "120".to_string()),
-            ("X-Codex-Secondary-Used-Percent".to_string(), "27.5".to_string()),
+            (
+                "X-Codex-Primary-Window-Minutes".to_string(),
+                "300".to_string(),
+            ),
+            (
+                "X-Codex-Primary-Reset-After-Seconds".to_string(),
+                "120".to_string(),
+            ),
+            (
+                "X-Codex-Secondary-Used-Percent".to_string(),
+                "27.5".to_string(),
+            ),
         ]);
         let now = 1_800_000_000.0;
         let reading = parse_live_signals(&signals, None, now).unwrap();
         assert_eq!(reading.quota.hourly_remaining_percent, Some(2.0));
         assert_eq!(reading.quota.weekly_remaining_percent, Some(72.5));
-        assert_eq!(reading.quota.hourly_reset_at, Some(now + 120.0 - APPLE_REF_UNIX_OFFSET));
+        assert_eq!(
+            reading.quota.hourly_reset_at,
+            Some(now + 120.0 - APPLE_REF_UNIX_OFFSET)
+        );
         assert_eq!(reading.quota.hourly_window_minutes, Some(300.0));
     }
 

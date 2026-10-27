@@ -95,12 +95,7 @@ pub async fn deepinfra_models(key: &str) -> Result<Vec<ProviderModel>, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let _ = http_json(&client, "https://api.deepinfra.com/v1/me", key).await?;
-    let list = http_json(
-        &client,
-        "https://api.deepinfra.com/v1/openai/models",
-        key,
-    )
-    .await?;
+    let list = http_json(&client, "https://api.deepinfra.com/v1/openai/models", key).await?;
     Ok(parse_deepinfra_models(&list))
 }
 
@@ -135,18 +130,12 @@ fn parse_deepinfra_models(value: &Value) -> Vec<ProviderModel> {
                 context_window: entry
                     .pointer("/metadata/context_length")
                     .and_then(Value::as_u64),
-                prompt_per_token: number(
-                    pricing.and_then(|p| p.get("input_tokens")),
-                )
-                .map(|value| value / 1_000_000.0),
-                completion_per_token: number(
-                    pricing.and_then(|p| p.get("output_tokens")),
-                )
-                .map(|value| value / 1_000_000.0),
-                cache_read_per_token: number(
-                    pricing.and_then(|p| p.get("cache_read_tokens")),
-                )
-                .map(|value| value / 1_000_000.0),
+                prompt_per_token: number(pricing.and_then(|p| p.get("input_tokens")))
+                    .map(|value| value / 1_000_000.0),
+                completion_per_token: number(pricing.and_then(|p| p.get("output_tokens")))
+                    .map(|value| value / 1_000_000.0),
+                cache_read_per_token: number(pricing.and_then(|p| p.get("cache_read_tokens")))
+                    .map(|value| value / 1_000_000.0),
                 supports_images,
                 id,
             })
@@ -256,11 +245,12 @@ fn parse_vercel_models(value: &Value) -> Vec<ProviderModel> {
 /// serves. Without an auth file the account is not connected; without a usage
 /// answer every number stays `null` ("—") — nothing is fabricated.
 pub async fn claude(settings: &Settings) -> Result<Value, String> {
-    let model_count = antigravity::claude_models_without_antigravity(settings.port, &settings.api_key)
-        .await
-        .ok()
-        .and_then(|value| value.get("count").and_then(|c| c.as_u64()))
-        .unwrap_or(0) as usize;
+    let model_count =
+        antigravity::claude_models_without_antigravity(settings.port, &settings.api_key)
+            .await
+            .ok()
+            .and_then(|value| value.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0) as usize;
     let Some(file) = claude::newest_auth_file() else {
         return Ok(claude_metrics(false, None, None, model_count, None));
     };
@@ -349,7 +339,10 @@ pub fn antigravity_metrics(
 
 #[cfg(test)]
 mod tests {
-    use super::{antigravity_metrics, claude_metrics, parse_deepinfra_models, parse_vercel_models, vercel_metrics};
+    use super::{
+        antigravity_metrics, claude_metrics, parse_deepinfra_models, parse_vercel_models,
+        vercel_metrics,
+    };
     use crate::claude::UsageSnapshot;
     use serde_json::json;
 
@@ -428,13 +421,7 @@ mod tests {
         assert_eq!(value["modelCount"], 11);
         assert!(value["updatedAt"].as_str().is_some());
 
-        let failing = antigravity_metrics(
-            true,
-            None,
-            None,
-            0,
-            Some("нет связи".to_string()),
-        );
+        let failing = antigravity_metrics(true, None, None, 0, Some("нет связи".to_string()));
         assert_eq!(failing["error"], "нет связи");
         assert_eq!(failing["email"], serde_json::Value::Null);
         assert_eq!(failing["projectId"], serde_json::Value::Null);
@@ -453,7 +440,10 @@ mod tests {
         ]});
         let models = parse_deepinfra_models(&value);
         assert_eq!(models.len(), 2);
-        let chat = models.iter().find(|m| m.id == "deepseek-ai/DeepSeek-V4").unwrap();
+        let chat = models
+            .iter()
+            .find(|m| m.id == "deepseek-ai/DeepSeek-V4")
+            .unwrap();
         assert_eq!(chat.display, "DeepSeek V4");
         assert_eq!(chat.context_window, Some(131_072));
         assert!((chat.prompt_per_token.unwrap() - 0.00000027).abs() < 1e-12);

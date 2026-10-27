@@ -120,7 +120,11 @@ pub fn auth_files_in(dir: &Path) -> Vec<AuthFile> {
 pub fn newest_of(files: &[AuthFile]) -> Option<AuthFile> {
     files
         .iter()
-        .max_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.name.cmp(&b.name)))
+        .max_by(|a, b| {
+            a.modified
+                .cmp(&b.modified)
+                .then_with(|| a.name.cmp(&b.name))
+        })
         .cloned()
 }
 
@@ -251,10 +255,7 @@ pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
 /// Claude model ids served by the gateway, with Antigravity-owned ids removed.
 /// Replaces `claude::models` for the app's listing and metrics so the Claude
 /// provider never claims Antigravity's Claude models.
-pub async fn claude_models_without_antigravity(
-    port: u16,
-    api_key: &str,
-) -> Result<Value, String> {
+pub async fn claude_models_without_antigravity(port: u16, api_key: &str) -> Result<Value, String> {
     let root = fetch_models(port, api_key).await?;
     let entries = parse_claude_models(&root);
     Ok(json!({ "models": entries.clone(), "count": entries.len() }))
@@ -285,10 +286,7 @@ impl Management {
         // The engine accepts either header; both are sent so the app is robust
         // against middleware variants.
         self.client
-            .request(
-                method,
-                format!("http://127.0.0.1:{}{}", self.port, path),
-            )
+            .request(method, format!("http://127.0.0.1:{}{}", self.port, path))
             .header("Authorization", format!("Bearer {}", self.secret))
             .header("X-Management-Key", self.secret.clone())
             .header("Accept", "application/json")
@@ -392,7 +390,10 @@ impl Management {
                 "/v8/management/credentials/refresh".to_string(),
                 Some(json!({ "name": name })),
             ),
-            None => ("/v8/management/credentials/refresh?all=true".to_string(), None),
+            None => (
+                "/v8/management/credentials/refresh?all=true".to_string(),
+                None,
+            ),
         };
         match self.call(reqwest::Method::POST, &path, body).await {
             Ok((status, _)) => json!({ "ok": (200..300).contains(&status) }),
@@ -456,8 +457,12 @@ mod tests {
         assert!(is_antigravity_auth_file_name(
             "antigravity-1a2b3c4d-user@example.com.json"
         ));
-        assert!(!is_antigravity_auth_file_name("claude-user@example.com.json"));
-        assert!(!is_antigravity_auth_file_name("codex-user@example.com.json"));
+        assert!(!is_antigravity_auth_file_name(
+            "claude-user@example.com.json"
+        ));
+        assert!(!is_antigravity_auth_file_name(
+            "codex-user@example.com.json"
+        ));
         assert!(!is_antigravity_auth_file_name(
             "._antigravity-user@example.com.json"
         ));
@@ -501,15 +506,12 @@ mod tests {
     #[test]
     fn decode_auth_file_tolerates_missing_fields_and_rejects_other_types() {
         let path = PathBuf::from("/tmp/antigravity-x.json");
-        let decoded =
-            decode_auth_file("antigravity.json", &path, r#"{"email":"a@b.c"}"#)
-                .expect("no type field is accepted");
+        let decoded = decode_auth_file("antigravity.json", &path, r#"{"email":"a@b.c"}"#)
+            .expect("no type field is accepted");
         assert_eq!(decoded.email.as_deref(), Some("a@b.c"));
         assert!(decoded.project_id.is_none());
         assert!(decoded.access_token.is_none());
-        assert!(
-            decode_auth_file("antigravity.json", &path, r#"{"type":"antigravity"}"#).is_some()
-        );
+        assert!(decode_auth_file("antigravity.json", &path, r#"{"type":"antigravity"}"#).is_some());
         assert!(decode_auth_file("antigravity.json", &path, r#"{"type":"claude"}"#).is_none());
         assert!(decode_auth_file("antigravity.json", &path, "{not json").is_none());
     }

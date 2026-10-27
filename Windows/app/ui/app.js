@@ -145,6 +145,13 @@ const DICT = {
     instanceBind: "Аккаунт", instanceNone: "текущий логин", instanceDelete: "Удалить", instanceHint: "Отдельный CODEX_HOME со своим входом.",
     composer: "Композер", composerHint: "Чипы в композере Codex: аккаунты и квоты прямо в строке ввода.",
     models: "Модели", modelsSearch: "Поиск модели…", modelsCount: "моделей", sources: "Источники", sourceEnabled: "включён",
+    poolTitle: "Модели Codex", poolSubtitle: "Модели OpenAI из общего пула аккаунтов. В picker попадают модели, выбранные хотя бы на одном аккаунте.",
+    poolInPool: "В пуле: {n} из {total}", poolAccountSelected: "Выбрано: {n} из {total}", poolAccounts: "{n} из {total} аккаунтов",
+    poolAll: "Выбрать все", poolClear: "Снять все", poolCloseLabel: "Закрыть",
+    poolAtLeastOne: "Хотя бы одна модель должна остаться выбранной.",
+    poolRelaunch: "Перезапустите Codex, чтобы обновить список моделей.",
+    poolNewOff: "Новые модели выключены, пока вы их не выберете.",
+    poolUnavailable: "недоступна",
     autostart: "Автозапуск с Windows", session: "Сессия",
     donateScan: "Отсканируйте QR — сеть TRON (TRC20)",
     update: "Обновить", updateCheck: "Проверить обновление", updateChecking: "Проверяем обновления…", updateAvailable: "Доступно обновление {v}",
@@ -325,6 +332,13 @@ const DICT = {
     instanceBind: "Account", instanceNone: "current login", instanceDelete: "Delete", instanceHint: "A separate CODEX_HOME with its own login.",
     composer: "Composer", composerHint: "Chips in the Codex composer: accounts and quotas right in the input row.",
     models: "Models", modelsSearch: "Search models…", modelsCount: "models", sources: "Sources", sourceEnabled: "enabled",
+    poolTitle: "Codex models", poolSubtitle: "OpenAI models from the shared account pool. The picker shows models selected on at least one account.",
+    poolInPool: "In pool: {n} of {total}", poolAccountSelected: "Selected: {n} of {total}", poolAccounts: "{n} of {total} accounts",
+    poolAll: "Select all", poolClear: "Clear", poolCloseLabel: "Close",
+    poolAtLeastOne: "At least one model must stay selected.",
+    poolRelaunch: "Relaunch Codex to refresh the model list.",
+    poolNewOff: "New models stay off until you select them.",
+    poolUnavailable: "unavailable",
     autostart: "Start with Windows", session: "Session",
     donateScan: "Scan the QR — TRON network (TRC20)",
     update: "Update", updateCheck: "Check for updates", updateChecking: "Checking for updates…", updateAvailable: "Update {v} is available",
@@ -396,6 +410,13 @@ const S = {
   calls: [],
   models: null,
   modelsQuery: "",
+  // Codex model pool: shared OpenAI model catalog, its picker modal and the
+  // per-account draft (poolDraft) edited in the account mode.
+  pool: null,
+  poolQuery: "",
+  poolModal: null,
+  poolError: null,
+  poolDraft: null,
   diag: null,
   scheduler: null,
   schedulerAt: 0,
@@ -457,6 +478,27 @@ async function inv(cmd, args = {}) {
   return mock(cmd, args);
 }
 
+// Browser preview only: a fake Codex pool so the picker modal works without
+// Tauri. selectedCount drifts as set_pool_model toggles slugs in the demo.
+const DEMO_POOL_MODELS = [
+  { slug: "gpt-6.1-sol", display: "GPT-6.1 Sol", contextLength: 400000, priority: 100, selectedCount: 2, accountCount: 2 },
+  { slug: "gpt-5.5-codex", display: "GPT-5.5 Codex", contextLength: 272000, priority: 90, selectedCount: 1, accountCount: 2 },
+  { slug: "gpt-4.1-codex-mini", display: "GPT-4.1 Codex Mini", contextLength: 200000, priority: 80, selectedCount: 0, accountCount: 2 },
+];
+const DEMO_AVAILABILITY = {
+  "demo-1": [
+    { model: "gpt-6.1-sol", available: true },
+    { model: "gpt-5.5-codex", available: false },
+  ],
+};
+function demoPoolSnapshot() {
+  return {
+    models: DEMO_POOL_MODELS.map((model) => Object.assign({}, model)),
+    selectedCount: DEMO_POOL_MODELS.filter((model) => model.selectedCount > 0).length,
+    accountCount: 2,
+  };
+}
+
 // Browser preview data (used only outside Tauri).
 function mock(cmd, args) {
   const nowSec = Date.now() / 1000;
@@ -467,6 +509,7 @@ function mock(cmd, args) {
       hourlyRemaining: 100, weeklyRemaining: 85, hourlyResetAt: nowSec + 16698, weeklyResetAt: nowSec + 583541,
       hourlyWindowPresent: true, weeklyWindowPresent: true, quotaUpdatedAt: nowSec - 40,
       hourlyReservePercent: 5, weeklyReservePercent: null, preferredFirst: true, hasTokens: true,
+      selectedModels: null,
     },
     {
       id: "demo-2", email: "account-2@example.invalid", displayName: "account-2@example.invalid", planType: "plus",
@@ -475,6 +518,7 @@ function mock(cmd, args) {
       hourlyRemaining: 4, weeklyRemaining: 85, hourlyResetAt: nowSec + 3600, weeklyResetAt: nowSec + 583000,
       hourlyWindowPresent: true, weeklyWindowPresent: true, quotaUpdatedAt: nowSec - 120,
       hourlyReservePercent: 5, weeklyReservePercent: null, preferredFirst: false, hasTokens: true,
+      selectedModels: ["gpt-6.1-sol"],
     },
   ];
   const historySeries = (key, start, drop) => Array.from({ length: 12 }, (_, index) => ({
@@ -491,10 +535,24 @@ function mock(cmd, args) {
     ...historySeries("openrouter", 60, 3),
   ];
   const mocks = {
-    app_info: { name: "Melon Tools", version: "1.4.7", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
+    app_info: { name: "Melon Tools", version: "2.4.0", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
     settings_get: { port: 18317, apiKey: "", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, deepinfraModels: [], vercelModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [] },
     settings_set: (a) => a.settings,
-    vault_list: demoAccounts,
+    vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
+    codex_pool_models: () => demoPoolSnapshot(),
+    codex_models_refresh: () => demoPoolSnapshot(),
+    set_pool_model: (a) => {
+      const model = DEMO_POOL_MODELS.find((item) => item.slug === a.slug);
+      if (model) model.selectedCount = a.enabled ? model.accountCount : 0;
+      return { pool: demoPoolSnapshot(), accounts: demoAccounts, catalogError: null };
+    },
+    save_account_models: (a) => {
+      const account = demoAccounts.find((item) => item.id === a.id);
+      if (!a.selected || !a.selected.length) return Promise.reject("хотя бы одна модель");
+      if (account) account.selectedModels = a.selected.slice();
+      return { accounts: demoAccounts, pool: demoPoolSnapshot(), catalogError: null };
+    },
+    apply_codex_models: () => ({ pool: demoPoolSnapshot(), accounts: demoAccounts, custom: 0 }),
     quota_history: historyMocks,
     quota_refresh: { accounts: demoAccounts, errors: [], syncedAccounts: 2 },
     gateway_status: { running: true, port: 18317, requestsLastMinute: 0, sidecarFound: true, dataDir: "…", logPath: "…\\gateway.log" },
@@ -1324,6 +1382,8 @@ function render() {
   if (S.section === "donate") renderDonateQr();
   if (S.section === "scheduler" && !S.scheduler && !S.schedulerError) A.schedulerLoad();
   if (S.section === "providers" && !S.models && !S.modelsError) A.modelsLoad();
+  // The Codex pool snapshot backs the pool card and both picker modes.
+  if ((S.section === "accounts" || S.section === "providers") && !S.pool && !S.poolError) A.poolLoad();
   if (S.section === "providers" && IS_TAURI && !S.vercelLoaded
       && String((S.settings && S.settings.vercelKey) || "").trim()) {
     A.vercelLoad();
@@ -1553,6 +1613,7 @@ function accountCard(account) {
             <input type="checkbox" ${account.isBackup ? "checked" : ""} onchange="A.setRole('${esc(account.id)}', ${account.preferredFirst ? "true" : "false"}, this.checked)">
           </label>
           <button class="ghost small" onclick="A.saveReserves('${esc(account.id)}')">${t("save")}</button>
+          <button class="ghost small" onclick="A.poolOpenAccount('${esc(account.id)}')">${t("models")}</button>
         </div>
         <div class="footnote">${esc(t("reserveExact"))}</div>
 
@@ -1639,7 +1700,8 @@ function accountsPage() {
       <button class="btn small" onclick="A.gatewayStart()">${t("start")}</button>
       <button class="ghost small" onclick="A.gatewayStop()">${t("stop")}</button>
     </div>
-  </div>`;
+  </div>
+  ${poolModal()}`;
 }
 
 function apiPage() {
@@ -2040,6 +2102,162 @@ function vercelCard(settings) {
   </div>`;
 }
 
+// MARK: - Codex model pool
+
+function poolFilteredModels() {
+  const pool = S.pool;
+  const models = (pool && pool.models) || [];
+  const query = String(S.poolQuery || "").trim().toLowerCase();
+  if (!query) return models;
+  return models.filter((model) => {
+    const haystack = `${model.slug || ""} ${model.display || ""}`.toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function poolContextText(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+// Global mode row: the whole row flips the model for every account. The
+// checkbox is a visual tri-state (all / some / none) driven by selectedCount.
+function poolRowGlobal(model, accountCount) {
+  const slug = String(model.slug || "");
+  const selected = model.selectedCount || 0;
+  const total = accountCount || 0;
+  const all = total > 0 && selected >= total;
+  const stateClass = all ? "on" : selected > 0 ? "mixed" : "";
+  const context = poolContextText(model.contextLength);
+  return `<div class="pool-row" role="checkbox" aria-checked="${all ? "true" : selected > 0 ? "mixed" : "false"}"
+      onclick="A.poolToggleGlobal('${esc(slug)}', ${all ? "false" : "true"})"
+      ${S.busy["pool-toggle-" + slug] ? 'style="opacity:0.5"' : ""}>
+    <span class="pool-check ${stateClass}"></span>
+    <span class="pool-name">${esc(model.display || slug)}</span>
+    <span class="mono pool-slug">${esc(slug)}</span>
+    ${context ? `<span class="footnote">${esc(context)}</span>` : ""}
+    <span class="spacer"></span>
+    <span class="footnote">${esc(fmt(t("poolAccounts"), { n: selected, total }))}</span>
+  </div>`;
+}
+
+// Account mode row: a plain checkbox bound to S.poolDraft; the availability
+// pill mirrors the per-account probe when the backend reported it.
+function poolRowAccount(model, account, draft) {
+  const slug = String(model.slug || "");
+  const context = poolContextText(model.contextLength);
+  const availability = account && Array.isArray(account.modelAvailability)
+    ? account.modelAvailability.find((item) => item && item.model === slug)
+    : null;
+  return `<label class="pool-row pool-row-static">
+    <input type="checkbox" ${draft.has(slug) ? "checked" : ""} onchange="A.poolToggleAccount('${esc(slug)}')">
+    <span class="pool-name">${esc(model.display || slug)}</span>
+    <span class="mono pool-slug">${esc(slug)}</span>
+    ${context ? `<span class="footnote">${esc(context)}</span>` : ""}
+    <span class="spacer"></span>
+    ${availability ? `<span class="pill ${availability.available ? "ok" : ""}">${esc(availability.available ? t("availableShort") : t("poolUnavailable"))}</span>` : ""}
+  </label>`;
+}
+
+function poolCountText() {
+  const pool = S.pool;
+  if (!pool) return t("loading");
+  if (S.poolModal && S.poolModal.mode === "account") {
+    return fmt(t("poolAccountSelected"), { n: (S.poolDraft || []).length, total: (pool.models || []).length });
+  }
+  return fmt(t("poolInPool"), { n: pool.selectedCount, total: (pool.models || []).length });
+}
+
+function poolListRows() {
+  const pool = S.pool;
+  if (!pool) return `<div class="muted">${esc(t("loading"))}</div>`;
+  const models = poolFilteredModels();
+  if (!models.length) return `<div class="footnote">${esc(t("noCalls"))}</div>`;
+  if (S.poolModal && S.poolModal.mode === "account") {
+    const account = (S.accounts || []).find((a) => a.id === S.poolModal.accountId);
+    const draft = new Set(S.poolDraft || []);
+    return models.map((model) => poolRowAccount(model, account, draft)).join("");
+  }
+  return models.map((model) => poolRowGlobal(model, pool.accountCount || 0)).join("");
+}
+
+// The search input keeps focus across typing, so search and the account
+// toggles patch the modal fragments in place instead of re-rendering.
+function poolModalFooterRefresh() {
+  const draftEmpty = !(S.poolDraft || []).length;
+  const warning = document.getElementById("pool-atleast");
+  if (warning) warning.hidden = !draftEmpty;
+  const save = document.getElementById("pool-save");
+  if (save) save.disabled = draftEmpty;
+}
+
+function poolModalRefresh() {
+  const list = document.getElementById("pool-list");
+  if (list) list.innerHTML = poolListRows();
+  const count = document.getElementById("pool-count");
+  if (count) count.textContent = poolCountText();
+  poolModalFooterRefresh();
+}
+
+function poolModal() {
+  const modal = S.poolModal;
+  if (!modal) return "";
+  const account = modal.mode === "account"
+    ? (S.accounts || []).find((a) => a.id === modal.accountId)
+    : null;
+  const title = modal.mode === "account"
+    ? `${t("models")} · ${account ? account.email || account.displayName : modal.accountId}`
+    : t("poolTitle");
+  const draftEmpty = modal.mode === "account" && !(S.poolDraft || []).length;
+  return `<div class="modal" id="pool-modal"><div class="modal-card pool-modal-card">
+    <div class="modal-head">
+      <h2>${esc(title)}</h2>
+      <button type="button" class="onboarding-close" title="${esc(t("poolCloseLabel"))}" aria-label="${esc(t("poolCloseLabel"))}" onclick="A.poolClose()">×</button>
+    </div>
+    <div class="subtitle" style="margin-bottom:10px">${esc(t("poolSubtitle"))}</div>
+    <div class="row">
+      <input type="text" id="pool-search" placeholder="${esc(t("modelsSearch"))}" value="${esc(S.poolQuery || "")}" oninput="A.poolSearch(this.value)">
+      <button class="ghost small" onclick="A.poolRefresh()" ${S.busy["pool-refresh"] ? "disabled" : ""}>${t("loadModels")}</button>
+      ${modal.mode === "account" ? `<button class="ghost small" onclick="A.poolSelectAll()">${t("poolAll")}</button>
+      <button class="ghost small" onclick="A.poolClearAll()">${t("poolClear")}</button>` : ""}
+      <span class="spacer"></span>
+      <span class="footnote" id="pool-count">${esc(poolCountText())}</span>
+    </div>
+    ${S.poolError ? `<div class="footnote" style="color:var(--danger)">${esc(S.poolError)}</div>` : ""}
+    <div class="pool-list" id="pool-list">${poolListRows()}</div>
+    ${modal.mode === "account" ? `
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <span class="footnote" id="pool-atleast" style="color:var(--warn)" ${draftEmpty ? "" : "hidden"}>${esc(t("poolAtLeastOne"))}</span>
+      <span class="spacer"></span>
+      <button class="ghost" onclick="A.poolClose()">${t("cancel")}</button>
+      <button class="btn" id="pool-save" onclick="A.poolSaveAccount()" ${draftEmpty || S.busy["pool-save-" + modal.accountId] ? "disabled" : ""}>${t("save")}</button>
+    </div>
+    <div class="footnote">${esc(t("poolNewOff"))} ${esc(t("poolRelaunch"))}</div>` : `
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button class="ghost" onclick="A.poolClose()">${t("cancel")}</button>
+      <button class="btn" onclick="A.poolApply()" ${S.busy["pool-apply"] ? "disabled" : ""}>${t("apply")}</button>
+    </div>
+    <div class="footnote">${esc(t("poolNewOff"))} ${esc(t("poolRelaunch"))}</div>`}
+  </div></div>`;
+}
+
+// The pool card heads the providers page: one glance at how many of the
+// shared OpenAI models are live, one button into the global picker.
+function codexPoolCard() {
+  const pool = S.pool;
+  const models = (pool && pool.models) || [];
+  return `
+  <div class="card">
+    <h2>${t("poolTitle")} ${pool ? `<span class="hint">${esc(fmt(t("poolInPool"), { n: pool.selectedCount, total: models.length }))}</span>` : ""}</h2>
+    <div class="row">
+      <span class="footnote">${t("poolSubtitle")}</span>
+      <span class="spacer"></span>
+      <button class="ghost small" onclick="A.poolOpen()">${t("models")}</button>
+    </div>
+  </div>`;
+}
+
 function providersPage() {
   const settings = S.settings || {};
   const models = S.models || [];
@@ -2056,6 +2274,7 @@ function providersPage() {
   return `
   ${pageHead("codex", t("providers"), t("providersSub"))}
   ${poolPauseBanner()}
+  ${codexPoolCard()}
   ${openRouterCard(settings)}
   ${openCodeCard(settings)}
   ${deepInfraCard(settings)}
@@ -2088,7 +2307,8 @@ function providersPage() {
         </div>`;
       }).join("") || `<div class="footnote">${t("noCalls")}</div>`}
     </div>
-  </div>`;
+  </div>
+  ${poolModal()}`;
 }
 
 function donatePage() {
@@ -3750,6 +3970,118 @@ const A = {
         input.setSelectionRange(input.value.length, input.value.length);
       }
     }, 0);
+  },
+
+  // MARK: - Codex model pool
+
+  async poolLoad() {
+    try {
+      S.pool = await inv("codex_pool_models");
+      S.poolError = null;
+    } catch (error) {
+      S.pool = null;
+      S.poolError = String(error);
+    }
+    render();
+  },
+
+  async poolRefresh() {
+    await run("pool-refresh", async () => {
+      S.pool = await inv("codex_models_refresh");
+      S.poolError = null;
+      poolModalRefresh();
+    });
+  },
+
+  async poolOpen() {
+    S.poolModal = { mode: "pool" };
+    S.poolQuery = "";
+    S.poolError = null;
+    if (!S.pool) await A.poolLoad();
+    render();
+  },
+
+  async poolOpenAccount(id) {
+    S.poolModal = { mode: "account", accountId: id };
+    S.poolQuery = "";
+    S.poolError = null;
+    if (!S.pool) await A.poolLoad();
+    const account = (S.accounts || []).find((a) => a.id === id);
+    const selected = account ? account.selectedModels : null;
+    // null = every visible pool model is on for this account.
+    S.poolDraft = selected
+      ? selected.slice()
+      : ((S.pool && S.pool.models) || []).map((m) => m.slug);
+    render();
+  },
+
+  poolClose() {
+    S.poolModal = null;
+    S.poolQuery = "";
+    S.poolError = null;
+    S.poolDraft = null;
+    render();
+  },
+
+  poolSearch(value) {
+    S.poolQuery = value;
+    poolModalRefresh();
+  },
+
+  poolToggleGlobal(slug, enabled) {
+    run("pool-toggle-" + slug, async () => {
+      const result = await inv("set_pool_model", { slug, enabled });
+      S.pool = result.pool;
+      S.accounts = result.accounts;
+      if (result.catalogError) toast(result.catalogError, true);
+      // The modal list patches in place: the search field may hold focus.
+      poolModalRefresh();
+    });
+  },
+
+  poolToggleAccount(slug) {
+    const draft = new Set(S.poolDraft || []);
+    if (draft.has(slug)) draft.delete(slug);
+    else draft.add(slug);
+    S.poolDraft = Array.from(draft);
+    poolModalRefresh();
+  },
+
+  // Both buttons act on the filtered list, so a search narrows what
+  // select-all/clear touch. Clearing is allowed; Save blocks an empty draft.
+  poolSelectAll() {
+    S.poolDraft = poolFilteredModels().map((m) => m.slug);
+    poolModalRefresh();
+  },
+
+  poolClearAll() {
+    S.poolDraft = [];
+    poolModalRefresh();
+  },
+
+  poolSaveAccount() {
+    const modal = S.poolModal;
+    if (!modal || modal.mode !== "account") return;
+    const selected = (S.poolDraft || []).slice();
+    if (!selected.length) return;
+    run("pool-save-" + modal.accountId, async () => {
+      const result = await inv("save_account_models", { id: modal.accountId, selected });
+      S.accounts = result.accounts;
+      S.pool = result.pool;
+      if (result.catalogError) toast(result.catalogError, true);
+      A.poolClose();
+    });
+  },
+
+  async poolApply() {
+    await run("pool-apply", async () => {
+      const result = await inv("apply_codex_models");
+      S.pool = result.pool;
+      S.accounts = result.accounts;
+      if (result.catalogError) toast(result.catalogError, true);
+      else toast(t("done"));
+      poolModalRefresh();
+    });
   },
 
   instancesLoad() {

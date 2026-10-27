@@ -44,8 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // rewrite ~/.codex, start the gateway or relaunch Codex during tests.
         guard !AppRuntime.isTesting else { return }
         MainActor.assumeIsolated {
-            ModelSourcesStore.shared.syncCatalogIfNeeded()
+            // The catalog filter and the picker index read the account pool and
+            // its per-account selection: load the vault and the pooled models
+            // before the catalog is regenerated.
             CodexStore.shared.load()
+            CodexPoolModelsStore.shared.refresh()
+            ModelSourcesStore.shared.syncCatalogIfNeeded()
             CodexStore.shared.startQuotaScheduler()
             SchedulerStore.shared.start()
             ComposerBridge.shared.start()

@@ -1187,11 +1187,25 @@ final class ModelSourcesStore: ObservableObject {
     func syncCatalogIfNeeded() {
         do {
             let ownsRoute = CodexGatewayService.shared.codexRoute == .melon
-            let count = try CodexModelCatalog.sync(sources: sources, updateConfig: ownsRoute)
+            let count = try CodexModelCatalog.sync(
+                sources: sources,
+                updateConfig: ownsRoute,
+                selectedPoolSlugs: Self.currentPoolUnion()
+            )
             lastApply = String(format: L("Applied: %d models for Codex."), count)
         } catch {
             lastApply = L("Apply failed") + ": " + error.localizedDescription
         }
+    }
+
+    /// Union of every account's effective pool selection — the common pool the
+    /// Codex picker offers. No accounts (or no explicit filter) keeps the whole
+    /// visible pool, so a fresh install behaves exactly like the legacy one.
+    static func currentPoolUnion() -> Set<String> {
+        CodexPoolModelsStore.unionSelection(
+            accounts: CodexStore.shared.accounts,
+            poolSlugs: CodexPoolModelsStore.shared.slugs
+        )
     }
 
     /// Writes the gateway config (hot-reloaded by the service) and regenerates
@@ -1202,12 +1216,23 @@ final class ModelSourcesStore: ObservableObject {
         do {
             try gateway.writeConfig()
             gateway.auditLog("model sources applied (\(selectedCount) model(s) selected)")
-            let count = try CodexModelCatalog.sync(sources: sources)
+            let count = try CodexModelCatalog.sync(
+                sources: sources,
+                selectedPoolSlugs: Self.currentPoolUnion()
+            )
             lastApply = String(format: L("Applied: %d models for Codex."), count)
             gateway.auditLog("model catalog updated (\(count) model(s))")
         } catch {
             lastApply = L("Apply failed") + ": " + error.localizedDescription
         }
+        // The auth files carry `excluded_models`; re-apply is also the point
+        // where the pool can have changed (for example after “Load models”), so
+        // the engine must see the current per-account filter.
+        gateway.syncAccountsLive(
+            CodexStore.shared.accounts,
+            priorities: CodexStore.shared.effectivePriorities(),
+            poolSlugs: CodexPoolModelsStore.shared.slugs
+        )
     }
 
     func applyAndRelaunch() async {

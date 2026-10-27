@@ -24,8 +24,8 @@ fn save(items: &[Value]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let data = serde_json::to_string_pretty(&Value::Array(items.to_vec()))
-        .map_err(|e| e.to_string())?;
+    let data =
+        serde_json::to_string_pretty(&Value::Array(items.to_vec())).map_err(|e| e.to_string())?;
     let tmp = crate::paths::tmp_path(&path);
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
@@ -66,11 +66,7 @@ pub fn list() -> Vec<Value> {
     load()
         .into_iter()
         .map(|mut item| {
-            if let Some(id) = item
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-            {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()).map(str::to_owned) {
                 let home = home_for(&id);
                 item["homePath"] = json!(home.to_string_lossy());
                 item["exists"] = json!(home.exists());
@@ -87,7 +83,10 @@ pub fn create(name: &str) -> Result<Value, String> {
     }
     let id = {
         let bytes: [u8; 8] = rand::random();
-        bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     };
     let home = home_for(&id);
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;

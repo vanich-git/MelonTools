@@ -14,8 +14,8 @@ mod dpapi;
 mod engine;
 mod gateway;
 mod history;
-mod live_quota;
 mod instances;
+mod live_quota;
 mod paths;
 mod providers;
 mod quota;
@@ -26,7 +26,7 @@ mod updater;
 mod vault;
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
@@ -257,9 +257,11 @@ fn quota_snapshot() -> PreviousQuota {
         .into_iter()
         .filter_map(|account| {
             let quota = account.quota.clone()?;
-            let block_code = account
-                .block_info()
-                .and_then(|info| info.get("code").and_then(|code| code.as_str()).map(String::from));
+            let block_code = account.block_info().and_then(|info| {
+                info.get("code")
+                    .and_then(|code| code.as_str())
+                    .map(String::from)
+            });
             let id = account.id.clone();
             Some((
                 id,
@@ -330,7 +332,11 @@ fn check_low_quota(app: &tauri::AppHandle, state: &AppState, previous: &Previous
                 account.hourly_reserve_percent,
                 before.and_then(|value| value.hourly),
                 3600i64,
-                if english { "5-hour window" } else { "5-часовое окно" },
+                if english {
+                    "5-hour window"
+                } else {
+                    "5-часовое окно"
+                },
             ),
             (
                 "week",
@@ -339,7 +345,11 @@ fn check_low_quota(app: &tauri::AppHandle, state: &AppState, previous: &Previous
                 account.weekly_reserve_percent,
                 before.and_then(|value| value.weekly),
                 21600i64,
-                if english { "weekly window" } else { "недельное окно" },
+                if english {
+                    "weekly window"
+                } else {
+                    "недельное окно"
+                },
             ),
         ];
         for (kind, remaining, reset_at, reserve, before_value, cooldown, label) in checks {
@@ -586,7 +596,10 @@ async fn routing_state(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn set_routing_strategy(state: State<'_, AppState>, strategy: String) -> Result<Value, String> {
+async fn set_routing_strategy(
+    state: State<'_, AppState>,
+    strategy: String,
+) -> Result<Value, String> {
     if !routing::STRATEGIES.contains(&strategy.as_str()) {
         return Err(format!("неизвестная стратегия: {}", strategy));
     }
@@ -645,7 +658,10 @@ fn mutate_settings(
     state: &State<'_, AppState>,
     mutate: impl FnOnce(&mut settings::Settings),
 ) -> Result<(), String> {
-    let mut guard = state.settings.lock().map_err(|_| "settings lock".to_string())?;
+    let mut guard = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock".to_string())?;
     mutate(&mut guard);
     settings::save(&guard)
 }
@@ -656,8 +672,11 @@ async fn resync(state: &State<'_, AppState>) -> Result<Value, String> {
         let _ = gateway::sync_accounts(&settings);
     }
     let accounts = vault::accounts();
-    let (ordered, blocked) =
-        routing::resolve(&accounts, &settings.routing_strategy, &settings.priority_order);
+    let (ordered, blocked) = routing::resolve(
+        &accounts,
+        &settings.routing_strategy,
+        &settings.priority_order,
+    );
     Ok(json!({
         "strategy": settings.routing_strategy,
         "priorityOrder": settings.priority_order,
@@ -697,6 +716,205 @@ async fn codex_route_apply(state: State<'_, AppState>) -> Result<Value, String> 
 async fn codex_route_remove() -> Result<Value, String> {
     codex_route::remove()?;
     Ok(codex_route::status())
+}
+
+// MARK: - Codex model pool (accounts × pool models)
+
+/// Picker payload: the visible pool models with how many accounts select each
+/// one. Read-only, so the UI can poll it without touching the vault.
+fn pool_snapshot() -> Value {
+    pool_snapshot_of(
+        &codex_route::pool_models(),
+        &vault::accounts(),
+        &codex_route::visible_pool_slugs(),
+    )
+}
+
+/// [`pool_snapshot`] against explicit inputs. The pool is read once, so the
+/// per-model counts and the union cannot disagree. The union matches
+/// `selected_pool_slugs` — same helper with the already-loaded pool.
+fn pool_snapshot_of(
+    models: &[codex_route::PoolModel],
+    accounts: &[vault::Account],
+    all: &HashSet<String>,
+) -> Value {
+    let mut selected_counts: HashMap<String, usize> = HashMap::new();
+    for account in accounts {
+        for slug in codex_route::effective_selected_models(account, all) {
+            *selected_counts.entry(slug).or_insert(0) += 1;
+        }
+    }
+    let account_count = accounts.len();
+    let models: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            let mut entry = serde_json::to_value(model).unwrap_or_else(|_| json!({}));
+            if let Some(object) = entry.as_object_mut() {
+                object.insert(
+                    "selectedCount".to_string(),
+                    json!(selected_counts.get(&model.slug).copied().unwrap_or(0)),
+                );
+                object.insert("accountCount".to_string(), json!(account_count));
+            }
+            entry
+        })
+        .collect();
+    json!({
+        "models": models,
+        "selectedCount": codex_route::selected_pool_slugs_in(accounts, all).len(),
+        "accountCount": account_count,
+    })
+}
+
+/// One account's new explicit selection after a pool-wide toggle, or `None`
+/// when the toggle would leave it without any model. Sorted so repeated toggles
+/// write the same vault payload.
+fn pool_toggle_selection(
+    current: &HashSet<String>,
+    slug: &str,
+    enabled: bool,
+) -> Option<Vec<String>> {
+    let mut next = current.clone();
+    if enabled {
+        next.insert(slug.to_string());
+    } else {
+        next.remove(slug);
+    }
+    if next.is_empty() {
+        return None;
+    }
+    let mut list: Vec<String> = next.into_iter().collect();
+    list.sort();
+    Some(list)
+}
+
+/// New `selectedModels` for every account after a pool-wide toggle. All or
+/// nothing: one account left empty rejects the whole change, naming the
+/// accounts the UI must show in the error.
+fn pool_toggle_plan(
+    accounts: &[vault::Account],
+    all: &HashSet<String>,
+    slug: &str,
+    enabled: bool,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let mut plan: HashMap<String, Vec<String>> = HashMap::new();
+    let mut blocked: Vec<String> = Vec::new();
+    for account in accounts {
+        let current = codex_route::effective_selected_models(account, all);
+        match pool_toggle_selection(&current, slug, enabled) {
+            Some(selected) => {
+                plan.insert(account.id.clone(), selected);
+            }
+            None => blocked.push(account.display_name()),
+        }
+    }
+    if !blocked.is_empty() {
+        return Err(format!(
+            "нельзя изменить {}: {} останется без моделей",
+            slug,
+            blocked.join(", ")
+        ));
+    }
+    Ok(plan)
+}
+
+/// Rewrites the gateway auth files when the engine is running. A stopped
+/// engine picks the new selection up on its next start.
+async fn sync_auth_accounts(settings: &settings::Settings) {
+    if gateway::health(settings.port, &settings.api_key).await {
+        let _ = gateway::sync_accounts(settings);
+    }
+}
+
+/// Regenerates the Codex catalog and reports the failure instead of failing the
+/// command: the selection is already saved and must not be rolled back.
+async fn catalog_refresh_error(settings: &settings::Settings) -> Option<String> {
+    let client = quota::client().ok()?;
+    codex_route::sync_catalog(&client, settings.port, &settings.api_key)
+        .await
+        .err()
+}
+
+/// Visible pool models with selection counts for the models picker.
+#[tauri::command]
+fn codex_pool_models() -> Value {
+    pool_snapshot()
+}
+
+/// Explicit refresh for the picker. Identical to `codex_pool_models`:
+/// `pool_models` re-reads the Codex cache on every call.
+#[tauri::command]
+fn codex_models_refresh() -> Value {
+    pool_snapshot()
+}
+
+/// Saves one account's model allowlist, then re-syncs the engine and the
+/// catalog. The selection is authoritative even when the catalog fails.
+#[tauri::command]
+async fn save_account_models(
+    state: State<'_, AppState>,
+    id: String,
+    selected: Vec<String>,
+) -> Result<Value, String> {
+    vault::set_account_models(&id, selected)?;
+    let settings = state.settings();
+    sync_auth_accounts(&settings).await;
+    let catalog_error = catalog_refresh_error(&settings).await;
+    Ok(json!({
+        "accounts": vault::list_views(),
+        "pool": pool_snapshot(),
+        "catalogError": catalog_error,
+    }))
+}
+
+/// Enables or disables one pool model on every account at once.
+#[tauri::command]
+async fn set_pool_model(
+    state: State<'_, AppState>,
+    slug: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    let all = codex_route::visible_pool_slugs();
+    if !all.contains(&slug) {
+        return Err(format!("модель {} отсутствует в пуле", slug));
+    }
+    let accounts = vault::accounts();
+    if accounts.is_empty() {
+        return Ok(json!({
+            "pool": pool_snapshot(),
+            "accounts": vault::list_views(),
+            "catalogError": Value::Null,
+        }));
+    }
+    let plan = pool_toggle_plan(&accounts, &all, &slug, enabled)?;
+    vault::set_all_account_selected_models(&plan)?;
+    let settings = state.settings();
+    sync_auth_accounts(&settings).await;
+    let catalog_error = catalog_refresh_error(&settings).await;
+    Ok(json!({
+        "pool": pool_snapshot(),
+        "accounts": vault::list_views(),
+        "catalogError": catalog_error,
+    }))
+}
+
+/// Applies the stored selection to the engine and the Codex catalog. Unlike
+/// `save_account_models`, a catalog failure is a hard error here: the command
+/// exists to make Codex match the vault.
+#[tauri::command]
+async fn apply_codex_models(state: State<'_, AppState>) -> Result<Value, String> {
+    let settings = state.settings();
+    sync_auth_accounts(&settings).await;
+    let custom = if let Ok(client) = quota::client() {
+        codex_route::sync_catalog(&client, settings.port, &settings.api_key).await?
+    } else {
+        0
+    };
+    Ok(json!({
+        "pool": pool_snapshot(),
+        "accounts": vault::list_views(),
+        "custom": custom,
+    }))
 }
 
 #[tauri::command]
@@ -831,7 +1049,10 @@ async fn autostart_get() -> Result<bool, String> {
             "MelonTools",
         ]);
         hidden_command(&mut command);
-        return Ok(command.output().map(|o| o.status.success()).unwrap_or(false));
+        return Ok(command
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false));
     }
     #[cfg(not(windows))]
     Ok(false)
@@ -1050,7 +1271,9 @@ async fn antigravity_login_status(
     state: State<'_, AppState>,
     state_token: String,
 ) -> Result<Value, String> {
-    antigravity_management(&state)?.login_status(&state_token).await
+    antigravity_management(&state)?
+        .login_status(&state_token)
+        .await
 }
 
 #[tauri::command]
@@ -1058,7 +1281,9 @@ async fn antigravity_login_cancel(
     state: State<'_, AppState>,
     state_token: String,
 ) -> Result<Value, String> {
-    antigravity_management(&state)?.login_cancel(&state_token).await
+    antigravity_management(&state)?
+        .login_cancel(&state_token)
+        .await
 }
 
 /// Antigravity credential entries written by the engine.
@@ -1295,13 +1520,8 @@ fn main() {
         .setup(|app| {
             // System tray: window, scheduler navigation, run-next, API
             // pause/resume and quit.
-            let show_item = tauri::menu::MenuItem::with_id(
-                app,
-                "show",
-                "Показать",
-                true,
-                None::<&str>,
-            )?;
+            let show_item =
+                tauri::menu::MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
             let scheduler_item = tauri::menu::MenuItem::with_id(
                 app,
                 "scheduler",
@@ -1357,9 +1577,12 @@ fn main() {
                     let settings = state.settings();
                     if gateway::start(&state.gw, &settings).await.is_ok() {
                         if let Ok(client) = quota::client() {
-                            let _ =
-                                codex_route::sync_catalog(&client, settings.port, &settings.api_key)
-                                    .await;
+                            let _ = codex_route::sync_catalog(
+                                &client,
+                                settings.port,
+                                &settings.api_key,
+                            )
+                            .await;
                         }
                         if codex_route::catalog_path().exists() {
                             let _ = codex_route::apply(settings.port, &settings.api_key);
@@ -1407,8 +1630,7 @@ fn main() {
             // timers when the window is hidden to the tray.
             let quota_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut last = std::time::Instant::now()
-                    - std::time::Duration::from_secs(300);
+                let mut last = std::time::Instant::now() - std::time::Duration::from_secs(300);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     let state = quota_handle.state::<AppState>();
@@ -1424,7 +1646,9 @@ fn main() {
                         continue;
                     }
                     last = std::time::Instant::now();
-                    let Ok(client) = quota::client() else { continue };
+                    let Ok(client) = quota::client() else {
+                        continue;
+                    };
                     let previous = quota_snapshot();
                     let _ = quota::refresh_all(&client, None).await;
                     let settings = state.settings();
@@ -1490,6 +1714,11 @@ fn main() {
             catalog_sync,
             codex_route_apply,
             codex_route_remove,
+            codex_pool_models,
+            codex_models_refresh,
+            save_account_models,
+            set_pool_model,
+            apply_codex_models,
             bridge_status,
             bridge_launch_codex,
             scheduler_list,
@@ -1538,7 +1767,11 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{api_toggle_action, launcher_argv, settings_view, tray_event_payload, ApiToggle};
+    use super::{
+        api_toggle_action, launcher_argv, pool_snapshot_of, pool_toggle_plan,
+        pool_toggle_selection, settings_view, tray_event_payload, ApiToggle,
+    };
+    use std::collections::HashSet;
 
     #[test]
     fn tray_events_map_to_frontend_actions() {
@@ -1590,5 +1823,88 @@ mod tests {
         assert_eq!(value["managementSecret"], "");
         assert_eq!(value["port"], 19000);
         assert!(!value.to_string().contains("melon-mgmt-"));
+    }
+
+    fn pool_set(slugs: &[&str]) -> HashSet<String> {
+        slugs.iter().map(|slug| slug.to_string()).collect()
+    }
+
+    fn account(id: &str, email: &str, selected: Option<&[&str]>) -> crate::vault::Account {
+        crate::vault::Account {
+            id: id.to_string(),
+            email: Some(email.to_string()),
+            selected_models: selected.map(|slugs| slugs.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pool_toggle_never_empties_an_account() {
+        let both = pool_set(&["gpt-5", "gpt-5-mini"]);
+        assert_eq!(
+            pool_toggle_selection(&both, "gpt-5", false).unwrap(),
+            vec!["gpt-5-mini".to_string()]
+        );
+        assert_eq!(
+            pool_toggle_selection(&both, "gpt-5", true).unwrap(),
+            vec!["gpt-5".to_string(), "gpt-5-mini".to_string()]
+        );
+        let single = pool_set(&["gpt-5"]);
+        assert!(pool_toggle_selection(&single, "gpt-5", false).is_none());
+        assert_eq!(
+            pool_toggle_selection(&single, "gpt-5", true).unwrap(),
+            vec!["gpt-5".to_string()]
+        );
+    }
+
+    #[test]
+    fn pool_toggle_plan_is_all_or_nothing() {
+        let all = pool_set(&["gpt-5", "gpt-5-mini"]);
+        let accounts = vec![
+            account("one", "one@example.com", Some(&["gpt-5", "gpt-5-mini"])),
+            account("two", "two@example.com", Some(&["gpt-5-mini"])),
+        ];
+        let plan = pool_toggle_plan(&accounts, &all, "gpt-5", false).unwrap();
+        assert_eq!(plan["one"], vec!["gpt-5-mini".to_string()]);
+        assert_eq!(plan["two"], vec!["gpt-5-mini".to_string()]);
+
+        let legacy = vec![account("legacy", "legacy@example.com", None)];
+        let plan = pool_toggle_plan(&legacy, &all, "gpt-5", false).unwrap();
+        assert_eq!(plan["legacy"], vec!["gpt-5-mini".to_string()]);
+
+        let blocked = vec![
+            account("one", "one@example.com", Some(&["gpt-5"])),
+            account("two", "two@example.com", Some(&["gpt-5-mini"])),
+        ];
+        let error = pool_toggle_plan(&blocked, &all, "gpt-5", false).unwrap_err();
+        assert_eq!(
+            error,
+            "нельзя изменить gpt-5: one@example.com останется без моделей"
+        );
+    }
+
+    #[test]
+    fn pool_snapshot_counts_selected_accounts() {
+        let all = pool_set(&["gpt-5", "gpt-5-mini"]);
+        let models = vec![crate::codex_route::PoolModel {
+            slug: "gpt-5".to_string(),
+            display: "GPT-5".to_string(),
+            context_length: Some(128_000),
+            priority: 10,
+        }];
+        let accounts = vec![
+            account("one", "one@example.com", Some(&["gpt-5"])),
+            account("two", "two@example.com", Some(&[])),
+        ];
+        let snapshot = pool_snapshot_of(&models, &accounts, &all);
+        assert_eq!(snapshot["accountCount"], 2);
+        assert_eq!(snapshot["selectedCount"], 1);
+        let entry = &snapshot["models"][0];
+        assert_eq!(entry["slug"], "gpt-5");
+        assert_eq!(entry["display"], "GPT-5");
+        assert_eq!(entry["contextLength"], 128_000);
+        assert_eq!(entry["priority"], 10);
+        assert_eq!(entry["selectedCount"], 1);
+        assert_eq!(entry["accountCount"], 2);
     }
 }

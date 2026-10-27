@@ -1,4 +1,29 @@
-# Melon Tools 2.3.7
+# Melon Tools 2.4.0
+
+- **Per-account Codex models.** Every Codex account has its own model
+  checkboxes. The app keeps one common pool of selected models, so a model
+  enabled anywhere stays available to the gateway. Hidden and internal routes
+  are never offered as choices and are preserved.
+- **`excluded_models` in auth files.** Each account's choice is written as
+  `excluded_models` in its Codex auth file. The gateway then routes a model
+  only to accounts that allow it, instead of sending every model to every
+  account.
+- **Predictable picker.** The Codex picker reflects the selection after a
+  relaunch of the Codex app; the accounts page states this explicitly.
+- **macOS and Windows parity.** Both platforms read and write the same
+  per-account filters and produce the same pool of selected models.
+- **Build metadata.** macOS build 25; version metadata is aligned at 2.4.0 on
+  macOS and Windows.
+- **Release checksums.** Checksums are regenerated from the 2.4.0 artifacts;
+  earlier sums no longer apply.
+
+## Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.4.0-win-x64-portable.exe) — single file, no install.
+
+## 2.3.7
 
 - **Windows routing order fixed.** The first account in the planner now gets
   the highest gateway priority, matching macOS and CLIProxyAPI `fill-first`.

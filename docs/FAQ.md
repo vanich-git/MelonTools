@@ -38,6 +38,17 @@ They are written to the local gateway configuration and the app's local store.
 They are not sent to a Melon Tools server. See
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
+### How do I choose Codex models?
+
+Each account has a **Models** button. The button opens a list of checkboxes.
+
+Melon Tools joins the checked models of all accounts into one common pool. That
+pool is the set of models that the Codex picker offers. A model that no account
+selects does not appear in the picker. Hidden and internal models cannot be
+selected. A newly added model stays off until you check it.
+
+After you change the selection, relaunch Codex to reload the picker.
+
 ## Quota
 
 ### Where do the quota numbers come from?

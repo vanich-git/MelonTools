@@ -2,7 +2,7 @@
 //! process lifecycle and the live request-rate counter.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -25,10 +25,7 @@ impl Gateway {
     }
 }
 
-const SIDECAR_NAMES: [&str; 2] = [
-    "cliproxyapi-x86_64-pc-windows-msvc.exe",
-    "cliproxyapi.exe",
-];
+const SIDECAR_NAMES: [&str; 2] = ["cliproxyapi-x86_64-pc-windows-msvc.exe", "cliproxyapi.exe"];
 
 pub fn resolve_sidecar() -> Option<PathBuf> {
     resolve_sidecar_checked().ok()
@@ -314,7 +311,11 @@ pub fn auth_file_name(account: &Account, index: usize) -> String {
         .clone()
         .or_else(|| account.tokens.account_id.clone())
         .unwrap_or_default();
-    let short: String = account_id.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let short: String = account_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
     if short.is_empty() {
         format!("codex-{}.json", email)
     } else {
@@ -327,6 +328,43 @@ pub fn auth_file_name(account: &Account, index: usize) -> String {
 /// get the highest number. This mirrors the macOS sync contract.
 fn priority_for(total: usize, index: usize) -> usize {
     total.saturating_sub(index)
+}
+
+/// Auth-file payload for one account: credentials, routing priority and the
+/// visible pool models the account must not receive. `excluded_models` is
+/// omitted for a full selection, so those files keep the older shape.
+fn auth_payload(account: &Account, priority: usize, pool: &HashSet<String>) -> Value {
+    let expired = account
+        .tokens
+        .access_expiry_unix()
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, 0))
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+    let account_id = account
+        .account_id
+        .clone()
+        .or_else(|| account.tokens.account_id.clone())
+        .unwrap_or_default();
+
+    let mut payload = json!({
+        "id_token": account.tokens.id_token.clone().unwrap_or_default(),
+        "access_token": account.tokens.access_token.clone().unwrap_or_default(),
+        "refresh_token": account.tokens.refresh_token.clone().unwrap_or_default(),
+        "account_id": account_id,
+        "last_refresh": account.last_refresh.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        "email": account.email.clone().unwrap_or_default(),
+        "type": "codex",
+        "expired": expired,
+        "plan_type": account.plan_type.clone().unwrap_or_else(|| "free".to_string()),
+        "priority": priority,
+    });
+    // The engine routes a pool model only to accounts that allow it. An empty
+    // exclusion list is omitted, not written as `[]`.
+    let excluded = crate::codex_route::excluded_models_for(account, pool);
+    if !excluded.is_empty() {
+        payload["excluded_models"] = json!(excluded);
+    }
+    payload
 }
 
 /// Mirrors the macOS sync: the auths directory is replaced with the current
@@ -346,38 +384,24 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             ordered.push(account.clone());
         }
     }
+    // One pool snapshot per sync: every account is filtered against the same
+    // visible set, so a quota-only sync does not read the cache twice.
+    let pool = crate::codex_route::visible_pool_slugs();
 
     let dir = paths::auths_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut desired = Vec::new();
     for (index, account) in ordered.iter().enumerate() {
-        let Some(access) = account.tokens.access_token.clone().filter(|t| !t.is_empty()) else {
-            continue;
-        };
-        let expired = account
+        let has_access = account
             .tokens
-            .access_expiry_unix()
-            .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, 0))
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_default();
-        let account_id = account
-            .account_id
-            .clone()
-            .or_else(|| account.tokens.account_id.clone())
-            .unwrap_or_default();
+            .access_token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty());
+        if !has_access {
+            continue;
+        }
 
-        let mut payload = json!({
-            "id_token": account.tokens.id_token.clone().unwrap_or_default(),
-            "access_token": access,
-            "refresh_token": account.tokens.refresh_token.clone().unwrap_or_default(),
-            "account_id": account_id,
-            "last_refresh": account.last_refresh.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-            "email": account.email.clone().unwrap_or_default(),
-            "type": "codex",
-            "expired": expired,
-            "plan_type": account.plan_type.clone().unwrap_or_else(|| "free".to_string()),
-            "priority": priority_for(ordered.len(), index),
-        });
+        let mut payload = auth_payload(account, priority_for(ordered.len(), index), &pool);
         if account.is_blocked() {
             payload["disabled"] = json!(true);
         }
@@ -394,7 +418,10 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
     // engine does not reload them during every quota poll.
     let desired_names: std::collections::HashSet<String> = desired
         .iter()
-        .filter_map(|(path, _, _)| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .filter_map(|(path, _, _)| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .collect();
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -460,7 +487,11 @@ impl ManagementAuthSnapshot {
         self.files
             .iter()
             .filter(|file| {
-                file.provider.as_deref().map(str::to_ascii_lowercase).as_deref() == Some("codex")
+                file.provider
+                    .as_deref()
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                    == Some("codex")
                     || file.name.starts_with("codex-")
             })
             .collect()
@@ -475,8 +506,14 @@ pub async fn management_auth_files(settings: &Settings) -> Result<ManagementAuth
         .build()
         .map_err(|e| e.to_string())?;
     let response = client
-        .get(format!("http://127.0.0.1:{}/v0/management/auth-files", settings.port))
-        .header("Authorization", format!("Bearer {}", settings.management_secret))
+        .get(format!(
+            "http://127.0.0.1:{}/v0/management/auth-files",
+            settings.port
+        ))
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.management_secret),
+        )
         .header("Accept", "application/json")
         .send()
         .await
@@ -487,7 +524,10 @@ pub async fn management_auth_files(settings: &Settings) -> Result<ManagementAuth
         return Err(format!("management auth-files {}", status.as_u16()));
     }
     let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let observed_at = value.get("observed_at").and_then(Value::as_str).map(String::from);
+    let observed_at = value
+        .get("observed_at")
+        .and_then(Value::as_str)
+        .map(String::from);
     let files = value
         .get("files")
         .and_then(Value::as_array)
@@ -502,16 +542,27 @@ pub async fn management_auth_files(settings: &Settings) -> Result<ManagementAuth
                 .map(|values| {
                     values
                         .iter()
-                        .filter_map(|(key, value)| value.as_str().map(|s| (key.clone(), s.to_string())))
+                        .filter_map(|(key, value)| {
+                            value.as_str().map(|s| (key.clone(), s.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
             Some(ManagementAuthFile {
                 name,
-                auth_index: entry.get("auth_index").and_then(Value::as_str).map(String::from),
-                disabled: entry.get("disabled").and_then(Value::as_bool).unwrap_or(false),
+                auth_index: entry
+                    .get("auth_index")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+                disabled: entry
+                    .get("disabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 email: entry.get("email").and_then(Value::as_str).map(String::from),
-                provider: entry.get("provider").and_then(Value::as_str).map(String::from),
+                provider: entry
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(String::from),
                 observed_at: quota
                     .and_then(|quota| quota.get("observed_at"))
                     .and_then(Value::as_str)
@@ -541,8 +592,14 @@ pub async fn set_auth_disabled(
         body["auth_index"] = json!(index);
     }
     let response = client
-        .patch(format!("http://127.0.0.1:{}/v0/management/auth-files/status", settings.port))
-        .header("Authorization", format!("Bearer {}", settings.management_secret))
+        .patch(format!(
+            "http://127.0.0.1:{}/v0/management/auth-files/status",
+            settings.port
+        ))
+        .header(
+            "Authorization",
+            format!("Bearer {}", settings.management_secret),
+        )
         .json(&body)
         .send()
         .await;
@@ -556,7 +613,9 @@ pub async fn set_auth_disabled(
         .files
         .iter()
         .find(|candidate| {
-            file.auth_index.as_deref().is_some_and(|index| candidate.auth_index.as_deref() == Some(index))
+            file.auth_index
+                .as_deref()
+                .is_some_and(|index| candidate.auth_index.as_deref() == Some(index))
                 || candidate.name == file.name
         })
         .is_some_and(|candidate| candidate.disabled == disabled)
@@ -679,7 +738,10 @@ pub(crate) fn parse_pid(text: &str) -> Option<u32> {
 /// not CSV, so it yields `None` instead of a bogus image name.
 #[cfg(any(windows, test))]
 pub(crate) fn parse_tasklist_image(output: &str) -> Option<String> {
-    let line = output.lines().map(str::trim).find(|line| line.starts_with('"'))?;
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('"'))?;
     let name = line.trim_start_matches('"').split('"').next()?.trim();
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -688,7 +750,11 @@ pub(crate) fn parse_tasklist_image(output: &str) -> Option<String> {
 #[cfg(any(windows, test))]
 pub(crate) fn parse_tasklist_pids(output: &str) -> Vec<u32> {
     let mut pids = Vec::new();
-    for line in output.lines().map(str::trim).filter(|line| line.starts_with('"')) {
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('"'))
+    {
         let fields: Vec<&str> = line.split("\",\"").collect();
         if let Some(pid) = fields
             .get(1)
@@ -982,12 +1048,14 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_keys_yaml, auth_file_name, base_config, image_matches_engine, image_starts_with,
-        parse_pid, parse_recent_call, parse_tasklist_image, parse_tasklist_pids, priority_for,
-        tail_bytes, yaml_escape, USER_AGENT,
+        api_keys_yaml, auth_file_name, auth_payload, base_config, image_matches_engine,
+        image_starts_with, parse_pid, parse_recent_call, parse_tasklist_image, parse_tasklist_pids,
+        priority_for, tail_bytes, yaml_escape, USER_AGENT,
     };
     use crate::settings::Settings;
     use crate::vault::Account;
+    use serde_json::json;
+    use std::collections::HashSet;
 
     fn settings() -> Settings {
         Settings::default()
@@ -1030,7 +1098,9 @@ mod tests {
         assert!(yaml.contains("      base-url: \"https://api.anthropic.com\"\n"));
         assert!(yaml.contains("        - api-key: \"sk-ant-key\"\n"));
         // Claude models keep a slash-less alias so the gateway lists raw ids.
-        assert!(yaml.contains("        - name: \"claude-opus-5-5\"\n          alias: \"claude-opus-5-5\"\n"));
+        assert!(yaml.contains(
+            "        - name: \"claude-opus-5-5\"\n          alias: \"claude-opus-5-5\"\n"
+        ));
     }
 
     #[test]
@@ -1108,6 +1178,58 @@ mod tests {
         assert_eq!(priority_for(0, 0), 0);
     }
 
+    fn pool(slugs: &[&str]) -> HashSet<String> {
+        slugs.iter().map(|slug| slug.to_string()).collect()
+    }
+
+    fn pool_account(selection: Option<Vec<String>>) -> Account {
+        let mut account = Account::default();
+        account.id = "pool-account".to_string();
+        account.tokens.access_token = Some("access-token".to_string());
+        account.selected_models = selection;
+        account
+    }
+
+    #[test]
+    fn auth_payload_lists_excluded_models_for_a_restricted_selection() {
+        let all = pool(&["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-5.5"]);
+        let account = pool_account(Some(vec![
+            "gpt-6-sol".to_string(),
+            "gpt-6-astra".to_string(),
+            // Outside the pool: it cannot appear in the picker, so it never
+            // becomes an exclusion.
+            "unknown-model".to_string(),
+        ]));
+
+        let payload = auth_payload(&account, 2, &all);
+
+        assert_eq!(payload["excluded_models"], json!(["gpt-5.5", "gpt-6-luna"]));
+        assert_eq!(payload["priority"], 2);
+        assert_eq!(payload["access_token"], "access-token");
+        assert_eq!(payload["type"], "codex");
+        assert!(payload.get("disabled").is_none());
+    }
+
+    #[test]
+    fn auth_payload_omits_excluded_models_for_a_full_selection() {
+        let all = pool(&["gpt-6-luna", "gpt-6-sol"]);
+
+        // Legacy vault: `None` means the whole pool.
+        let legacy = auth_payload(&pool_account(None), 1, &all);
+        assert!(legacy.get("excluded_models").is_none());
+
+        // An explicit list covering every visible model excludes nothing.
+        let full = auth_payload(
+            &pool_account(Some(vec![
+                "gpt-6-luna".to_string(),
+                "gpt-6-sol".to_string(),
+            ])),
+            1,
+            &all,
+        );
+        assert!(full.get("excluded_models").is_none());
+    }
+
     #[test]
     fn auth_file_name_without_email_is_stable_across_order_indexes() {
         let mut account = Account::default();
@@ -1142,7 +1264,10 @@ mod tests {
     #[test]
     fn tasklist_csv_parsing() {
         let output = "\"cliproxyapi.exe\",\"4321\",\"Console\",\"1\",\"12,345 K\"\r\n";
-        assert_eq!(parse_tasklist_image(output).as_deref(), Some("cliproxyapi.exe"));
+        assert_eq!(
+            parse_tasklist_image(output).as_deref(),
+            Some("cliproxyapi.exe")
+        );
         assert_eq!(parse_tasklist_pids(output), vec![4321]);
         assert_eq!(
             parse_tasklist_image("INFO: No tasks are running which match the specified criteria."),
@@ -1156,7 +1281,9 @@ mod tests {
     #[test]
     fn pid_identity_matches_only_the_engine() {
         assert!(image_matches_engine("cliproxyapi.exe"));
-        assert!(image_matches_engine("CLIProxyAPI-x86_64-pc-windows-msvc.exe"));
+        assert!(image_matches_engine(
+            "CLIProxyAPI-x86_64-pc-windows-msvc.exe"
+        ));
         assert!(image_matches_engine("C:\\Tools\\cliproxyapi.exe"));
         assert!(!image_matches_engine("chatgpt.exe"));
         assert!(!image_matches_engine("notcliproxyapi.exe"));

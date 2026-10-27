@@ -121,10 +121,7 @@ fn extract_engine() -> Result<PathBuf, String> {
         } else {
             // The previous engine is still running from the target path
             // (a crash left it behind): keep the fresh extraction instead.
-            let fallback = dir.join(format!(
-                "cliproxyapi-{}.exe",
-                payload_key()
-            ));
+            let fallback = dir.join(format!("cliproxyapi-{}.exe", payload_key()));
             std::fs::rename(&tmp, &fallback).map_err(|e| e.to_string())?;
             write_provenance(&digest)?;
             return Ok(fallback);
@@ -168,10 +165,8 @@ mod tests {
 
     #[test]
     fn file_hash_matches_the_known_empty_vector() {
-        let path = std::env::temp_dir().join(format!(
-            "melontools-engine-hash-{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("melontools-engine-hash-{}.bin", std::process::id()));
         std::fs::write(&path, b"").unwrap();
         let digest = sha256_file(&path).unwrap();
         let _ = std::fs::remove_file(&path);

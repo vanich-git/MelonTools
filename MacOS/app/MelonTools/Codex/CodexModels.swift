@@ -22,6 +22,11 @@ struct CodexAccount: Codable, Identifiable, Equatable {
     var lastRefresh: String?
     var addedAt: Date = Date()
     var note: String?
+    /// Account-level model filter, like OpenCode/OpenRouter connections.
+    /// `nil` (old vaults) means “every visible pool model”; an explicit list
+    /// is the only set this account may route. The union of all accounts is
+    /// the common pool the Codex picker offers.
+    var selectedModels: [String]?
 
     // Quota cache
     var quota: CodexQuota?

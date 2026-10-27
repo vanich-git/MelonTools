@@ -7,7 +7,7 @@
 //! {
 //!   "format": "melon-backup",
 //!   "formatVersion": 1,
-//!   "appVersion": "2.3.1",
+//!   "appVersion": "2.4.0",
 //!   "createdAt": 1760000000,
 //!   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 210000,
 //!            "salt": "<base64 16 bytes>" },
@@ -53,7 +53,7 @@ pub const FORMAT: &str = "melon-backup";
 pub const FORMAT_VERSION: u32 = 1;
 /// Product version recorded in the envelope. Kept as a literal because the
 /// portable format is shared with the matching macOS build.
-pub const APP_VERSION: &str = "2.3.1";
+pub const APP_VERSION: &str = "2.4.0";
 pub const KDF_NAME: &str = "PBKDF2-HMAC-SHA256";
 pub const CIPHER_NAME: &str = "AES-256-GCM";
 pub const ITERATIONS: u32 = 210_000;
@@ -270,8 +270,12 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
     let mut snapshots: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::with_capacity(targets.len());
     for target in targets {
         if target.exists() {
-            let bytes = fs::read(&target)
-                .map_err(|e| format!("backup file error: cannot snapshot {}: {e}", target.display()))?;
+            let bytes = fs::read(&target).map_err(|e| {
+                format!(
+                    "backup file error: cannot snapshot {}: {e}",
+                    target.display()
+                )
+            })?;
             snapshots.push((target, Some(bytes)));
         } else {
             snapshots.push((target, None));
@@ -350,8 +354,8 @@ fn read_last_backup_at(paths: &BackupPaths) -> Option<i64> {
 }
 
 fn set_last_backup_at(paths: &BackupPaths, at: i64) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(&json!({"lastBackupAt": at}))
-        .map_err(|e| e.to_string())?;
+    let data =
+        serde_json::to_string_pretty(&json!({"lastBackupAt": at})).map_err(|e| e.to_string())?;
     write_atomic(&paths.state_path(), &data)
 }
 
@@ -506,9 +510,9 @@ fn parse_auths(value: Option<&Value>) -> Result<BTreeMap<String, Value>, String>
     if value.is_null() {
         return Ok(result);
     }
-    let object = value.as_object().ok_or_else(|| {
-        "the backup payload is damaged: auths is not a JSON object".to_string()
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "the backup payload is damaged: auths is not a JSON object".to_string())?;
     for (name, entry) in object {
         if !is_safe_auth_file_name(name) {
             return Err(format!("unsafe backup file name: {name}"));
@@ -624,7 +628,10 @@ fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
         ));
     }
     if envelope.cipher.name != CIPHER_NAME {
-        return Err(format!("unsupported backup cipher: {}", envelope.cipher.name));
+        return Err(format!(
+            "unsupported backup cipher: {}",
+            envelope.cipher.name
+        ));
     }
     if !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&envelope.kdf.iterations) {
         return Err(INVALID_PARAMETERS.to_string());
@@ -634,7 +641,8 @@ fn open(content: &str, password: &str) -> Result<Vec<u8>, String> {
     if salt.len() != SALT_LEN {
         return Err(INVALID_PARAMETERS.to_string());
     }
-    let nonce = decode_base64(&envelope.cipher.nonce).ok_or_else(|| INVALID_PARAMETERS.to_string())?;
+    let nonce =
+        decode_base64(&envelope.cipher.nonce).ok_or_else(|| INVALID_PARAMETERS.to_string())?;
     if nonce.len() != NONCE_LEN {
         return Err(INVALID_PARAMETERS.to_string());
     }
@@ -661,9 +669,7 @@ fn derive_key(password: &str, salt: &[u8], iterations: u32) -> Zeroizing<[u8; KE
 }
 
 fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD
-        .decode(value)
-        .ok()
+    base64::engine::general_purpose::STANDARD.decode(value).ok()
 }
 
 // MARK: - Files
@@ -803,8 +809,11 @@ mod tests {
                 ..Default::default()
             }],
         };
-        scheduler::save_raw_at(&paths.scheduler_path(), &serde_json::to_value(&store).unwrap())
-            .unwrap();
+        scheduler::save_raw_at(
+            &paths.scheduler_path(),
+            &serde_json::to_value(&store).unwrap(),
+        )
+        .unwrap();
 
         vault::save_raw_at(
             &paths.vault_path(),
@@ -930,7 +939,11 @@ mod tests {
 
         let exported = export_to(&dir.paths, PASSWORD, CREATED_AT).unwrap();
         let path = PathBuf::from(exported["path"].as_str().unwrap());
-        assert!(path.starts_with(&dir.paths.destination), "{}", path.display());
+        assert!(
+            path.starts_with(&dir.paths.destination),
+            "{}",
+            path.display()
+        );
         let backup = fs::read(&path).unwrap();
         assert_eq!(exported["bytes"].as_i64().unwrap(), backup.len() as i64);
         assert_eq!(exported["createdAt"], CREATED_AT);
@@ -939,7 +952,7 @@ mod tests {
         let envelope: Value = serde_json::from_slice(&backup).unwrap();
         assert_eq!(envelope["format"], FORMAT);
         assert_eq!(envelope["formatVersion"], FORMAT_VERSION);
-        assert_eq!(envelope["appVersion"], "2.3.1");
+        assert_eq!(envelope["appVersion"], "2.4.0");
         assert_eq!(envelope["createdAt"], CREATED_AT);
         assert_eq!(envelope["kdf"]["name"], KDF_NAME);
         assert_eq!(envelope["kdf"]["iterations"], ITERATIONS);
@@ -1004,7 +1017,10 @@ mod tests {
         assert_eq!(restored_settings.port, 19000);
         // Gateway secrets are machine-local and survive a restore.
         assert_eq!(restored_settings.api_key, "changed-api-key");
-        assert_eq!(restored_settings.management_secret, "changed-management-secret");
+        assert_eq!(
+            restored_settings.management_secret,
+            "changed-management-secret"
+        );
         assert_eq!(restored_settings.lang, "en");
 
         let auth = fs::read_to_string(dir.paths.auths_dir().join("codex-user.json")).unwrap();
@@ -1026,7 +1042,13 @@ mod tests {
         seed_support(&dir.paths);
         let content = export_content(&dir.paths);
 
-        for secret in [ACCESS_TOKEN, REFRESH_TOKEN, API_KEY, MANAGEMENT_SECRET, PASSWORD] {
+        for secret in [
+            ACCESS_TOKEN,
+            REFRESH_TOKEN,
+            API_KEY,
+            MANAGEMENT_SECRET,
+            PASSWORD,
+        ] {
             assert!(
                 !content.contains(secret),
                 "plaintext secret leaked into backup: {secret}"
@@ -1076,7 +1098,10 @@ mod tests {
         let mut envelope: Value = serde_json::from_str(&content).unwrap();
         envelope["formatVersion"] = json!(99);
         let error = import_into(&dir.paths, &envelope.to_string(), PASSWORD).unwrap_err();
-        assert!(error.contains("unsupported backup format version 99"), "{error}");
+        assert!(
+            error.contains("unsupported backup format version 99"),
+            "{error}"
+        );
         assert_eq!(snapshot(&dir.root), before);
 
         let mut envelope: Value = serde_json::from_str(&content).unwrap();
@@ -1113,7 +1138,12 @@ mod tests {
         assert!(error.contains("unsafe backup file name"), "{error}");
         assert_eq!(snapshot(&dir.root), before);
         assert!(!dir.paths.support.join("escape.json").exists());
-        assert!(!dir.paths.support.join("gateway").join("escape.json").exists());
+        assert!(!dir
+            .paths
+            .support
+            .join("gateway")
+            .join("escape.json")
+            .exists());
         assert!(!dir.paths.auths_dir().join("escape.json").exists());
         // Even the safe sibling is not written when another name is unsafe.
         assert!(!dir.paths.auths_dir().join("safe.json").exists());

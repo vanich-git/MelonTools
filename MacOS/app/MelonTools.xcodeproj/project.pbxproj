@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		03A1C09B1E98D9A166E66227 /* MTTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 768560461E883B63C28E2ACB /* MTTheme.swift */; };
 		06E6BC70649ECDFABF6C0745 /* AntigravityAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126A58DE87AE4967867A4491 /* AntigravityAuthService.swift */; };
+		0899AB54E180E7928BEEE1B3 /* CodexPoolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321BA8BCAB47FC8B701BC8DE /* CodexPoolModels.swift */; };
 		0A6FD711E033E51224DD1A5E /* ClaudeAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F826140BEDB6A5D7ABAE63A /* ClaudeAuthTests.swift */; };
 		0C6967B388B7D4D4B1EA679A /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55304F692A547242AA3220F1 /* AppState.swift */; };
 		12AAE47E36E72C3F40686B71 /* DonateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E439C9E3BFE452A19209DFB /* DonateView.swift */; };
@@ -91,6 +92,7 @@
 		2C7113F932E22E2C4B120FD1 /* CodexGatewayService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexGatewayService.swift; sourceTree = "<group>"; };
 		2E0FE92353CF3930D5522680 /* ModelSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSources.swift; sourceTree = "<group>"; };
 		2F826140BEDB6A5D7ABAE63A /* ClaudeAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeAuthTests.swift; sourceTree = "<group>"; };
+		321BA8BCAB47FC8B701BC8DE /* CodexPoolModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexPoolModels.swift; sourceTree = "<group>"; };
 		325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLiveQuota.swift; sourceTree = "<group>"; };
 		3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAuthFileTests.swift; sourceTree = "<group>"; };
 		3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModelCatalog.swift; sourceTree = "<group>"; };
@@ -205,6 +207,7 @@
 				325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */,
 				3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */,
 				747248C3C8AE60381B934643 /* CodexModels.swift */,
+				321BA8BCAB47FC8B701BC8DE /* CodexPoolModels.swift */,
 				B1C69B678951C7A01AABD656 /* CodexRouting.swift */,
 				A1789B6E80C211EDD2A5C921 /* CodexService.swift */,
 				AC0ED55431DF119F7A8C5174 /* CodexStore.swift */,
@@ -448,6 +451,7 @@
 				3195466B8C27A4AF0653E5F8 /* CodexLiveQuota.swift in Sources */,
 				DA5F068851218CE3C4C25420 /* CodexModelCatalog.swift in Sources */,
 				AB2680DD5873DFCF56CB5D39 /* CodexModels.swift in Sources */,
+				0899AB54E180E7928BEEE1B3 /* CodexPoolModels.swift in Sources */,
 				52D4C99653D19EE1DBB6B831 /* CodexRouting.swift in Sources */,
 				CF5A837BC671DE1E18FDC62E /* CodexService.swift in Sources */,
 				3DEFB14E9053148102B0EFDE /* CodexStore.swift in Sources */,
@@ -664,14 +668,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.3.7;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};
@@ -682,14 +686,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.3.7;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};
