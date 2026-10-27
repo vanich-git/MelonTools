@@ -18,11 +18,20 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 2.3.7 (previous release)
+## Release artifacts for 2.4.0
 
-The current version is 2.4.0. Its artifacts use the same file names with `2.4.0`
-in place of `2.3.7`. Record their SHA-256 values from the published release
-assets. The digests below belong to the 2.3.7 release and stay here as history.
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-2.4.0.dmg` | `6a610ce686ff1c9801a72f060bd274ff4d5de1e7e9f268f665dd7428ed46d8f1` |
+| Windows installer | `MelonTools-2.4.0-setup.exe` | `c06a0ea3cb0222ceab2ee78a8a31c0704172f2cd1a3c67f7c43f93fb6db8c07f` |
+| Windows portable | `MelonTools-2.4.0-win-x64-portable.exe` | `6d0c2cd2aa15b1a6e4dfb0972795f02552e735707a75c5a9550cfd4e7c7ef315` |
+| Windows legacy alias | `MelonTools-2.4.0-win-x64.exe` | `6d0c2cd2aa15b1a6e4dfb0972795f02552e735707a75c5a9550cfd4e7c7ef315` |
+
+All files and their `.sha256` siblings are attached to the GitHub release for
+tag `v2.4.0`. The in-app updater accepts only HTTPS GitHub hosts and verifies
+the downloaded file against the release digest or the `.sha256` sibling.
+
+## Release artifacts for 2.3.7 (previous release)
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
@@ -30,10 +39,6 @@ assets. The digests below belong to the 2.3.7 release and stay here as history.
 | Windows installer | `MelonTools-2.3.7-setup.exe` | `d7d73ce0d3cd53f360149cf21c14968cd461b76d842fc48deecbe54702fc83b3` |
 | Windows portable | `MelonTools-2.3.7-win-x64-portable.exe` | `a93e3edb197d3a9309d600f5775d68a7d75503e4b9a314142b77ee7fb8d21f60` |
 | Windows legacy alias | `MelonTools-2.3.7-win-x64.exe` | `a93e3edb197d3a9309d600f5775d68a7d75503e4b9a314142b77ee7fb8d21f60` |
-
-All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v2.3.7`. The in-app updater accepts only HTTPS GitHub hosts and verifies
-the downloaded file against the release digest or the `.sha256` sibling.
 
 ## Required secrets
 
@@ -118,9 +123,8 @@ that skip into an error.
 
 The manifest lives at
 [`homebrew/Casks/melon-tools.rb`](homebrew/Casks/melon-tools.rb). It points at
-the DMG for the matching GitHub release and carries the DMG SHA-256. Set the
-`sha256` value to the published 2.4.0 DMG digest; the 2.3.7 digest is not valid
-for the new build.
+the DMG for the matching GitHub release and carries the published 2.4.0 DMG
+SHA-256.
 
 Local validation and installation:
 

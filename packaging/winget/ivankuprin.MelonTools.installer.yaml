@@ -9,7 +9,7 @@ Installers:
   - Architecture: x64
     InstallerType: nullsoft
     InstallerUrl: https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-setup.exe
-    InstallerSha256: D7D73CE0D3CD53F360149CF21C14968CD461B76D842FC48DEECBE54702FC83B3
+    InstallerSha256: C06A0EA3CB0222CEAB2EE78A8A31C0704172F2CD1A3C67F7C43F93FB6DB8C07F
     InstallerSwitches:
       Silent: /S
 ManifestType: installer
