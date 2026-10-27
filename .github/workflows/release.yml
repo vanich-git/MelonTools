@@ -72,6 +72,7 @@ jobs:
             -project MacOS/app/MelonTools.xcodeproj \
             -scheme MelonTools \
             -configuration Debug \
+            -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/MelonToolsTests" \
             CODE_SIGNING_ALLOWED=NO test
 
