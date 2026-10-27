@@ -332,17 +332,19 @@ enum CodexRoutingPlanner {
         return values
     }
 
-    /// Rough subscription tiers for plan-based modes.
+    /// Rough subscription tiers for plan-based modes. Keep this table in
+    /// sync with Windows `routing.rs::plan_rank`.
     static func planRank(_ planType: String?) -> Int {
         switch (planType ?? "").lowercased() {
         case "free": return 0
-        case "": return 1
-        case "plus": return 1
-        case "pro": return 2
-        case "team": return 3
-        case "business", "self_serve_business_usage_based": return 4
-        case "enterprise": return 5
-        default: return 1
+        case "go": return 1
+        case "plus": return 2
+        case "prolite": return 3
+        case "pro": return 4
+        case "team", "business", "self_serve_business_usage_based": return 5
+        case "enterprise", "enterprise_cbp_automation": return 6
+        case "": return 0
+        default: return 2
         }
     }
 }

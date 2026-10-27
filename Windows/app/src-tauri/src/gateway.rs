@@ -288,7 +288,24 @@ pub fn auth_file_name(account: &Account, index: usize) -> String {
     let email: String = account
         .email
         .clone()
-        .unwrap_or_else(|| format!("account{}", index))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            // An account without an email must still get a stable gateway
+            // filename. The index is derived from the routing order in one
+            // caller and from the vault order in another, so using it here
+            // would make the live PATCH lookup miss the file.
+            let id: String = account
+                .id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(12)
+                .collect();
+            if id.is_empty() {
+                format!("account{}", index)
+            } else {
+                format!("account-{}", id)
+            }
+        })
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || "@._-".contains(*c))
         .collect();
@@ -303,6 +320,13 @@ pub fn auth_file_name(account: &Account, index: usize) -> String {
     } else {
         format!("codex-{}-{}.json", email, short)
     }
+}
+
+/// CLIProxyAPI `fill-first` selects the highest priority value first. The
+/// routing planner returns the best account first, so the first account must
+/// get the highest number. This mirrors the macOS sync contract.
+fn priority_for(total: usize, index: usize) -> usize {
+    total.saturating_sub(index)
 }
 
 /// Mirrors the macOS sync: the auths directory is replaced with the current
@@ -352,7 +376,7 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             "type": "codex",
             "expired": expired,
             "plan_type": account.plan_type.clone().unwrap_or_else(|| "free".to_string()),
-            "priority": index + 1,
+            "priority": priority_for(ordered.len(), index),
         });
         if account.is_blocked() {
             payload["disabled"] = json!(true);
@@ -958,11 +982,12 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_keys_yaml, base_config, image_matches_engine, image_starts_with, parse_pid,
-        parse_recent_call, parse_tasklist_image, parse_tasklist_pids, tail_bytes, yaml_escape,
-        USER_AGENT,
+        api_keys_yaml, auth_file_name, base_config, image_matches_engine, image_starts_with,
+        parse_pid, parse_recent_call, parse_tasklist_image, parse_tasklist_pids, priority_for,
+        tail_bytes, yaml_escape, USER_AGENT,
     };
     use crate::settings::Settings;
+    use crate::vault::Account;
 
     fn settings() -> Settings {
         Settings::default()
@@ -1073,6 +1098,24 @@ mod tests {
         // A whitespace-only key never reaches the config.
         s.claude_api_key = "   ".to_string();
         assert_eq!(api_keys_yaml(&s), "");
+    }
+
+    #[test]
+    fn planner_order_maps_to_descending_gateway_priority() {
+        assert_eq!(priority_for(3, 0), 3);
+        assert_eq!(priority_for(3, 1), 2);
+        assert_eq!(priority_for(3, 2), 1);
+        assert_eq!(priority_for(0, 0), 0);
+    }
+
+    #[test]
+    fn auth_file_name_without_email_is_stable_across_order_indexes() {
+        let mut account = Account::default();
+        account.id = "abc-123-def".to_string();
+        let first = auth_file_name(&account, 0);
+        let second = auth_file_name(&account, 7);
+        assert_eq!(first, second);
+        assert!(first.contains("account-abc123def"));
     }
 
     #[test]

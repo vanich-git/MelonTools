@@ -16,10 +16,10 @@ use sha2::{Digest, Sha256};
 
 use crate::paths;
 
-/// Pinned engine commit id: the extraction cache key. A release that ships a
-/// different payload must change this value, otherwise the old extraction is
-/// (correctly) distrusted by the hash check below.
-const ENGINE_VERSION: &str = "e7003d2a";
+/// Pinned engine commit id, kept for provenance. The extraction cache key is
+/// derived from the embedded payload hash (`payload_key`), so a rebuilt engine
+/// can never be silently ignored.
+const ENGINE_VERSION: &str = "1f917e77";
 
 /// Cache key derived from the embedded payload itself. A rebuilt engine can
 /// never be silently ignored because someone forgot to bump a constant.
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn engine_version_is_the_pinned_commit() {
-        assert_eq!(ENGINE_VERSION, "e7003d2a");
+        assert_eq!(ENGINE_VERSION, "1f917e77");
     }
 
     #[test]

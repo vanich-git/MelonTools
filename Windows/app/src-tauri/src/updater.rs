@@ -53,13 +53,22 @@ fn pick_asset<'a>(assets: &'a [serde_json::Value]) -> Option<&'a serde_json::Val
 }
 
 /// Bare host of an https URL, or `None` for any other scheme or a malformed
-/// authority. Userinfo and port are stripped so only the real host is checked.
-fn https_host(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix("https://")?;
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..end];
-    let host = authority.rsplit('@').next()?.split(':').next()?;
-    (!host.is_empty()).then_some(host)
+/// authority. Parsed with the same URL parser the HTTP client uses, so
+/// backslash/userinfo tricks cannot make the allowlist and the request
+/// disagree about the real host.
+fn https_host(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    if parsed.port().is_some() && parsed.port() != Some(443) {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Only https GitHub endpoints are ever fetched.
@@ -414,10 +423,16 @@ mod tests {
     fn allowlist() {
         assert!(allowed("https://api.github.com/repos/x"));
         assert!(allowed("https://github.com/a/b"));
+        assert!(allowed("https://github.com:443/a/b"));
         assert!(allowed("https://objects.githubusercontent.com/blob"));
         assert!(!allowed("http://github.com/a/b"));
         assert!(!allowed("https://github.com.evil.example.com/x"));
         assert!(!allowed("https://evil.example.com/x"));
+        // Backslash makes the naive host split and the real URL parser
+        // disagree; the real parser must win.
+        assert!(!allowed("https://evil.com\\@github.com/x"));
+        assert!(!allowed("https://github.com@evil.com/x"));
+        assert!(!allowed("https://github.com:444/x"));
     }
 
     #[test]

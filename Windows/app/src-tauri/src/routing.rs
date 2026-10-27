@@ -139,3 +139,29 @@ pub fn quota_is_fresh(account: &Account) -> bool {
 pub fn _unused_reference() -> f64 {
     APPLE_REF_UNIX_OFFSET
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::Account;
+
+    fn rank(plan: &str) -> i32 {
+        let mut account = Account::default();
+        account.plan_type = Some(plan.to_string());
+        plan_rank(&account)
+    }
+
+    #[test]
+    fn plan_rank_matches_macos_table() {
+        assert_eq!(rank("free"), 0);
+        assert_eq!(rank("go"), 1);
+        assert_eq!(rank("plus"), 2);
+        assert_eq!(rank("prolite"), 3);
+        assert_eq!(rank("pro"), 4);
+        assert_eq!(rank("team"), 5);
+        assert_eq!(rank("business"), 5);
+        assert_eq!(rank("enterprise"), 6);
+        assert_eq!(rank(""), 0);
+        assert_eq!(rank("unknown"), 2);
+    }
+}

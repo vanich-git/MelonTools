@@ -90,6 +90,19 @@ final class CodexRoutingTests: XCTestCase {
         let resolution = CodexRoutingPlanner.resolve(accounts: [a, b], strategy: .custom, manualOrder: [b.id, a.id])
         XCTAssertEqual(resolution.orderedIds, [b.id, a.id])
     }
+
+    func testPlanRanksMatchTheWindowsTable() {
+        XCTAssertEqual(CodexRoutingPlanner.planRank("free"), 0)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("go"), 1)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("plus"), 2)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("prolite"), 3)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("pro"), 4)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("team"), 5)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("business"), 5)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("enterprise"), 6)
+        XCTAssertEqual(CodexRoutingPlanner.planRank(""), 0)
+        XCTAssertEqual(CodexRoutingPlanner.planRank("unknown"), 2)
+    }
 }
 
 /// The pool-pause banner is the last line of defense before the gateway has no

@@ -1,4 +1,26 @@
-# Melon Tools 2.3.6
+# Melon Tools 2.3.7
+
+- **Windows routing order fixed.** The first account in the planner now gets
+  the highest gateway priority, matching macOS and CLIProxyAPI `fill-first`.
+  Preferred, custom and quota-high order are no longer inverted.
+- **Gateway security update.** CLIProxyAPI v8.0.44 with Go 1.26.10, `x/net`
+  0.60.0, `x/crypto` 0.57.0, `go-git` alpha.5, `x/text` 0.42.0 and
+  `klauspost/compress` 1.18.7. `govulncheck` reports 0 reachable
+  vulnerabilities.
+- **Updater hardening.** Windows download URLs are parsed with the same URL
+  parser as the HTTP client. Backslash, userinfo and non-standard port tricks
+  can no longer bypass the host allowlist.
+- **Parity fixes.** macOS and Windows use the same plan-rank table, and auth
+  files without an email get a stable name that does not depend on order.
+- **Build metadata.** macOS build 24; version metadata is aligned at 2.3.7.
+
+## Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.7-win-x64-portable.exe) — single file, no install.
+
+## 2.3.6
 
 - **Exact quota reserve on macOS and Windows.** Live Codex quota signals are
   checked about every 1.5 seconds. Routing pauses exactly at the configured
@@ -11,12 +33,6 @@
   startup checks, uses a native modal layer, keeps its actions clickable, and
   pins the action row while the content scrolls.
 - **Build metadata.** macOS build 23; version metadata is aligned at 2.3.6.
-
-## Downloads
-
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-2.3.6-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.5
 

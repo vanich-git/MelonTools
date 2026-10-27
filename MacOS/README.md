@@ -16,6 +16,19 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 2.3.7
+
+- **Windows routing order fixed.** The first account in the planner now gets
+  the highest gateway priority, matching macOS and CLIProxyAPI `fill-first`.
+- **Gateway security update.** CLIProxyAPI v8.0.44 with Go 1.26.10, `x/net`
+  0.60.0, `x/crypto` 0.57.0, `go-git` alpha.5, `x/text` 0.42.0 and
+  `klauspost/compress` 1.18.7; `govulncheck` reports 0 reachable issues.
+- **Updater hardening.** Windows download URLs use the same parser as the HTTP
+  client, so backslash, userinfo and port tricks cannot bypass the allowlist.
+- **Parity fixes.** The plan-rank table is shared in behavior, and auth files
+  without an email get a stable name.
+- **Build metadata.** macOS build 24; version metadata is aligned at 2.3.7.
+
 ## What's new in 2.3.6
 
 - **Exact quota reserve.** macOS and Windows read live Codex quota signals every
@@ -426,7 +439,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.3.6.dmg
+open build/MelonTools-2.3.7.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use
@@ -451,7 +464,7 @@ xcodebuild -project MelonTools.xcodeproj -scheme MelonTools \
 
 # 4. Ad-hoc sign + DMG
 codesign --force --deep --sign - "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
-create-dmg --volname "Melon Tools" "build/MelonTools-2.3.6.dmg" "Melon Tools.app"
+create-dmg --volname "Melon Tools" "build/MelonTools-2.3.7.dmg" "Melon Tools.app"
 ```
 
 ## Layout
@@ -497,4 +510,4 @@ build/                        artifacts (gateway binary, icon, dmg)
 
 | Component      | Version | Commit                                    |
 |----------------|---------|-------------------------------------------|
-| CLIProxyAPI    | v8 tree | `e7003d2a3e2cee2d45f9950c067bf8e02a2ac0f8` |
+| CLIProxyAPI    | v8 tree | `1f917e77c4562623aa49e9804d999524151a2f96` |

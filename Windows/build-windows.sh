@@ -19,6 +19,9 @@ cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
 export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/bin:$PATH"
+# The gateway source requires Go 1.26.10; keep local cross-builds on the same
+# toolchain the release DMG uses.
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.10}"
 # Build cache off a slow volume by default.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Developer/melontools-win/target}"
 CLI_SRC="${CLI_SRC:-$ROOT/../MacOS/_sources/CLIProxyAPI}"

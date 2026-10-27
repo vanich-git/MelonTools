@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
+# v8.0.44 requires Go 1.26.10 (the x509 advisory is fixed there). Pinning the
+# toolchain also prevents a newer local Go from silently building with an
+# older patch level.
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.10}"
+
 # Single source of truth for the release version: app/project.yml.
 VERSION="$(awk -F'"' '/CFBundleShortVersionString:/{print $2; exit}' app/project.yml)"
 if [ -z "${VERSION:-}" ]; then
