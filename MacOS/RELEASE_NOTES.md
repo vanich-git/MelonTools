@@ -1,4 +1,34 @@
-# Melon Tools 2.4.2
+# Melon Tools 2.4.3
+
+Bulk account import for macOS and Windows.
+
+- **Import JSON button.** The Accounts page now has a separate **Import JSON**
+  file picker. It accepts both common pool-export formats instead of requiring
+  a browser login for every account.
+- **Cockpit / CPA.** A flat JSON array with `email`, `account_id`,
+  `access_token`, `refresh_token` and `id_token`.
+- **sub2api-data.** `type: "sub2api-data"` with `accounts[].credentials`;
+  OpenAI/OAuth entries are imported and other platforms are skipped.
+- **Refresh tokens are preserved.** Imported accounts keep `refresh_token` and
+  `chatgpt_account_id`, so the existing quota/refresh scheduler can renew
+  `access_token` in the background. Emails, plan and account ids are also read
+  from the `id_token` when present.
+- **Safe merge.** Accounts are merged by ChatGPT account id or email. Re-import
+  updates tokens and profile data without duplicating the pool; local routing
+  preferences and quota cache stay intact. Duplicates inside one file are
+  skipped.
+- **Storage.** macOS writes through `SecureFile` (0600); Windows stores tokens
+  with the existing DPAPI protection.
+- **Includes 2.4.2.** Official OpenAI model refresh (`Load models` calls
+  `chatgpt.com/backend-api/codex/models`), plus the 2.4.1 reliability and
+  security fixes.
+
+### Upgrading from 2.4.2
+
+Open **Accounts → Import JSON**, choose a Cockpit/CPA or sub2api-data export,
+review the summary, then use the normal account/model controls.
+
+## 2.4.2
 
 Official OpenAI model refresh, plus the 2.4.1 reliability and security fixes.
 

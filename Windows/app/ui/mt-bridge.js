@@ -30,6 +30,7 @@
     "gateway_recent_calls",
     "switch_account",
     "import_current_auth",
+    "import_json_accounts",
     "account_refresh_tokens",
     "save_reserves",
     "delete_account",

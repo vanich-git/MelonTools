@@ -786,6 +786,48 @@ final class CodexStore: ObservableObject {
         return account
     }
 
+    @discardableResult
+    func importAccountsFromFile(_ url: URL) -> Int? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            lastMessage = L("Could not read the JSON file.")
+            return nil
+        }
+        return importAccountsFromJSON(text)
+    }
+
+    /// Bulk import from a Cockpit/CPA array or sub2api-data export. Existing
+    /// accounts are merged by ChatGPT account id/email, so re-importing
+    /// refreshed tokens does not duplicate the pool.
+    @discardableResult
+    func importAccountsFromJSON(_ text: String) -> Int? {
+        let parsed: CodexBulkImport.Result
+        do {
+            parsed = try CodexBulkImport.parse(text)
+        } catch {
+            lastMessage = L("Import failed:") + " " + error.localizedDescription
+            return nil
+        }
+        var added = 0
+        var updated = 0
+        for account in parsed.accounts {
+            let exists = accounts.contains {
+                ($0.accountId != nil && $0.accountId == account.accountId)
+                    || ($0.email != nil && $0.email?.lowercased() == account.email?.lowercased())
+            }
+            upsert(account)
+            if exists { updated += 1 } else { added += 1 }
+        }
+        save()
+        applyRoutingIfNeeded(reason: L("account added"))
+        lastMessage = String(
+            format: L("Imported %d accounts (%d updated, %d skipped)"),
+            added + updated,
+            updated,
+            parsed.skipped
+        )
+        return added + updated
+    }
+
     /// Insert or merge (by accountId/email) into the vault.
     private func upsert(_ account: CodexAccount) {
         if let idx = accounts.firstIndex(where: {

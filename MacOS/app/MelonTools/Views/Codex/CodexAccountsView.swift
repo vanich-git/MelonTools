@@ -199,6 +199,9 @@ struct CodexAccountsView: View {
             MTSecondaryButton(title: L("Paste login (JSON)"), systemImage: "doc.on.clipboard") {
                 showImportSheet = true
             }
+            MTSecondaryButton(title: L("Import JSON"), systemImage: "doc.badge.plus") {
+                chooseBulkJSON()
+            }
             Spacer()
             MTSecondaryButton(title: L("Refresh quotas"), systemImage: "arrow.clockwise") {
                 Task { await store.refreshAllQuotas(forceTokens: true) }
@@ -538,6 +541,17 @@ struct CodexAccountsView: View {
         formatter.timeStyle = .none
         return formatter
     }()
+
+    private func chooseBulkJSON() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = L("Import accounts from JSON")
+        panel.prompt = L("Import")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.importAccountsFromFile(url)
+    }
 
     private var importSheet: some View {
         VStack(alignment: .leading, spacing: MTTheme.s4) {

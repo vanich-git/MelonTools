@@ -18,17 +18,17 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 2.4.2
+## Release artifacts for 2.4.3
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-2.4.2.dmg` | `3b50911275c36a3bdf5f8af60d6f1c7be04a21cc1a70702785409be44a54ec00` |
-| Windows installer | `MelonTools-2.4.2-setup.exe` | `95ecabf61ab9b5d4af1b8d980f4c97ac3e5b3bbae9cd65238fe6eb6d168e3a71` |
-| Windows portable | `MelonTools-2.4.2-win-x64-portable.exe` | `608fc98e8c0aa74f75f772b8d028b2c553f2f2a088c00e2afca9b271da18a112` |
-| Windows legacy alias | `MelonTools-2.4.2-win-x64.exe` | `608fc98e8c0aa74f75f772b8d028b2c553f2f2a088c00e2afca9b271da18a112` |
+| macOS DMG | `MelonTools-2.4.3.dmg` | `c4cfd72d9f078919e699d8e57755d53f737c48e9901aad846329b83409455ecd` |
+| Windows installer | `MelonTools-2.4.3-setup.exe` | `619cb69fe6f6cbfb196217f4782ac8fabe1de2e962de83c773485c3c5bd92d7f` |
+| Windows portable | `MelonTools-2.4.3-win-x64-portable.exe` | `33a60fd13ec6990a15633dee8e52092d8fc898537c1e8405ace0202d081f986f` |
+| Windows legacy alias | `MelonTools-2.4.3-win-x64.exe` | `33a60fd13ec6990a15633dee8e52092d8fc898537c1e8405ace0202d081f986f` |
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v2.4.2`. The in-app updater accepts only HTTPS GitHub hosts and verifies
+tag `v2.4.3`. The in-app updater accepts only HTTPS GitHub hosts and verifies
 the downloaded file against the release digest or the `.sha256` sibling.
 
 The release workflow also publishes stable, unversioned aliases
@@ -125,7 +125,7 @@ keychain, then calls:
 ```bash
 ./packaging/sign-macos.sh \
   "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app" \
-  "MacOS/build/MelonTools-2.4.2.dmg"
+  "MacOS/build/MelonTools-2.4.3.dmg"
 ```
 
 The script:
@@ -149,7 +149,7 @@ and calls:
 
 ```powershell
 ./packaging/sign-windows.ps1 `
-  -File Windows/dist/MelonTools-2.4.2-setup.exe -Require
+  -File Windows/dist/MelonTools-2.4.3-setup.exe -Require
 ```
 
 The script locates `signtool.exe` from the Windows SDK, signs with SHA-256 and
@@ -161,7 +161,7 @@ that skip into an error.
 
 The manifest lives at
 [`homebrew/Casks/melon-tools.rb`](homebrew/Casks/melon-tools.rb). It points at
-the DMG for the matching GitHub release and carries the published 2.4.2 DMG
+the DMG for the matching GitHub release and carries the published 2.4.3 DMG
 SHA-256.
 
 Local validation and installation:
@@ -210,11 +210,11 @@ manifest loses its 64-character SHA-256.
 ## Checksums
 
 ```bash
-shasum -a 256 MacOS/build/MelonTools-2.4.2.dmg
+shasum -a 256 MacOS/build/MelonTools-2.4.3.dmg
 ```
 
 ```powershell
-Get-FileHash .\MelonTools-2.4.2-setup.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-2.4.3-setup.exe -Algorithm SHA256
 ```
 
 The `.sha256` files published next to each artifact use the standard

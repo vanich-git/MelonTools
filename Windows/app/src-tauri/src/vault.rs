@@ -868,6 +868,74 @@ pub fn jwt_claims(id_token: Option<&str>) -> Claims {
     claims
 }
 
+pub fn new_account_id() -> String {
+    uuid_like()
+}
+
+/// Insert or merge bulk-imported accounts in one vault write. Existing
+/// accounts keep their local id, quota cache and routing preferences; tokens
+/// and profile fields are replaced. Matching is by ChatGPT account id or email.
+pub fn import_accounts(accounts: Vec<Account>) -> Result<(usize, usize), String> {
+    if accounts.is_empty() {
+        return Ok((0, 0));
+    }
+    let _guard = lock_vault_writes();
+    let mut raw = load_raw();
+    let Some(items) = raw.get_mut("accounts").and_then(|a| a.as_array_mut()) else {
+        return Err("vault accounts is not an array".to_string());
+    };
+    let mut added = 0;
+    let mut updated = 0;
+    for account in accounts {
+        let index = items.iter().position(|item| {
+            let same_account = match (
+                item.get("accountId").and_then(Value::as_str),
+                account.account_id.as_deref(),
+            ) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            };
+            let same_email = match (
+                item.get("email").and_then(Value::as_str),
+                account.email.as_deref(),
+            ) {
+                (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+                _ => false,
+            };
+            same_account || same_email
+        });
+        if let Some(index) = index {
+            let item = &mut items[index];
+            let tokens = serde_json::to_value(&account.tokens).map_err(|e| e.to_string())?;
+            item["tokens"] = tokens;
+            for (key, value) in [
+                ("email", json!(account.email)),
+                ("planType", json!(account.plan_type)),
+                ("accountId", json!(account.account_id)),
+                ("userId", json!(account.user_id)),
+                (
+                    "subscriptionActiveUntil",
+                    json!(account.subscription_active_until),
+                ),
+                ("lastRefresh", json!(account.last_refresh)),
+            ] {
+                if !value.is_null() {
+                    item[key] = value;
+                }
+            }
+            item["needsRelogin"] = json!(false);
+            item["quotaError"] = Value::Null;
+            updated += 1;
+        } else {
+            let value = serde_json::to_value(&account).map_err(|e| e.to_string())?;
+            items.push(value);
+            added += 1;
+        }
+    }
+    save_raw(&raw)?;
+    Ok((added, updated))
+}
+
 fn uuid_like() -> String {
     let bytes: [u8; 16] = rand::random();
     let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();

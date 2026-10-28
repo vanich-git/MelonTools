@@ -14,6 +14,7 @@
 		0C6967B388B7D4D4B1EA679A /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55304F692A547242AA3220F1 /* AppState.swift */; };
 		12AAE47E36E72C3F40686B71 /* DonateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E439C9E3BFE452A19209DFB /* DonateView.swift */; };
 		148321B5F77267CFE9A2D46B /* SecureFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E4F7622B54B974672276242 /* SecureFile.swift */; };
+		1ACDBA77B13567C47F10929F /* CodexBulkImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E8950D346C6D44F3E4E2F2 /* CodexBulkImportTests.swift */; };
 		20168DA912EEE1A1968D496E /* LoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00D2E62FCC1AB51BFF6509B /* LoopbackServer.swift */; };
 		23EC11A934DD627D892AD22B /* BaseModelCatalog.json in Resources */ = {isa = PBXBuildFile; fileRef = 9FBBAD5E1C94E01916E33918 /* BaseModelCatalog.json */; };
 		24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */; };
@@ -49,6 +50,7 @@
 		74ED531633757BFE48EB4A23 /* CodexControlCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */; };
 		76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */; };
 		798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */; };
+		7E300D18F96A97F225BB2294 /* CodexBulkImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 589D2CF83323AB1D877B6B6A /* CodexBulkImport.swift */; };
 		94D871780AD7A084BDEC52BA /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B370D20064EDBC82BF5CDA /* L10n.swift */; };
 		A5B3029C23DB0CB85B948FC6 /* ClaudeAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63C34F0C33E0120C3357320 /* ClaudeAuthService.swift */; };
 		A6F46806E903C83442A84E8F /* BackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1DAD6CCDB82CBCEB8A2405C /* BackupService.swift */; };
@@ -112,6 +114,7 @@
 		55304F692A547242AA3220F1 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLiveQuotaTests.swift; sourceTree = "<group>"; };
 		55DDF5FCA08CD166B7EA7BA0 /* SchedulerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulerStore.swift; sourceTree = "<group>"; };
+		589D2CF83323AB1D877B6B6A /* CodexBulkImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexBulkImport.swift; sourceTree = "<group>"; };
 		5D1DA1473EC63E66C91E6DDB /* Logo.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Logo.png; sourceTree = "<group>"; };
 		6122C219EB9D610DECD893A7 /* ShellService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellService.swift; sourceTree = "<group>"; };
 		651DED2BFF8134A5713FB28A /* UpdaterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterStore.swift; sourceTree = "<group>"; };
@@ -133,6 +136,7 @@
 		A1789B6E80C211EDD2A5C921 /* CodexService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexService.swift; sourceTree = "<group>"; };
 		A35AB5611799383F91510547 /* ModelSourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSourcesView.swift; sourceTree = "<group>"; };
 		A63C34F0C33E0120C3357320 /* ClaudeAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeAuthService.swift; sourceTree = "<group>"; };
+		A6E8950D346C6D44F3E4E2F2 /* CodexBulkImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexBulkImportTests.swift; sourceTree = "<group>"; };
 		A95A0F4F35FD6AB8669B2F08 /* UpdateSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateSheet.swift; sourceTree = "<group>"; };
 		AAAD0F5803A4F71DEA4B885E /* CodexAccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAccountsView.swift; sourceTree = "<group>"; };
 		AC0ED55431DF119F7A8C5174 /* CodexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexStore.swift; sourceTree = "<group>"; };
@@ -210,6 +214,7 @@
 				126A58DE87AE4967867A4491 /* AntigravityAuthService.swift */,
 				65CC3D84764010FEBA404100 /* CDPSession.swift */,
 				A63C34F0C33E0120C3357320 /* ClaudeAuthService.swift */,
+				589D2CF83323AB1D877B6B6A /* CodexBulkImport.swift */,
 				18DB835AB1985DF1F56805B6 /* CodexConfigRoute.swift */,
 				2C7113F932E22E2C4B120FD1 /* CodexGatewayService.swift */,
 				325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */,
@@ -272,6 +277,7 @@
 				DB1BB95213E754D8D3EF63DA /* BackupTests.swift */,
 				2F826140BEDB6A5D7ABAE63A /* ClaudeAuthTests.swift */,
 				3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */,
+				A6E8950D346C6D44F3E4E2F2 /* CodexBulkImportTests.swift */,
 				0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */,
 				55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */,
 				47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */,
@@ -433,6 +439,7 @@
 				6B4D1C41EB09C3A285A8ED8A /* BackupTests.swift in Sources */,
 				0A6FD711E033E51224DD1A5E /* ClaudeAuthTests.swift in Sources */,
 				FD1B231CB13438110C05CB2B /* CodexAuthFileTests.swift in Sources */,
+				1ACDBA77B13567C47F10929F /* CodexBulkImportTests.swift in Sources */,
 				41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */,
 				2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */,
 				5F0462D21FD58B3E437252E6 /* CodexModelCatalogTests.swift in Sources */,
@@ -458,6 +465,7 @@
 				A5B3029C23DB0CB85B948FC6 /* ClaudeAuthService.swift in Sources */,
 				B2FB786CFC1FFB46F4EBB75D /* CodexAPIView.swift in Sources */,
 				5721650C91F03EE4219CFD9C /* CodexAccountsView.swift in Sources */,
+				7E300D18F96A97F225BB2294 /* CodexBulkImport.swift in Sources */,
 				5BF1757222CDC389386D799B /* CodexComposerView.swift in Sources */,
 				354D55EF6C9BD92B2C75635B /* CodexConfigRoute.swift in Sources */,
 				74ED531633757BFE48EB4A23 /* CodexControlCard.swift in Sources */,
@@ -685,14 +693,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.2;
+				MARKETING_VERSION = 2.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -704,14 +712,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 27;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.2;
+				MARKETING_VERSION = 2.4.3;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

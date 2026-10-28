@@ -662,6 +662,7 @@ function actionArgs(action, el) {
     case "autostartToggle":
       return [!!el.checked];
     case "backupImportFile":
+    case "importJsonFile":
       return [el];
     case "instanceBind":
     case "schedulerVarInput":

@@ -251,6 +251,8 @@ function accountsPage() {
   ${poolPauseBanner()}
   <div class="row">
     <button class="btn" data-action="importAuth">${t("importAuth")}</button>
+    <button class="ghost small" data-action="importJsonPick">${t("importJson")}</button>
+    <input type="file" id="accounts-json-file" accept=".json,application/json" hidden data-action="importJsonFile" data-on="change">
     <span class="footnote">${t("importHint")}</span>
   </div>
   ${deviceCard}

@@ -786,6 +786,11 @@ final class L10n: ObservableObject {
         "Support bundle export failed": "Не удалось экспортировать диагностику",
         "Add a Codex account before loading models.": "Добавьте аккаунт Codex, чтобы загрузить модели.",
         "Could not load the official model list.": "Не удалось загрузить официальный список моделей.",
+        "Import JSON": "Импорт JSON",
+        "Import accounts from JSON": "Импорт аккаунтов из JSON",
+        "Import failed:": "Импорт не удался:",
+        "Imported %d accounts (%d updated, %d skipped)": "Импортировано аккаунтов: %d (обновлено: %d, пропущено: %d)",
+        "Could not read the JSON file.": "Не удалось прочитать JSON-файл.",
     ]
 }
 

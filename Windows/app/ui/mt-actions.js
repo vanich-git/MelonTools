@@ -459,6 +459,29 @@ const A = {
     });
   },
 
+  importJsonPick() {
+    const input = document.getElementById("accounts-json-file");
+    if (input) input.click();
+  },
+
+  importJsonFile(input) {
+    const file = input && input.files ? input.files[0] : null;
+    if (!file) return;
+    run("import-json", async () => {
+      const content = await file.text();
+      const result = await inv("import_json_accounts", { content });
+      S.accounts = result.accounts;
+      const counts = result.result || {};
+      toast(fmt(t("importJsonDone"), {
+        n: counts.imported ?? 0,
+        added: counts.added ?? 0,
+        updated: counts.updated ?? 0,
+        skipped: counts.skipped ?? 0,
+      }));
+    });
+    input.value = "";
+  },
+
   liftPoolPause() {
     const state = poolPauseState();
     if (!state || !state.liftable) return;

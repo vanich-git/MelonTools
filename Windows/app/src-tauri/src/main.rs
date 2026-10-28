@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account_import;
 mod antigravity;
 mod backup;
 mod bridge;
@@ -594,6 +595,22 @@ async fn import_current_auth(state: State<'_, AppState>) -> Result<Value, String
         let _ = gateway::sync_accounts(&settings);
     }
     Ok(json!({ "result": result, "accounts": vault::list_views() }))
+}
+
+#[tauri::command]
+async fn import_json_accounts(
+    state: State<'_, AppState>,
+    content: String,
+) -> Result<Value, String> {
+    let result = account_import::import_json(&content)?;
+    let settings = state.settings();
+    if gateway::health(settings.port, &settings.api_key).await {
+        let _ = gateway::sync_accounts(&settings);
+    }
+    Ok(json!({
+        "result": result,
+        "accounts": vault::list_views(),
+    }))
 }
 
 #[tauri::command]
@@ -1866,6 +1883,7 @@ fn main() {
             quota_history,
             switch_account,
             import_current_auth,
+            import_json_accounts,
             account_refresh_tokens,
             save_reserves,
             delete_account,
