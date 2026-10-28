@@ -128,7 +128,7 @@ final class UpdaterStore: ObservableObject {
             request.timeoutInterval = 20
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             request.setValue("MelonTools/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await NetworkProxy.session().data(for: request)
             guard let finalURL = response.url, Self.isAllowed(finalURL) else {
                 throw UpdaterError.message(L("The update server answered from a disallowed host."))
             }
@@ -180,7 +180,7 @@ final class UpdaterStore: ObservableObject {
                 throw UpdaterError.message(L("Updating works only from the Applications folder."))
             }
             phase = .working(L("Downloading the update…"))
-            let (temp, response) = try await URLSession.shared.download(from: assetURL)
+            let (temp, response) = try await NetworkProxy.session().download(from: assetURL)
             guard let finalURL = response.url, Self.isAllowed(finalURL) else {
                 throw UpdaterError.message(L("The download was redirected to a disallowed host."))
             }
@@ -224,7 +224,7 @@ final class UpdaterStore: ObservableObject {
         guard let assetURL,
               let shaURL = URL(string: assetURL.absoluteString + ".sha256"),
               Self.isAllowed(shaURL) else { return nil }
-        guard let (data, response) = try? await URLSession.shared.data(from: shaURL),
+        guard let (data, response) = try? await NetworkProxy.session().data(from: shaURL),
               let finalURL = response.url, Self.isAllowed(finalURL) else { return nil }
         return Self.parseSha256File(String(data: data, encoding: .utf8) ?? "")
     }

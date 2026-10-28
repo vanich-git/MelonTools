@@ -943,9 +943,15 @@ const A = {
     const langNode = document.getElementById("set-lang");
     const portNode = document.getElementById("set-port");
     const intervalNode = document.getElementById("set-interval");
+    const proxyEnabledNode = document.getElementById("set-proxy-enabled");
+    const proxyUrlNode = document.getElementById("set-proxy-url");
+    const proxyBypassNode = document.getElementById("set-proxy-bypass");
     const lang = langNode ? langNode.value : S.lang;
     const port = parseInt(portNode ? portNode.value : "", 10);
     const quotaInterval = parseInt(intervalNode ? intervalNode.value : "", 10);
+    const proxyEnabled = proxyEnabledNode ? proxyEnabledNode.checked : !!(S.settings && S.settings.proxyEnabled);
+    const proxyUrl = proxyUrlNode ? proxyUrlNode.value.trim() : ((S.settings && S.settings.proxyUrl) || "");
+    const proxyBypass = proxyBypassNode ? proxyBypassNode.value.trim() : ((S.settings && S.settings.proxyBypass) || "127.0.0.1,localhost");
     run("settings", async () => {
       S.settings = await inv("settings_set", {
         settings: {
@@ -953,6 +959,9 @@ const A = {
           lang,
           port: Number.isFinite(port) ? port : S.settings.port,
           quotaInterval: Number.isFinite(quotaInterval) ? quotaInterval : S.settings.quotaInterval,
+          proxyEnabled,
+          proxyUrl,
+          proxyBypass,
         },
       });
       S.lang = lang;

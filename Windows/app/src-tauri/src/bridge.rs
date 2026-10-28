@@ -158,6 +158,7 @@ fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default()

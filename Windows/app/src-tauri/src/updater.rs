@@ -183,14 +183,14 @@ pub fn parse_sha256(text: &str) -> Option<String> {
 }
 
 fn client(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::proxy::apply(reqwest::Client::builder())
         .timeout(timeout)
         .build()
         .map_err(|e| e.to_string())
 }
 
 fn client_no_redirect(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::proxy::apply(reqwest::Client::builder())
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()

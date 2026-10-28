@@ -233,7 +233,7 @@ pub fn parse_claude_models(root: &Value) -> Vec<Value> {
 }
 
 async fn fetch_models(port: u16, api_key: &str) -> Result<Value, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
@@ -272,7 +272,7 @@ pub struct Management {
 
 impl Management {
     pub fn new(settings: &Settings) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        let client = crate::proxy::apply(reqwest::Client::builder())
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| e.to_string())?;

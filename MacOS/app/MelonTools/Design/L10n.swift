@@ -791,6 +791,11 @@ final class L10n: ObservableObject {
         "Import failed:": "Импорт не удался:",
         "Imported %d accounts (%d updated, %d skipped)": "Импортировано аккаунтов: %d (обновлено: %d, пропущено: %d)",
         "Could not read the JSON file.": "Не удалось прочитать JSON-файл.",
+        "Network / Proxy": "Сеть / Прокси",
+        "Use proxy for OpenAI and providers": "Использовать прокси для OpenAI и провайдеров",
+        "Proxy URL": "URL прокси",
+        "Bypass": "Исключения",
+        "Leave the URL empty to use the macOS system proxy. The local gateway always stays direct.": "Оставьте URL пустым, чтобы использовать системный прокси macOS. Локальный шлюз всегда работает напрямую.",
     ]
 }
 

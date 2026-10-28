@@ -1588,6 +1588,7 @@ fn git_context(directory: &str) -> String {
 pub async fn execute(port: u16, api_key: &str, task: &Task) -> Outcome {
     let started = Instant::now();
     let client = match reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(RUN_TIMEOUT_SECS))
         .build()
     {

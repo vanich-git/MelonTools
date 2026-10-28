@@ -309,7 +309,7 @@ struct SchedulerModelCatalog {
     private let transport: Transport
 
     init(transport: @escaping Transport = { request in
-        try await URLSession.shared.data(for: request)
+        try await NetworkProxy.directSession().data(for: request)
     }) {
         self.transport = transport
     }

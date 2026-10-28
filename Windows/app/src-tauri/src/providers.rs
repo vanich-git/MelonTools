@@ -38,7 +38,7 @@ pub async fn openrouter(key: &str) -> Result<Value, String> {
     if key.trim().is_empty() {
         return Err("ключ OpenRouter не задан".to_string());
     }
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -90,7 +90,7 @@ pub async fn deepinfra_models(key: &str) -> Result<Vec<ProviderModel>, String> {
     if key.trim().is_empty() {
         return Err("ключ DeepInfra не задан".to_string());
     }
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
@@ -159,7 +159,7 @@ pub async fn vercel(key: &str) -> Result<Value, String> {
     if key.trim().is_empty() {
         return Err("ключ Vercel AI Gateway не задан".to_string());
     }
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
@@ -179,7 +179,7 @@ fn vercel_metrics(credits: &Value) -> Value {
 /// credits endpoint and keeps language models only.
 pub async fn vercel_models(key: &str) -> Result<Vec<ProviderModel>, String> {
     let _ = vercel(key).await?;
-    let client = reqwest::Client::builder()
+    let client = crate::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;

@@ -180,7 +180,7 @@ extension CodexGatewayService {
         request.setValue("Bearer \(Self.managementSecret)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await NetworkProxy.directSession().data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return nil
             }
@@ -222,7 +222,7 @@ extension CodexGatewayService {
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return false }
         request.httpBody = payload
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await NetworkProxy.directSession().data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return false
             }

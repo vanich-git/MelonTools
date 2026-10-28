@@ -23,6 +23,8 @@ final class CDPSession: @unchecked Sendable {
     init(wsURL: URL) {
         self.wsURL = wsURL
         let configuration = URLSessionConfiguration.ephemeral
+        // CDP is always a loopback WebSocket; a system proxy must not capture it.
+        configuration.connectionProxyDictionary = [:]
         configuration.timeoutIntervalForRequest = 10
         configuration.waitsForConnectivity = false
         self.session = URLSession(configuration: configuration)

@@ -10,6 +10,9 @@ struct SettingsView: View {
 
     @AppStorage("gatewayAutoStart") private var gatewayAutoStart = true
     @AppStorage("gatewayStopOnQuit") private var gatewayStopOnQuit = false
+    @AppStorage("networkProxyEnabled") private var networkProxyEnabled = false
+    @AppStorage("networkProxyURL") private var networkProxyURL = ""
+    @AppStorage("networkProxyBypass") private var networkProxyBypass = "127.0.0.1,localhost"
     @AppStorage("quotaRefreshInterval") private var quotaRefreshInterval = 300
     @AppStorage("quotaNotifications") private var quotaNotifications = false
     @AppStorage("taskNotifications") private var taskNotifications = true
@@ -75,6 +78,47 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textPrimary)
                         }
+                    }
+                }
+
+                MTCard(title: L("Network / Proxy"), systemImage: "network") {
+                    VStack(alignment: .leading, spacing: MTTheme.s3) {
+                        Toggle(L("Use proxy for OpenAI and providers"), isOn: $networkProxyEnabled)
+                            .toggleStyle(.switch)
+                            .font(MTTheme.body(12))
+                        HStack(spacing: MTTheme.s3) {
+                            Text(L("Proxy URL"))
+                                .font(MTTheme.mono(11))
+                                .foregroundStyle(MTTheme.textSecondary)
+                                .frame(width: 130, alignment: .leading)
+                            TextField("socks5h://127.0.0.1:1080", text: $networkProxyURL)
+                                .textFieldStyle(.roundedBorder)
+                                .font(MTTheme.mono(11))
+                                .frame(width: 300)
+                        }
+                        HStack(spacing: MTTheme.s3) {
+                            Text(L("Bypass"))
+                                .font(MTTheme.mono(11))
+                                .foregroundStyle(MTTheme.textSecondary)
+                                .frame(width: 130, alignment: .leading)
+                            TextField("127.0.0.1,localhost", text: $networkProxyBypass)
+                                .textFieldStyle(.roundedBorder)
+                                .font(MTTheme.mono(11))
+                                .frame(width: 300)
+                        }
+                        Text(L("Leave the URL empty to use the macOS system proxy. The local gateway always stays direct."))
+                            .font(MTTheme.mono(10))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .onChange(of: networkProxyEnabled) { _ in
+                        CodexGatewayService.shared.applyNetworkSettings()
+                    }
+                    .onChange(of: networkProxyURL) { _ in
+                        CodexGatewayService.shared.applyNetworkSettings()
+                    }
+                    .onChange(of: networkProxyBypass) { _ in
+                        CodexGatewayService.shared.applyNetworkSettings()
                     }
                 }
 

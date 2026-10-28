@@ -169,7 +169,7 @@ final class ClaudeAuthService: ObservableObject {
 
     private func send(_ request: URLRequest?) async -> (Data, HTTPURLResponse)? {
         guard let request else { return nil }
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await NetworkProxy.session().data(for: request),
               let http = response as? HTTPURLResponse else { return nil }
         return (data, http)
     }
@@ -342,7 +342,7 @@ final class ClaudeAuthService: ObservableObject {
     }
 
     nonisolated static func fetchUsage(token: String) async throws -> UsageSnapshot? {
-        let (data, response) = try await URLSession.shared.data(for: usageRequest(token: token))
+        let (data, response) = try await NetworkProxy.session().data(for: usageRequest(token: token))
         guard let http = response as? HTTPURLResponse else { return nil }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
         guard http.statusCode == 200 else { return nil }

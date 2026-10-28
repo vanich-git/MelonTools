@@ -3,7 +3,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::vault::{self, now_ref, Account, Quota, Tokens, APPLE_REF_UNIX_OFFSET};
 
@@ -14,23 +14,32 @@ const USER_AGENT: &str = "Codex Desktop (Windows)";
 const ORIGINATOR: &str = "Codex Desktop";
 const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 
-static SHARED_CLIENT: OnceLock<Client> = OnceLock::new();
+static SHARED_CLIENTS: OnceLock<Mutex<HashMap<String, Client>>> = OnceLock::new();
 
-/// One HTTP client for token refresh, quota probes and reset probes. Cloning
-/// a `reqwest::Client` is cheap (it is an `Arc` around the pool).
+/// Client for loopback gateway calls; never follows the upstream proxy.
+pub fn local_client() -> Result<Client, String> {
+    crate::proxy::local(Client::builder())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 pub fn client() -> Result<Client, String> {
-    if let Some(client) = SHARED_CLIENT.get() {
-        return Ok(client.clone());
+    let key = crate::proxy::active_url().unwrap_or_default();
+    let cache = SHARED_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(client) = guard.get(&key) {
+            return Ok(client.clone());
+        }
     }
-    let client = Client::builder()
+    let client = crate::proxy::apply(Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let _ = SHARED_CLIENT.set(client);
-    SHARED_CLIENT
-        .get()
-        .cloned()
-        .ok_or_else(|| "quota client unavailable".to_string())
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(key, client.clone());
+    }
+    Ok(client)
 }
 
 pub async fn refresh_tokens(client: &Client, account: &Account) -> Result<Tokens, String> {

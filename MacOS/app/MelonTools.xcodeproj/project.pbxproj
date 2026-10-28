@@ -22,6 +22,7 @@
 		2B2E8EF3471108C45AE900AF /* UpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E8EF91D2DDDB89B093FB19 /* UpdaterTests.swift */; };
 		2BD81C9F013C460DE76A06D9 /* SupportBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B81A70B58EDF35609B3D9463 /* SupportBundleTests.swift */; };
 		2D9F397A2C9D715C88CD4E94 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C7DE7781BC232D89855C509 /* SettingsView.swift */; };
+		2DB95416F195D2146071C3BE /* NetworkProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89349401A85B581F93A02BD9 /* NetworkProxy.swift */; };
 		2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */; };
 		2FA012E7000545B4077ADD23 /* ShellService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6122C219EB9D610DECD893A7 /* ShellService.swift */; };
 		3195466B8C27A4AF0653E5F8 /* CodexLiveQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */; };
@@ -49,6 +50,7 @@
 		70092A4A70BBD78D1B57CAED /* TerminalLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8FB7C6A30E71A442B95A2E9 /* TerminalLauncher.swift */; };
 		74ED531633757BFE48EB4A23 /* CodexControlCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */; };
 		76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */; };
+		78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */; };
 		798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */; };
 		7E300D18F96A97F225BB2294 /* CodexBulkImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 589D2CF83323AB1D877B6B6A /* CodexBulkImport.swift */; };
 		94D871780AD7A084BDEC52BA /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B370D20064EDBC82BF5CDA /* L10n.swift */; };
@@ -127,8 +129,10 @@
 		78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDiagnosticsTests.swift; sourceTree = "<group>"; };
 		7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexPoolModelsTests.swift; sourceTree = "<group>"; };
 		7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistory.swift; sourceTree = "<group>"; };
+		89349401A85B581F93A02BD9 /* NetworkProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkProxy.swift; sourceTree = "<group>"; };
 		8C7DE7781BC232D89855C509 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexControlCard.swift; sourceTree = "<group>"; };
+		90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkProxyTests.swift; sourceTree = "<group>"; };
 		9360724A6B2BF9E4758C7D38 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		94A12DE6C0489C0163639BCE /* AntigravityAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityAuthTests.swift; sourceTree = "<group>"; };
 		9E4F7622B54B974672276242 /* SecureFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureFile.swift; sourceTree = "<group>"; };
@@ -284,6 +288,7 @@
 				7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */,
 				BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */,
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
+				90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */,
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
 				72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */,
 				4CD2F1E1C6BB70D5F637F283 /* SchedulerTests.swift */,
@@ -308,6 +313,7 @@
 			children = (
 				55304F692A547242AA3220F1 /* AppState.swift */,
 				C1DAD6CCDB82CBCEB8A2405C /* BackupService.swift */,
+				89349401A85B581F93A02BD9 /* NetworkProxy.swift */,
 				9E4F7622B54B974672276242 /* SecureFile.swift */,
 				6122C219EB9D610DECD893A7 /* ShellService.swift */,
 				6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */,
@@ -446,6 +452,7 @@
 				FB56C88445F19CAB49855BEA /* CodexPoolModelsTests.swift in Sources */,
 				76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */,
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
+				78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */,
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
 				798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */,
 				FB55B8F81FAF43250E5CF3D9 /* SchedulerTests.swift in Sources */,
@@ -491,6 +498,7 @@
 				67FCC88A8AE0E1767FBF9B1B /* MelonToolsApp.swift in Sources */,
 				E86D2022AF1C4B1C67F34E1F /* ModelSources.swift in Sources */,
 				DA68BEADDDDCD2CD1D133399 /* ModelSourcesView.swift in Sources */,
+				2DB95416F195D2146071C3BE /* NetworkProxy.swift in Sources */,
 				4F103A33DCF7EFC587975B08 /* OnboardingView.swift in Sources */,
 				60F62DEF12F331D2025F9A38 /* ProviderDiagnostics.swift in Sources */,
 				D2B25057C961DDBAA9218046 /* ProviderUsage.swift in Sources */,
@@ -693,14 +701,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.3;
+				MARKETING_VERSION = 2.4.4;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -712,14 +720,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.4.3;
+				MARKETING_VERSION = 2.4.4;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

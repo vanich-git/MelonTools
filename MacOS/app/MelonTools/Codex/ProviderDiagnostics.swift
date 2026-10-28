@@ -249,7 +249,7 @@ final class ProviderDiagnosticsStore: ObservableObject {
         request.setValue(ProviderUsageStore.appUserAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await NetworkProxy.directSession().data(for: request)
             let http = response as? HTTPURLResponse
             result.gatewayStatusCode = http?.statusCode
             if http?.statusCode == 200 {

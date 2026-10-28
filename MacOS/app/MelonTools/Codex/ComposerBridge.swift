@@ -767,7 +767,7 @@ final class ComposerBridge: ObservableObject {
         guard let url = URL(string: "http://127.0.0.1:\(port)/json") else { return [] }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
-        guard let (data, _) = try? await URLSession.shared.data(for: request),
+        guard let (data, _) = try? await NetworkProxy.directSession().data(for: request),
               let list = try? JSONDecoder().decode([DebugTarget].self, from: data) else { return [] }
         return list.filter { target in
             guard target.type == "page",

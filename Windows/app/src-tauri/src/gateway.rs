@@ -48,6 +48,7 @@ fn gateway_client() -> Option<&'static reqwest::Client> {
         return Some(client);
     }
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(3))
         .build()
         .ok()?;
@@ -159,11 +160,14 @@ routing:
 request-retry: 3
 max-retry-interval: 45
 transient-error-cooldown-seconds: 20
+requests:
+  proxy-url: "{proxy}"
 "#,
         port = port,
         api_key = yaml_escape(api_key),
         auth_dir = auth_dir,
         secret = yaml_escape(secret),
+        proxy = yaml_escape(&crate::proxy::engine_url()),
     )
 }
 
@@ -985,6 +989,7 @@ pub fn recent_calls(limit: usize) -> Value {
 /// The gateway's live model list (id + owner) for the providers page.
 pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
@@ -1002,6 +1007,7 @@ pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
 
 pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;

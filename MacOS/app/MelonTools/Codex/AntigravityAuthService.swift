@@ -233,7 +233,7 @@ final class AntigravityAuthService: ObservableObject {
 
     private func send(_ request: URLRequest?) async -> (Data, HTTPURLResponse)? {
         guard let request else { return nil }
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await NetworkProxy.session().data(for: request),
               let http = response as? HTTPURLResponse else { return nil }
         return (data, http)
     }

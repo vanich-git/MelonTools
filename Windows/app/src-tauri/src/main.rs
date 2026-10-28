@@ -20,6 +20,7 @@ mod instances;
 mod live_quota;
 mod paths;
 mod providers;
+mod proxy;
 mod quota;
 mod routing;
 mod scheduler;
@@ -147,10 +148,14 @@ async fn settings_set(
     }
     settings::carry_provider_models(&mut merged, &old);
     settings::save(&merged)?;
+    proxy::configure(&merged);
     if let Ok(mut guard) = state.settings.lock() {
         *guard = merged.clone();
     }
     bridge::invalidate_providers(&state.bridge);
+    if was_running && old.port == merged.port {
+        let _ = gateway::write_config(&merged);
+    }
     if old.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
     }
@@ -259,7 +264,7 @@ async fn start_gateway(state: &AppState) -> Result<String, String> {
     let result = gateway::start(&state.gw, &settings).await?;
     // Generate the catalog before pointing Codex at it; a dangling
     // model_catalog_json can stop the Codex app from starting.
-    if let Ok(client) = quota::client() {
+    if let Ok(client) = quota::local_client() {
         let _ = codex_route::sync_catalog(&client, settings.port, &settings.api_key).await;
     }
     if std::path::Path::new(&codex_route::catalog_path()).exists() {
@@ -802,14 +807,14 @@ async fn codex_route_status() -> Result<Value, String> {
 #[tauri::command]
 async fn catalog_sync(state: State<'_, AppState>) -> Result<usize, String> {
     let settings = state.settings();
-    let client = quota::client().map_err(|e| e.to_string())?;
+    let client = quota::local_client().map_err(|e| e.to_string())?;
     codex_route::sync_catalog(&client, settings.port, &settings.api_key).await
 }
 
 #[tauri::command]
 async fn codex_route_apply(state: State<'_, AppState>) -> Result<Value, String> {
     let settings = state.settings();
-    let custom = if let Ok(client) = quota::client() {
+    let custom = if let Ok(client) = quota::local_client() {
         codex_route::sync_catalog(&client, settings.port, &settings.api_key).await?
     } else {
         0
@@ -935,7 +940,7 @@ async fn sync_auth_accounts(settings: &settings::Settings) {
 /// Regenerates the Codex catalog and reports the failure instead of failing the
 /// command: the selection is already saved and must not be rolled back.
 async fn catalog_refresh_error(settings: &settings::Settings) -> Option<String> {
-    let client = quota::client().ok()?;
+    let client = quota::local_client().ok()?;
     codex_route::sync_catalog(&client, settings.port, &settings.api_key)
         .await
         .err()
@@ -1012,7 +1017,7 @@ async fn set_pool_model(
 async fn apply_codex_models(state: State<'_, AppState>) -> Result<Value, String> {
     let settings = state.settings();
     sync_auth_accounts(&settings).await;
-    let custom = if let Ok(client) = quota::client() {
+    let custom = if let Ok(client) = quota::local_client() {
         codex_route::sync_catalog(&client, settings.port, &settings.api_key).await?
     } else {
         0
@@ -1564,6 +1569,7 @@ fn ensure_single_instance() {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1724,10 +1730,22 @@ fn main() {
             tauri::tray::TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .menu(&menu)
+                // Left click opens the window; the context menu belongs to the
+                // right click. With the default (menu on left click too) the
+                // window focus could dismiss the popup as it opened.
+                .show_menu_on_left_click(false)
                 .tooltip("Melon Tools")
                 .on_menu_event(|app, event| handle_tray_menu(app, event.id.as_ref()))
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                    // Only a left click opens the window. Handling every click
+                    // here stole focus from the right-click menu on Windows,
+                    // so the menu flashed and closed immediately.
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
                         show_main_window(tray.app_handle());
                     }
                 })
@@ -1741,7 +1759,7 @@ fn main() {
                     let state = handle.state::<AppState>();
                     let settings = state.settings();
                     if gateway::start(&state.gw, &settings).await.is_ok() {
-                        if let Ok(client) = quota::client() {
+                        if let Ok(client) = quota::local_client() {
                             let _ = codex_route::sync_catalog(
                                 &client,
                                 settings.port,

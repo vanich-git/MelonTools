@@ -394,7 +394,7 @@ final class ProviderUsageStore: ObservableObject {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue(Self.appUserAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }

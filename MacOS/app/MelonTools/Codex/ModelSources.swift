@@ -501,7 +501,7 @@ final class ModelSourcesStore: ObservableObject {
         }
         if let userAgent { request.setValue(userAgent, forHTTPHeaderField: "User-Agent") }
         request.timeoutInterval = 30
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -549,7 +549,7 @@ final class ModelSourcesStore: ObservableObject {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 30
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await NetworkProxy.session().data(for: request)
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else {
             throw URLError(.userAuthenticationRequired)

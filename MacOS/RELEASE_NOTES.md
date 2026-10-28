@@ -1,4 +1,42 @@
-# Melon Tools 2.4.3
+# Melon Tools 2.4.4
+
+Network / Proxy support for macOS and Windows.
+
+- **Network / Proxy settings.** A new settings section adds an enable switch, a
+  Proxy URL field and a bypass list (default `127.0.0.1,localhost`).
+- **System proxy fallback.** Leave the URL empty while the switch is on to use
+  the macOS system proxy or the Windows per-user Internet Settings proxy. On
+  macOS the proxy is resolved with `CFNetworkCopyProxiesForURL` for the target
+  host, so PAC scripts and auto-discovery work too. A running gateway rewrites
+  `config.yaml` when the system proxy changes, without an app restart.
+- **Gateway proxy.** The generated `config.yaml` now contains:
+  `requests.proxy-url`, so OpenAI, Codex and provider upstream traffic from the
+  embedded CLIProxyAPI engine goes through the proxy. The setting survives app
+  restarts and gateway rebuilds.
+- **Application proxy.** Quota, official model catalog, provider model lists and
+  update checks use `URLSessionConfiguration.connectionProxyDictionary` on
+  macOS and `reqwest::Proxy` on Windows.
+- **Local traffic stays direct.** Gateway management, health, CDP and scheduler
+  loopback calls explicitly bypass the proxy, so `127.0.0.1:18317` never goes
+  through the tunnel.
+- **Windows tray menu.** Right-click on the tray icon now reliably opens the
+  menu. Before, the click handler focused the main window and the popup was
+  dismissed as it appeared. Left click still opens the window.
+- **Fixes the region error.** A system proxy now applies to the engine instead
+  of only the WebView/app layer, avoiding
+  `unsupported_country_region_territory` from OpenAI when the direct route is
+  blocked.
+- **Includes 2.4.3.** Bulk Cockpit/CPA and sub2api JSON import, plus the 2.4.2
+  official model refresh and earlier reliability/security fixes.
+
+### Upgrading from 2.4.3
+
+Open **Settings → Network / Proxy**, enable the switch, and either paste a
+proxy URL (`http://`, `https://`, `socks5://`, `socks5h://`) or leave it empty
+to use the system proxy. Keep `127.0.0.1,localhost` in the bypass list. macOS
+applies changes immediately after you edit a field; on Windows press **Apply**.
+
+## 2.4.3
 
 Bulk account import for macOS and Windows.
 

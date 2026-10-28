@@ -58,6 +58,10 @@ final class CodexGatewayService: ObservableObject {
     private var logReadOffset: UInt64 = 0
     private var logRemainder = ""
     private var userInitiatedStop = false
+    /// Proxy URL currently written into config.yaml. The health timer compares
+    /// it with the live system proxy so a PAC/VPN change is picked up without
+    /// restarting the gateway.
+    private var appliedProxyURL = ""
 
     // MARK: - Settings (persisted)
 
@@ -292,6 +296,20 @@ final class CodexGatewayService: ObservableObject {
 
     // MARK: - Config generation
 
+    /// Rewrite config.yaml after the Network/Proxy settings change. The engine
+    /// watches the file; a running service picks up the new proxy without a
+    /// restart.
+    func applyNetworkSettings() {
+        NetworkProxy.invalidate()
+        guard isRunning else { return }
+        do {
+            try writeConfig()
+            auditLog("network proxy settings applied")
+        } catch {
+            lastError = L("Apply failed") + ": \(error.localizedDescription)"
+        }
+    }
+
     func writeConfig() throws {
         // api-key and paths are escaped: a key containing quotes/colons would
         // otherwise break the YAML and the gateway would never come up.
@@ -323,12 +341,31 @@ final class CodexGatewayService: ObservableObject {
         request-retry: 3
         max-retry-interval: 45
         transient-error-cooldown-seconds: 20
+
+        requests:
+          proxy-url: "\(ModelSourcesStore.yamlEscape(NetworkProxy.activeURL() ?? ""))"
         """
         // External model sources (OpenRouter, OpenCode) ride in the same config;
         // the running service hot-reloads the file.
         yaml += ModelSourcesStore.shared.gatewayYAML()
         let data = Data(yaml.utf8)
         try SecureFile.write(data, to: URL(fileURLWithPath: configPath))
+        appliedProxyURL = NetworkProxy.activeURL() ?? ""
+    }
+
+    /// The system proxy can change while the app is running (a VPN or proxy
+    /// client toggles it). Rewrite config.yaml when that happens; the engine
+    /// watches the file and swaps its upstream transport.
+    private func refreshProxyIfNeeded() {
+        guard NetworkProxy.isEnabled else { return }
+        let current = NetworkProxy.activeURL() ?? ""
+        guard current != appliedProxyURL else { return }
+        do {
+            try writeConfig()
+            auditLog("network proxy changed; gateway config updated")
+        } catch {
+            auditLog("network proxy update failed: \(error.localizedDescription)")
+        }
     }
 
     /// Auth files account sync owns and may delete when the vault is
@@ -834,7 +871,7 @@ final class CodexGatewayService: ObservableObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 3
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await NetworkProxy.directSession().data(for: request)
             guard let http = response as? HTTPURLResponse else { return .unreachable }
             if http.statusCode == 200 { return .ok }
             if http.statusCode == 401 || http.statusCode == 403 { return .unauthorized }
@@ -858,6 +895,7 @@ final class CodexGatewayService: ObservableObject {
                     }
                     // Assign only on change: every write invalidates the views.
                     if self.lastError != nil { self.lastError = nil }
+                    self.refreshProxyIfNeeded()
                 case .unauthorized, .unreachable:
                     misses += 1
                     if misses >= 3 {
@@ -942,7 +980,7 @@ final class CodexGatewayService: ObservableObject {
             var listRequest = URLRequest(url: URL(string: "\(baseURL)/v1/models")!)
             listRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             listRequest.timeoutInterval = 8
-            let (listData, listResponse) = try await URLSession.shared.data(for: listRequest)
+            let (listData, listResponse) = try await NetworkProxy.directSession().data(for: listRequest)
             guard let listHTTP = listResponse as? HTTPURLResponse, listHTTP.statusCode == 200 else {
                 let code = (listResponse as? HTTPURLResponse)?.statusCode ?? -1
                 checkResult = L("Check failed") + ": HTTP \(code)"
@@ -976,7 +1014,7 @@ final class CodexGatewayService: ObservableObject {
                 "max_tokens": 8,
                 "stream": false,
             ])
-            let (chatData, chatResponse) = try await URLSession.shared.data(for: chatRequest)
+            let (chatData, chatResponse) = try await NetworkProxy.directSession().data(for: chatRequest)
             let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
             guard let chatHTTP = chatResponse as? HTTPURLResponse, (200..<300).contains(chatHTTP.statusCode) else {
                 let code = (chatResponse as? HTTPURLResponse)?.statusCode ?? -1

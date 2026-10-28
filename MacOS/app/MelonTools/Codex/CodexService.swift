@@ -66,7 +66,7 @@ enum CodexService {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["client_id": clientId])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let deviceAuthId = obj["device_auth_id"] as? String,
@@ -93,7 +93,7 @@ enum CodexService {
             "user_code": session.userCode,
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CodexError.http(-1, "no response") }
 
         switch http.statusCode {
@@ -168,7 +168,7 @@ enum CodexService {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
         return try parseTokenResponse(data)
     }
@@ -190,7 +190,7 @@ enum CodexService {
             "refresh_token": refreshToken,
         ], options: [])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
 
         var tokens = try parseTokenResponse(data)
@@ -250,7 +250,7 @@ enum CodexService {
         if let accountId, !accountId.isEmpty {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
         return try parseSubscription(data)
     }
@@ -308,7 +308,7 @@ enum CodexService {
            !accountId.isEmpty {
             request.setValue(accountId, forHTTPHeaderField: "Chatgpt-Account-Id")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let models = object["models"] as? [[String: Any]],
@@ -330,7 +330,7 @@ enum CodexService {
         if let accountId = safeAccountId(effectiveAccountId(account, tokens: tokens)), !accountId.isEmpty {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CodexError.decoding("reset credits response not an object")
@@ -419,7 +419,7 @@ enum CodexService {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
 
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {

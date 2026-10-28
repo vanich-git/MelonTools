@@ -136,7 +136,7 @@ pub struct Management {
 
 impl Management {
     pub fn new(settings: &Settings) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        let client = crate::proxy::apply(reqwest::Client::builder())
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| e.to_string())?;
@@ -301,7 +301,7 @@ pub struct UsageSnapshot {
 }
 
 pub fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::proxy::apply(reqwest::Client::builder())
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())

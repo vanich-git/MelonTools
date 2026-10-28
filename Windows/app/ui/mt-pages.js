@@ -978,6 +978,25 @@ function settingsPage() {
     </div>
   </div>
 
+  <div class="card">
+    <h2>${t("networkProxy")}</h2>
+    <div class="stack">
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+        <input type="checkbox" id="set-proxy-enabled" ${settings.proxyEnabled ? "checked" : ""}>
+        <span>${t("useProxy")}</span>
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1">${t("proxyUrl")}
+          <input id="set-proxy-url" class="mono" placeholder="socks5h://127.0.0.1:1080" value="${esc(settings.proxyUrl || "")}">
+        </label>
+        <label class="field" style="flex:1">${t("proxyBypass")}
+          <input id="set-proxy-bypass" class="mono" value="${esc(settings.proxyBypass || "127.0.0.1,localhost")}">
+        </label>
+      </div>
+      <div class="footnote" style="margin-top:0">${t("proxyHint")}</div>
+    </div>
+  </div>
+
   ${dashboardCardToggles(settings)}
 
   <div class="card">
