@@ -48,11 +48,11 @@ final class UpdaterStore: ObservableObject {
     private var busy = false
 
     /// How often the running app wakes up to ask for updates. The throttle
-    /// below still owns the real cadence: a non-manual check within 24 hours
+    /// below still owns the real cadence: a non-manual check within one hour
     /// of the last successful one is a no-op.
-    nonisolated static let periodicCheckInterval: TimeInterval = 6 * 3600
+    nonisolated static let periodicCheckInterval: TimeInterval = 3600
     /// Only a successful non-manual check counts toward this throttle.
-    nonisolated static let automaticCheckThrottle: TimeInterval = 24 * 3600
+    nonisolated static let automaticCheckThrottle: TimeInterval = 3600
 
     var currentVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"

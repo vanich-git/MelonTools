@@ -16,6 +16,13 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.2.0
+
+- The sidebar button changes from **Проверить обновление** to a gold
+  **Обновить** when a new version exists.
+- macOS shows a sidebar notice; Windows shows a toast.
+- Both apps check hourly and on launch.
+
 ## What's new in 3.1.2
 
 - The macOS **API control** card lists every account instead of showing
@@ -503,7 +510,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.1.2.dmg
+open build/MelonTools-3.2.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

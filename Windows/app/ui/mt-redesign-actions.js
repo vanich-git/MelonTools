@@ -118,6 +118,14 @@ Object.assign(A, {
     render();
   },
 
+  updateNotify() {
+    if (!S.update || !S.update.newer) return;
+    const version = String(S.update.version || "");
+    if (!version || S.updateNotifiedVersion === version) return;
+    S.updateNotifiedVersion = version;
+    toast(fmt(t("updateAvailable"), { v: version }));
+  },
+
   gatewayRestart() {
     run("start", async () => {
       await inv("gateway_stop");
@@ -309,3 +317,19 @@ Object.assign(A, {
 // The boot in app.js may have rendered before this layer loaded; refresh once
 // so the macOS navigation and page renderers are visible immediately.
 render();
+
+// Hourly update check: keep the sidebar button in sync and toast once per
+// version when a newer release appears while the app stays open.
+if (IS_TAURI) {
+  setInterval(() => {
+    inv("update_check", { force: false })
+      .then((result) => {
+        if (result && !result.skipped) {
+          S.update = result;
+          A.updateButton();
+          A.updateNotify();
+        }
+      })
+      .catch(() => {});
+  }, 3600 * 1000);
+}

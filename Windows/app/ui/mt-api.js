@@ -87,7 +87,7 @@ function mock(cmd, args) {
     ...historySeries("openrouter", 60, 30),
   ];
   const mocks = {
-    app_info: { name: "Melon Tools", version: "3.1.2", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
+    app_info: { name: "Melon Tools", version: "3.2.0", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
     settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, deepinfraModels: [], vercelModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),

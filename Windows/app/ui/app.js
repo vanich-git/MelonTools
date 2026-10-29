@@ -1037,13 +1037,15 @@ async function statusPoll() {
   showOnboarding();
   await A.loadAll();
   sectionLoads(S.section);
-  // Daily update check: lights the badge only; the window opens on click.
+  // Update check at launch: turn the sidebar control gold and show a toast
+  // when a newer release exists.
   if (IS_TAURI) {
-    inv("update_check", { force: false })
+    inv("update_check", { force: true })
       .then((result) => {
         if (result && !result.skipped) {
           S.update = result;
           A.updateButton();
+          A.updateNotify();
         }
       })
       .catch(() => {});

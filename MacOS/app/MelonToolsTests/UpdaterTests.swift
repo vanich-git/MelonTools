@@ -47,13 +47,13 @@ final class UpdaterTests: XCTestCase {
         XCTAssertNil(UpdaterStore.parseSha256File(String(repeating: "f", count: 63)))
     }
 
-    func testPeriodicTimerStillHonoursTheDailyThrottle() {
-        XCTAssertEqual(UpdaterStore.periodicCheckInterval, 6 * 3600)
-        XCTAssertEqual(UpdaterStore.automaticCheckThrottle, 24 * 3600)
+    func testPeriodicTimerChecksHourly() {
+        XCTAssertEqual(UpdaterStore.periodicCheckInterval, 3600)
+        XCTAssertEqual(UpdaterStore.automaticCheckThrottle, 3600)
         let now = Date(timeIntervalSince1970: 1_000_000)
-        XCTAssertFalse(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-23 * 3600), now: now))
-        XCTAssertFalse(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-24 * 3600), now: now))
-        XCTAssertTrue(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-25 * 3600), now: now))
+        XCTAssertFalse(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-30 * 60), now: now))
+        XCTAssertFalse(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-3600), now: now))
+        XCTAssertTrue(UpdaterStore.shouldCheckAutomatically(lastCheck: now.addingTimeInterval(-3660), now: now))
         XCTAssertTrue(UpdaterStore.shouldCheckAutomatically(lastCheck: .distantPast, now: now))
     }
 

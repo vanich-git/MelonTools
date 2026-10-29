@@ -226,11 +226,11 @@ async fn get_following_allowed(url: &str, timeout: Duration) -> Result<reqwest::
 }
 
 /// Latest-release lookup. `force=false` skips when the last check is younger
-/// than 24 hours (returns `{"skipped": true}`).
+/// than one hour (returns `{"skipped": true}`).
 pub async fn check(force: bool, current: &str, last_check: Option<i64>) -> Result<Value, String> {
     if !force {
         if let Some(at) = last_check {
-            if chrono::Utc::now().timestamp() - at < 24 * 3600 {
+            if chrono::Utc::now().timestamp() - at < 3600 {
                 return Ok(json!({ "skipped": true }));
             }
         }

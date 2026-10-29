@@ -1,4 +1,37 @@
-# Melon Tools 3.1.2
+# Melon Tools 3.2.0
+
+Update notifications on macOS and Windows.
+
+- **The sidebar button becomes «Обновить».** When a newer release is found,
+  «Проверить обновление» changes to a gold **Обновить** button on both
+  platforms.
+- **Visible notice.** macOS shows a banner in the sidebar with the new version;
+  Windows shows an in-app toast once per version.
+- **Hourly check.** Both apps check while running (at most once per hour) and on
+  launch, so a new release is noticed without reopening the app.
+- **Includes 3.1.2.** Every account is listed in the API control card, quota
+  limits use live pool totals, and the Codex config/chips fixes are present.
+- **Build metadata.** macOS build 35; version metadata is aligned at 3.2.0.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+a7d37162917002748ece36b61d54c3fb8bc5e9a78c9ed35f33130405f1f1d214  MelonTools-3.2.0.dmg
+6ce9298b8a22da4a23a06cc4b8aae80850d2e8a6c9a33b477ad46a035dafbe13  MelonTools-3.2.0-setup.exe
+d5fc4b83beb2b8cfe080b9b15460ecf5a883d36f1cff23ab38233706bb7ce299  MelonTools-3.2.0-win-x64-portable.exe
+d5fc4b83beb2b8cfe080b9b15460ecf5a883d36f1cff23ab38233706bb7ce299  MelonTools-3.2.0-win-x64.exe
+```
+
+## 3.1.2
 
 Account list fix in the API control card.
 

@@ -89,9 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Fires every six hours; `check(manual: false)` is a no-op until 24 hours
-    /// have passed since the last successful check, so the effective cadence
-    /// stays daily. Invalidated with the application lifetime.
+    /// Fires every hour; `check(manual: false)` is a no-op until an hour has
+    /// passed since the last successful check.
     private func startUpdateTimer() {
         updateTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: UpdaterStore.periodicCheckInterval, repeats: true) { _ in

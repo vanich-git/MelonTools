@@ -10,6 +10,7 @@ Object.assign(S, {
   launchModal: null,
   launchError: null,
   accountSettings: null,
+  updateNotifiedVersion: null,
   popup: null,
 });
 

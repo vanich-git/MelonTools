@@ -40,6 +40,13 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.2.0
+
+- The sidebar button becomes a gold **Обновить** when a new version exists, on
+  macOS and Windows.
+- macOS adds a sidebar notice; Windows adds a toast.
+- Update checks run hourly and on launch.
+
 ## What's new in 3.1.2
 
 - The API control card now lists every account on macOS instead of
