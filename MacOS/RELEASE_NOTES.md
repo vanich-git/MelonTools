@@ -1,4 +1,36 @@
-# Melon Tools 3.1.0
+# Melon Tools 3.1.1
+
+Quota-limit totals on macOS and Windows.
+
+- **Лимиты квот use the current pool.** The dashboard card now sums the live
+  account quotas instead of historical samples or averages. Two accounts at
+  100% and 4% read 104% of 200%; five accounts at 100% read 500% of 500%.
+- **macOS parity.** The macOS card no longer shows history sparklines/averages;
+  it uses the same total formula and account-quota bars as Windows.
+- **Consistent with account cards.** The value and bar are derived from the same
+  `hourlyRemaining`/`weeklyRemaining` fields shown on each account card.
+- **Build metadata.** macOS build 33; version metadata is aligned at 3.1.1.
+- Includes the 3.1.0 Codex `config.toml` and Windows composer-chips fixes.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-win-x64-portable.exe)
+
+### SHA-256
+
+```
+bd9102633b242adf5a76c5bfbd3d377267e77aef9c7d426f1203e72de4df6d8d  MelonTools-3.1.1.dmg
+7cce97b22aa553494d27ce1629b36029822895d9258e662461ecc4e074655758  MelonTools-3.1.1-setup.exe
+3748c0e67762ef9a09a946f2dd80f9f26b981fdf4c6dd86b68ee312b94d2686a  MelonTools-3.1.1-win-x64-portable.exe
+3748c0e67762ef9a09a946f2dd80f9f26b981fdf4c6dd86b68ee312b94d2686a  MelonTools-3.1.1-win-x64.exe
+```
+
+## 3.1.0
 
 Codex route compatibility and Windows composer chips.
 

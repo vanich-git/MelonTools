@@ -1159,8 +1159,8 @@ function priorityRow(account, index, blocked) {
     <span class="dot ${blocked ? "warn" : quotaDotClass(account)}"></span>
     <span class="priority-name">${esc(account.displayName || account.email)}</span>
     ${plan ? `<span class="priority-plan">${esc(plan)}</span>` : ""}
-    ${hourly !== null && hourly !== undefined ? `<span class="priority-quota">${round(hourly)}%</span>` : ""}
-    ${weekly !== null && weekly !== undefined ? `<span class="priority-quota">· ${round(weekly)}%</span>` : ""}
+    ${hourly !== null && hourly !== undefined ? `<span class="priority-quota">${round(hourly)}</span>` : ""}
+    ${weekly !== null && weekly !== undefined ? `<span class="priority-quota">· ${round(weekly)}</span>` : ""}
     ${account.preferredFirst ? `<span class="role-badge">${t("preferred")}</span>` : ""}
     ${account.isBackup ? `<span class="role-badge">${t("backup")}</span>` : ""}
     ${blocked ? `<span class="priority-blocked">${esc(blockText(account.blockInfo))}</span>` : ""}
@@ -1849,12 +1849,45 @@ function dashboardPoolCard(health) {
   </div>`;
 }
 
-function dashboardTrendsCard(trends) {
+function quotaTotals(accounts, field) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  let sum = 0;
+  let seen = 0;
+  for (const account of list) {
+    const value = finiteNumber(account && account[field]);
+    if (value === null) continue;
+    sum += value;
+    seen += 1;
+  }
+  return {
+    total: seen ? sum : null,
+    max: list.length * 100,
+    accounts: list.length,
+  };
+}
+
+function quotaLimitRow(label, total, max) {
+  const fraction = total === null || !max ? 0 : Math.min(1, Math.max(0, total / max));
+  return `<div class="quota">
+    <div class="top"><span class="name">${esc(label)}</span><span class="val">${total === null ? "—" : `${round(total)}`}</span></div>
+    <div class="bar"><i class="${quotaTint(total === null ? null : fraction * 100)}" style="width:${(fraction * 100).toFixed(1)}%"></i></div>
+  </div>`;
+}
+
+function dashboardTrendsCard(accounts) {
+  const hourly = quotaTotals(accounts, "hourlyRemaining");
+  const weekly = quotaTotals(accounts, "weeklyRemaining");
+  const max = Math.max(hourly.max, weekly.max);
   return `<div class="card dash-card" data-dashboard-card="quota-trends">
     <h2>${t("dashQuotaTrends")} <span class="hint">${t("dashTrendHint")}</span></h2>
     <div class="stack" style="gap:var(--s3)">
-      ${trendChart(trends.hourly, t("dashLast24h"))}
-      ${trendChart(trends.weekly, t("dashLast7d"))}
+      ${quotaLimitRow(t("fiveHour"), hourly.total, hourly.max)}
+      ${quotaLimitRow(t("week"), weekly.total, weekly.max)}
+      <div class="row">
+        <span class="footnote" style="margin:0">${esc(fmt(t("accountsInPool"), { n: hourly.accounts }))}</span>
+        <span class="spacer"></span>
+        <span class="footnote" style="margin:0">${max ? esc(fmt(t("dashOfMax"), { n: Math.round(max) })) : ""}</span>
+      </div>
     </div>
   </div>`;
 }
@@ -1912,7 +1945,7 @@ function dashboardCodexCard(accounts, health) {
     </div>
     ${account.current ? `<span class="pill ok">${t("current")}</span>` : ""}
     <span class="spacer"></span>
-    <span class="pool-week">${account.weeklyRemaining === null || account.weeklyRemaining === undefined ? "—" : `${round(account.weeklyRemaining)}%`}</span>
+    <span class="pool-week">${account.weeklyRemaining === null || account.weeklyRemaining === undefined ? "—" : `${round(account.weeklyRemaining)}`}</span>
   </div>`).join("");
   const average = health.averageWeekly;
   return `<div class="card dash-card" data-dashboard-card="codex-pool">
@@ -1957,8 +1990,6 @@ function dashboardPage() {
   const status = S.status || {};
   const cards = dashboardVisibility(S.settings);
   const health = poolHealth(accounts, S.routing);
-  const accountIds = new Set(accounts.map((account) => account.id));
-  const trends = quotaTrends(S.history, nowRef(), accountIds, accounts.length);
   const scheduleData = S.schedulerSummary || S.scheduler;
   const usage = usageSummary(scheduleData, S.bridge);
   const schedule = schedulerSummary(scheduleData, nowRef());
@@ -1968,88 +1999,11 @@ function dashboardPage() {
   <div class="dash-grid">
     ${cards.pool ? dashboardPoolCard(health) : ""}
     ${cards.scheduler ? dashboardSchedulerCard(schedule) : ""}
-    ${cards.trends ? dashboardTrendsCard(trends) : ""}
+    ${cards.trends ? dashboardTrendsCard(accounts) : ""}
     ${cards.spend ? dashboardSpendCard(usage) : ""}
     ${dashboardCodexCard(accounts, health)}
     ${dashboardGatewayCard(status)}
   </div>
   ${!accounts.length ? `<div class="card"><div class="muted">${t("warnNoAccounts")}</div></div>` : ""}
   `;
-}
-
-function quotaTrend(history, field, windowSeconds, bucketSeconds, nowSeconds, accountIds, poolSize) {
-  const buckets = Math.max(1, Math.round(windowSeconds / bucketSeconds));
-  const cutoff = nowSeconds - windowSeconds;
-  const byBucket = Array.from({ length: buckets }, () => new Map());
-  // The card shows the current account-pool total: the latest sample of every
-  // account, summed. Five accounts at 100% must read 500%, not the 100% average.
-  const latestByKey = new Map();
-  let sampleCount = 0;
-  for (const sample of Array.isArray(history) ? history : []) {
-    const timestamp = finiteNumber(sample && sample.timestamp);
-    const value = finiteNumber(sample && sample[field]);
-    if (timestamp === null || value === null) continue;
-    if (timestamp < cutoff || timestamp > nowSeconds + bucketSeconds) continue;
-    const key = String((sample && (sample.key || sample.provider)) || "");
-    if (accountIds && !accountIds.has(key)) continue;
-    const index = Math.min(buckets - 1, Math.max(0, Math.floor((timestamp - cutoff) / bucketSeconds)));
-    const bucket = byBucket[index];
-    const inBucket = bucket.get(key);
-    if (!inBucket || timestamp >= inBucket.timestamp) {
-      bucket.set(key, { timestamp, value });
-    }
-    const latest = latestByKey.get(key);
-    if (!latest || timestamp >= latest.timestamp) {
-      latestByKey.set(key, { timestamp, value });
-    }
-    sampleCount += 1;
-  }
-  const points = [];
-  for (let index = 0; index < buckets; index += 1) {
-    if (!byBucket[index].size) continue;
-    let total = 0;
-    for (const entry of byBucket[index].values()) total += entry.value;
-    points.push({ index, value: total });
-  }
-  let latest = null;
-  if (latestByKey.size) {
-    latest = 0;
-    for (const entry of latestByKey.values()) latest += entry.value;
-  }
-  const average = points.length
-    ? points.reduce((sum, point) => sum + point.value, 0) / points.length
-    : null;
-  return {
-    points,
-    buckets,
-    max: (poolSize === undefined ? latestByKey.size : poolSize) * 100,
-    average,
-    latest,
-    count: sampleCount,
-    keys: latestByKey.size,
-  };
-}
-
-function quotaTrends(history, nowSeconds, accountIds, poolSize) {
-  const now = finiteNumber(nowSeconds) ?? nowRef();
-  return {
-    hourly: quotaTrend(history, "hourlyLeft", 24 * HOUR_SECONDS, HOUR_SECONDS, now, accountIds, poolSize),
-    weekly: quotaTrend(history, "weeklyLeft", 7 * DAY_SECONDS, DAY_SECONDS, now, accountIds, poolSize),
-  };
-}
-
-function trendChart(trend, label) {
-  const hasData = !!(trend && trend.points.length);
-  const total = hasData && trend.latest !== null ? trend.latest : null;
-  const max = hasData && trend.max ? trend.max : 100;
-  const fraction = total === null ? 0 : Math.min(1, Math.max(0, total / max));
-  const latestText = total === null ? "—" : `${round(total)}%`;
-  return `<div class="quota trend-quota">
-    <div class="top"><span class="name">${esc(label)}</span><span class="val">${latestText}</span></div>
-    <div class="bar"><i class="${quotaTint(total === null ? null : fraction * 100)}" style="width:${(fraction * 100).toFixed(1)}%"></i></div>
-    <div class="bottom">
-      <span>${hasData ? esc(fmt(t("dashSamplesCount"), { n: trend.count })) : esc(t("dashTrendEmpty"))}</span>
-      <span>${hasData ? esc(fmt(t("dashOfMax"), { n: round(max) })) : ""}</span>
-    </div>
-  </div>`;
 }

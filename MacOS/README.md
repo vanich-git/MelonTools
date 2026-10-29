@@ -16,6 +16,13 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.1.1
+
+- **Лимиты квот** now sum the live account quotas on macOS and Windows. They
+  match the account cards and show the pool maximum (5 accounts = 500%).
+- Includes the 3.1.0 Codex config and Windows chips fixes.
+- macOS build 33.
+
 ## What's new in 3.1.0
 
 - **Codex `config.toml` safety.** Third-party provider tables are preserved,
@@ -489,7 +496,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.1.0.dmg
+open build/MelonTools-3.1.1.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

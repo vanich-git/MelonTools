@@ -40,6 +40,12 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.1.1
+
+- **Лимиты квот** now show live pool totals on macOS and Windows, not history
+  averages. Five accounts at 100% read 500%.
+- Includes the 3.1.0 Codex config and Windows composer-chips fixes.
+
 ## What's new in 3.1.0
 
 - **Codex route safety:** third-party `[model_providers.*]` tables are kept,

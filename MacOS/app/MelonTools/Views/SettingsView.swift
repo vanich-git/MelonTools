@@ -127,7 +127,7 @@ struct SettingsView: View {
                         Toggle(L("Show pool health"), isOn: $showPoolHealth)
                             .toggleStyle(.switch)
                             .font(MTTheme.body(12))
-                        Toggle(L("Show quota trends"), isOn: $showQuotaTrends)
+                        Toggle(L("Show quota limits"), isOn: $showQuotaTrends)
                             .toggleStyle(.switch)
                             .font(MTTheme.body(12))
                         Toggle(L("Show spend & top providers"), isOn: $showSpend)

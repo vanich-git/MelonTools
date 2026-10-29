@@ -215,6 +215,31 @@ final class DashboardAggregationTests: XCTestCase {
         XCTAssertEqual(health.usable, 1)
     }
 
+    func testQuotaTotalsSumTheWholePoolNotAnAverage() {
+        let accounts = (1...5).map { index in
+            account(
+                id: "account-\(index)",
+                hourly: 100,
+                weekly: index == 1 ? 80 : 100
+            )
+        }
+        let totals = DashboardMetrics.quotaTotals(accounts: accounts)
+        XCTAssertEqual(totals.hourly ?? 0, 500, accuracy: 0.001)
+        XCTAssertEqual(totals.weekly ?? 0, 480, accuracy: 0.001)
+        XCTAssertEqual(totals.max, 500, accuracy: 0.001)
+    }
+
+    func testQuotaTotalsKeepThePoolMaximumWhenAReadingIsMissing() {
+        let accounts = [
+            account(id: "a", hourly: 100, weekly: 50),
+            account(id: "b", hourly: nil, weekly: nil),
+        ]
+        let totals = DashboardMetrics.quotaTotals(accounts: accounts)
+        XCTAssertEqual(totals.hourly ?? 0, 100, accuracy: 0.001)
+        XCTAssertEqual(totals.weekly ?? 0, 50, accuracy: 0.001)
+        XCTAssertEqual(totals.max, 200, accuracy: 0.001)
+    }
+
     func testTrendBucketsHourlyAcrossAllKeys() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let start = now.addingTimeInterval(-24 * 3600)

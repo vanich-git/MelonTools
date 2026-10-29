@@ -37,10 +37,28 @@ struct DashboardPoolHealth: Equatable {
     }
 }
 
+struct DashboardQuotaTotals: Equatable {
+    var hourly: Double?
+    var weekly: Double?
+    var max: Double
+}
+
 enum DashboardMetrics {
     static func average(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    /// Current pool totals, not history averages. The denominator is the
+    /// number of accounts in the pool, so five accounts at 100% read 500%.
+    static func quotaTotals(accounts: [CodexAccount]) -> DashboardQuotaTotals {
+        let hourlyValues = accounts.compactMap(\.quota?.hourlyRemainingPercent)
+        let weeklyValues = accounts.compactMap(\.quota?.weeklyRemainingPercent)
+        return DashboardQuotaTotals(
+            hourly: hourlyValues.isEmpty ? nil : hourlyValues.reduce(0, +),
+            weekly: weeklyValues.isEmpty ? nil : weeklyValues.reduce(0, +),
+            max: Double(accounts.count) * 100
+        )
     }
 
     static func poolHealth(accounts: [CodexAccount]) -> DashboardPoolHealth {
@@ -134,7 +152,6 @@ struct DashboardView: View {
 
     @ObservedObject private var codex = CodexStore.shared
     @ObservedObject private var gateway = CodexGatewayService.shared
-    @ObservedObject private var quotaHistory = QuotaHistoryStore.shared
     @ObservedObject private var usage = ProviderUsageStore.shared
     @ObservedObject private var scheduler = SchedulerStore.shared
 
@@ -173,9 +190,6 @@ struct DashboardView: View {
         .onAppear {
             codex.load()
             scheduler.start()
-            // The store loads its file lazily; this call primes it before the
-            // trend helpers read `history`.
-            _ = quotaHistory.samples(for: "")
             Task { await gateway.healthCheck() }
             Task { await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID) }
         }
@@ -234,67 +248,45 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Quota trends
+    // MARK: - Quota limits
 
-    private var hourlyTrend: [DashboardTrend.Point] {
-        DashboardTrend.points(
-            history: quotaHistory.history,
-            field: .hourly,
-            now: Date(),
-            window: 24 * 3600,
-            bucket: 3600
-        )
-    }
-
-    private var weeklyTrend: [DashboardTrend.Point] {
-        DashboardTrend.points(
-            history: quotaHistory.history,
-            field: .weekly,
-            now: Date(),
-            window: 7 * 24 * 3600,
-            bucket: 24 * 3600
-        )
+    /// Current pool totals. This is intentionally not a history average:
+    /// five accounts at 100% must read 500%, and the value must agree with the
+    /// quota bars on the account cards.
+    private var quotaLimitTotals: DashboardQuotaTotals {
+        DashboardMetrics.quotaTotals(accounts: codex.accounts)
     }
 
     private var quotaTrendsCard: some View {
-        MTCard(title: L("Quota trends"), systemImage: "chart.xyaxis.line") {
+        let totals = quotaLimitTotals
+        return MTCard(title: L("Quota limits"), systemImage: "gauge.with.dots.needle.33percent") {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
-                trendRow(title: L("Last 24 hours"), points: hourlyTrend, tint: MTTheme.gold)
-                trendRow(title: L("Last 7 days"), points: weeklyTrend, tint: MTTheme.info)
-                Text(L("Aggregated across accounts and providers."))
-                    .font(MTTheme.mono(9))
-                    .foregroundStyle(MTTheme.textSecondary)
+                quotaLimitRow(title: L("hourly"), value: totals.hourly, limit: totals.max)
+                quotaLimitRow(title: L("weekly"), value: totals.weekly, limit: totals.max)
+                HStack(spacing: MTTheme.s2) {
+                    Text(String(format: L("Accounts in pool: %d"), codex.accounts.count))
+                    Spacer(minLength: 0)
+                    Text(String(format: L("of %d%%"), Int(totals.max)))
+                }
+                .font(MTTheme.mono(9))
+                .foregroundStyle(MTTheme.textSecondary)
             }
         }
     }
 
-    private func trendRow(title: String, points: [DashboardTrend.Point], tint: Color) -> some View {
-        HStack(spacing: MTTheme.s3) {
-            VStack(alignment: .leading, spacing: 2) {
+    private func quotaLimitRow(title: String, value: Double?, limit: Double) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
                 Text(title.uppercased())
                     .font(MTTheme.mono(9, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(MTTheme.textTertiary)
-                Text(points.last.map { "\(Int($0.value.rounded()))%" } ?? "—")
-                    .font(MTTheme.display(15, weight: .semibold))
-                    .foregroundStyle(points.isEmpty ? MTTheme.textTertiary : MTTheme.textPrimary)
+                Spacer()
+                Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(MTTheme.mono(10, weight: .semibold))
+                    .foregroundStyle(MTTheme.textPrimary)
             }
-            Spacer(minLength: MTTheme.s2)
-            if points.count >= 2 {
-                QuotaSparklineShape(values: points.map(\.value), fixedRange: 0...100)
-                    .stroke(tint, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                    .frame(width: 150, height: 26)
-                    .background(
-                        MTTheme.borderColor.opacity(0.35),
-                        in: RoundedRectangle(cornerRadius: 3)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                    .accessibilityHidden(true)
-            } else {
-                Text("—")
-                    .font(MTTheme.mono(11))
-                    .foregroundStyle(MTTheme.textTertiary)
-            }
+            MTMeter(fraction: limit > 0 ? min(1, max(0, (value ?? 0) / limit)) : 0)
         }
     }
 
