@@ -1,15 +1,15 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **3.1.1**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **3.1.2**.
 
-Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-3.1.1-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
+Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-3.1.2-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
 **WebView2 Runtime**. Файл не подписан Authenticode, поэтому Windows может
 показать предупреждение. SHA-256 опубликован рядом с файлом; в PowerShell
 проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-3.1.1-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-3.1.2-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
@@ -123,7 +123,7 @@ brew install lld llvm
 cd Windows/app/src-tauri
 cargo build --release --locked
 cd ../..
-makensis /DVERSION=3.1.1 /DSOURCE_EXE=..\dist\MelonTools-3.1.1-win-x64-portable.exe installer\MelonTools.nsi
+makensis /DVERSION=3.1.2 /DSOURCE_EXE=..\dist\MelonTools-3.1.2-win-x64-portable.exe installer\MelonTools.nsi
 ```
 
 `cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий

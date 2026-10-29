@@ -1,4 +1,34 @@
-# Melon Tools 3.1.1
+# Melon Tools 3.1.2
+
+Account list fix in the API control card.
+
+- **macOS shows every account.** The API control card on the Accounts page no
+  longer truncates the routing preview to three rows with “+N more”. All pool
+  accounts are listed when the card has room.
+- **Windows already lists all accounts.** The same card is verified to keep the
+  full order without a hidden limit.
+- **Includes 3.1.1.** Лимиты квот use live pool totals on both platforms.
+- **Build metadata.** macOS build 34; version metadata is aligned at 3.1.2.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-win-x64-portable.exe)
+
+### SHA-256
+
+```
+15be71003e14fad6da75c8bf106dc0f0544603ed996f252593b8da7a44a271d4  MelonTools-3.1.2.dmg
+9f4caef93c2793408c21b7227030151894fc10dcad59353979512a77882db152  MelonTools-3.1.2-setup.exe
+6f7eff44f732883b9b59ea8114fa252fd50d850ab6d5fad078c74310f9cf967f  MelonTools-3.1.2-win-x64-portable.exe
+6f7eff44f732883b9b59ea8114fa252fd50d850ab6d5fad078c74310f9cf967f  MelonTools-3.1.2-win-x64.exe
+```
+
+## 3.1.1
 
 Quota-limit totals on macOS and Windows.
 

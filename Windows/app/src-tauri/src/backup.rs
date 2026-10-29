@@ -7,7 +7,7 @@
 //! {
 //!   "format": "melon-backup",
 //!   "formatVersion": 2,
-//!   "appVersion": "3.1.1",
+//!   "appVersion": "3.1.2",
 //!   "createdAt": 1760000000,
 //!   "kdf": { "name": "PBKDF2-HMAC-SHA256", "iterations": 600000,
 //!            "salt": "<base64 16 bytes>" },
@@ -56,7 +56,7 @@ pub const FORMAT_VERSION: u32 = 2;
 pub const LEGACY_FORMAT_VERSION: u32 = 1;
 /// Product version recorded in the envelope. Kept as a literal because the
 /// portable format is shared with the matching macOS build.
-pub const APP_VERSION: &str = "3.1.1";
+pub const APP_VERSION: &str = "3.1.2";
 pub const KDF_NAME: &str = "PBKDF2-HMAC-SHA256";
 pub const CIPHER_NAME: &str = "AES-256-GCM";
 pub const ITERATIONS: u32 = 600_000;
@@ -1042,7 +1042,7 @@ mod tests {
         let envelope: Value = serde_json::from_slice(&backup).unwrap();
         assert_eq!(envelope["format"], FORMAT);
         assert_eq!(envelope["formatVersion"], FORMAT_VERSION);
-        assert_eq!(envelope["appVersion"], "3.1.1");
+        assert_eq!(envelope["appVersion"], "3.1.2");
         assert_eq!(envelope["createdAt"], CREATED_AT);
         assert_eq!(envelope["kdf"]["name"], KDF_NAME);
         assert_eq!(envelope["kdf"]["iterations"], ITERATIONS);

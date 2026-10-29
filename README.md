@@ -40,6 +40,12 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.1.2
+
+- The API control card now lists every account on macOS instead of
+  “+N more”; Windows already shows the full list.
+- Includes the 3.1.1 live quota totals.
+
 ## What's new in 3.1.1
 
 - **Лимиты квот** now show live pool totals on macOS and Windows, not history

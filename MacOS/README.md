@@ -16,6 +16,13 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.1.2
+
+- The macOS **API control** card lists every account instead of showing
+  “+N more”.
+- Windows keeps the full routing list; both platforms show all pool accounts.
+- Includes the 3.1.1 live quota totals.
+
 ## What's new in 3.1.1
 
 - **Лимиты квот** now sum the live account quotas on macOS and Windows. They
@@ -496,7 +503,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.1.1.dmg
+open build/MelonTools-3.1.2.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

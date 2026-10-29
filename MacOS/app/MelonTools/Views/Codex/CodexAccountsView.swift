@@ -834,7 +834,7 @@ private struct MiniAPICard: View {
                 .foregroundStyle(MTTheme.textSecondary)
         } else {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(resolution.orderedIds.prefix(3).enumerated()), id: \.element) { index, id in
+                ForEach(Array(resolution.orderedIds.enumerated()), id: \.element) { index, id in
                     if let account = store.accounts.first(where: { $0.id == id }) {
                         HStack(spacing: MTTheme.s2) {
                             Text("\(index + 1)")
@@ -869,11 +869,6 @@ private struct MiniAPICard: View {
                             }
                         }
                     }
-                }
-                if resolution.orderedIds.count > 3 {
-                    Text(String(format: L("+%d more"), resolution.orderedIds.count - 3))
-                        .font(MTTheme.mono(9))
-                        .foregroundStyle(MTTheme.textSecondary)
                 }
             }
         }
