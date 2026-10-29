@@ -33,6 +33,7 @@
 		3EC5FC54DCC7A79071678844 /* AntigravityAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94A12DE6C0489C0163639BCE /* AntigravityAuthTests.swift */; };
 		41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */; };
 		42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */; };
+		4B7AD00FC84D0B4FE0008B4A /* ProviderBulkImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 492045DD5C76276095A48319 /* ProviderBulkImport.swift */; };
 		4BC7623A3A5BCA4E228E4392 /* CodexInstancesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B4ECC496C0A6AE2F7D50CE /* CodexInstancesView.swift */; };
 		4C8C3F023C25F1DF12763050 /* SchedulerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D15F8FA7DF957DF6B33B6EB /* SchedulerView.swift */; };
 		4DE9BB4AB391848035938DF9 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD5F2D4313079608CA034CD /* MainView.swift */; };
@@ -68,6 +69,7 @@
 		D2B25057C961DDBAA9218046 /* ProviderUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0743C522162285FF400C341E /* ProviderUsage.swift */; };
 		DA5F068851218CE3C4C25420 /* CodexModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */; };
 		DA68BEADDDDCD2CD1D133399 /* ModelSourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A35AB5611799383F91510547 /* ModelSourcesView.swift */; };
+		DFECC444904DD8C2FAAC46EB /* ProviderBulkImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43DF36EBCAF7BAC399EA4644 /* ProviderBulkImportTests.swift */; };
 		E149425A4AE22977827CE28E /* ComposerBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9F5A5F4EAADF5CEAB6FB641 /* ComposerBridge.swift */; };
 		E18E858CE59F884695A1AA55 /* CodexGatewayService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C7113F932E22E2C4B120FD1 /* CodexGatewayService.swift */; };
 		E5762C94A819547E61D66FFE /* UpdaterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 651DED2BFF8134A5713FB28A /* UpdaterStore.swift */; };
@@ -107,9 +109,11 @@
 		3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAuthFileTests.swift; sourceTree = "<group>"; };
 		3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModelCatalog.swift; sourceTree = "<group>"; };
 		42E5F922E1CBE668022BFBDE /* CodexConfigRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConfigRouteTests.swift; sourceTree = "<group>"; };
+		43DF36EBCAF7BAC399EA4644 /* ProviderBulkImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderBulkImportTests.swift; sourceTree = "<group>"; };
 		44B370D20064EDBC82BF5CDA /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		44B4ECC496C0A6AE2F7D50CE /* CodexInstancesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexInstancesView.swift; sourceTree = "<group>"; };
 		47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModelCatalogTests.swift; sourceTree = "<group>"; };
+		492045DD5C76276095A48319 /* ProviderBulkImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderBulkImport.swift; sourceTree = "<group>"; };
 		49370FA7B0D3BE7C9C77DD3F /* MTScrollMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MTScrollMemory.swift; sourceTree = "<group>"; };
 		4CD2F1E1C6BB70D5F637F283 /* SchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulerTests.swift; sourceTree = "<group>"; };
 		4D15F8FA7DF957DF6B33B6EB /* SchedulerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulerView.swift; sourceTree = "<group>"; };
@@ -233,6 +237,7 @@
 				D9F5A5F4EAADF5CEAB6FB641 /* ComposerBridge.swift */,
 				B00D2E62FCC1AB51BFF6509B /* LoopbackServer.swift */,
 				2E0FE92353CF3930D5522680 /* ModelSources.swift */,
+				492045DD5C76276095A48319 /* ProviderBulkImport.swift */,
 				185C46A347C8DBA9271F1A57 /* ProviderDiagnostics.swift */,
 				0743C522162285FF400C341E /* ProviderUsage.swift */,
 				7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */,
@@ -292,6 +297,7 @@
 				BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */,
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
 				90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */,
+				43DF36EBCAF7BAC399EA4644 /* ProviderBulkImportTests.swift */,
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
 				72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */,
 				4CD2F1E1C6BB70D5F637F283 /* SchedulerTests.swift */,
@@ -457,6 +463,7 @@
 				76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */,
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
 				78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */,
+				DFECC444904DD8C2FAAC46EB /* ProviderBulkImportTests.swift in Sources */,
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
 				798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */,
 				FB55B8F81FAF43250E5CF3D9 /* SchedulerTests.swift in Sources */,
@@ -504,6 +511,7 @@
 				DA68BEADDDDCD2CD1D133399 /* ModelSourcesView.swift in Sources */,
 				2DB95416F195D2146071C3BE /* NetworkProxy.swift in Sources */,
 				4F103A33DCF7EFC587975B08 /* OnboardingView.swift in Sources */,
+				4B7AD00FC84D0B4FE0008B4A /* ProviderBulkImport.swift in Sources */,
 				60F62DEF12F331D2025F9A38 /* ProviderDiagnostics.swift in Sources */,
 				D2B25057C961DDBAA9218046 /* ProviderUsage.swift in Sources */,
 				53F69D34EBFC29C6CA1E7760 /* QuotaHistory.swift in Sources */,
@@ -705,14 +713,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3.2.0;
+				MARKETING_VERSION = 3.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -724,14 +732,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3.2.0;
+				MARKETING_VERSION = 3.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

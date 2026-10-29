@@ -19,6 +19,7 @@ mod history;
 mod instances;
 mod live_quota;
 mod paths;
+mod provider_import;
 mod providers;
 mod proxy;
 mod quota;
@@ -1590,31 +1591,11 @@ async fn watchdog_check(state: &AppState) {
     }
 }
 
-/// Holds the instance lock for the whole process lifetime; the OS releases it
-/// even after a crash. A second launch exits instead of racing over the vault.
-static INSTANCE_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
-
-fn ensure_single_instance() {
-    let dir = paths::appdata_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("app.lock");
-    let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)
-    else {
-        return; // No lock file — run anyway rather than blocking the app.
-    };
-    use fs2::FileExt;
-    if file.try_lock_exclusive().is_ok() {
-        let _ = INSTANCE_LOCK.set(file);
-    } else {
-        eprintln!("Melon Tools is already running.");
-        std::process::exit(0);
-    }
-}
-
+/// Single-instance ownership lives in `tauri-plugin-single-instance`: on
+/// Windows it uses a named mutex, so a crash releases it automatically and a
+/// stale `app.lock` file can never block the next launch. The plugin also
+/// calls the callback below in the first instance, which is what raises the
+/// window out of the tray instead of silently exiting.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -1756,11 +1737,15 @@ fn main() {
         let _ = codex_route::remove();
         return;
     }
-    ensure_single_instance();
     let initial_settings = settings::load();
     let initial_lang = initial_settings.lang.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A desktop shortcut or a tray double-click while the app is
+            // hidden must show the existing window, not start a second app.
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {

@@ -5,10 +5,12 @@ import Foundation
 /// Both formats carry the OAuth triple (`access_token`, `refresh_token`,
 /// `id_token`) plus the ChatGPT account id. They differ only in nesting:
 /// Cockpit uses a flat array, sub2api wraps the same fields in
-/// `accounts[].credentials`.
+/// `accounts[].credentials`. Claude and Antigravity entries from the same
+/// export are parsed here and written by `ProviderBulkImport`.
 enum CodexBulkImport {
     struct Result {
         var accounts: [CodexAccount]
+        var providers: [ProviderCredential]
         var skipped: Int
     }
 
@@ -21,7 +23,7 @@ enum CodexBulkImport {
             switch self {
             case .invalidJSON: return "The file is not valid JSON."
             case .unsupportedFormat: return "Use a Cockpit/CPA array or a sub2api-data export."
-            case .noAccounts: return "No Codex accounts with tokens were found."
+            case .noAccounts: return "No accounts with tokens were found."
             }
         }
     }
@@ -48,13 +50,35 @@ enum CodexBulkImport {
         }
 
         var accounts: [CodexAccount] = []
+        var providers: [ProviderCredential] = []
         var seen: Set<String> = []
+        var seenProviders: Set<String> = []
         var skipped = 0
         for object in objects {
-            // sub2api may contain other platforms; only OpenAI/OAuth belongs here.
-            if let platform = object["platform"] as? String,
-               !platform.isEmpty,
-               platform.lowercased() != "openai" {
+            let platform = (object["platform"] as? String)
+                ?? (object["provider"] as? String)
+                ?? ""
+            let declaredType = object["type"] as? String ?? ""
+            let kind = ProviderBulkImport.kind(forPlatform: platform)
+                ?? (platform.isEmpty ? ProviderBulkImport.kind(forPlatform: declaredType) : nil)
+
+            if let kind {
+                guard let credential = ProviderBulkImport.parse(object, kind: kind) else {
+                    skipped += 1
+                    continue
+                }
+                guard seenProviders.insert(credential.dedupeKey).inserted else {
+                    skipped += 1
+                    continue
+                }
+                providers.append(credential)
+                continue
+            }
+
+            // sub2api may contain platforms this importer does not own.
+            if !platform.isEmpty,
+               platform.lowercased() != "openai",
+               platform.lowercased() != "codex" {
                 skipped += 1
                 continue
             }
@@ -69,8 +93,8 @@ enum CodexBulkImport {
             }
             accounts.append(account)
         }
-        guard !accounts.isEmpty else { throw ImportError.noAccounts }
-        return Result(accounts: accounts, skipped: skipped)
+        guard !accounts.isEmpty || !providers.isEmpty else { throw ImportError.noAccounts }
+        return Result(accounts: accounts, providers: providers, skipped: skipped)
     }
 
     private static func parseAccount(_ object: [String: Any]) -> CodexAccount? {

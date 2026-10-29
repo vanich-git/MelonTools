@@ -1117,16 +1117,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2150,13 +2140,12 @@ dependencies = [
 
 [[package]]
 name = "melontools"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "chrono",
  "flate2",
- "fs2",
  "futures-util",
  "pbkdf2",
  "rand 0.8.8",
@@ -2168,6 +2157,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
  "tokio",
  "tokio-tungstenite",
  "url",
@@ -4052,6 +4042,22 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "url",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726b6da0dd5bd1344f84f4108a622c07d01923baacb5c803a605189672c5352f"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

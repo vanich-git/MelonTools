@@ -794,6 +794,8 @@ final class L10n: ObservableObject {
         "Import accounts from JSON": "Импорт аккаунтов из JSON",
         "Import failed:": "Импорт не удался:",
         "Imported %d accounts (%d updated, %d skipped)": "Импортировано аккаунтов: %d (обновлено: %d, пропущено: %d)",
+        "Claude accounts: %d · Antigravity: %d": "Claude: %d · Antigravity: %d",
+        "Imported providers": "Импортированы провайдеры",
         "Could not read the JSON file.": "Не удалось прочитать JSON-файл.",
         "Network / Proxy": "Сеть / Прокси",
         "Use proxy for OpenAI and providers": "Использовать прокси для OpenAI и провайдеров",

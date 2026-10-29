@@ -96,6 +96,72 @@ fn create_no_window(_cmd: &mut Command) {
     }
 }
 
+/// Windows Job Object that kills the engine when Melon Tools exits, including
+/// a crash or a forced kill. `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is the
+/// kernel guarantee: when the last handle to the job closes with the main
+/// process, every process assigned to the job is terminated. That prevents a
+/// zombie `cliproxyapi.exe` from keeping port 18317 after a bad shutdown.
+#[cfg(windows)]
+mod engine_job {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+
+    fn handle() -> Option<HANDLE> {
+        if let Some(handle) = JOB.get() {
+            return Some(*handle as HANDLE);
+        }
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if configured == 0 {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            let _ = JOB.set(job as usize);
+            Some(job)
+        }
+    }
+
+    /// Assign a freshly spawned engine to the job. Failure is non-fatal (for
+    /// example when the app itself runs inside a restrictive job), but the
+    /// normal desktop path gets the kill-on-close guarantee.
+    pub fn assign(pid: u32) {
+        let Some(job) = handle() else {
+            return;
+        };
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return;
+            }
+            if AssignProcessToJobObject(job, process) == 0 {
+                eprintln!("could not assign the gateway to the kill-on-close job");
+            }
+            let _ = CloseHandle(process);
+        }
+    }
+}
+
 // MARK: - Config
 
 const OPENCODE_MODELS: &[(&str, &str)] = &[
@@ -669,6 +735,8 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
     if health(settings.port, &settings.api_key).await {
         write_config(settings)?;
         sync_accounts(settings)?;
+        #[cfg(windows)]
+        adopt_recorded_engine();
         return Ok("adopted".to_string());
     }
 
@@ -705,6 +773,8 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
 
     let child = command.spawn().map_err(|e| e.to_string())?;
     let pid = child.id();
+    #[cfg(windows)]
+    engine_job::assign(pid);
     if let Ok(mut guard) = gateway.child.lock() {
         *guard = Some(child);
     }
@@ -846,6 +916,26 @@ pub(crate) fn taskkill_pid(pid: u32, force: bool) -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+/// Put an engine left by an earlier Melon process into the same kill-on-close
+/// job. Without this an adopted engine would survive the next crash even
+/// though newly spawned engines are covered.
+#[cfg(windows)]
+fn adopt_recorded_engine() {
+    let Some(pid) = fs::read_to_string(paths::pid_path())
+        .ok()
+        .as_deref()
+        .and_then(parse_pid)
+    else {
+        return;
+    };
+    if tasklist_image_name(pid)
+        .as_deref()
+        .is_some_and(image_matches_engine)
+    {
+        engine_job::assign(pid);
+    }
 }
 
 #[cfg(windows)]

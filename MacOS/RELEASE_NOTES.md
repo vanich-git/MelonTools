@@ -1,5 +1,50 @@
-# Melon Tools 3.2.0
+# Melon Tools 3.3.0
 
+Windows stability fixes and cross-provider JSON import.
+
+- **Codex history survives the gateway.** Melon changes only the top-level
+  `model_provider` and its own provider table. Every other
+  `[model_providers.*]` table is preserved, and the legacy
+  `codex_local_access` alias is written automatically so old chats open and
+  route through Melon instead of failing with “Model provider not found”.
+- **No more `app.lock` startup hang.** Single-instance ownership moved to a
+  named OS mutex. A crash releases it automatically, so a stale
+  `%APPDATA%\MelonTools\app.lock` cannot block the next launch.
+- **No zombie `cliproxyapi.exe`.** The engine is assigned to a Windows Job
+  Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; closing Melon — even
+  abnormally — also terminates the engine and frees port 18317.
+- **The window comes back from the tray.** Launching the shortcut while Melon
+  is hidden now shows, unminimizes and focuses the existing window instead of
+  silently exiting.
+- **Claude and Antigravity import from the same JSON.** One Cockpit/CPA or
+  sub2api export can contain OpenAI, Anthropic and Antigravity entries. Codex
+  accounts go to the vault; Claude and Antigravity credentials become engine
+  auth files, and existing engine metadata (device ids, organization) is
+  preserved.
+- **Includes 3.2.0.** The sidebar button changes to a gold **Обновить** when a
+  newer release exists, macOS shows a sidebar notice, Windows shows a toast,
+  and both apps check hourly and on launch.
+- **Build metadata.** macOS build 36; version metadata is aligned at 3.3.0.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+394c8dc6dbe7b4077fd37018baff1898864587d47b5ebffa54780abe424689be  MelonTools-3.3.0.dmg
+20ec74f478a8537cd24076e05f5d493da356301e0fd9cc7d40979968af171bf2  MelonTools-3.3.0-setup.exe
+c064aef4c6dc479395edef8761cd458fba0d33a345d70cdc518c2b5fd265cb99  MelonTools-3.3.0-win-x64-portable.exe
+c064aef4c6dc479395edef8761cd458fba0d33a345d70cdc518c2b5fd265cb99  MelonTools-3.3.0-win-x64.exe
+```
+
+## 3.2.0
 Update notifications on macOS and Windows.
 
 - **The sidebar button becomes «Обновить».** When a newer release is found,

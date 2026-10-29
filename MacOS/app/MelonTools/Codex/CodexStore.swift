@@ -807,6 +807,17 @@ final class CodexStore: ObservableObject {
             lastMessage = L("Import failed:") + " " + error.localizedDescription
             return nil
         }
+        let written: ProviderBulkImport.Written
+        do {
+            written = try ProviderBulkImport.write(
+                parsed.providers,
+                to: CodexGatewayService.authDir
+            )
+        } catch {
+            lastMessage = L("Import failed:") + " " + error.localizedDescription
+            return nil
+        }
+
         var added = 0
         var updated = 0
         for account in parsed.accounts {
@@ -819,12 +830,22 @@ final class CodexStore: ObservableObject {
         }
         save()
         applyRoutingIfNeeded(reason: L("account added"))
-        lastMessage = String(
-            format: L("Imported %d accounts (%d updated, %d skipped)"),
-            added + updated,
-            updated,
-            parsed.skipped
-        )
+        var message = added + updated > 0
+            ? String(
+                format: L("Imported %d accounts (%d updated, %d skipped)"),
+                added + updated,
+                updated,
+                parsed.skipped
+            )
+            : L("Imported providers")
+        if written.total > 0 {
+            message += " · " + String(
+                format: L("Claude accounts: %d · Antigravity: %d"),
+                written.claude,
+                written.antigravity
+            )
+        }
+        lastMessage = message
         return added + updated
     }
 

@@ -16,6 +16,17 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.3.0
+
+- Codex keeps every third-party `[model_providers.*]` table and gains the
+  `codex_local_access` alias, so old chats keep working.
+- Single-instance is a named OS mutex; a stale `app.lock` no longer blocks
+  startup, and a second launch focuses the tray window.
+- Windows assigns `cliproxyapi.exe` to a kill-on-close Job Object, so the
+  engine cannot survive Melon and hold port 18317.
+- One JSON export now imports Codex, Claude and Antigravity accounts.
+- Includes 3.2.0: gold **Обновить** button, update notice, hourly checks.
+
 ## What's new in 3.2.0
 
 - The sidebar button changes from **Проверить обновление** to a gold
@@ -389,6 +400,9 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 - **Account priority and roles.** Mark an account **Always first** (it leads
   the queue while usable) or **Backup** (used only when the regular accounts
   are unavailable).
+- **Cross-provider JSON import.** One Cockpit/CPA or sub2api export can carry
+  Codex, Claude and Antigravity logins; Codex accounts join the vault and the
+  other providers are written to the engine auth directory.
 - **Seven routing modes**, mirroring Cockpit Tools: **Auto (recommended)**,
   **Most quota left first**, **Least quota left first**, **Top plan first**,
   **Lower plan first**, **Expiring soon first**, and **Manual order** with
@@ -510,7 +524,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.2.0.dmg
+open build/MelonTools-3.3.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

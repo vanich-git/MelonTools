@@ -1,24 +1,39 @@
-//! Bulk Codex account import for Cockpit/CPA and sub2api JSON exports.
+//! Bulk account import for Cockpit/CPA and sub2api JSON exports.
+//!
+//! OpenAI entries become Codex vault accounts; Claude and Antigravity entries
+//! are written as engine auth files. One export may carry all three platforms.
 
 use serde_json::{json, Map, Value};
 
+use crate::paths;
+use crate::provider_import::{self, ProviderCredential};
 use crate::vault::{self, Account, Tokens};
 
+pub struct Parsed {
+    pub accounts: Vec<Account>,
+    pub providers: Vec<ProviderCredential>,
+    pub skipped: usize,
+}
+
 pub fn import_json(content: &str) -> Result<Value, String> {
-    let (accounts, skipped) = parse(content)?;
-    let count = accounts.len();
-    let (added, updated) = vault::import_accounts(accounts)?;
+    let parsed = parse(content)?;
+    let count = parsed.accounts.len();
+    let (added, updated) = vault::import_accounts(parsed.accounts)?;
+    let (claude, antigravity) = provider_import::write_all(&parsed.providers, &paths::auths_dir())?;
     Ok(json!({
         "imported": count,
         "added": added,
         "updated": updated,
-        "skipped": skipped,
+        "skipped": parsed.skipped,
+        "claude": claude,
+        "antigravity": antigravity,
     }))
 }
 
 /// Parse either a flat Cockpit/CPA array, a `sub2api-data` object, or one
-/// legacy `auth.json` object.
-pub fn parse(content: &str) -> Result<(Vec<Account>, usize), String> {
+/// legacy `auth.json` object. OpenAI, Claude and Antigravity entries are
+/// accepted; unknown platforms are counted as skipped.
+pub fn parse(content: &str) -> Result<Parsed, String> {
     let root: Value = serde_json::from_str(content)
         .map_err(|_| "файл не является корректным JSON".to_string())?;
     let entries: Vec<&Map<String, Value>> = if let Some(array) = root.as_array() {
@@ -36,14 +51,40 @@ pub fn parse(content: &str) -> Result<(Vec<Account>, usize), String> {
     };
 
     let mut accounts = Vec::new();
+    let mut providers = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut seen_providers = std::collections::HashSet::new();
     let mut skipped = 0;
     for entry in entries {
         let platform = entry
             .get("platform")
             .and_then(Value::as_str)
-            .unwrap_or("openai");
-        if !platform.is_empty() && !platform.eq_ignore_ascii_case("openai") {
+            .or_else(|| entry.get("provider").and_then(Value::as_str))
+            .unwrap_or("");
+        let declared_type = entry.get("type").and_then(Value::as_str).unwrap_or("");
+        let provider_kind = provider_import::kind_for_platform(platform).or_else(|| {
+            if platform.is_empty() {
+                provider_import::kind_for_platform(declared_type)
+            } else {
+                None
+            }
+        });
+        if let Some(kind) = provider_kind {
+            let Some(credential) = provider_import::parse(entry, kind) else {
+                skipped += 1;
+                continue;
+            };
+            if !seen_providers.insert(credential.dedupe_key()) {
+                skipped += 1;
+                continue;
+            }
+            providers.push(credential);
+            continue;
+        }
+        if !platform.is_empty()
+            && !platform.eq_ignore_ascii_case("openai")
+            && !platform.eq_ignore_ascii_case("codex")
+        {
             skipped += 1;
             continue;
         }
@@ -63,10 +104,14 @@ pub fn parse(content: &str) -> Result<(Vec<Account>, usize), String> {
         }
         accounts.push(account);
     }
-    if accounts.is_empty() {
+    if accounts.is_empty() && providers.is_empty() {
         return Err("не найдено ни одного аккаунта с токенами".to_string());
     }
-    Ok((accounts, skipped))
+    Ok(Parsed {
+        accounts,
+        providers,
+        skipped,
+    })
 }
 
 fn parse_account(entry: &Map<String, Value>) -> Option<Account> {
@@ -129,27 +174,68 @@ mod tests {
         let text = r#"[
           {"email":"user@example.com","account_id":"acct-1","access_token":"a","refresh_token":"r","id_token":"i"}
         ]"#;
-        let (accounts, skipped) = parse(text).unwrap();
-        assert_eq!(skipped, 0);
-        assert_eq!(accounts[0].tokens.refresh_token.as_deref(), Some("r"));
-        assert_eq!(accounts[0].tokens.account_id.as_deref(), Some("acct-1"));
-        assert_eq!(accounts[0].email.as_deref(), Some("user@example.com"));
+        let parsed = parse(text).unwrap();
+        assert_eq!(parsed.skipped, 0);
+        assert_eq!(
+            parsed.accounts[0].tokens.refresh_token.as_deref(),
+            Some("r")
+        );
+        assert_eq!(
+            parsed.accounts[0].tokens.account_id.as_deref(),
+            Some("acct-1")
+        );
+        assert_eq!(
+            parsed.accounts[0].email.as_deref(),
+            Some("user@example.com")
+        );
     }
 
     #[test]
-    fn sub2api_credentials_are_read_and_other_platforms_skipped() {
+    fn sub2api_imports_openai_claude_and_antigravity() {
         let text = r#"{
           "type":"sub2api-data","version":1,
           "accounts":[
             {"platform":"openai","credentials":{"email":"a@b.c","chatgpt_account_id":"acct-2","access_token":"a2","refresh_token":"r2"}},
-            {"platform":"anthropic","credentials":{"access_token":"x","refresh_token":"y"}}
+            {"platform":"anthropic","credentials":{"email":"claude@example.com","access_token":"x","refresh_token":"y"}},
+            {"platform":"antigravity","credentials":{"email":"google@example.com","access_token":"g","refresh_token":"gr","project_id":"p"}}
           ]
         }"#;
-        let (accounts, skipped) = parse(text).unwrap();
-        assert_eq!(accounts.len(), 1);
-        assert_eq!(skipped, 1);
-        assert_eq!(accounts[0].tokens.refresh_token.as_deref(), Some("r2"));
-        assert_eq!(accounts[0].account_id.as_deref(), Some("acct-2"));
+        let parsed = parse(text).unwrap();
+        assert_eq!(parsed.accounts.len(), 1);
+        assert_eq!(parsed.providers.len(), 2);
+        assert_eq!(parsed.skipped, 0);
+        assert_eq!(
+            parsed.accounts[0].tokens.refresh_token.as_deref(),
+            Some("r2")
+        );
+        assert_eq!(parsed.accounts[0].account_id.as_deref(), Some("acct-2"));
+        assert_eq!(
+            parsed.providers[0].email.as_deref(),
+            Some("claude@example.com")
+        );
+        assert_eq!(parsed.providers[1].project_id.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn provider_only_export_is_accepted() {
+        let text = r#"[
+          {"platform":"claude","access_token":"x","refresh_token":"y","email":"c@example.com"}
+        ]"#;
+        let parsed = parse(text).unwrap();
+        assert!(parsed.accounts.is_empty());
+        assert_eq!(parsed.providers.len(), 1);
+    }
+
+    #[test]
+    fn unknown_platforms_are_skipped() {
+        let text = r#"[
+          {"platform":"openai","access_token":"a","refresh_token":"r"},
+          {"platform":"gemini","access_token":"g","refresh_token":"gr"}
+        ]"#;
+        let parsed = parse(text).unwrap();
+        assert_eq!(parsed.accounts.len(), 1);
+        assert!(parsed.providers.is_empty());
+        assert_eq!(parsed.skipped, 1);
     }
 
     #[test]

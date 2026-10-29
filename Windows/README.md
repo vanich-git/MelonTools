@@ -1,15 +1,15 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **3.2.0**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **3.3.0**.
 
-Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-3.2.0-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
+Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-3.3.0-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
 **WebView2 Runtime**. Файл не подписан Authenticode, поэтому Windows может
 показать предупреждение. SHA-256 опубликован рядом с файлом; в PowerShell
 проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-3.2.0-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-3.3.0-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
@@ -44,7 +44,8 @@ Get-FileHash .\MelonTools-3.2.0-win-x64-portable.exe -Algorithm SHA256
   список исключений. Пустой URL использует системный прокси Windows; локальный
   шлюз всегда работает напрямую.
 - **Импорт JSON**: кнопка **«Импорт JSON»** на странице «Аккаунты» принимает
-  Cockpit/CPA и sub2api-экспорт и сохраняет refresh-токены.
+  Cockpit/CPA и sub2api-экспорт. Codex-аккаунты попадают в пул, Claude и
+  Antigravity — в файлы входа движка; refresh-токены сохраняются.
 - **Планировщик**: задачи по расписанию (название, запрос, модель шлюза,
   опциональный reasoning effort, интервал или cron-выражение с часовым поясом).
   Пять шаблонов — утренняя сводка, проверка PR, недельная сводка репозитория,
@@ -123,7 +124,7 @@ brew install lld llvm
 cd Windows/app/src-tauri
 cargo build --release --locked
 cd ../..
-makensis /DVERSION=3.2.0 /DSOURCE_EXE=..\dist\MelonTools-3.2.0-win-x64-portable.exe installer\MelonTools.nsi
+makensis /DVERSION=3.3.0 /DSOURCE_EXE=..\dist\MelonTools-3.3.0-win-x64-portable.exe installer\MelonTools.nsi
 ```
 
 `cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий

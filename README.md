@@ -40,6 +40,17 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.3.0
+
+- Codex keeps every third-party `[model_providers.*]` table and gains the
+  `codex_local_access` alias, so old chats keep working.
+- Single-instance is a named OS mutex; a stale `app.lock` no longer blocks
+  startup, and a second launch focuses the tray window.
+- Windows assigns `cliproxyapi.exe` to a kill-on-close Job Object, so the
+  engine cannot survive Melon and hold port 18317.
+- One JSON export now imports Codex, Claude and Antigravity accounts.
+- Includes 3.2.0: gold **Обновить** button, update notice, hourly checks.
+
 ## What's new in 3.2.0
 
 - The sidebar button becomes a gold **Обновить** when a new version exists, on

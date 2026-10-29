@@ -252,8 +252,12 @@ pub fn apply(port: u16, api_key: &str) -> Result<(), String> {
     let mut updated = upsert_route(&current, &format!("http://127.0.0.1:{}/v1", port), api_key);
     if catalog_path().exists() {
         updated = upsert_top_level_key(&updated, "model_catalog_json", CATALOG_FILE);
-    } else {
-        // Never point Codex at a file we did not generate.
+    } else if top_level_value(&updated, "model_catalog_json")
+        .map(|value| value.ends_with(CATALOG_FILE))
+        .unwrap_or(false)
+    {
+        // Remove only our own catalog reference; a catalog configured by the
+        // user or another tool must survive a Melon route change.
         updated = remove_top_level_key(&updated, "model_catalog_json");
     }
     if let Some(dir) = path.parent() {

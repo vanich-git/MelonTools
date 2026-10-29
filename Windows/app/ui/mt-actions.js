@@ -471,12 +471,22 @@ const A = {
       const content = await file.text();
       const result = await inv("import_json_accounts", { content });
       S.accounts = result.accounts;
+      // Provider files change outside the Codex vault: drop the cached cards
+      // so the Connections page reads the freshly imported auth files.
+      S.models = null;
+      S.pool = null;
+      S.claude = null;
+      S.antigravity = null;
+      S.lastClaudeUsageAt = 0;
+      S.lastAntigravityAt = 0;
       const counts = result.result || {};
       toast(fmt(t("importJsonDone"), {
         n: counts.imported ?? 0,
         added: counts.added ?? 0,
         updated: counts.updated ?? 0,
         skipped: counts.skipped ?? 0,
+        claude: counts.claude ?? 0,
+        antigravity: counts.antigravity ?? 0,
       }));
     });
     input.value = "";
