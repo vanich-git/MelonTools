@@ -7,28 +7,33 @@
   <link rel="stylesheet" href="mt.css" />
 </head>
 <body>
-  <aside>
-    <div class="brand">
-      <div class="logo">🍉</div>
-      <div>
-        <div class="title">Melon Tools</div>
-        <div class="sub">codex + api</div>
-      </div>
+  <div class="app">
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo"><span>🍉</span></div>
+          <div class="brand-text">
+            <div class="title">Melon Tools</div>
+            <div class="sub" id="brand-sub">планировщик и Codex в одном месте</div>
+          </div>
+        </div>
+        <nav id="nav"></nav>
+        <div class="sidebar-update">
+          <button class="update-btn" id="update-btn" data-action="updateOpen">
+            <span id="update-label">Проверить обновление</span>
+          </button>
+        </div>
+        <div class="side-footer">
+          <span class="dot" id="gw-dot"></span>
+          <span id="gw-label">…</span>
+          <span class="spacer"></span>
+          <span id="ver"></span>
+        </div>
+      </aside>
+      <main class="detail"><div class="board" id="main"></div></main>
     </div>
-    <nav id="nav"></nav>
-    <div class="sidebar-update">
-      <button class="update-btn" id="update-btn" data-action="updateOpen">
-        <span id="update-label">Проверить обновление</span>
-      </button>
-    </div>
-    <div class="side-footer">
-      <span class="dot" id="gw-dot"></span>
-      <span id="gw-label">…</span>
-      <span class="spacer"></span>
-      <span id="ver"></span>
-    </div>
-  </aside>
-  <main><div class="board" id="main"></div></main>
+  </div>
+
   <div id="update-modal" class="modal" hidden>
     <div class="modal-card">
       <h2 id="update-title">Проверка обновлений…</h2>
@@ -50,5 +55,7 @@
   <script src="mt-pages.js"></script>
   <script src="mt-actions.js"></script>
   <script src="app.js"></script>
+  <script src="mt-redesign.js"></script>
+  <script src="mt-redesign-actions.js"></script>
 </body>
 </html>

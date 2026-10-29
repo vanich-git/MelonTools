@@ -45,6 +45,10 @@
     "catalog_sync",
     "codex_route_apply",
     "codex_route_remove",
+    "codex_app_status",
+    "codex_app_set_path",
+    "codex_app_forget_path",
+    "codex_app_open",
     "codex_pool_models",
     "codex_models_refresh",
     "save_account_models",
@@ -95,6 +99,7 @@
     "open_url",
     "plugin:event|listen",
     "plugin:event|unlisten",
+    "plugin:dialog|open",
   ];
 
   var allowed = Object.create(null);

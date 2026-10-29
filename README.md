@@ -40,6 +40,22 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.0.0
+
+- **Windows matches the macOS layout.** Sidebar card, grouped navigation, bento
+  cards, Segoe UI Variable, capsule buttons, switches and a native Windows title
+  bar with right-side window controls.
+- **Quota trends show pool totals.** Five accounts at 100% read 500%, not a
+  100% average. The bars match the account quota style.
+- **Launch Codex from the app.** The Windows API page starts the service,
+  applies the route and opens Codex. A missing `ChatGPT.exe` opens a clear
+  picker dialog instead of a technical environment-variable error.
+- **Preserves the 2.4.4 feature set.** Network/proxy support, bulk JSON import,
+  the official model refresh, the tray menu fix and earlier security/reliability
+  work are included. macOS is functionally unchanged and moves to build 30.
+
+See [release notes](MacOS/RELEASE_NOTES.md) for the full changelog.
+
 ## Screenshots
 
 **Melon Tools — model provider management**

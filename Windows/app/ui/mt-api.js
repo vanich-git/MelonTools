@@ -53,7 +53,7 @@ function mock(cmd, args) {
   const demoAccounts = [
     {
       id: "demo-1", email: "account-1@example.invalid", displayName: "account-1@example.invalid", planType: "plus",
-      subscriptionActiveUntil: "2026-11-18T05:54:42Z", blocked: false, blockInfo: null,
+      current: true, subscriptionActiveUntil: "2026-11-18T05:54:42Z", blocked: false, blockInfo: null,
       hourlyRemaining: 100, weeklyRemaining: 85, hourlyResetAt: nowSec + 16698, weeklyResetAt: nowSec + 583541,
       hourlyWindowPresent: true, weeklyWindowPresent: true, quotaUpdatedAt: nowSec - 40,
       hourlyReservePercent: 5, weeklyReservePercent: null, preferredFirst: true, hasTokens: true,
@@ -69,22 +69,26 @@ function mock(cmd, args) {
       selectedModels: ["gpt-6.1-sol"],
     },
   ];
-  const historySeries = (key, start, drop) => Array.from({ length: 12 }, (_, index) => ({
-    key,
-    provider: key === "claude" ? "claude" : key === "openrouter" ? "openrouter" : "codex",
-    timestamp: nowSec - (11 - index) * 300,
-    hourlyLeft: Math.max(0, start - index * drop),
-    weeklyLeft: Math.max(0, 90 - index * 2),
-  }));
+  const historySeries = (key, hourlyLatest, weeklyLatest) => Array.from({ length: 12 }, (_, index) => {
+    const age = 11 - index;
+    const drift = Math.min(age * 0.4, 6);
+    return {
+      key,
+      provider: key === "claude" ? "claude" : key === "openrouter" ? "openrouter" : "codex",
+      timestamp: nowSec - age * 300,
+      hourlyLeft: Math.max(0, Math.min(100, hourlyLatest - drift)),
+      weeklyLeft: Math.max(0, Math.min(100, weeklyLatest - drift * 0.3)),
+    };
+  });
   const historyMocks = [
-    ...historySeries("demo-1", 100, 7),
-    ...historySeries("demo-2", 80, 6),
-    ...historySeries("claude", 88, 2),
-    ...historySeries("openrouter", 60, 3),
+    ...historySeries("demo-1", 100, 85),
+    ...historySeries("demo-2", 4, 85),
+    ...historySeries("claude", 72, 41),
+    ...historySeries("openrouter", 60, 30),
   ];
   const mocks = {
-    app_info: { name: "Melon Tools", version: "2.4.4", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
-    settings_get: { port: 18317, apiKey: "", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, deepinfraModels: [], vercelModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [] },
+    app_info: { name: "Melon Tools", version: "3.0.0", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
+    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, deepinfraModels: [], vercelModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
     codex_pool_models: () => demoPoolSnapshot(),
@@ -153,6 +157,19 @@ function mock(cmd, args) {
     codex_route_status: { configPath: "C:\\Users\\you\\.codex\\config.toml", provider: "melon_local_access", ours: true, catalogExists: true, catalogPath: "C:\\Users\\you\\.codex\\melon-model-catalog.json" },
     codex_route_apply: { route: { provider: "melon_local_access", ours: true, catalogExists: true }, catalogCustom: 32 },
     codex_route_remove: { provider: null, ours: false, catalogExists: true },
+    codex_app_status: () => demoCodexStatus(),
+    codex_app_set_path: (a) => {
+      DEMO_CODEX_PATH = a.path;
+      return demoCodexStatus();
+    },
+    codex_app_forget_path: () => {
+      DEMO_CODEX_PATH = "";
+      return demoCodexStatus();
+    },
+    codex_app_open: () => DEMO_CODEX_PATH
+      ? { path: DEMO_CODEX_PATH, source: "manual", debugPort: 55660, restarted: false, elevated: false, route: { provider: "melon_local_access", ours: true, catalogExists: true } }
+      : Promise.reject("codex_not_found"),
+    "plugin:dialog|open": "C:\\Users\\you\\AppData\\Local\\Programs\\ChatGPT\\ChatGPT.exe",
     bridge_status: { attached: true, debugPort: 55660, model: "GPT-6.1 Sol", targets: 3, reason: null, session: { total: { total: 2730 }, cost: { total: 0.42, providers: { openai: { usd: 0.32 }, opencode: { usd: 0.10 }, deepinfra: { usd: 0.014 }, vercel: { usd: 0.021 } } } } },
     routing_state: { strategy: "auto", strategies: ["auto", "quotaHighFirst", "quotaLowFirst", "planHighFirst", "planLowFirst", "expirySoonFirst", "custom"], priorityOrder: [], orderedIds: ["demo-1", "demo-2"], blockedIds: ["demo-2"] },
     set_routing_strategy: (a) => ({ strategy: a.strategy, orderedIds: ["demo-1", "demo-2"], blockedIds: ["demo-2"], accounts: demoAccounts }),
@@ -244,6 +261,17 @@ function mock(cmd, args) {
 // without Tauri (the real app answers from the Rust scheduler).
 let DEMO_SCHEDULER = null;
 let DEMO_BACKUP_LAST = null;
+let DEMO_CODEX_PATH = "";
+function demoCodexStatus() {
+  return {
+    found: true,
+    source: DEMO_CODEX_PATH ? "manual" : "auto",
+    path: DEMO_CODEX_PATH || "C:\\Users\\you\\AppData\\Local\\Programs\\ChatGPT\\ChatGPT.exe",
+    savedPath: DEMO_CODEX_PATH,
+    savedPathValid: true,
+    running: true,
+  };
+}
 // Browser preview only: one demo run at a time, later requests wait in the
 // queue — the same shape the Rust scheduler reports through `scheduler_queue`.
 const DEMO_RUN_MS = 4000;

@@ -1,4 +1,58 @@
-# Melon Tools 2.4.4
+# Melon Tools 3.0.0
+
+Windows UI parity with macOS. Both platforms share the 3.0.0 version and the
+2.4.4 feature set; macOS is functionally unchanged.
+
+- **macOS-style Windows interface.** The Windows build now has the same
+  sidebar-card navigation, bento cards, Segoe UI Variable typography, capsule
+  buttons, switches and compact headers as the macOS app. The window uses the
+  native Windows title bar with standard minimize/maximize/close buttons on the
+  right.
+- **Dashboard.** Six aligned cards cover pool health, scheduler, quota trends,
+  spend, the Codex pool and the API service. Quota trends show the **total**
+  remaining quota of the account pool: five accounts at 100% read 500%, not a
+  100% average. Bars use the same style as account quotas.
+- **Launch Codex from the app.** The API page has a single **Launch Codex**
+  action. Melon Tools starts the service, applies the Codex route and opens the
+  desktop app with the composer-chips debug port. If `ChatGPT.exe` is not found,
+  a clear dialog offers **Choose ChatGPT.exe**, **Download Codex** and **Retry**.
+  A manually selected path is stored in `settings.json` (`codexExePath`);
+  `MELON_CODEX_EXE` is now only a hidden fallback.
+- **Accounts.** The API control card matches the account cards in height, the
+  current account is marked, and bulk JSON import is preserved from 2.4.3.
+- **Settings.** Appearance, language and accent, dashboard widgets, service,
+  notifications, backup and About are grouped like macOS. The Network / Proxy
+  section from 2.4.4 is kept.
+- **Complete RU/EN strings.** New labels and launch dialogs are translated.
+- **Reliability.** Includes the 2.4.1 security/audit fixes, the 2.4.2 official
+  model catalog refresh, 2.4.3 bulk import, and the 2.4.4 proxy and tray-menu
+  fixes.
+- **Build metadata.** macOS build 30; version metadata is aligned at 3.0.0 on
+  macOS and Windows.
+- **Release checksums.** Checksums below are generated from the 3.0.0
+  artifacts; earlier sums do not apply.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows) because certificate/notarization secrets are not configured.
+> Verify every download against its `.sha256` file or the combined
+> `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-win-x64-portable.exe) — single file, no install.
+
+### SHA-256
+
+```
+f5f0620f8085898daaf959bbc267fe4a1abd6836c2a546099a1d13ead09c07ea  MelonTools-3.0.0.dmg
+1f904a7070aad48f7d397f63260fee3838b66ca16cb0cebd963841ace227d486  MelonTools-3.0.0-setup.exe
+79612d964c3ab3cd955937aaab2185f8f07c77492c3c87384b6ee53a49dcca92  MelonTools-3.0.0-win-x64-portable.exe
+79612d964c3ab3cd955937aaab2185f8f07c77492c3c87384b6ee53a49dcca92  MelonTools-3.0.0-win-x64.exe
+```
+
+## 2.4.4
 
 Network / Proxy support for macOS and Windows.
 

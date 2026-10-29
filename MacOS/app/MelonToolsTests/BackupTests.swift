@@ -74,7 +74,7 @@ final class BackupTests: XCTestCase {
         XCTAssertFalse(payloadText.contains("melon-gateway-key"))
         XCTAssertFalse(payloadText.contains("melon-mgmt-secret"))
 
-        let backupURL = root.appendingPathComponent("melon-backup-2.4.4.melon")
+        let backupURL = root.appendingPathComponent("melon-backup-3.0.0.melon")
         let exportSummary = try BackupService.export(
             to: backupURL,
             password: password,
@@ -479,7 +479,7 @@ final class BackupTests: XCTestCase {
         )
         XCTAssertEqual(envelope["format"] as? String, BackupService.format)
         XCTAssertEqual(envelope["formatVersion"] as? Int, BackupService.formatVersion)
-        XCTAssertEqual(envelope["appVersion"] as? String, "2.4.4")
+        XCTAssertEqual(envelope["appVersion"] as? String, "3.0.0")
 
         let kdf = try XCTUnwrap(envelope["kdf"] as? [String: Any])
         XCTAssertEqual(kdf["name"] as? String, "PBKDF2-HMAC-SHA256")

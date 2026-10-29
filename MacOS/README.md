@@ -16,6 +16,20 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.0.0
+
+- **Windows parity release.** The Windows app now follows the macOS layout:
+  sidebar card, grouped navigation, bento cards, Segoe UI Variable, capsule
+  buttons and switches, and a native Windows title bar with right-side controls.
+- **Codex launch flow.** The Windows API page starts the service, applies the
+  route and opens Codex. A missing `ChatGPT.exe` now opens a clear picker dialog
+  instead of a technical environment-variable error.
+- **Pool quota totals.** Dashboard quota trends sum the current pool quota. The
+  bars match the account quota style, and five accounts at 100% read 500%.
+- **Version alignment.** macOS build 30 and Windows 3.0.0 share the 2.4.4
+  feature set, including network/proxy support, bulk JSON import and the tray
+  menu fix. The macOS app itself is functionally unchanged from 2.4.4.
+
 ## What's new in 2.4.0
 
 - **Per-account Codex models.** Each Codex account has its own model
@@ -457,7 +471,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-2.4.4.dmg
+open build/MelonTools-3.0.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use
