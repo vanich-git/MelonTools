@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::paths;
+use crate::settings::Settings;
 use crate::vault;
 
 const INJECTED_SCRIPT: &str = include_str!("../../../../shared/composer-chips.js");
@@ -951,12 +952,41 @@ fn codex_exe_candidates() -> Vec<std::path::PathBuf> {
     candidates
 }
 
-fn find_codex_exe() -> Option<std::path::PathBuf> {
-    if let Some(candidate) = codex_exe_candidates()
-        .into_iter()
-        .find(|candidate| candidate.exists())
-    {
-        return Some(candidate);
+/// A user-picked path must be a real `.exe` file. The automatic Store lookup
+/// intentionally skips this check: WindowsApps ACLs can hide the file from the
+/// process while Windows itself still allows an elevated launch.
+pub fn valid_codex_exe(path: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    let candidate = std::path::Path::new(path);
+    candidate.is_file()
+        && candidate
+            .extension()
+            .map(|ext| ext.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false)
+}
+
+/// Resolution order: the path picked in Settings, the hidden environment
+/// override, the usual install folders, `PATH`, then the Store package.
+fn resolve_codex_exe(settings: &Settings) -> Option<(std::path::PathBuf, &'static str)> {
+    let saved = settings.codex_exe_path.trim();
+    if valid_codex_exe(saved) {
+        return Some((std::path::PathBuf::from(saved), "manual"));
+    }
+    for candidate in codex_exe_candidates() {
+        if candidate.exists() {
+            let source = if std::env::var("MELON_CODEX_EXE")
+                .map(|value| std::path::Path::new(&value) == candidate)
+                .unwrap_or(false)
+            {
+                "environment"
+            } else {
+                "auto"
+            };
+            return Some((candidate, source));
+        }
     }
     #[cfg(windows)]
     {
@@ -969,12 +999,141 @@ fn find_codex_exe() -> Option<std::path::PathBuf> {
             if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
                 let path = std::path::PathBuf::from(first);
                 if path.exists() {
-                    return Some(path);
+                    return Some((path, "path"));
                 }
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Some(location) = store_codex_install_location() {
+            let candidates = store_exe_paths(&location);
+            for candidate in &candidates {
+                let path = std::path::PathBuf::from(candidate);
+                if path.exists() {
+                    return Some((path, "store"));
+                }
+            }
+            // The package registry is authoritative: the path is correct now
+            // and after every update. Even when the WindowsApps ACL hides the
+            // exe from us, the spawn below can still be unlocked by elevation.
+            return Some((std::path::PathBuf::from(&candidates[0]), "store"));
+        }
+    }
     None
+}
+
+/// Renderer-facing Codex app state. Technical paths stay available for the
+/// «Дополнительно» block; the main UI only needs `found`.
+pub fn codex_app_status(settings: &Settings) -> Value {
+    let saved = settings.codex_exe_path.trim().to_string();
+    let resolved = resolve_codex_exe(settings);
+    json!({
+        "found": resolved.is_some(),
+        "source": resolved.as_ref().map(|(_, source)| *source).unwrap_or("missing"),
+        "path": resolved
+            .as_ref()
+            .map(|(path, _)| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        "savedPath": saved,
+        "savedPathValid": saved.is_empty() || valid_codex_exe(&saved),
+        "running": codex_is_running(),
+    })
+}
+
+/// First usable install path from `Get-AppxPackage` output: a non-empty line
+/// that looks like a Windows path (warnings carry no separator).
+fn store_location_from_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains('\\'))
+        .map(str::to_string)
+}
+
+/// exe candidates inside a Store package: the current `app\` layout first,
+/// then the package root.
+fn store_exe_paths(location: &str) -> Vec<String> {
+    ["app\\ChatGPT.exe", "ChatGPT.exe"]
+        .iter()
+        .map(|tail| {
+            std::path::Path::new(location)
+                .join(tail)
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Resolves the OpenAI Store package (Codex / ChatGPT desktop). The
+/// InstallLocation comes from the package registry for the current user
+/// (without `-AllUsers`, so no admin rights needed), which keeps the path
+/// stable across app updates — unlike a hardcoded versioned folder.
+#[cfg(windows)]
+fn store_codex_install_location() -> Option<String> {
+    let script = "$ids = @('OpenAI.Codex', 'OpenAI.ChatGPT-Desktop', 'OpenAI.ChatGPT'); foreach ($id in $ids) { $package = Get-AppxPackage -Name $id | Select-Object -First 1; if ($package -and $package.InstallLocation) { Write-Output $package.InstallLocation; break } }";
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0000);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    store_location_from_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Single-quoted PowerShell string literal: `''` encodes an embedded quote.
+#[cfg(windows)]
+fn ps_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Runs a one-line PowerShell script with admin rights — this is what shows
+/// the UAC dialog when the script needs them. The host window is hidden on
+/// purpose; the UAC dialog itself must stay visible, that is the point.
+#[cfg(windows)]
+fn run_elevated_powershell(script: &str) -> Result<(), String> {
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        script,
+    ]);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0000);
+    let output = command
+        .output()
+        .map_err(|e| format!("PowerShell недоступен: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err("права администратора не получены (UAC отклонён или не удался)".to_string())
+    }
+}
+
+/// Launches the Codex app with the CDP flags through UAC — the fallback when
+/// the exe inside WindowsApps is blocked by the folder ACL.
+#[cfg(windows)]
+fn spawn_codex_elevated(exe: &std::path::Path, port: u16) -> Result<(), String> {
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; Start-Process -FilePath {} -ArgumentList {}, {} | Out-Null",
+        ps_quote(&exe.to_string_lossy()),
+        ps_quote("--remote-debugging-address=127.0.0.1"),
+        ps_quote(&format!("--remote-debugging-port={}", port)),
+    );
+    run_elevated_powershell(&script)
+}
+
+/// Elevated stop for an already-elevated Codex instance that the regular
+/// taskkill cannot touch. The caller re-checks liveness afterwards.
+#[cfg(windows)]
+fn kill_codex_elevated() {
+    let script = "Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Stop-Process -Force";
+    let _ = run_elevated_powershell(script);
 }
 
 fn codex_is_running() -> bool {
@@ -1015,7 +1174,7 @@ fn kill_chatgpt_processes(force: bool) {
 /// an already running instance cannot gain the flags any other way).
 #[cfg(test)]
 mod tests {
-    use super::{provider_pricing, session_cost};
+    use super::{provider_pricing, session_cost, valid_codex_exe};
     use crate::settings::{ProviderModel, Settings};
     use serde_json::json;
 
@@ -1038,6 +1197,23 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn picked_codex_path_must_exist_and_be_an_exe() {
+        let dir = std::env::temp_dir().join(format!("melon-codex-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let exe = dir.join("ChatGPT.exe");
+        std::fs::write(&exe, b"stub").expect("write exe");
+        assert!(valid_codex_exe(&exe.to_string_lossy()));
+
+        let text = dir.join("ChatGPT.txt");
+        std::fs::write(&text, b"stub").expect("write txt");
+        assert!(!valid_codex_exe(&text.to_string_lossy()));
+        assert!(!valid_codex_exe(""));
+        assert!(!valid_codex_exe(&dir.join("missing.exe").to_string_lossy()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1081,11 +1257,10 @@ mod tests {
     }
 }
 
-pub async fn launch_codex_with_debug_port() -> Result<String, String> {
-    let exe = find_codex_exe().ok_or_else(|| {
-        "не нашёл ChatGPT.exe — укажите путь через переменную MELON_CODEX_EXE".to_string()
-    })?;
-    if codex_is_running() {
+pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, String> {
+    let (exe, source) = resolve_codex_exe(settings).ok_or_else(|| "codex_not_found".to_string())?;
+    let was_running = codex_is_running();
+    if was_running {
         #[cfg(windows)]
         kill_chatgpt_processes(false);
         for _ in 0..20 {
@@ -1100,7 +1275,22 @@ pub async fn launch_codex_with_debug_port() -> Result<String, String> {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
-    let port = free_local_port().ok_or_else(|| "нет свободного порта".to_string())?;
+    #[cfg(windows)]
+    if codex_is_running() {
+        // A previously elevated Codex survives the regular taskkill; ask for
+        // admin rights once and give it a moment to actually stop.
+        kill_codex_elevated();
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !codex_is_running() {
+                break;
+            }
+        }
+        if codex_is_running() {
+            return Err("codex_launch_failed".to_string());
+        }
+    }
+    let port = free_local_port().ok_or_else(|| "codex_launch_failed".to_string())?;
     let mut command = std::process::Command::new(&exe);
     command.args([
         "--remote-debugging-address=127.0.0.1",
@@ -1111,8 +1301,34 @@ pub async fn launch_codex_with_debug_port() -> Result<String, String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    command
-        .spawn()
-        .map_err(|e| format!("запуск не удался: {}", e))?;
-    Ok(format!("{} · port {}", exe.to_string_lossy(), port))
+    let spawn_result = command.spawn();
+    #[cfg(windows)]
+    {
+        let access_denied = spawn_result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        if access_denied {
+            // The exe inside WindowsApps can be blocked by the folder ACL:
+            // retry elevated — Windows shows the UAC dialog, the user confirms.
+            return match spawn_codex_elevated(&exe, port) {
+                Ok(()) => Ok(json!({
+                    "path": exe.to_string_lossy(),
+                    "source": source,
+                    "debugPort": port,
+                    "restarted": was_running,
+                    "elevated": true,
+                })),
+                Err(_) => Err("codex_launch_failed".to_string()),
+            };
+        }
+    }
+    spawn_result.map_err(|_| "codex_launch_failed".to_string())?;
+    Ok(json!({
+        "path": exe.to_string_lossy(),
+        "source": source,
+        "debugPort": port,
+        "restarted": was_running,
+        "elevated": false,
+    }))
 }

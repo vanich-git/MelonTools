@@ -389,6 +389,7 @@ pub fn list_views() -> Vec<Value> {
         let quota = account.quota.clone().unwrap_or_default();
         views.push(json!({
             "id": account.id,
+            "current": raw.get("currentAccountId").and_then(|v| v.as_str()) == Some(account.id.as_str()),
             "email": account.email,
             "displayName": account.display_name(),
             "planType": account.plan_type,

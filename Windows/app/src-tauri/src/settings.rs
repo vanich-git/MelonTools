@@ -75,6 +75,9 @@ pub struct Settings {
     pub proxy_enabled: bool,
     pub proxy_url: String,
     pub proxy_bypass: String,
+    /// User-selected path to `ChatGPT.exe`. Empty means automatic discovery.
+    /// The environment override stays available as a hidden fallback.
+    pub codex_exe_path: String,
     /// Persisted format version. Missing in files written before 2.4.1.
     pub schema_version: u32,
     /// Set when a newer build owns the file; never serialized.
@@ -117,6 +120,7 @@ impl Default for Settings {
             proxy_enabled: false,
             proxy_url: String::new(),
             proxy_bypass: "127.0.0.1,localhost".to_string(),
+            codex_exe_path: String::new(),
             schema_version: crate::schema::CURRENT,
             schema_error: None,
         }

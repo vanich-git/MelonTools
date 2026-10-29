@@ -829,6 +829,54 @@ async fn codex_route_remove() -> Result<Value, String> {
     Ok(codex_route::status())
 }
 
+// MARK: - Codex desktop app
+
+#[tauri::command]
+async fn codex_app_status(state: State<'_, AppState>) -> Result<Value, String> {
+    Ok(bridge::codex_app_status(&state.settings()))
+}
+
+#[tauri::command]
+async fn codex_app_set_path(state: State<'_, AppState>, path: String) -> Result<Value, String> {
+    let path = path.trim().to_string();
+    if !bridge::valid_codex_exe(&path) {
+        return Err("codex_path_invalid".to_string());
+    }
+    mutate_settings(&state, |settings| {
+        settings.codex_exe_path = path.clone();
+    })?;
+    Ok(bridge::codex_app_status(&state.settings()))
+}
+
+#[tauri::command]
+async fn codex_app_forget_path(state: State<'_, AppState>) -> Result<Value, String> {
+    mutate_settings(&state, |settings| settings.codex_exe_path.clear())?;
+    Ok(bridge::codex_app_status(&state.settings()))
+}
+
+/// One click from the API page: make sure the gateway is running, point Codex
+/// at it, then reopen the desktop app with the chips debug port.
+#[tauri::command]
+async fn codex_app_open(state: State<'_, AppState>) -> Result<Value, String> {
+    let settings = state.settings();
+    if !gateway::health(settings.port, &settings.api_key).await {
+        start_gateway(state.inner())
+            .await
+            .map_err(|_| "service_failed".to_string())?;
+    }
+    let settings = state.settings();
+    if let Ok(client) = quota::local_client() {
+        let _ = codex_route::sync_catalog(&client, settings.port, &settings.api_key).await;
+    }
+    codex_route::apply(settings.port, &settings.api_key)
+        .map_err(|_| "codex_route_failed".to_string())?;
+    let mut result = bridge::launch_codex_with_debug_port(&settings).await?;
+    if let Some(object) = result.as_object_mut() {
+        object.insert("route".to_string(), codex_route::status());
+    }
+    Ok(result)
+}
+
 // MARK: - Codex model pool (accounts × pool models)
 
 /// Picker payload: the visible pool models with how many accounts select each
@@ -1042,8 +1090,8 @@ async fn bridge_status(state: State<'_, AppState>) -> Result<Value, String> {
 
 /// Restarts the Codex app with the CDP flags so the chips can attach.
 #[tauri::command]
-async fn bridge_launch_codex() -> Result<String, String> {
-    bridge::launch_codex_with_debug_port().await
+async fn bridge_launch_codex(state: State<'_, AppState>) -> Result<Value, String> {
+    bridge::launch_codex_with_debug_port(&state.settings()).await
 }
 
 // MARK: - Scheduler
@@ -1714,6 +1762,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             gw: gateway::Gateway::new(),
             bridge: bridge::BridgeState::new(),
@@ -1916,6 +1965,10 @@ fn main() {
             catalog_sync,
             codex_route_apply,
             codex_route_remove,
+            codex_app_status,
+            codex_app_set_path,
+            codex_app_forget_path,
+            codex_app_open,
             codex_pool_models,
             codex_models_refresh,
             save_account_models,
