@@ -1205,8 +1205,8 @@ mod tests {
         effective_selected_models, entry_slug, excluded_models_for, inject_catalog_schema,
         merge_pool_entries, models_cache_entries, models_cache_from_value, pool_models_in,
         prettify, provider_display_name, provider_tag, remove_route, selected_pool_slugs_in,
-        strip_private_catalog_metadata, third_party_band, third_party_band_for_model,
-        upsert_route, visible_pool_slugs_in, vision_capable, LEGACY_PROVIDER_ID, PROVIDER_ID,
+        strip_private_catalog_metadata, third_party_band, third_party_band_for_model, upsert_route,
+        visible_pool_slugs_in, vision_capable, LEGACY_PROVIDER_ID, PROVIDER_ID,
     };
     use crate::vault::Account;
     use serde_json::{json, Value};

@@ -105,7 +105,8 @@ fn find_debug_port() -> Option<u16> {
     {
         // The Codex desktop app must be started with the debug flag; read the
         // command lines of its processes. Both process names are supported.
-        let script = "Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe' OR Name='Codex.exe'\" | \
+        let script =
+            "Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe' OR Name='Codex.exe'\" | \
                       Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
         let mut command = std::process::Command::new("powershell");
         command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
@@ -1097,15 +1098,20 @@ fn store_location_from_output(output: &str) -> Option<String> {
 /// then the package root. Both ChatGPT.exe and Codex.exe names are used by
 /// the Store packages.
 fn store_exe_paths(location: &str) -> Vec<String> {
-    ["app\\ChatGPT.exe", "ChatGPT.exe", "app\\Codex.exe", "Codex.exe"]
-        .iter()
-        .map(|tail| {
-            std::path::Path::new(location)
-                .join(tail)
-                .to_string_lossy()
-                .to_string()
-        })
-        .collect()
+    [
+        "app\\ChatGPT.exe",
+        "ChatGPT.exe",
+        "app\\Codex.exe",
+        "Codex.exe",
+    ]
+    .iter()
+    .map(|tail| {
+        std::path::Path::new(location)
+            .join(tail)
+            .to_string_lossy()
+            .to_string()
+    })
+    .collect()
 }
 
 /// Resolves the OpenAI Store package (Codex / ChatGPT desktop). The
@@ -1175,7 +1181,8 @@ fn spawn_codex_elevated(exe: &std::path::Path, port: u16) -> Result<(), String> 
 /// taskkill cannot touch. The caller re-checks liveness afterwards.
 #[cfg(windows)]
 fn kill_codex_elevated() {
-    let script = "Get-Process -Name ChatGPT,Codex -ErrorAction SilentlyContinue | Stop-Process -Force";
+    let script =
+        "Get-Process -Name ChatGPT,Codex -ErrorAction SilentlyContinue | Stop-Process -Force";
     let _ = run_elevated_powershell(script);
 }
 
