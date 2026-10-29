@@ -16,6 +16,15 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.0.1
+
+- **Custom fields.** Dark text, number, select and checkbox controls replace
+  native white inputs, including the network/proxy card.
+- **Account settings dialog.** The account card now has the macOS-style sliders
+  button; reserve limits, “always first” and “backup” live in the dialog.
+- **Лимиты квот.** The dashboard card was renamed from “Тренды квот”.
+- **Build 31**, version 3.0.1 on macOS and Windows.
+
 ## What's new in 3.0.0
 
 - **Windows parity release.** The Windows app now follows the macOS layout:
@@ -471,7 +480,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.0.0.dmg
+open build/MelonTools-3.0.1.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

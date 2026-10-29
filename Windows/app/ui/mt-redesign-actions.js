@@ -59,12 +59,14 @@ render = function renderWithScroll() {
 };
 
 A.go = function go(section) {
+  S.accountSettings = null;
   baseGo.call(A, section);
   const detail = document.querySelector(".detail");
   if (detail) detail.scrollTop = 0;
 };
 
 A.onboardingGo = function onboardingGo(section) {
+  S.accountSettings = null;
   baseOnboardingGo.call(A, section);
   const detail = document.querySelector(".detail");
   if (detail) detail.scrollTop = 0;
@@ -232,6 +234,45 @@ Object.assign(A, {
     S.launchModal = null;
     S.launchError = null;
     render();
+  },
+
+  accountSettingsOpen(id) {
+    S.accountSettings = id;
+    render();
+  },
+
+  accountSettingsClose() {
+    S.accountSettings = null;
+    render();
+  },
+
+  accountSettingsModels(id) {
+    S.accountSettings = null;
+    render();
+    A.poolOpenAccount(id);
+  },
+
+  accountSettingsSave(id) {
+    // Read before run(): the first render rebuilds the account page.
+    const hourlyNode = document.getElementById("account-res-h");
+    const weeklyNode = document.getElementById("account-res-w");
+    const preferredNode = document.getElementById("account-preferred");
+    const backupNode = document.getElementById("account-backup");
+    const hourly = parseInt(hourlyNode ? hourlyNode.value : "", 10);
+    const weekly = parseInt(weeklyNode ? weeklyNode.value : "", 10);
+    const preferred = !!(preferredNode && preferredNode.checked);
+    const backup = !!(backupNode && backupNode.checked);
+    run("account-settings-" + id, async () => {
+      S.accounts = await inv("save_reserves", {
+        id,
+        hourly: Number.isFinite(hourly) ? hourly : null,
+        weekly: Number.isFinite(weekly) ? weekly : null,
+      });
+      S.routing = await inv("set_account_role", { id, preferred, backup });
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      S.accountSettings = null;
+      toast(t("done"));
+    });
   },
 
   async bridgeLaunchCodex() {

@@ -1,4 +1,37 @@
-# Melon Tools 3.0.0
+# Melon Tools 3.0.1
+
+UI polish for the Windows 3.0 release.
+
+- **Custom fields everywhere.** Text, number, password, select, file and
+  checkbox controls now use the dark Melon Tools style instead of native white
+  inputs. Number spinners and the system select arrow are replaced.
+- **Account settings button.** Each Codex account card has the macOS-style
+  sliders button. Reserve limits, “always first” and “backup” moved into an
+  **Account settings** dialog instead of cluttering the card.
+- **Quota limits label.** The dashboard card is now **Лимиты квот** (Quota
+  limits) instead of “Тренды квот”.
+- **Build metadata.** macOS build 31; version metadata is aligned at 3.0.1 on
+  macOS and Windows.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-win-x64-portable.exe)
+
+### SHA-256
+
+```
+1798e5f26bf0ac8f205853cff2c81d519fd25d1c4b949cb4775260d0a147d07b  MelonTools-3.0.1.dmg
+1c5c9d9679c09cceaaddacd244b67737d9613cf7017564faab3ef3a50c25e0ab  MelonTools-3.0.1-setup.exe
+fe331acadb2f437f3902d6f2011deba66445b7902c36c91a826858ae0f9a47f5  MelonTools-3.0.1-win-x64-portable.exe
+fe331acadb2f437f3902d6f2011deba66445b7902c36c91a826858ae0f9a47f5  MelonTools-3.0.1-win-x64.exe
+```
+
+## 3.0.0
 
 Windows UI parity with macOS. Both platforms share the 3.0.0 version and the
 2.4.4 feature set; macOS is functionally unchanged.

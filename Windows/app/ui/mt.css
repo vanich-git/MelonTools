@@ -336,8 +336,8 @@ button:focus-visible, .nav-row:focus-visible, input:focus-visible, select:focus-
 
 /* ---------- Inputs ---------- */
 
-input:not([type]),
-input[type="text"], input[type="number"], input[type="password"], select, textarea {
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]),
+select, textarea {
   font: inherit;
   font-size: 12px;
   color: var(--text);
@@ -349,15 +349,65 @@ input[type="text"], input[type="number"], input[type="password"], select, textar
   min-width: 0;
   min-height: 30px;
 }
-input:not([type]):focus,
-input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, select:focus, textarea:focus {
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+select:focus, textarea:focus {
   border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(250, 196, 64, 0.14);
+}
+input::placeholder, textarea::placeholder { color: var(--text3); }
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23A2A2AA' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 10px 6px;
+}
+input[type="number"] { -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="file"] { color: var(--text2); font-size: 11px; }
+input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-small);
+  padding: 5px 10px;
+  margin-right: 8px;
+  cursor: pointer;
+}
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--soft);
+  position: relative;
+  cursor: pointer;
+  vertical-align: middle;
+}
+input[type="checkbox"]:checked { background: var(--gold); border-color: var(--gold); }
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--on-gold);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 input.small { width: 72px; }
 label.field { display: flex; flex-direction: column; gap: var(--s1); font-size: 11px; color: var(--text2); }
 label.field.row { flex-direction: row; align-items: center; gap: 6px; }
-input[type="checkbox"] { accent-color: var(--gold); width: 14px; height: 14px; }
-input[type="file"] { color: var(--text2); font-size: 11px; }
 
 /* ---------- Badges / pills ---------- */
 
@@ -673,6 +723,24 @@ details:not(.advanced) > summary { color: var(--text2); }
   user-select: text;
 }
 .codex-modal-actions { display: flex; justify-content: flex-end; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s4); }
+.account-settings-card { width: min(460px, 94vw); }
+.account-settings-card .row .field { flex: 1; }
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 26px;
+}
+.icon-btn:hover { background: var(--soft); color: var(--text); }
+.icon-btn svg { display: block; }
 
 /* Codex model pool: wider than the default modal, list scrolls independently. */
 .pool-modal-card { width: min(820px, 94vw); max-height: 86vh; }

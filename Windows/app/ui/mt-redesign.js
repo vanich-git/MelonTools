@@ -9,6 +9,7 @@ Object.assign(S, {
   codexAppError: null,
   launchModal: null,
   launchError: null,
+  accountSettings: null,
   popup: null,
 });
 
@@ -251,7 +252,7 @@ Object.assign(DICT.ru, {
   "accent": "Акцент",
   "goldenMelon": "золотая дыня",
   "showPoolHealth": "Показывать состояние пула",
-  "showQuotaTrends": "Показывать динамику квот",
+  "showQuotaTrends": "Показывать лимиты квот",
   "showSpend": "Показывать расход и топ провайдеров",
   "showScheduler": "Показывать сводку планировщика",
   "settingsPort": "Порт сервиса",
@@ -301,6 +302,7 @@ Object.assign(DICT.ru, {
   "resetsAvailable": "Сбросы 5ч",
   "resetsNone": "нет",
   "accountModels": "Модели на аккаунте",
+  "accountSettings": "Настройки аккаунта",
   "availableShort": "есть",
   "unavailableShort": "нет",
   "routing": "Роутинг",
@@ -529,7 +531,7 @@ Object.assign(DICT.ru, {
   "notificationsHint": "Главный переключатель уведомлений; ниже — отдельные категории.",
   "dashCards": "Карточки дашборда",
   "dashCardPool": "Здоровье пула",
-  "dashCardTrends": "Тренды квот",
+  "dashCardTrends": "Лимиты квот",
   "dashCardSpend": "Расход",
   "dashCardScheduler": "Планировщик",
   "dashPoolHealth": "Здоровье пула",
@@ -539,7 +541,7 @@ Object.assign(DICT.ru, {
   "dashErrors": "С ошибкой",
   "dashAvgFive": "Средний 5ч",
   "dashAvgWeek": "Средняя неделя",
-  "dashQuotaTrends": "Тренды квот",
+  "dashQuotaTrends": "Лимиты квот",
   "dashLast24h": "24 часа · по часам",
   "dashLast7d": "7 дней · по дням",
   "dashTrendEmpty": "Данных пока нет",
@@ -804,7 +806,7 @@ Object.assign(DICT.en, {
   "accent": "Accent",
   "goldenMelon": "golden melon",
   "showPoolHealth": "Show pool health",
-  "showQuotaTrends": "Show quota trends",
+  "showQuotaTrends": "Show quota limits",
   "showSpend": "Show spend & top providers",
   "showScheduler": "Show scheduler summary",
   "settingsPort": "Service port",
@@ -854,6 +856,7 @@ Object.assign(DICT.en, {
   "resetsAvailable": "5h resets",
   "resetsNone": "none",
   "accountModels": "Models on this account",
+  "accountSettings": "Account settings",
   "availableShort": "yes",
   "unavailableShort": "no",
   "routing": "Routing",
@@ -1082,7 +1085,7 @@ Object.assign(DICT.en, {
   "notificationsHint": "Master notification switch; individual categories below.",
   "dashCards": "Dashboard cards",
   "dashCardPool": "Pool health",
-  "dashCardTrends": "Quota trends",
+  "dashCardTrends": "Quota limits",
   "dashCardSpend": "Spend",
   "dashCardScheduler": "Scheduler",
   "dashPoolHealth": "Pool health",
@@ -1092,7 +1095,7 @@ Object.assign(DICT.en, {
   "dashErrors": "Errors",
   "dashAvgFive": "Avg 5h",
   "dashAvgWeek": "Avg week",
-  "dashQuotaTrends": "Quota trends",
+  "dashQuotaTrends": "Quota limits",
   "dashLast24h": "24 hours · hourly",
   "dashLast7d": "7 days · daily",
   "dashTrendEmpty": "No data yet",
@@ -1337,6 +1340,8 @@ function quotaBlock(title, percent, resetUnix, present) {
   </div>`;
 }
 
+const ACCOUNT_SETTINGS_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.1"/><circle cx="7" cy="17" r="2.1"/></svg>';
+
 function accountCard(account) {
   const resetsText = account.resetCreditsAvailable === null || account.resetCreditsAvailable === undefined
     ? t("resetsNone")
@@ -1361,6 +1366,7 @@ function accountCard(account) {
           ? `<span class="pill warn" title="${esc(blockText(account.blockInfo))}">${t("paused")}</span>`
           : `<span class="pill ok">${t("ready")}</span>`}
         <span class="spacer"></span>
+        <button class="icon-btn" title="${t("accountSettings")}" data-action="accountSettingsOpen" data-id="${esc(account.id)}">${ACCOUNT_SETTINGS_ICON}</button>
         <button class="ghost small" title="${t("orderUp")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="true">↑</button>
         <button class="ghost small" title="${t("orderDown")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="false">↓</button>
       </div>
@@ -1379,32 +1385,53 @@ function accountCard(account) {
         ${modelsBlock}
 
         <div class="row">
-          <label class="field">${t("reserveHourly")}
-            <input class="small" type="number" id="res-h-${esc(account.id)}" value="${account.hourlyReservePercent ?? ""}" min="0" max="100">
-          </label>
-          <label class="field">${t("reserveWeekly")}
-            <input class="small" type="number" id="res-w-${esc(account.id)}" value="${account.weeklyReservePercent ?? ""}" min="0" max="100">
-          </label>
-          <label class="field">${t("preferred")}
-            <input type="checkbox" ${account.preferredFirst ? "checked" : ""} data-action="setRole" data-role="preferred" data-id="${esc(account.id)}" data-value="${account.isBackup ? "true" : "false"}" data-on="change">
-          </label>
-          <label class="field">${t("backup")}
-            <input type="checkbox" ${account.isBackup ? "checked" : ""} data-action="setRole" data-role="backup" data-id="${esc(account.id)}" data-value="${account.preferredFirst ? "true" : "false"}" data-on="change">
-          </label>
-          <button class="ghost small" data-action="saveReserves" data-id="${esc(account.id)}">${t("save")}</button>
-          <button class="ghost small" data-action="poolOpenAccount" data-id="${esc(account.id)}">${t("models")}</button>
-        </div>
-        <div class="footnote">${esc(t("reserveExact"))}</div>
-
-        <div class="row">
           ${account.current ? "" : `<button class="btn small" data-action="switchAccount" data-id="${esc(account.id)}">${t("makeCurrent")}</button>`}
           <button class="ghost small" data-action="refreshQuota" data-id="${esc(account.id)}">${t("refreshQuota")}</button>
           <button class="ghost small" data-action="refreshLogin" data-id="${esc(account.id)}">${t("refreshLogin")}</button>
+          <button class="ghost small" data-action="poolOpenAccount" data-id="${esc(account.id)}">${t("models")}</button>
           <span class="spacer"></span>
           <button class="ghost small danger" data-action="deleteAccount" data-id="${esc(account.id)}">${t("remove")}</button>
         </div>
       </div>
     </div>`;
+}
+
+function accountSettingsModal() {
+  if (!S.accountSettings) return "";
+  const account = (S.accounts || []).find((item) => item.id === S.accountSettings);
+  if (!account) return "";
+  return `
+  <div class="modal">
+    <div class="modal-card account-settings-card">
+      <div class="row" style="align-items:flex-start">
+        <div class="stack" style="gap:2px">
+          <span class="stat-label">${t("accountSettings")}</span>
+          <b style="font-size:15px">${esc(account.email || account.displayName)}</b>
+        </div>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="${t("cancel")}" data-action="accountSettingsClose">×</button>
+      </div>
+      <div class="divider"></div>
+      <div class="row">
+        <label class="field">${t("reserveHourly")}
+          <input type="number" id="account-res-h" min="0" max="100" value="${account.hourlyReservePercent ?? ""}">
+        </label>
+        <label class="field">${t("reserveWeekly")}
+          <input type="number" id="account-res-w" min="0" max="100" value="${account.weeklyReservePercent ?? ""}">
+        </label>
+      </div>
+      <div class="stack" style="gap:8px">
+        <label class="card-toggle"><input type="checkbox" id="account-preferred" ${account.preferredFirst ? "checked" : ""}> ${t("preferred")}</label>
+        <label class="card-toggle"><input type="checkbox" id="account-backup" ${account.isBackup ? "checked" : ""}> ${t("backup")}</label>
+      </div>
+      <div class="footnote">${t("reserveExact")}</div>
+      <div class="codex-modal-actions">
+        <button class="ghost" data-action="accountSettingsClose">${t("cancel")}</button>
+        <button class="ghost" data-action="accountSettingsModels" data-id="${esc(account.id)}">${t("models")}</button>
+        <button class="btn" data-action="accountSettingsSave" data-id="${esc(account.id)}">${t("save")}</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function accountsPage() {
@@ -1444,7 +1471,8 @@ function accountsPage() {
     ${cards || `<div class="card"><div class="muted">${t("warnNoAccounts")}</div></div>`}
   </div>
   ${poolModal()}
-  ${launchModal()}`;
+  ${launchModal()}
+  ${accountSettingsModal()}`;
 }
 
 function apiPage() {

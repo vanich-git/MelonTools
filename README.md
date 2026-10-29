@@ -40,6 +40,14 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.0.1
+
+- **Custom dark fields** for text, numbers, selects and checkboxes.
+- **Account settings dialog** with the macOS-style sliders button; reserve and
+  role controls no longer clutter the account card.
+- **«Лимиты квот»** replaces the “Тренды квот” label.
+- Version 3.0.1, macOS build 31.
+
 ## What's new in 3.0.0
 
 - **Windows matches the macOS layout.** Sidebar card, grouped navigation, bento
