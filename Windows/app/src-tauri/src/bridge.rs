@@ -10,6 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -19,6 +20,24 @@ use crate::settings::Settings;
 use crate::vault;
 
 const INJECTED_SCRIPT: &str = include_str!("../../../../shared/composer-chips.js");
+
+/// Both the classic ChatGPT desktop app and the newer Codex package use the
+/// same renderer, but their process names differ.
+const CODEX_PROCESS_NAMES: [&str; 2] = ["ChatGPT.exe", "Codex.exe"];
+const CODEX_IMAGE_PREFIXES: [&str; 2] = ["chatgpt", "codex"];
+
+/// Port chosen by our own launch. Process-command discovery can fail for a
+/// Store package or a renamed executable; remembering the port keeps the
+/// composer bridge attached in those cases.
+static LAUNCHED_PORT: AtomicU16 = AtomicU16::new(0);
+
+fn remember_launched_port(port: u16) {
+    LAUNCHED_PORT.store(port, Ordering::Relaxed);
+}
+
+fn clear_launched_port() {
+    LAUNCHED_PORT.store(0, Ordering::Relaxed);
+}
 
 pub struct BridgeState {
     pub status: Mutex<Value>,
@@ -78,11 +97,15 @@ fn find_debug_port() -> Option<u16> {
     if let Ok(explicit) = std::env::var("MELON_CODEX_DEBUG_PORT") {
         return explicit.parse().ok();
     }
+    let launched = LAUNCHED_PORT.load(Ordering::Relaxed);
+    if launched != 0 {
+        return Some(launched);
+    }
     #[cfg(windows)]
     {
-        // The ChatGPT desktop app must be started with the debug flag; read the
-        // command lines of its processes.
-        let script = "Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe'\" | \
+        // The Codex desktop app must be started with the debug flag; read the
+        // command lines of its processes. Both process names are supported.
+        let script = "Get-CimInstance Win32_Process -Filter \"Name='ChatGPT.exe' OR Name='Codex.exe'\" | \
                       Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
         let mut command = std::process::Command::new("powershell");
         command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
@@ -132,6 +155,12 @@ fn find_debug_port() -> Option<u16> {
 fn find_debug_port_cached(state: &BridgeState) -> Option<u16> {
     if let Ok(explicit) = std::env::var("MELON_CODEX_DEBUG_PORT") {
         return explicit.parse().ok();
+    }
+    // Our own launch knows the port even before the PowerShell scan runs (or
+    // when the process name/package is not visible to the scan).
+    let launched = LAUNCHED_PORT.load(Ordering::Relaxed);
+    if launched != 0 {
+        return Some(launched);
     }
     if let Ok(guard) = state.discovery.lock() {
         if let Some((cached, at)) = guard.as_ref() {
@@ -586,6 +615,9 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
     let targets = match fetch_targets(client(), debug_port).await {
         Ok(targets) => targets,
         Err(error) => {
+            if !codex_is_running() {
+                clear_launched_port();
+            }
             invalidate_discovery(state);
             set_status(
                 state,
@@ -623,6 +655,9 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
     let mut session = match Session::connect(ws_url).await {
         Ok(session) => session,
         Err(error) => {
+            if !codex_is_running() {
+                clear_launched_port();
+            }
             invalidate_discovery(state);
             set_status(
                 state,
@@ -942,12 +977,17 @@ fn codex_exe_candidates() -> Vec<std::path::PathBuf> {
             "Programs\\ChatGPT\\ChatGPT.exe",
             "ChatGPT\\ChatGPT.exe",
             "Programs\\ChatGPT-Desktop\\ChatGPT.exe",
+            "Programs\\Codex\\Codex.exe",
+            "Codex\\Codex.exe",
+            "Programs\\OpenAI\\Codex\\Codex.exe",
         ] {
             candidates.push(std::path::PathBuf::from(&local).join(tail));
         }
     }
     if let Ok(program_files) = std::env::var("PROGRAMFILES") {
-        candidates.push(std::path::PathBuf::from(&program_files).join("ChatGPT\\ChatGPT.exe"));
+        for tail in ["ChatGPT\\ChatGPT.exe", "Codex\\Codex.exe"] {
+            candidates.push(std::path::PathBuf::from(&program_files).join(tail));
+        }
     }
     candidates
 }
@@ -990,16 +1030,18 @@ fn resolve_codex_exe(settings: &Settings) -> Option<(std::path::PathBuf, &'stati
     }
     #[cfg(windows)]
     {
-        let mut command = std::process::Command::new("where.exe");
-        command.arg("ChatGPT.exe");
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-        if let Ok(output) = command.output() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
-                let path = std::path::PathBuf::from(first);
-                if path.exists() {
-                    return Some((path, "path"));
+        for name in CODEX_PROCESS_NAMES {
+            let mut command = std::process::Command::new("where.exe");
+            command.arg(name);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+            if let Ok(output) = command.output() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    let path = std::path::PathBuf::from(first);
+                    if path.exists() {
+                        return Some((path, "path"));
+                    }
                 }
             }
         }
@@ -1052,9 +1094,10 @@ fn store_location_from_output(output: &str) -> Option<String> {
 }
 
 /// exe candidates inside a Store package: the current `app\` layout first,
-/// then the package root.
+/// then the package root. Both ChatGPT.exe and Codex.exe names are used by
+/// the Store packages.
 fn store_exe_paths(location: &str) -> Vec<String> {
-    ["app\\ChatGPT.exe", "ChatGPT.exe"]
+    ["app\\ChatGPT.exe", "ChatGPT.exe", "app\\Codex.exe", "Codex.exe"]
         .iter()
         .map(|tail| {
             std::path::Path::new(location)
@@ -1132,19 +1175,23 @@ fn spawn_codex_elevated(exe: &std::path::Path, port: u16) -> Result<(), String> 
 /// taskkill cannot touch. The caller re-checks liveness afterwards.
 #[cfg(windows)]
 fn kill_codex_elevated() {
-    let script = "Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Stop-Process -Force";
+    let script = "Get-Process -Name ChatGPT,Codex -ErrorAction SilentlyContinue | Stop-Process -Force";
     let _ = run_elevated_powershell(script);
 }
 
 fn codex_is_running() -> bool {
     #[cfg(windows)]
     {
-        let mut command = std::process::Command::new("tasklist.exe");
-        command.args(["/FI", "IMAGENAME eq ChatGPT.exe", "/NH"]);
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-        if let Ok(output) = command.output() {
-            return String::from_utf8_lossy(&output.stdout).contains("ChatGPT.exe");
+        for name in CODEX_PROCESS_NAMES {
+            let mut command = std::process::Command::new("tasklist.exe");
+            command.args(["/FI", &format!("IMAGENAME eq {}", name), "/NH"]);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+            if let Ok(output) = command.output() {
+                if String::from_utf8_lossy(&output.stdout).contains(name) {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -1155,17 +1202,24 @@ fn free_local_port() -> Option<u16> {
     listener.local_addr().ok().map(|addr| addr.port())
 }
 
-/// Kills every running ChatGPT process by its resolved PID. The image identity
+/// Kills every running Codex process by its resolved PID. The image identity
 /// is verified per PID first: an image-name taskkill could terminate an
-/// unrelated binary that happens to share the name.
+/// unrelated binary that happens to share the name. Both the ChatGPT and
+/// Codex package names are covered.
 #[cfg(windows)]
 fn kill_chatgpt_processes(force: bool) {
-    for pid in crate::gateway::tasklist_pids("ChatGPT.exe") {
-        let verified = crate::gateway::tasklist_image_name(pid)
-            .map(|image| crate::gateway::image_starts_with(&image, "chatgpt"))
-            .unwrap_or(false);
-        if verified {
-            let _ = crate::gateway::taskkill_pid(pid, force);
+    for name in CODEX_PROCESS_NAMES {
+        for pid in crate::gateway::tasklist_pids(name) {
+            let verified = crate::gateway::tasklist_image_name(pid)
+                .map(|image| {
+                    CODEX_IMAGE_PREFIXES
+                        .iter()
+                        .any(|prefix| crate::gateway::image_starts_with(&image, prefix))
+                })
+                .unwrap_or(false);
+            if verified {
+                let _ = crate::gateway::taskkill_pid(pid, force);
+            }
         }
     }
 }
@@ -1312,18 +1366,22 @@ pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, 
             // The exe inside WindowsApps can be blocked by the folder ACL:
             // retry elevated — Windows shows the UAC dialog, the user confirms.
             return match spawn_codex_elevated(&exe, port) {
-                Ok(()) => Ok(json!({
-                    "path": exe.to_string_lossy(),
-                    "source": source,
-                    "debugPort": port,
-                    "restarted": was_running,
-                    "elevated": true,
-                })),
+                Ok(()) => {
+                    remember_launched_port(port);
+                    Ok(json!({
+                        "path": exe.to_string_lossy(),
+                        "source": source,
+                        "debugPort": port,
+                        "restarted": was_running,
+                        "elevated": true,
+                    }))
+                }
                 Err(_) => Err("codex_launch_failed".to_string()),
             };
         }
     }
     spawn_result.map_err(|_| "codex_launch_failed".to_string())?;
+    remember_launched_port(port);
     Ok(json!({
         "path": exe.to_string_lossy(),
         "source": source,

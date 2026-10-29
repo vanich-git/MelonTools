@@ -1,4 +1,43 @@
-# Melon Tools 3.0.1
+# Melon Tools 3.1.0
+
+Codex route compatibility and Windows composer chips.
+
+- **`config.toml` keeps third-party providers.** Applying the Melon route now
+  preserves every existing `[model_providers.*]` table. Removing the route no
+  longer restores an old whole-file backup; only Melon's own top-level keys and
+  provider blocks are touched.
+- **Legacy provider alias.** Melon creates/refreshes
+  `[model_providers.codex_local_access]` with the current gateway URL and token.
+  Older chats that saved this provider id no longer fail with
+  `Model provider not found`.
+- **Windows composer chips.** The bridge now recognises both `ChatGPT.exe` and
+  `Codex.exe`, remembers the debug port chosen by Melon at launch, and keeps it
+  while Codex starts. Chips attach after **Launch Codex** or **Relaunch Codex
+  with chips**.
+- **Includes 3.0.1.** Dark custom fields, the account settings dialog and the
+  **Лимиты квот** label.
+- **Build metadata.** macOS build 32; version metadata is aligned at 3.1.0 on
+  macOS and Windows.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0.dmg)
+- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-setup.exe)
+- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+d992bfc4963c78607d73055a065f0556c6e971505dc1f7724fa0ac0af1ad0a2b  MelonTools-3.1.0.dmg
+8c1d71c50ef65c78f97bf4f77acd8329bf044bdca2d8934db185bc64386ad4f1  MelonTools-3.1.0-setup.exe
+7222808a57b0c400f9df1810487e80949d793f8bcd2adda0e3d346e940d863fe  MelonTools-3.1.0-win-x64-portable.exe
+7222808a57b0c400f9df1810487e80949d793f8bcd2adda0e3d346e940d863fe  MelonTools-3.1.0-win-x64.exe
+```
+
+## 3.0.1
 
 UI polish for the Windows 3.0 release.
 

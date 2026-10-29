@@ -40,6 +40,15 @@
 
 The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
 
+## What's new in 3.1.0
+
+- **Codex route safety:** third-party `[model_providers.*]` tables are kept,
+  and a legacy `codex_local_access` alias prevents “Model provider not found”
+  in old chats.
+- **Windows composer chips** now attach for both `ChatGPT.exe` and `Codex.exe`;
+  the launch debug port is remembered.
+- Includes the 3.0.1 custom fields and account-settings dialog.
+
 ## What's new in 3.0.1
 
 - **Custom dark fields** for text, numbers, selects and checkboxes.

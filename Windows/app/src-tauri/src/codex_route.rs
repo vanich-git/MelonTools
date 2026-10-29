@@ -11,6 +11,10 @@ use crate::paths;
 use crate::vault::Account;
 
 pub const PROVIDER_ID: &str = "melon_local_access";
+/// Legacy provider id used by older chats and earlier Melon routes. Keeping
+/// this table makes those chats resolve to the local gateway instead of
+/// failing with "Model provider not found".
+pub const LEGACY_PROVIDER_ID: &str = "codex_local_access";
 const PROVIDER_NAME: &str = "Melon Tools API";
 pub const CATALOG_FILE: &str = "melon-model-catalog.json";
 
@@ -53,6 +57,16 @@ fn raw_value(line: &str, key: &str) -> Option<String> {
 
 fn provider_value(line: &str) -> Option<String> {
     raw_value(line, "model_provider").filter(|v| !v.is_empty())
+}
+
+fn top_level_value(text: &str, key: &str) -> Option<String> {
+    let lines = to_lines(text);
+    let header = first_header(&lines);
+    lines
+        .iter()
+        .take(header)
+        .find_map(|line| raw_value(line, key))
+        .filter(|value| !value.is_empty())
 }
 
 fn table_bounds(lines: &[String], id: &str) -> Option<(usize, usize)> {
@@ -119,12 +133,41 @@ pub fn upsert_route(in_text: &str, base_url: &str, token: &str) -> String {
         "supports_websockets = false".to_string(),
     ];
     if let Some((start, end)) = table_bounds(&lines, PROVIDER_ID) {
-        lines.splice(start..end, block);
+        let mut replacement = block;
+        if end < lines.len() {
+            replacement.push(String::new());
+        }
+        lines.splice(start..end, replacement);
     } else {
         if lines.last().map(|l| !l.is_empty()).unwrap_or(false) {
             lines.push(String::new());
         }
         lines.extend(block);
+    }
+
+    // Legacy alias for chats saved with the older provider id. All other
+    // provider tables are left untouched; only this known alias is refreshed
+    // to the current gateway address.
+    let legacy_block = vec![
+        format!("[model_providers.{}]", LEGACY_PROVIDER_ID),
+        format!("name = \"{} (legacy)\"", PROVIDER_NAME),
+        format!("base_url = \"{}\"", base_url),
+        "wire_api = \"responses\"".to_string(),
+        "requires_openai_auth = true".to_string(),
+        format!("experimental_bearer_token = \"{}\"", token),
+        "supports_websockets = false".to_string(),
+    ];
+    if let Some((start, end)) = table_bounds(&lines, LEGACY_PROVIDER_ID) {
+        let mut replacement = legacy_block;
+        if end < lines.len() {
+            replacement.push(String::new());
+        }
+        lines.splice(start..end, replacement);
+    } else {
+        if lines.last().map(|l| !l.is_empty()).unwrap_or(false) {
+            lines.push(String::new());
+        }
+        lines.extend(legacy_block);
     }
     normalized(lines, ends)
 }
@@ -219,27 +262,44 @@ pub fn apply(port: u16, api_key: &str) -> Result<(), String> {
     write_atomic(&path, &updated)
 }
 
-/// Removes the Melon route (and the catalog reference, which would otherwise
-/// stop the Codex app from starting when the file is gone).
+/// Removes the Melon route and its catalog reference while preserving every
+/// other provider table. The legacy `codex_local_access` alias stays so old
+/// chats keep resolving to the local gateway. The one-time backup is only used
+/// to restore the original top-level provider/catalog values, never to replace
+/// the whole file: provider sections added after the takeover must survive.
 pub fn remove() -> Result<(), String> {
     let path = config_path();
     let backup = path.with_extension("toml.melon-backup");
     let Ok(current) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
-    // Restore the pre-Melon config when possible; otherwise strip only our
-    // route and catalog reference.
-    if backup.exists() {
-        let restored = std::fs::read_to_string(&backup).map_err(|e| e.to_string())?;
-        if !restored.trim().is_empty() {
-            write_atomic(&path, &restored)?;
-            let _ = std::fs::remove_file(&backup);
-            return Ok(());
+    let backup_text = std::fs::read_to_string(&backup).ok();
+    let mut updated = remove_route(&current);
+
+    // Drop only the catalog reference Melon owns.
+    if top_level_value(&updated, "model_catalog_json")
+        .map(|value| value.ends_with(CATALOG_FILE))
+        .unwrap_or(false)
+    {
+        updated = remove_top_level_key(&updated, "model_catalog_json");
+    }
+
+    if let Some(backup_text) = backup_text {
+        if let Some(provider) = top_level_value(&backup_text, "model_provider") {
+            if provider != PROVIDER_ID {
+                updated = upsert_top_level_key(&updated, "model_provider", &provider);
+            }
+        }
+        if let Some(catalog) = top_level_value(&backup_text, "model_catalog_json") {
+            if !catalog.ends_with(CATALOG_FILE) {
+                updated = upsert_top_level_key(&updated, "model_catalog_json", &catalog);
+            }
         }
     }
-    let mut updated = remove_route(&current);
-    updated = remove_top_level_key(&updated, "model_catalog_json");
-    write_atomic(&path, &updated)
+
+    write_atomic(&path, &updated)?;
+    let _ = std::fs::remove_file(&backup);
+    Ok(())
 }
 
 /// What the route looks like right now, for the UI.
@@ -1144,9 +1204,9 @@ mod tests {
         append_unique_catalog_entries, build_catalog_models, custom_catalog_entry,
         effective_selected_models, entry_slug, excluded_models_for, inject_catalog_schema,
         merge_pool_entries, models_cache_entries, models_cache_from_value, pool_models_in,
-        prettify, provider_display_name, provider_tag, selected_pool_slugs_in,
+        prettify, provider_display_name, provider_tag, remove_route, selected_pool_slugs_in,
         strip_private_catalog_metadata, third_party_band, third_party_band_for_model,
-        visible_pool_slugs_in, vision_capable,
+        upsert_route, visible_pool_slugs_in, vision_capable, LEGACY_PROVIDER_ID, PROVIDER_ID,
     };
     use crate::vault::Account;
     use serde_json::{json, Value};
@@ -1750,6 +1810,58 @@ mod tests {
 
         // Only the ids made of the safe ASCII set survive.
         assert_eq!(slugs, vec!["gpt-6.1-sol", "opencode/glm-5.3"]);
+    }
+
+    #[test]
+    fn route_preserves_third_party_providers_and_adds_legacy_alias() {
+        let input = "model_provider = \"openai\"\n\n\
+[model_providers.cockpit]\n\
+name = \"Cockpit\"\n\
+base_url = \"http://127.0.0.1:4000/v1\"\n\n\
+[model_providers.other]\n\
+name = \"Other\"\n\
+base_url = \"http://127.0.0.1:4001/v1\"\n";
+        let base_url = "http://127.0.0.1:18317/v1";
+        let output = upsert_route(input, base_url, "test-key");
+
+        assert!(output.contains("[model_providers.cockpit]"));
+        assert!(output.contains("[model_providers.other]"));
+        assert!(output.contains(&format!("[model_providers.{}]", PROVIDER_ID)));
+        assert!(output.contains(&format!("[model_providers.{}]", LEGACY_PROVIDER_ID)));
+        assert!(output.contains(&format!("base_url = \"{}\"", base_url)));
+        assert!(output.contains("experimental_bearer_token = \"test-key\""));
+
+        let again = upsert_route(&output, base_url, "test-key");
+        assert_eq!(again, output, "upsert_route must be idempotent");
+    }
+
+    #[test]
+    fn route_removal_keeps_third_party_providers_and_legacy_alias() {
+        let input = "model_provider = \"openai\"\n\n\
+[model_providers.cockpit]\n\
+name = \"Cockpit\"\n\
+base_url = \"http://127.0.0.1:4000/v1\"\n";
+        let applied = upsert_route(input, "http://127.0.0.1:18317/v1", "test-key");
+        let removed = remove_route(&applied);
+
+        assert!(removed.contains("[model_providers.cockpit]"));
+        assert!(!removed.contains(&format!("[model_providers.{}]", PROVIDER_ID)));
+        assert!(removed.contains(&format!("[model_providers.{}]", LEGACY_PROVIDER_ID)));
+        assert!(!removed.contains(&format!("model_provider = \"{}\"", PROVIDER_ID)));
+    }
+
+    #[test]
+    fn legacy_alias_tracks_the_current_gateway() {
+        let applied = upsert_route("", "http://127.0.0.1:18317/v1", "old-key");
+        let moved = upsert_route(&applied, "http://127.0.0.1:19000/v1", "new-key");
+        assert!(moved.contains("http://127.0.0.1:19000/v1"));
+        assert!(!moved.contains("http://127.0.0.1:18317/v1"));
+        assert_eq!(
+            moved
+                .matches(&format!("[model_providers.{}]", LEGACY_PROVIDER_ID))
+                .count(),
+            1
+        );
     }
 
     #[test]

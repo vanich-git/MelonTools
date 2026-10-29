@@ -27,6 +27,7 @@
 		2FA012E7000545B4077ADD23 /* ShellService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6122C219EB9D610DECD893A7 /* ShellService.swift */; };
 		3195466B8C27A4AF0653E5F8 /* CodexLiveQuota.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */; };
 		32835AA10325DA17578976BA /* composer-chips.js in Resources */ = {isa = PBXBuildFile; fileRef = B5D5481EBF3A71A36794564E /* composer-chips.js */; };
+		32896F716E13A6AACD3317B0 /* CodexConfigRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42E5F922E1CBE668022BFBDE /* CodexConfigRouteTests.swift */; };
 		354D55EF6C9BD92B2C75635B /* CodexConfigRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18DB835AB1985DF1F56805B6 /* CodexConfigRoute.swift */; };
 		3DEFB14E9053148102B0EFDE /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0ED55431DF119F7A8C5174 /* CodexStore.swift */; };
 		3EC5FC54DCC7A79071678844 /* AntigravityAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94A12DE6C0489C0163639BCE /* AntigravityAuthTests.swift */; };
@@ -105,6 +106,7 @@
 		325239845CDD4087D2D7E4CE /* CodexLiveQuota.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLiveQuota.swift; sourceTree = "<group>"; };
 		3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAuthFileTests.swift; sourceTree = "<group>"; };
 		3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModelCatalog.swift; sourceTree = "<group>"; };
+		42E5F922E1CBE668022BFBDE /* CodexConfigRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConfigRouteTests.swift; sourceTree = "<group>"; };
 		44B370D20064EDBC82BF5CDA /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		44B4ECC496C0A6AE2F7D50CE /* CodexInstancesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexInstancesView.swift; sourceTree = "<group>"; };
 		47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexModelCatalogTests.swift; sourceTree = "<group>"; };
@@ -282,6 +284,7 @@
 				2F826140BEDB6A5D7ABAE63A /* ClaudeAuthTests.swift */,
 				3AEA90D89352DD60C34910A8 /* CodexAuthFileTests.swift */,
 				A6E8950D346C6D44F3E4E2F2 /* CodexBulkImportTests.swift */,
+				42E5F922E1CBE668022BFBDE /* CodexConfigRouteTests.swift */,
 				0BF15D3E7F5AE3B717820F28 /* CodexGatewayEngineTests.swift */,
 				55BA2DA42936B06CB32E5013 /* CodexLiveQuotaTests.swift */,
 				47529E0DB527DA9405074E30 /* CodexModelCatalogTests.swift */,
@@ -446,6 +449,7 @@
 				0A6FD711E033E51224DD1A5E /* ClaudeAuthTests.swift in Sources */,
 				FD1B231CB13438110C05CB2B /* CodexAuthFileTests.swift in Sources */,
 				1ACDBA77B13567C47F10929F /* CodexBulkImportTests.swift in Sources */,
+				32896F716E13A6AACD3317B0 /* CodexConfigRouteTests.swift in Sources */,
 				41BFF338808C9961FF28B58D /* CodexGatewayEngineTests.swift in Sources */,
 				2E7F13D018AF4513D27948D0 /* CodexLiveQuotaTests.swift in Sources */,
 				5F0462D21FD58B3E437252E6 /* CodexModelCatalogTests.swift in Sources */,
@@ -701,14 +705,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3.0.1;
+				MARKETING_VERSION = 3.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -720,14 +724,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3.0.1;
+				MARKETING_VERSION = 3.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

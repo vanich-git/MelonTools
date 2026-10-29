@@ -12,6 +12,11 @@ import Foundation
 /// functions are pure `String → String` transforms so they can be unit tested.
 enum CodexConfigRoute {
     static let providerID = "melon_local_access"
+    /// Legacy provider id used by older Melon Tools routes and by chats saved
+    /// before the current provider name. Keeping this table makes those chats
+    /// resolve to the local gateway instead of failing with "Model provider
+    /// not found".
+    static let legacyProviderID = "codex_local_access"
     static let defaultProviderName = "Melon Tools API"
 
     /// Value of the top-level `model_provider` key, if present.
@@ -148,12 +153,38 @@ enum CodexConfigRoute {
             "supports_websockets = false",
         ]
         if let bounds = tableBounds(of: providerID, in: lines) {
-            lines.replaceSubrange(bounds.start..<bounds.end, with: block)
+            var replacement = block
+            if bounds.end < lines.count { replacement.append("") }
+            lines.replaceSubrange(bounds.start..<bounds.end, with: replacement)
         } else {
             if lines.isEmpty == false, lines.last?.isEmpty == false {
                 lines.append("")
             }
             lines.append(contentsOf: block)
+        }
+
+        // 3. Legacy alias. Old Codex threads persist the provider id in their
+        // rollout data; without this table they fail with "Model provider not
+        // found" after the route is applied. Keep all other provider tables
+        // untouched and point the alias at the current local gateway.
+        let legacyBlock: [String] = [
+            "[model_providers.\(legacyProviderID)]",
+            "name = \"\(providerName) (legacy)\"",
+            "base_url = \"\(baseURL)\"",
+            "wire_api = \"responses\"",
+            "requires_openai_auth = true",
+            "experimental_bearer_token = \"\(token)\"",
+            "supports_websockets = false",
+        ]
+        if let bounds = tableBounds(of: legacyProviderID, in: lines) {
+            var replacement = legacyBlock
+            if bounds.end < lines.count { replacement.append("") }
+            lines.replaceSubrange(bounds.start..<bounds.end, with: replacement)
+        } else {
+            if lines.isEmpty == false, lines.last?.isEmpty == false {
+                lines.append("")
+            }
+            lines.append(contentsOf: legacyBlock)
         }
 
         return normalized(lines, endsWithNewline: text.hasSuffix("\n"))

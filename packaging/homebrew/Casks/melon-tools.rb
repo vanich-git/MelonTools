@@ -1,6 +1,6 @@
 cask "melon-tools" do
-  version "3.0.1"
-  sha256 "1798e5f26bf0ac8f205853cff2c81d519fd25d1c4b949cb4775260d0a147d07b"
+  version "3.1.0"
+  sha256 "d992bfc4963c78607d73055a065f0556c6e971505dc1f7724fa0ac0af1ad0a2b"
 
   url "https://github.com/ivankuprin/MelonTools/releases/download/v#{version}/MelonTools-#{version}.dmg"
   name "Melon Tools"

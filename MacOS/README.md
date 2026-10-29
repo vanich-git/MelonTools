@@ -16,6 +16,15 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 3.1.0
+
+- **Codex `config.toml` safety.** Third-party provider tables are preserved,
+  and a legacy `codex_local_access` alias keeps old chats working.
+- **Windows composer chips.** Both `ChatGPT.exe` and `Codex.exe` are supported;
+  the launch debug port is remembered so chips attach reliably.
+- Includes the 3.0.1 field and account-settings fixes.
+- macOS build 32, version 3.1.0.
+
 ## What's new in 3.0.1
 
 - **Custom fields.** Dark text, number, select and checkbox controls replace
@@ -480,7 +489,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.0.1.dmg
+open build/MelonTools-3.1.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

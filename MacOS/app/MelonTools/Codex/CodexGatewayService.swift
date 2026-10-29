@@ -726,17 +726,38 @@ final class CodexGatewayService: ObservableObject {
         return true
     }
 
-    /// Restores the pre-takeover config (or strips the Melon route when no
-    /// backup exists). Returns true when the file changed.
+    /// Removes the Melon route while preserving every other provider table.
+    /// Previous versions restored the whole backup, which discarded provider
+    /// sections added after the takeover. Only Melon's top-level keys and its
+    /// own provider blocks are touched now; the legacy alias stays so old
+    /// chats keep resolving to the local gateway.
     @discardableResult
     func disableCodexRoute() -> Bool {
         let fm = FileManager.default
         let current = codexConfigText
-        var updated: String
-        if let backup = try? String(contentsOfFile: Self.codexConfigBackupPath, encoding: .utf8) {
-            updated = backup
-        } else {
-            updated = CodexConfigRoute.removeRoute(in: current)
+        let backup = try? String(contentsOfFile: Self.codexConfigBackupPath, encoding: .utf8)
+        var updated = CodexConfigRoute.removeRoute(in: current)
+
+        // Remove only the catalog reference Melon owns.
+        if let reference = CodexConfigRoute.modelCatalogPath(in: updated),
+           reference.hasSuffix(CodexModelCatalog.fileName) {
+            updated = CodexConfigRoute.removingTopLevelKey("model_catalog_json", in: updated)
+        }
+        if let backup {
+            if let provider = CodexConfigRoute.currentProvider(in: backup),
+               provider != CodexConfigRoute.providerID,
+               provider != "melon_local_access" {
+                updated = CodexConfigRoute.upsertTopLevelKey(
+                    "model_provider", value: provider, in: updated
+                )
+            }
+            if let catalog = CodexConfigRoute.modelCatalogPath(in: backup),
+               !catalog.isEmpty,
+               !catalog.hasSuffix(CodexModelCatalog.fileName) {
+                updated = CodexConfigRoute.upsertTopLevelKey(
+                    "model_catalog_json", value: catalog, in: updated
+                )
+            }
         }
         guard updated != current else { return false }
         if updated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
