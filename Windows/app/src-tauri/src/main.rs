@@ -1944,7 +1944,7 @@ fn main() {
                         let settings = state.settings();
                         bridge::tick(&state.bridge, &settings).await;
                         tick += 1;
-                        if tick % 6 == 0 {
+                        if tick.is_multiple_of(6) {
                             watchdog_check(&state, &handle).await;
                         }
                     }

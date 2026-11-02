@@ -475,7 +475,9 @@ pub async fn antigravity(settings: &Settings) -> Result<Value, String> {
 }
 
 /// Assembles the Antigravity metrics object. Pure, so the nil-tolerance is
-/// testable without a gateway.
+/// testable without a gateway. Test-only: the Tauri command in `main.rs`
+/// builds the shipped object from the live pool.
+#[cfg(test)]
 pub fn antigravity_metrics(
     connected: bool,
     email: Option<String>,

@@ -123,7 +123,7 @@ fn flush_quota_updates(blocks: Option<&[(String, Option<QuotaBlock>)]>) {
                 .collect()
         })
         .unwrap_or_default();
-    if updates.is_empty() && blocks.map_or(true, |blocks| blocks.is_empty()) {
+    if updates.is_empty() && blocks.is_none_or(|blocks| blocks.is_empty()) {
         return;
     }
     if vault::apply_live_updates(&updates, blocks.unwrap_or(&[])).is_ok() {
