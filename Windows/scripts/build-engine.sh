@@ -31,6 +31,10 @@ echo "==> building pinned engine"
 (
   cd "$SRC"
   git checkout --quiet --force "$(python3 -c "import json;print(json.load(open('$PROVENANCE'))['sourceCommit'])")"
+  # The QoS patch adds files that `git checkout` leaves untracked; remove them
+  # so the patch can be applied to a clean tree instead of colliding with a
+  # previous application.
+  git clean --quiet -ffd
   GOTOOLCHAIN=go1.26.10 go get github.com/klauspost/compress@v1.18.7 >/dev/null
   GOTOOLCHAIN=go1.26.10 go mod tidy >/dev/null
   "$ROOT/MacOS/scripts/apply-engine-patches.sh"
