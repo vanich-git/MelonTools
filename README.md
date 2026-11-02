@@ -33,7 +33,7 @@ Everything runs on your machine. Credentials stay local, the gateway listens on 
 
 ## Features
 
-| | |
+| Capability | What you get |
 |---|---|
 | **Codex account pool** | Add Codex accounts to a local vault, refresh usage, enable or disable accounts, and route requests across the pool. |
 | **Quota at a glance** | Per-account and pooled quota with reset times, the 5-hour window, and a quota-aware guard that pauses automation before limits run out. |
