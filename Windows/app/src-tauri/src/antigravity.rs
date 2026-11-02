@@ -465,6 +465,23 @@ mod tests {
     }
 
     #[test]
+    fn probe_targets_prefer_the_list_and_fall_back_to_the_single_model() {
+        assert_eq!(
+            probe_targets(Some(vec!["a".into(), "b".into()]), Some("legacy".into())),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            probe_targets(Some(Vec::new()), Some("legacy".into())),
+            vec!["legacy".to_string()]
+        );
+        assert_eq!(
+            probe_targets(None, Some("legacy".into())),
+            vec!["legacy".to_string()]
+        );
+        assert!(probe_targets(None, None).is_empty());
+    }
+
+    #[test]
     fn auth_file_predicates_own_only_antigravity_files() {
         assert!(is_antigravity_auth_file_name("antigravity.json"));
         assert!(is_antigravity_auth_file_name(
@@ -820,10 +837,20 @@ impl Management {
     }
 }
 
+/// Models a probe must release. `models` is the current UI payload (every
+/// watchdog cooldown of the account); the single `model` is the pre-4.0.1
+/// shape and stays accepted for older WebView bundles.
+pub fn probe_targets(models: Option<Vec<String>>, model: Option<String>) -> Vec<String> {
+    match models {
+        Some(list) if !list.is_empty() => list,
+        _ => model.into_iter().collect(),
+    }
+}
+
 /// Lightweight health probe for a quarantined account: a model-list request
-/// must succeed before the first-token cooldown is released.
-pub async fn probe_account(settings: &Settings, name: &str, auth_index: &str, model: &str) -> bool {
-    if model.is_empty() || auth_index.is_empty() {
+/// must succeed before every first-token cooldown of the account is released.
+pub async fn probe_account(settings: &Settings, name: &str, auth_index: &str, models: &[String]) -> bool {
+    if models.is_empty() || auth_index.is_empty() {
         return false;
     }
     let Some(file) = auth_files_in(&paths::auths_dir())
@@ -851,10 +878,16 @@ pub async fn probe_account(settings: &Settings, name: &str, auth_index: &str, mo
     {
         return false;
     }
-    match Management::new(settings) {
-        Ok(manager) => manager.clear_bootstrap_cooldown(auth_index, model).await,
-        Err(_) => false,
+    let Ok(manager) = Management::new(settings) else {
+        return false;
+    };
+    let mut cleared_all = true;
+    for model in models {
+        if !manager.clear_bootstrap_cooldown(auth_index, model).await {
+            cleared_all = false;
+        }
     }
+    cleared_all
 }
 
 /// A per-account quota pool from `quotaInfo`. Gemini models share one window;

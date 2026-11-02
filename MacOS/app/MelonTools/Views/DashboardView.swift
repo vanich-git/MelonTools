@@ -154,6 +154,12 @@ struct DashboardView: View {
     @ObservedObject private var gateway = CodexGatewayService.shared
     @ObservedObject private var usage = ProviderUsageStore.shared
     @ObservedObject private var scheduler = SchedulerStore.shared
+    @ObservedObject private var modelSources = ModelSourcesStore.shared
+    @ObservedObject private var antigravity = AntigravityPoolStore.shared
+
+    /// Claude OAuth accounts are plain files on disk, so they are read once per
+    /// appearance instead of being polled on every render.
+    @State private var claudeAccounts: [ClaudeAuthService.AuthFile] = []
 
     @AppStorage(DashboardWidgetKey.poolHealth) private var showPoolHealth = true
     @AppStorage(DashboardWidgetKey.quotaTrends) private var showQuotaTrends = true
@@ -162,45 +168,110 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: MTTheme.s5) {
-                MTPageHeader(
-                    kicker: "melon tools",
-                    title: L("Dashboard"),
-                    subtitle: L("Dashboard subtitle")
-                )
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                heroGreetingBanner
 
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 340), spacing: MTTheme.s3)],
-                    spacing: MTTheme.s3
-                ) {
-                    if showPoolHealth { dashboardTile { poolHealthCard } }
-                    if showScheduler { dashboardTile { schedulerCard } }
-                    if showQuotaTrends { dashboardTile { quotaTrendsCard } }
-                    if showSpend { dashboardTile { spendCard } }
-                    dashboardTile { codexCard }
-                    dashboardTile { gatewayCard }
+                bentoRow {
+                    providersCard
+                    poolsCard
                 }
+
+                if showPoolHealth || showQuotaTrends {
+                    bentoRow {
+                        if showPoolHealth { poolHealthCard }
+                        if showQuotaTrends { quotaTrendsCard }
+                    }
+                }
+
+                if showScheduler || showSpend {
+                    bentoRow {
+                        if showScheduler { schedulerCard }
+                        if showSpend { spendCard }
+                    }
+                }
+
+                gatewayCard
             }
             .padding(MTTheme.s5)
-            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: 1040, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
-        .mtScrollMemory("scroll.dashboard")
+            .mtScrollMemory("scroll.dashboard")
         }
         .background(MTTheme.background)
         .onAppear {
             codex.load()
             scheduler.start()
+            antigravity.start()
+            claudeAccounts = ClaudeAuthService.authFiles()
             Task { await gateway.healthCheck() }
             Task { await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID) }
+            Task { await antigravity.refresh() }
         }
     }
 
-    /// Every dashboard card has the same height, regardless of how much
-    /// content it carries. The grid then reads as one aligned surface instead
-    /// of a staircase of differently sized tiles.
-    private func dashboardTile<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, minHeight: 250, maxHeight: 250, alignment: .top)
+    /// One bento row. Cards share the row height (`fillsHeight`), so a short
+    /// card never leaves a hole under itself and the board reads as a grid.
+    private func bentoRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: MTTheme.s3) {
+            content()
+        }
+    }
+
+    // MARK: - Hero Greeting Banner
+
+    private var heroGreetingBanner: some View {
+        HStack(alignment: .center, spacing: MTTheme.s4) {
+            MelonAssets.logoImage(size: 56)
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: MTTheme.s2) {
+                    Text("Melon Tools")
+                        .font(MTTheme.display(22, weight: .bold))
+                        .foregroundStyle(MTTheme.textPrimary)
+
+                    Circle()
+                        .fill(gateway.isRunning ? MTTheme.emerald : MTTheme.amber)
+                        .frame(width: 8, height: 8)
+
+                    Text(gateway.isRunning ? L("running") : L("stopped"))
+                        .font(MTTheme.body(10, weight: .semibold))
+                        .foregroundStyle(gateway.isRunning ? MTTheme.emerald : MTTheme.textSecondary)
+                }
+
+                Text(L("Dashboard subtitle"))
+                    .font(MTTheme.body(12))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: MTTheme.s3)
+
+            HStack(spacing: MTTheme.s2) {
+                if gateway.isRunning {
+                    MTGlassButton(title: L("Stop"), systemImage: "stop.fill", tint: MTTheme.ruby) {
+                        Task { await gateway.stop() }
+                    }
+                } else {
+                    MTGlassButton(
+                        title: L("Start"),
+                        systemImage: "play.fill",
+                        tint: MTTheme.emerald,
+                        prominent: true,
+                        isLoading: gateway.isStarting
+                    ) {
+                        codex.load()
+                        Task { await gateway.start(accounts: codex.accounts, priorities: codex.effectivePriorities()) }
+                    }
+                }
+
+                MTGlassButton(title: L("Accounts"), systemImage: "person.2", tint: MTTheme.cyan) {
+                    selection = .codexAccounts
+                }
+            }
+        }
+        .padding(MTTheme.s4)
+        .mtBentoCard(accent: MTTheme.amber, cornerRadius: MTTheme.rBento)
     }
 
     // MARK: - Pool health
@@ -211,39 +282,58 @@ struct DashboardView: View {
 
     private var poolHealthCard: some View {
         let health = poolHealth
-        return MTCard(title: L("Pool health"), systemImage: "heart.text.square") {
+        let totals = DashboardMetrics.quotaTotals(accounts: codex.accounts)
+        return MTCard(title: L("Codex pool health"), systemImage: "heart.text.square", accent: MTTheme.emerald) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 88), spacing: MTTheme.s2)],
+                    columns: [GridItem(.adaptive(minimum: 84), spacing: MTTheme.s2)],
                     spacing: MTTheme.s2
                 ) {
-                    MTMetricTile(title: L("Total"), value: "\(health.total)")
-                    MTMetricTile(title: L("Usable"), value: "\(health.usable)", tint: MTTheme.ok)
-                    MTMetricTile(title: L("Paused"), value: "\(health.paused)", tint: MTTheme.warn)
+                    MTMetricTile(title: L("Total"), value: "\(health.total)", tint: MTTheme.cyan)
+                    MTMetricTile(title: L("Usable"), value: "\(health.usable)", tint: MTTheme.emerald)
+                    MTMetricTile(title: L("Paused"), value: "\(health.paused)", tint: MTTheme.amber)
                     MTMetricTile(
                         title: L("Errors"),
                         value: "\(health.errors)",
-                        tint: health.errors > 0 ? MTTheme.danger : MTTheme.textTertiary
+                        tint: health.errors > 0 ? MTTheme.ruby : MTTheme.textTertiary
                     )
                 }
                 HStack(spacing: MTTheme.s3) {
-                    averageCell(title: L("5-hour average"), value: health.hourlyAverage)
-                    averageCell(title: L("Weekly average"), value: health.weeklyAverage)
+                    totalCell(
+                        title: L("Total left 5 h"),
+                        value: totals.hourly,
+                        limit: totals.max,
+                        tint: MTTheme.cyan
+                    )
+                    totalCell(
+                        title: L("Total left weekly"),
+                        value: totals.weekly,
+                        limit: totals.max,
+                        tint: MTTheme.emerald
+                    )
                 }
             }
         }
     }
 
-    private func averageCell(title: String, value: Double?) -> some View {
+    /// Pool sum, not an average: five accounts at 100% read 500% of 500%.
+    private func totalCell(title: String, value: Double?, limit: Double, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title.uppercased())
-                .font(MTTheme.mono(9, weight: .semibold))
+                .font(MTTheme.body(9, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(MTTheme.textTertiary)
-            Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
-                .font(MTTheme.display(18, weight: .semibold))
-                .foregroundStyle(value == nil ? MTTheme.textTertiary : MTTheme.textPrimary)
-            MTMeter(fraction: value.map { $0 / 100.0 })
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
+                    .font(MTTheme.display(18, weight: .semibold))
+                    .foregroundStyle(value == nil ? MTTheme.textTertiary : MTTheme.textPrimary)
+                if value != nil {
+                    Text(String(format: L("of %d%%"), Int(limit)))
+                        .font(MTTheme.body(9))
+                        .foregroundStyle(MTTheme.textTertiary)
+                }
+            }
+            MTMeter(fraction: limit > 0 ? Swift.min(1, Swift.max(0, (value ?? 0) / limit)) : 0, tint: tint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -259,10 +349,54 @@ struct DashboardView: View {
 
     private var quotaTrendsCard: some View {
         let totals = quotaLimitTotals
-        return MTCard(title: L("Quota limits"), systemImage: "gauge.with.dots.needle.33percent") {
+        let hourlyFraction = totals.max > 0 ? (totals.hourly.map { min(1, max(0, $0 / totals.max)) }) : nil
+        let weeklyFraction = totals.max > 0 ? (totals.weekly.map { min(1, max(0, $0 / totals.max)) }) : nil
+
+        return MTCard(title: L("Quota limits"), systemImage: "gauge.with.dots.needle.33percent", accent: MTTheme.cyan) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
-                quotaLimitRow(title: L("hourly"), value: totals.hourly, limit: totals.max)
-                quotaLimitRow(title: L("weekly"), value: totals.weekly, limit: totals.max)
+                HStack(spacing: MTTheme.s3) {
+                    HStack(spacing: MTTheme.s2) {
+                        MTQuotaRing(
+                            fraction: hourlyFraction,
+                            size: 56,
+                            ringTint: MTTheme.cyan,
+                            strokeWidth: 5
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("hourly").uppercased())
+                                .font(MTTheme.mono(9, weight: .semibold))
+                                .tracking(0.8)
+                                .foregroundStyle(MTTheme.textTertiary)
+                            Text(totals.hourly.map { "\(Int($0.rounded()))%" } ?? "—")
+                                .font(MTTheme.mono(13, weight: .semibold))
+                                .foregroundStyle(MTTheme.textPrimary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack(spacing: MTTheme.s2) {
+                        MTQuotaRing(
+                            fraction: weeklyFraction,
+                            size: 56,
+                            ringTint: MTTheme.emerald,
+                            strokeWidth: 5
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("weekly").uppercased())
+                                .font(MTTheme.mono(9, weight: .semibold))
+                                .tracking(0.8)
+                                .foregroundStyle(MTTheme.textTertiary)
+                            Text(totals.weekly.map { "\(Int($0.rounded()))%" } ?? "—")
+                                .font(MTTheme.mono(13, weight: .semibold))
+                                .foregroundStyle(MTTheme.textPrimary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 2)
+
+                Divider().overlay(MTTheme.borderColor)
+
                 HStack(spacing: MTTheme.s2) {
                     Text(String(format: L("Accounts in pool: %d"), codex.accounts.count))
                     Spacer(minLength: 0)
@@ -293,7 +427,7 @@ struct DashboardView: View {
     // MARK: - Spend and top providers
 
     private var spendCard: some View {
-        MTCard(title: L("Spend & top providers"), systemImage: "dollarsign.circle") {
+        MTCard(title: L("Spend & top providers"), systemImage: "dollarsign.circle", accent: MTTheme.violet) {
             if let spend = usage.sessionSpend, !spend.providers.isEmpty {
                 VStack(alignment: .leading, spacing: MTTheme.s2) {
                     HStack(alignment: .firstTextBaseline, spacing: MTTheme.s2) {
@@ -304,7 +438,7 @@ struct DashboardView: View {
                         Spacer()
                         Text(spend.hasData ? "≈ " + money(spend.totalUSD) : "—")
                             .font(MTTheme.display(20, weight: .semibold))
-                            .foregroundStyle(spend.hasData ? MTTheme.textPrimary : MTTheme.textTertiary)
+                            .foregroundStyle(spend.hasData ? MTTheme.violet : MTTheme.textTertiary)
                     }
                     Divider().overlay(MTTheme.borderColor)
                     ForEach(spend.topProviders(), id: \.provider) { row in
@@ -360,11 +494,11 @@ struct DashboardView: View {
         let due = SchedulerPolicy.due(scheduler.tasks, now: now)
         let next = DashboardMetrics.nextRun(tasks: scheduler.tasks)
         let last = DashboardMetrics.lastStatus(tasks: scheduler.tasks, history: scheduler.history)
-        return MTCard(title: L("Scheduler summary"), systemImage: "clock.badge.checkmark") {
+        return MTCard(title: L("Scheduler summary"), systemImage: "clock.badge.checkmark", accent: MTTheme.amber) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 HStack(spacing: MTTheme.s2) {
-                    MTMetricTile(title: L("Due now"), value: "\(due.count)")
-                    MTMetricTile(title: L("Next run"), value: next.map { ISODate.until($0) } ?? "—")
+                    MTMetricTile(title: L("Due now"), value: "\(due.count)", tint: due.isEmpty ? MTTheme.textTertiary : MTTheme.amber)
+                    MTMetricTile(title: L("Next run"), value: next.map { ISODate.until($0) } ?? "—", tint: MTTheme.cyan)
                 }
                 HStack(spacing: MTTheme.s2) {
                     Text(L("Last status").uppercased())
@@ -373,9 +507,10 @@ struct DashboardView: View {
                         .foregroundStyle(MTTheme.textTertiary)
                     statusPill(last)
                     Spacer()
-                    MTSecondaryButton(
+                    MTGlassButton(
                         title: L("Run next"),
                         systemImage: "play.fill",
+                        tint: MTTheme.amber,
                         isLoading: scheduler.isRunning
                     ) {
                         guard gateway.isRunning, let task = due.first else { return }
@@ -414,57 +549,286 @@ struct DashboardView: View {
 
     // MARK: - Existing pool and API cards
 
-    private var codexCard: some View {
-        MTCard(title: L("Codex pool"), systemImage: "person.2") {
+    // MARK: - Providers and pools
+
+    /// Every upstream the gateway can use, key-based and OAuth alike, so the
+    /// board answers "what is connected" without opening the sources page.
+    private var providersCard: some View {
+        let lines = providerLines
+        return MTCard(
+            title: L("Providers"),
+            systemImage: "point.3.connected.trianglepath.dotted",
+            accent: MTTheme.violet,
+            fillsHeight: true
+        ) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
-                if codex.accounts.isEmpty {
-                    Text(L("No accounts yet."))
-                        .font(MTTheme.mono(11))
+                if lines.isEmpty {
+                    Text(L("No providers connected yet."))
+                        .font(MTTheme.body(11))
                         .foregroundStyle(MTTheme.textSecondary)
                 } else {
-                    ForEach(codex.accounts.prefix(4)) { account in
-                        HStack(spacing: MTTheme.s2) {
-                            MTQuotaRing(fraction: account.quota?.weeklyRemainingPercent.map { $0 / 100.0 }, size: 26)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(account.displayName)
-                                    .font(MTTheme.mono(10, weight: .semibold))
-                                    .foregroundStyle(MTTheme.textPrimary)
-                                    .lineLimit(1)
-                                Text((account.planType ?? "").planDisplayName)
-                                    .font(MTTheme.mono(9))
-                                    .foregroundStyle(MTTheme.textSecondary)
-                            }
-                            Spacer()
-                            if codex.currentAccountId == account.id {
-                                MTStatusPill(text: L("active"), status: .ok)
-                            }
-                        }
+                    ForEach(lines) { line in
+                        providerLineView(line)
                     }
-                }
-                Divider().overlay(MTTheme.borderColor)
-                HStack(spacing: MTTheme.s2) {
-                    Text(String(format: L("Accounts in pool: %d"), codex.accounts.count))
-                        .font(MTTheme.mono(9))
-                        .foregroundStyle(MTTheme.textSecondary)
-                    if let average = poolHealth.weeklyAverage {
-                        Text("·")
-                            .font(MTTheme.mono(9))
-                            .foregroundStyle(MTTheme.textSecondary)
-                        Text(String(format: L("Weekly quota left: %d%%"), Int(average.rounded())))
-                            .font(MTTheme.mono(9))
-                            .foregroundStyle(MTTheme.textSecondary)
-                    }
-                    Spacer()
-                    MTSecondaryButton(title: L("Open"), systemImage: "arrow.right") {
-                        selection = .codexAccounts
+                    Divider().overlay(MTTheme.borderColor)
+                    HStack(spacing: MTTheme.s2) {
+                        Text(L("Connected") + ": \(lines.filter(\.isOn).count)")
+                            .font(MTTheme.body(9.5))
+                            .foregroundStyle(MTTheme.textTertiary)
+                        Spacer(minLength: 0)
+                        Text(modelsLabel(lines.reduce(0) { $0 + $1.modelCount }))
+                            .font(MTTheme.body(9.5))
+                            .foregroundStyle(MTTheme.textTertiary)
                     }
                 }
             }
         }
     }
 
+    private struct ProviderLine: Identifiable {
+        var id: String
+        var title: String
+        var detail: String
+        var tint: Color
+        var isOn: Bool
+        var modelCount: Int
+    }
+
+    private var providerLines: [ProviderLine] {
+        var lines = modelSources.sources
+            .filter { !$0.title.isEmpty }
+            .map { source in
+                let models = source.selectedModels.count
+                return ProviderLine(
+                    id: source.id,
+                    title: source.title,
+                    detail: models > 0
+                        ? modelsLabel(models)
+                        : (source.enabled ? L("no models") : L("Disabled")),
+                    tint: providerTint(source.kind),
+                    isOn: source.enabled && (models > 0 || source.kind == .claude || source.kind == .antigravity),
+                    modelCount: models
+                )
+            }
+
+        // OAuth providers live outside `sources` (there is no key to store), so
+        // they are added from the pools they actually serve.
+        if !lines.contains(where: { $0.id == "oauth.codex" }), !codex.accounts.isEmpty {
+            lines.append(ProviderLine(
+                id: "oauth.codex",
+                title: "Codex",
+                detail: accountsLabel(codex.accounts.count),
+                tint: MTTheme.cyan,
+                isOn: true,
+                modelCount: 0
+            ))
+        }
+        if !lines.contains(where: { $0.id == "oauth.claude" }), !claudeAccounts.isEmpty {
+            lines.append(ProviderLine(
+                id: "oauth.claude",
+                title: "Claude",
+                detail: accountsLabel(claudeAccounts.count),
+                tint: MTTheme.amber,
+                isOn: true,
+                modelCount: 0
+            ))
+        }
+
+        return lines.sorted { lhs, rhs in
+            if lhs.isOn != rhs.isOn { return lhs.isOn && !rhs.isOn }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    private func providerTint(_ kind: ModelSource.Kind) -> Color {
+        switch kind {
+        case .openRouter: return MTTheme.violet
+        case .openCode: return MTTheme.cyan
+        case .deepInfra: return MTTheme.emerald
+        case .vercel: return MTTheme.textSecondary
+        case .zai: return MTTheme.amber
+        case .claude: return MTTheme.amber
+        case .antigravity: return MTTheme.cyan
+        }
+    }
+
+    private func providerLineView(_ line: ProviderLine) -> some View {
+        HStack(spacing: MTTheme.s2) {
+            Circle()
+                .fill(line.isOn ? line.tint : MTTheme.textTertiary)
+                .frame(width: 6, height: 6)
+            Text(line.title)
+                .font(MTTheme.body(11.5, weight: .medium))
+                .foregroundStyle(line.isOn ? MTTheme.textPrimary : MTTheme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: MTTheme.s2)
+            Text(line.detail)
+                .font(MTTheme.body(10))
+                .foregroundStyle(MTTheme.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
+    /// Every account pool the app can route through: Codex OAuth, the
+    /// Antigravity OAuth pool and the Claude OAuth accounts.
+    private var poolsCard: some View {
+        MTCard(
+            title: L("Account pools"),
+            systemImage: "square.stack.3d.up",
+            accent: MTTheme.emerald,
+            fillsHeight: true
+        ) {
+            VStack(alignment: .leading, spacing: MTTheme.s2) {
+                poolLine(
+                    icon: "person.2",
+                    title: L("Codex pool"),
+                    tint: MTTheme.cyan,
+                    accounts: codex.accounts.count,
+                    metrics: [
+                        (L("5 h"), poolHealth.hourlyAverage),
+                        (L("Week"), poolHealth.weeklyAverage)
+                    ]
+                )
+                Divider().overlay(MTTheme.borderColor)
+                poolLine(
+                    icon: "atom",
+                    title: "Antigravity",
+                    tint: MTTheme.violet,
+                    accounts: antigravity.accounts.count,
+                    metrics: [
+                        ("Gemini", antigravityGeminiAverage),
+                        ("Claude", antigravityClaudeAverage)
+                    ]
+                )
+                if !claudeAccounts.isEmpty {
+                    Divider().overlay(MTTheme.borderColor)
+                    poolLine(
+                        icon: "c.circle",
+                        title: "Claude",
+                        tint: MTTheme.amber,
+                        accounts: claudeAccounts.count,
+                        metrics: []
+                    )
+                }
+                Divider().overlay(MTTheme.borderColor)
+                HStack(spacing: MTTheme.s2) {
+                    Text(L("All pools"))
+                        .font(MTTheme.body(9.5))
+                        .foregroundStyle(MTTheme.textTertiary)
+                    Spacer(minLength: 0)
+                    Text(accountsLabel(totalPoolAccounts))
+                        .font(MTTheme.body(9.5))
+                        .foregroundStyle(MTTheme.textTertiary)
+                }
+            }
+        }
+    }
+
+    private func poolLine(
+        icon: String,
+        title: String,
+        tint: Color,
+        accounts: Int,
+        metrics: [(String, Double?)]
+    ) -> some View {
+        HStack(spacing: MTTheme.s2) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 16, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(MTTheme.body(11.5, weight: .medium))
+                    .foregroundStyle(MTTheme.textPrimary)
+                Text(String(format: L("Accounts in pool: %d"), accounts))
+                    .font(MTTheme.body(9.5))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+            Spacer(minLength: MTTheme.s2)
+            HStack(spacing: MTTheme.s3) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(metric.0.uppercased())
+                            .font(MTTheme.body(8, weight: .semibold))
+                            .tracking(0.5)
+                            .foregroundStyle(MTTheme.textTertiary)
+                        Text(metric.1.map { "\(Int($0.rounded()))%" } ?? "—")
+                            .font(.system(size: 12, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(metric.1 == nil ? MTTheme.textTertiary : MTTheme.textPrimary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var totalPoolAccounts: Int {
+        codex.accounts.count + antigravity.accounts.count + claudeAccounts.count
+    }
+
+    /// Russian needs three plural forms; the app ships RU and EN, so the rule
+    /// lives here instead of a format string.
+    private func accountsLabel(_ count: Int) -> String {
+        guard L10n.shared.isRU else {
+            return count == 1 ? "1 account" : "\(count) accounts"
+        }
+        let mod100 = count % 100
+        let mod10 = count % 10
+        let word: String
+        if mod100 >= 11 && mod100 <= 14 {
+            word = "аккаунтов"
+        } else if mod10 == 1 {
+            word = "аккаунт"
+        } else if mod10 >= 2 && mod10 <= 4 {
+            word = "аккаунта"
+        } else {
+            word = "аккаунтов"
+        }
+        return "\(count) \(word)"
+    }
+
+    private func modelsLabel(_ count: Int) -> String {
+        guard L10n.shared.isRU else {
+            return count == 1 ? "1 model" : "\(count) models"
+        }
+        let mod100 = count % 100
+        let mod10 = count % 10
+        let word: String
+        if mod100 >= 11 && mod100 <= 14 {
+            word = "моделей"
+        } else if mod10 == 1 {
+            word = "модель"
+        } else if mod10 >= 2 && mod10 <= 4 {
+            word = "модели"
+        } else {
+            word = "моделей"
+        }
+        return "\(count) \(word)"
+    }
+
+    private var antigravityGeminiAverage: Double? {
+        DashboardMetrics.average(
+            antigravity.accounts.compactMap { $0.geminiQuota?.remaining }.map { $0 * 100 }
+        )
+    }
+
+    private var antigravityClaudeAverage: Double? {
+        DashboardMetrics.average(
+            antigravity.accounts.compactMap { $0.claudeQuota?.remaining }.map { $0 * 100 }
+        )
+    }
+
     private var gatewayCard: some View {
-        MTCard(title: L("Codex API"), systemImage: "network") {
+        let gatewayAccent: Color = {
+            switch gateway.status {
+            case .running: return MTTheme.emerald
+            case .starting: return MTTheme.amber
+            case .failed: return MTTheme.ruby
+            case .stopped: return MTTheme.cyan
+            }
+        }()
+
+        return MTCard(title: L("Codex API"), systemImage: "network", accent: gatewayAccent) {
             HStack(spacing: MTTheme.s3) {
                 switch gateway.status {
                 case .stopped: MTStatusPill(text: L("stopped"), status: .absent)
@@ -475,21 +839,27 @@ struct DashboardView: View {
                 if let error = gateway.lastError, case .failed = gateway.status {
                     Text(error)
                         .font(MTTheme.mono(10))
-                        .foregroundStyle(MTTheme.danger)
+                        .foregroundStyle(MTTheme.ruby)
                         .lineLimit(1)
                 }
                 Spacer()
                 if gateway.isRunning {
-                    MTSecondaryButton(title: L("Stop")) {
+                    MTGlassButton(title: L("Stop"), systemImage: "stop.fill", tint: MTTheme.ruby) {
                         Task { await gateway.stop() }
                     }
                 } else {
-                    MTPrimaryButton(title: L("Start"), systemImage: "play.fill", isLoading: gateway.isStarting) {
+                    MTGlassButton(
+                        title: L("Start"),
+                        systemImage: "play.fill",
+                        tint: MTTheme.emerald,
+                        prominent: true,
+                        isLoading: gateway.isStarting
+                    ) {
                         codex.load()
                         Task { await gateway.start(accounts: codex.accounts, priorities: codex.effectivePriorities()) }
                     }
                 }
-                MTSecondaryButton(title: L("Open"), systemImage: "arrow.right") {
+                MTGlassButton(title: L("Open"), systemImage: "arrow.right", tint: MTTheme.cyan) {
                     selection = .codexAPI
                 }
             }

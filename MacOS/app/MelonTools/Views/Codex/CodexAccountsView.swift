@@ -142,7 +142,7 @@ struct CodexAccountsView: View {
                 .font(MTTheme.mono(10))
                 .foregroundStyle(MTTheme.textSecondary)
             Spacer()
-            MTSecondaryButton(title: L("Refresh selected"), systemImage: "arrow.clockwise") {
+            MTGlassButton(title: L("Refresh selected"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.emerald) {
                 Task {
                     for id in selectedAccounts {
                         await store.refreshQuota(for: id, forceTokens: true)
@@ -150,7 +150,7 @@ struct CodexAccountsView: View {
                 }
             }
             .disabled(selectedAccounts.isEmpty)
-            MTSecondaryButton(title: L("Delete selected"), systemImage: "trash") {
+            MTGlassButton(title: L("Delete selected"), systemImage: "trash", size: .small, tint: MTTheme.ruby) {
                 confirmDeleteSelection = true
             }
             .disabled(selectedAccounts.isEmpty)
@@ -198,34 +198,36 @@ struct CodexAccountsView: View {
 
     private var controls: some View {
         HStack(spacing: MTTheme.s3) {
-            MTPrimaryButton(title: L("OAuth browser login"), systemImage: "safari") {
+            MTGlassButton(title: L("OAuth browser login"), systemImage: "safari", tint: MTTheme.cyan, prominent: true) {
                 loginMode = .browser
                 showLoginSheet = true
                 store.startBrowserLogin()
             }
-            MTSecondaryButton(title: L("Device login"), systemImage: "person.badge.plus") {
+            MTGlassButton(title: L("Device login"), systemImage: "person.badge.plus", tint: MTTheme.cyan) {
                 loginMode = .device
                 showLoginSheet = true
                 store.startDeviceLogin()
             }
-            MTSecondaryButton(title: L("Import from CLI"), systemImage: "square.and.arrow.down") {
+            MTGlassButton(title: L("Import from CLI"), systemImage: "square.and.arrow.down", tint: MTTheme.emerald) {
                 store.importFromCodexCLI()
             }
-            MTSecondaryButton(title: L("Paste login (JSON)"), systemImage: "doc.on.clipboard") {
+            MTGlassButton(title: L("Paste login (JSON)"), systemImage: "doc.on.clipboard", tint: MTTheme.violet) {
                 showImportSheet = true
             }
-            MTSecondaryButton(title: L("Import JSON"), systemImage: "doc.badge.plus") {
+            MTGlassButton(title: L("Import JSON"), systemImage: "doc.badge.plus", tint: MTTheme.violet) {
                 chooseBulkJSON()
             }
             Spacer()
-            MTSecondaryButton(title: L("Refresh quotas"), systemImage: "arrow.clockwise") {
+            MTGlassButton(title: L("Refresh quotas"), systemImage: "arrow.clockwise", tint: MTTheme.amber) {
                 Task { await store.refreshAllQuotas(forceTokens: true) }
             }
         }
     }
 
     private func accountCard(_ account: CodexAccount) -> some View {
-        MTCard {
+        let isCurrent = store.currentAccountId == account.id
+        let accentTint: Color = isCurrent ? MTTheme.emerald : MTTheme.cyan
+        return MTCard(accent: accentTint, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(alignment: .top, spacing: MTTheme.s3) {
                     Toggle("", isOn: selectionBinding(account.id))
@@ -239,7 +241,7 @@ struct CodexAccountsView: View {
                         HStack(spacing: MTTheme.s2) {
                             Text((account.planType ?? "").planDisplayName)
                                 .font(MTTheme.mono(10, weight: .semibold))
-                                .foregroundStyle(MTTheme.gold)
+                                .foregroundStyle(MTTheme.amber)
                             if let position = store.routingPosition(of: account.id) {
                                 Text("· №\(position)")
                                     .font(MTTheme.mono(9))
@@ -248,7 +250,7 @@ struct CodexAccountsView: View {
                         }
                     }
                     Spacer()
-                    if store.currentAccountId == account.id {
+                    if isCurrent {
                         MTStatusPill(text: L("active"), status: .ok)
                     }
                     Button {
@@ -321,14 +323,14 @@ struct CodexAccountsView: View {
 
                 HStack(spacing: MTTheme.s2) {
                     if store.currentAccountId != account.id {
-                        MTSecondaryButton(title: L("Switch"), systemImage: "arrow.left.arrow.right", isLoading: store.busyAccountIds.contains(account.id)) {
+                        MTGlassButton(title: L("Switch"), systemImage: "arrow.left.arrow.right", size: .small, tint: MTTheme.cyan, isLoading: store.busyAccountIds.contains(account.id)) {
                             Task { await store.switchTo(account) }
                         }
                     }
-                    MTSecondaryButton(title: L("Quota"), systemImage: "gauge.with.dots.needle.33percent", isLoading: store.busyAccountIds.contains(account.id)) {
+                    MTGlassButton(title: L("Quota"), systemImage: "gauge.with.dots.needle.33percent", size: .small, tint: MTTheme.emerald, isLoading: store.busyAccountIds.contains(account.id)) {
                         Task { await store.refreshQuota(for: account.id, forceTokens: true) }
                     }
-                    MTSecondaryButton(title: L("Launch in Codex"), systemImage: "arrow.up.forward.app") {
+                    MTGlassButton(title: L("Launch in Codex"), systemImage: "arrow.up.forward.app", size: .small, tint: MTTheme.amber) {
                         store.launchInCodex(account)
                     }
                     Button {
@@ -440,7 +442,15 @@ struct CodexAccountsView: View {
 
     /// Horizontal quota bar: label + percent, a bar and a detailed reset time.
     private func quotaBar(title: String, percent: Double?, reset: Date?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let fraction = percent.map { min(1, max(0, $0 / 100)) }
+        let meterColor: Color = {
+            guard let p = percent else { return MTTheme.cyan }
+            if p <= 15 { return MTTheme.ruby }
+            if p <= 40 { return MTTheme.amber }
+            return MTTheme.emerald
+        }()
+
+        return VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(title.uppercased())
                     .font(MTTheme.mono(9, weight: .semibold))
@@ -449,9 +459,9 @@ struct CodexAccountsView: View {
                 Spacer()
                 Text(percent.map { "\(Int($0.rounded()))%" } ?? "—")
                     .font(MTTheme.mono(10, weight: .semibold))
-                    .foregroundStyle(MTTheme.textPrimary)
+                    .foregroundStyle(meterColor)
             }
-            MTMeter(fraction: percent.map { min(1, max(0, $0 / 100)) })
+            MTMeter(fraction: fraction, tint: meterColor, height: 4)
             if let reset {
                 Text(detailedResetText(reset))
                     .font(MTTheme.mono(9))
@@ -540,7 +550,7 @@ struct CodexAccountsView: View {
     /// Subscription end date with a relative reminder, like the Cockpit cards.
     @ViewBuilder
     private func subscriptionRow(_ account: CodexAccount) -> some View {
-        let until = account.subscriptionActiveUntil.flatMap { ISO8601DateFormatter().date(from: $0) }
+        let until = account.subscriptionActiveUntil.flatMap { Self.quotaStampISO.date(from: $0) }
         let plan = (account.planType ?? "").lowercased()
         let paidPlan = !plan.isEmpty && plan != "free"
         VStack(alignment: .leading, spacing: 2) {
@@ -628,8 +638,8 @@ struct CodexAccountsView: View {
                 .overlay(RoundedRectangle(cornerRadius: MTTheme.rSmall).strokeBorder(MTTheme.borderColor))
             HStack {
                 Spacer()
-                MTSecondaryButton(title: L("Cancel")) { showImportSheet = false }
-                MTPrimaryButton(title: L("Import"), systemImage: "checkmark") {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { showImportSheet = false }
+                MTGlassButton(title: L("Import"), systemImage: "checkmark", tint: MTTheme.emerald, prominent: true) {
                     store.importFromJSON(importText)
                     importText = ""
                     showImportSheet = false
@@ -655,7 +665,7 @@ struct CodexAccountsView: View {
 
             HStack {
                 Spacer()
-                MTSecondaryButton(title: L("Close")) {
+                MTGlassButton(title: L("Close"), tint: MTTheme.textSecondary) {
                     store.cancelBrowserLogin()
                     store.cancelDeviceLogin()
                     showLoginSheet = false
@@ -701,11 +711,11 @@ struct CodexAccountsView: View {
                         .padding(.vertical, MTTheme.s2)
                         .background(MTTheme.gold)
                         .clipShape(RoundedRectangle(cornerRadius: MTTheme.rSmall))
-                    MTSecondaryButton(title: L("Copy code")) {
+                    MTGlassButton(title: L("Copy code"), tint: MTTheme.cyan) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(session.userCode, forType: .string)
                     }
-                    MTSecondaryButton(title: L("Open browser")) {
+                    MTGlassButton(title: L("Open browser"), systemImage: "safari", tint: MTTheme.emerald) {
                         if let url = URL(string: session.verificationURL) {
                             NSWorkspace.shared.open(url)
                         }
@@ -756,7 +766,7 @@ struct CodexPoolPauseBanner: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: MTTheme.s2)
             if summary.canLift {
-                MTSecondaryButton(title: L("Lift pause"), systemImage: "play.circle", isLoading: lifting) {
+                MTGlassButton(title: L("Lift pause"), systemImage: "play.circle", size: .small, tint: MTTheme.emerald, isLoading: lifting) {
                     confirmLift = true
                 }
                 .disabled(lifting)
@@ -820,7 +830,7 @@ private struct MiniAPICard: View {
     @State private var launching = false
 
     var body: some View {
-        MTCard {
+        MTCard(accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     Text(L("API control"))
@@ -850,9 +860,11 @@ private struct MiniAPICard: View {
                 Spacer(minLength: 0)
 
                 HStack(spacing: MTTheme.s2) {
-                    MTPrimaryButton(
+                    MTGlassButton(
                         title: gateway.codexRoute == .melon ? L("Open Codex") : L("Launch Codex"),
                         systemImage: "play.fill",
+                        tint: MTTheme.cyan,
+                        prominent: true,
                         isLoading: launching
                     ) {
                         guard !launching else { return }
@@ -862,7 +874,7 @@ private struct MiniAPICard: View {
                             await gateway.launchCodexApp()
                         }
                     }
-                    MTSecondaryButton(title: L("Manage"), systemImage: "arrow.right") {
+                    MTGlassButton(title: L("Manage"), systemImage: "arrow.right", tint: MTTheme.cyan) {
                         selection = .codexAPI
                     }
                     Spacer()
@@ -1022,7 +1034,7 @@ private struct AccountRoutingSheet: View {
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
                     Spacer()
-                    MTSecondaryButton(title: L("Models"), systemImage: "square.grid.2x2") {
+                    MTGlassButton(title: L("Models"), systemImage: "square.grid.2x2", size: .small, tint: MTTheme.cyan) {
                         showModels = true
                     }
                 }
@@ -1033,8 +1045,8 @@ private struct AccountRoutingSheet: View {
 
             HStack(spacing: MTTheme.s2) {
                 Spacer()
-                MTSecondaryButton(title: L("Cancel")) { dismiss() }
-                MTPrimaryButton(title: L("Save"), systemImage: "checkmark") {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
+                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true) {
                     store.updateRoutingSettings(
                         account,
                         hourlyPercent: hourlyEnabled ? hourly : nil,
@@ -1116,7 +1128,7 @@ private struct AccountModelsSheet: View {
                         .foregroundStyle(MTTheme.textPrimary)
                     HStack {
                         Spacer()
-                        MTSecondaryButton(title: L("Close")) { dismiss() }
+                        MTGlassButton(title: L("Close"), tint: MTTheme.textSecondary) { dismiss() }
                     }
                 }
                 .padding(MTTheme.s5)
@@ -1143,16 +1155,18 @@ private struct AccountModelsSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .font(MTTheme.mono(11))
                     .frame(maxWidth: 260)
-                MTSecondaryButton(title: L("Select all")) {
+                MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) {
                     for model in filteredModels { selected.insert(model.slug) }
                 }
-                MTSecondaryButton(title: L("Clear")) {
+                MTGlassButton(title: L("Clear"), size: .small, tint: MTTheme.textSecondary) {
                     for model in filteredModels { selected.remove(model.slug) }
                 }
                 Spacer()
-                MTSecondaryButton(
+                MTGlassButton(
                     title: L("Load models"),
                     systemImage: "arrow.down.circle",
+                    size: .small,
+                    tint: MTTheme.emerald,
                     isLoading: pool.isRefreshing
                 ) {
                     Task { await pool.refreshFromServer(accounts: store.accounts) }
@@ -1184,8 +1198,8 @@ private struct AccountModelsSheet: View {
 
             HStack(spacing: MTTheme.s2) {
                 Spacer()
-                MTSecondaryButton(title: L("Cancel")) { dismiss() }
-                MTPrimaryButton(title: L("Save"), systemImage: "checkmark") {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
+                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true) {
                     if let message = store.updateAccountModels(account, selected: selected) {
                         error = message
                     } else {

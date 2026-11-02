@@ -127,5 +127,19 @@ fi
 rm -f build/rw.*.dmg 2>/dev/null || true
 echo "DMG ready: $ROOT/$DMG"
 
+# Every DMG build mounts a temporary volume; LaunchServices keeps each of them
+# registered after the detach, and the stale entries keep answering icon lookups
+# for `dev.melontools.app`, so Finder and the Dock show an older artwork. Drop
+# the temporary copies we just created (installed copies are left alone).
+LSREG=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+"$LSREG" -dump 2>/dev/null \
+  | grep -E "^ *path: .*/Melon( Tools)?\.app" \
+  | sed -E 's/^ *path: *//; s/ \(0x[0-9a-f]+\)$//' \
+  | while IFS= read -r stale; do
+      case "$stale" in
+        /Volumes/dmg.*|*/Library/Developer/*|*/dmg-stage/*) "$LSREG" -u "$stale" >/dev/null 2>&1 || true ;;
+      esac
+    done
+
 cp "$DMG" "$ROOT/"
 echo "copied to $ROOT/"

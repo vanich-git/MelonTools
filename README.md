@@ -78,7 +78,28 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 4.0.0
+## What's new in 5.0.0
+
+- **Flat dark canvas.** One `#111113` surface behind the sidebar and the board; cards are `#1F1F22` plates with an 18 pt radius and a neutral hairline. Coloured frames, glows, shadows and per-card blurs are gone, so long boards no longer stutter while scrolling.
+- **Floating sidebar.** A selected row takes a soft tint of its section accent, a matching glyph and a trailing dot; hover stays a neutral wash.
+- **Bento dashboard.** Two equal columns whose cards stretch to the row height. New **Providers** and **Account pools** cards list every connected upstream and every pool (Codex, Antigravity, Claude) with model and account counts.
+- **Pool totals, not averages.** "Codex pool health" and the status bar panel sum the remaining quota: five accounts at 100% read 500% of 500% for the 5-hour window.
+- **Cleaner status bar panel.** The account list is gone, the monospaced face is replaced by the system font, rows gain hover states and the duplicated status string is fixed.
+- **Windows parity.** The Tauri app ships the same palette, radii, cards, hero, provider/pool cards and summary maths; only the system font differs.
+- **New identity.** The amber melon-slice icon and the transparent logo ship in both apps.
+
+Read the [full changelog](MacOS/RELEASE_NOTES.md) for every release.
+
+## Earlier: 4.0.1
+
+- **Probe clears every cooldown.** One first-token timeout can quarantine several models of the same account; a successful probe now releases all of them on macOS and Windows instead of only the first.
+- **Idle pool calls Google less.** The macOS quota poll follows gateway load like Windows: 60 s under traffic, 15 min when idle, so battery use and quota-endpoint rate limits drop.
+- **Logs rotate during long sessions.** `gateway.log` is rotated by the watchdog once it passes 32 MB while the pool is idle, so a machine left running for weeks no longer grows the file without bound.
+- **The quarantine badge names its reason.** The account row now distinguishes a first-token timeout, exhausted quota, Cloudflare challenge, sign-in failure and plan/payment problems.
+
+Read the [full changelog](MacOS/RELEASE_NOTES.md) for every release.
+
+## Earlier: 4.0.0
 
 - **Antigravity is a real account pool.** Connect any number of Google accounts; each row shows identity, project, model count, pause/resume, sign-in refresh and removal. The engine routes across the pool instead of the newest auth file.
 - **A quota you can see.** `fetchAvailableModels` exposes `quotaInfo`; the app groups it into the Gemini and Claude/GPT pools, shows the remaining share of the 5-hour window and its reset time, and does not invent the weekly window the API does not expose.

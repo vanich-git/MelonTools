@@ -539,7 +539,17 @@ Object.assign(DICT.ru, {
   "dashCardTrends": "Лимиты квот",
   "dashCardSpend": "Расход",
   "dashCardScheduler": "Планировщик",
-  "dashPoolHealth": "Здоровье пула",
+  "dashProviders": "Провайдеры",
+  "dashPools": "Пулы аккаунтов",
+  "dashPoolHealth": "Состояние пула Codex",
+  "dashTotalFive": "Общий остаток 5 ч",
+  "dashTotalWeek": "Общий остаток недели",
+  "dashConnected": "Подключено: {n}",
+  "dashNoProviders": "Провайдеры не подключены.",
+  "dashAllPools": "Всего в пулах",
+  "accountsShort": "аккаунтов",
+  "modelsShort": "моделей",
+  "notConnected": "не подключён",
   "dashTotal": "Всего",
   "dashUsable": "Рабочие",
   "dashPaused": "На паузе",
@@ -1097,7 +1107,17 @@ Object.assign(DICT.en, {
   "dashCardTrends": "Quota limits",
   "dashCardSpend": "Spend",
   "dashCardScheduler": "Scheduler",
-  "dashPoolHealth": "Pool health",
+  "dashProviders": "Providers",
+  "dashPools": "Account pools",
+  "dashPoolHealth": "Codex pool health",
+  "dashTotalFive": "Total left 5h",
+  "dashTotalWeek": "Total left weekly",
+  "dashConnected": "Connected: {n}",
+  "dashNoProviders": "No providers connected yet.",
+  "dashAllPools": "All pools",
+  "accountsShort": "accounts",
+  "modelsShort": "models",
+  "notConnected": "not connected",
   "dashTotal": "Total",
   "dashUsable": "Usable",
   "dashPaused": "Paused",
@@ -1846,19 +1866,155 @@ function donatePage() {
   </div>`;
 }
 
-function dashboardPoolCard(health) {
+function cardIcon(svg, tint) {
+  return `<span class="card-icon" style="color:${tint || "var(--gold)"}">${svg}</span>`;
+}
+
+const CARD_ICONS = {
+  health: '<svg viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2-5h4"/></svg>',
+  providers: '<svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 14l9 5 9-5"/></svg>',
+  pools: '<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><path d="M8 11v2a3 3 0 0 0 3 3h2"/></svg>',
+  trends: '<svg viewBox="0 0 24 24"><path d="M4 19a15 15 0 0 1 16 0"/><path d="M12 19l4-6"/></svg>',
+  scheduler: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
+  spend: '<svg viewBox="0 0 24 24"><path d="M12 4v16"/><path d="M16 8a4 4 0 0 0-8 0c0 4 8 2 8 6a4 4 0 0 1-8 0"/></svg>',
+  gateway: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a13 13 0 0 1 0 16a13 13 0 0 1 0-16"/></svg>',
+};
+
+function dashAverage(values) {
+  const list = values.filter((value) => typeof value === "number" && Number.isFinite(value));
+  return list.length ? list.reduce((sum, value) => sum + value, 0) / list.length : null;
+}
+
+function providerLines() {
+  const settings = S.settings || {};
+  const accounts = Array.isArray(S.accounts) ? S.accounts : [];
+  const agAccounts = (S.antigravity && Array.isArray(S.antigravity.accounts)) ? S.antigravity.accounts : [];
+  const claudeOn = !!(S.claude && S.claude.connected);
+  const models = Array.isArray(S.models) ? S.models : [];
+  const countModels = (prefix) => models.filter((model) => String(model.id || "").startsWith(prefix)).length;
+  const hasKey = (value) => String(value || "").trim().length > 0;
+  const lines = [];
+
+  lines.push({
+    id: "codex",
+    name: "Codex",
+    on: accounts.length > 0,
+    detail: `${accounts.length} ${t("accountsShort")}`,
+    tint: "var(--info)",
+  });
+  if (hasKey(settings.openRouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: `${countModels("openrouter/")} ${t("modelsShort")}`, tint: "var(--violet)" });
+  if (hasKey(settings.openCodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: `${countModels("opencode/")} ${t("modelsShort")}`, tint: "var(--info)" });
+  if (hasKey(settings.deepInfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: `${countModels("deepinfra/")} ${t("modelsShort")}`, tint: "var(--ok)" });
+  if (hasKey(settings.vercelKey)) lines.push({ id: "vercel", name: "Vercel", on: true, detail: `${countModels("vercel/")} ${t("modelsShort")}`, tint: "var(--text2)" });
+  if (hasKey(settings.zaiKey)) lines.push({ id: "zai", name: "Z.ai", on: true, detail: `${countModels("zai/")} ${t("modelsShort")}`, tint: "var(--gold)" });
+  if (claudeOn || hasKey(settings.claudeKey)) lines.push({ id: "claude", name: "Claude", on: true, detail: t("connected"), tint: "var(--gold)" });
+  if (agAccounts.length) lines.push({ id: "antigravity", name: "Antigravity", on: true, detail: `${agAccounts.length} ${t("accountsShort")}`, tint: "var(--info)" });
+
+  return lines.sort((lhs, rhs) => {
+    if (lhs.on !== rhs.on) return lhs.on ? -1 : 1;
+    return lhs.name.localeCompare(rhs.name);
+  });
+}
+
+function dashboardProvidersCard() {
+  const lines = providerLines();
+  const models = Array.isArray(S.models) ? S.models.length : 0;
+  const body = lines.length
+    ? lines.map((line) => `<div class="provider-line${line.on ? "" : " off"}">
+        <span class="provider-dot" style="background:${line.on ? line.tint : "var(--text3)"}"></span>
+        <span class="provider-name">${esc(line.name)}</span>
+        <span class="provider-detail">${esc(line.detail)}</span>
+      </div>`).join("")
+    : `<div class="footnote" style="margin:0">${t("dashNoProviders")}</div>`;
+  return `<div class="card dash-card" data-dashboard-card="providers">
+    <h2>${cardIcon(CARD_ICONS.providers, "var(--violet)")}${t("dashProviders")}</h2>
+    <div class="stack" style="gap:6px">${body}</div>
+    <div class="spacer"></div>
+    <div class="card-footer">
+      <span>${esc(fmt(t("dashConnected"), { n: lines.filter((line) => line.on).length }))}</span>
+      <span class="spacer"></span>
+      <span>${models} ${t("modelsShort")}</span>
+    </div>
+  </div>`;
+}
+
+function poolMetric(label, value) {
+  const text = value === null || value === undefined ? "—" : `${Math.round(value)}%`;
+  return `<div class="pool-metric"><span class="label">${esc(label)}</span><span class="value">${text}</span></div>`;
+}
+
+function dashboardPoolsCard() {
+  const accounts = Array.isArray(S.accounts) ? S.accounts : [];
+  const health = poolHealth(accounts, S.routing);
+  const agAccounts = (S.antigravity && Array.isArray(S.antigravity.accounts)) ? S.antigravity.accounts : [];
+  const gemini = dashAverage(agAccounts.map((account) => {
+    const value = account && account.gemini && account.gemini.remaining;
+    return typeof value === "number" ? value * 100 : null;
+  }));
+  const claudePool = dashAverage(agAccounts.map((account) => {
+    const value = account && account.claude && account.claude.remaining;
+    return typeof value === "number" ? value * 100 : null;
+  }));
+  const claudeConnected = !!(S.claude && S.claude.connected);
+  const total = accounts.length + agAccounts.length + (claudeConnected ? 1 : 0);
+
+  const row = (icon, tint, title, count, metrics) => `<div class="pool-line">
+    <span class="pool-icon" style="color:${tint}">${icon}</span>
+    <span class="stack" style="gap:0">
+      <span class="provider-name">${esc(title)}</span>
+      <span class="provider-detail" style="margin:0">${esc(fmt(t("accountsInPool"), { n: count }))}</span>
+    </span>
+    <span class="pool-metrics">${metrics.join("")}</span>
+  </div>`;
+
+  const codexIcon = '<svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8a4 4 0 0 0 0 8Z"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>';
+  const agIcon = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M12 4a8 8 0 0 1 8 8M12 20a8 8 0 0 1-8-8"/></svg>';
+  const claudeIcon = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8"/></svg>';
+
+  const rows = [];
+  rows.push(row(codexIcon, "var(--info)", t("codexPool"), accounts.length, [
+    poolMetric(t("fiveHour"), health.averageHourly),
+    poolMetric(t("week"), health.averageWeekly),
+  ]));
+  if (agAccounts.length) {
+    rows.push(row(agIcon, "var(--violet)", "Antigravity", agAccounts.length, [
+      poolMetric("Gemini", gemini),
+      poolMetric("Claude", claudePool),
+    ]));
+  }
+  if (claudeConnected) {
+    rows.push(row(claudeIcon, "var(--gold)", "Claude", 1, []));
+  }
+
+  return `<div class="card dash-card" data-dashboard-card="pools">
+    <h2>${cardIcon(CARD_ICONS.pools, "var(--ok)")}${t("dashPools")}</h2>
+    <div class="stack" style="gap:10px">${rows.join("")}</div>
+    <div class="spacer"></div>
+    <div class="card-footer">
+      <span>${t("dashAllPools")}</span>
+      <span class="spacer"></span>
+      <span>${total} ${t("accountsShort")}</span>
+    </div>
+  </div>`;
+}
+
+function totalCell(label, total, max) {
+  const fraction = total === null || !max ? 0 : Math.min(1, Math.max(0, total / max));
+  return `<div class="average-cell">
+    <span class="stat-label">${esc(label)}</span>
+    <span class="average-value">${total === null ? "—" : `${Math.round(total)}%`}${total === null ? "" : ` <span class="footnote" style="margin:0">${esc(fmt(t("dashOfMax"), { n: Math.round(max) }))}</span>`}</span>
+    <div class="bar"><i class="${quotaTint(total === null ? null : fraction * 100)}" style="width:${(fraction * 100).toFixed(1)}%"></i></div>
+  </div>`;
+}
+
+function dashboardPoolCard(health, accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  const hourly = quotaTotals(list, "hourlyRemaining");
+  const weekly = quotaTotals(list, "weeklyRemaining");
   const stat = (label, value, cls) => `<div class="stat ${cls || ""}">
     <span class="value">${value}</span><span class="label">${esc(label)}</span></div>`;
-  const average = (label, value) => {
-    const width = value === null || value === undefined ? 0 : Math.min(100, Math.max(0, value));
-    return `<div class="average-cell">
-      <span class="stat-label">${esc(label)}</span>
-      <span class="average-value">${value === null || value === undefined ? "—" : `${Math.round(value)}%`}</span>
-      <div class="bar"><i class="${quotaTint(value)}" style="width:${width}%"></i></div>
-    </div>`;
-  };
   return `<div class="card dash-card" data-dashboard-card="pool-health">
-    <h2>${t("dashPoolHealth")}</h2>
+    <h2>${cardIcon(CARD_ICONS.health, "var(--ok)")}${t("dashPoolHealth")}</h2>
     <div class="stat-grid">
       ${stat(t("dashTotal"), health.total, "")}
       ${stat(t("dashUsable"), health.usable, "ok")}
@@ -1866,8 +2022,8 @@ function dashboardPoolCard(health) {
       ${stat(t("dashErrors"), health.errors, health.errors > 0 ? "danger" : "")}
     </div>
     <div class="average-grid">
-      ${average(t("dashAvgFive"), health.averageHourly)}
-      ${average(t("dashAvgWeek"), health.averageWeekly)}
+      ${totalCell(t("dashTotalFive"), hourly.total, hourly.max)}
+      ${totalCell(t("dashTotalWeek"), weekly.total, weekly.max)}
     </div>
   </div>`;
 }
@@ -1902,7 +2058,7 @@ function dashboardTrendsCard(accounts) {
   const weekly = quotaTotals(accounts, "weeklyRemaining");
   const max = Math.max(hourly.max, weekly.max);
   return `<div class="card dash-card" data-dashboard-card="quota-trends">
-    <h2>${t("dashQuotaTrends")} <span class="hint">${t("dashTrendHint")}</span></h2>
+    <h2>${cardIcon(CARD_ICONS.trends, "var(--info)")}${t("dashQuotaTrends")}</h2>
     <div class="stack" style="gap:var(--s3)">
       ${quotaLimitRow(t("fiveHour"), hourly.total, hourly.max)}
       ${quotaLimitRow(t("week"), weekly.total, weekly.max)}
@@ -1923,7 +2079,7 @@ function dashboardSpendCard(usage) {
     <td>${row.turns}</td>
   </tr>`).join("");
   return `<div class="card dash-card" data-dashboard-card="spend">
-    <h2>${t("dashSpend")}</h2>
+    <h2>${cardIcon(CARD_ICONS.spend, "var(--violet)")}${t("dashSpend")}</h2>
     <div class="usage-totals">
       <div class="stat"><span class="value">${formatMoney(usage.sessionSpend)}</span><span class="label">${esc(t("dashSessionSpend"))}</span></div>
       <div class="stat"><span class="value">${formatTokens(usage.sessionTokens)}</span><span class="label">${esc(t("dashSessionTokens"))}</span></div>
@@ -1940,7 +2096,7 @@ function dashboardSchedulerCard(summary) {
   const next = summary.next;
   const last = summary.last;
   return `<div class="card dash-card" data-dashboard-card="scheduler">
-    <h2>${t("dashScheduler")}</h2>
+    <h2>${cardIcon(CARD_ICONS.scheduler, "var(--gold)")}${t("dashScheduler")}</h2>
     <div class="stat-grid">
       <div class="stat ${summary.due ? "warn" : ""}"><span class="value">${summary.due}</span><span class="label">${esc(t("dashDue"))}</span></div>
       <div class="stat"><span class="value">${next ? esc(schedulerNextText(next.nextRunAt)) : "—"}</span><span class="label">${esc(t("dashNextRun"))}</span></div>
@@ -1972,7 +2128,7 @@ function dashboardCodexCard(accounts, health) {
   </div>`).join("");
   const average = health.averageWeekly;
   return `<div class="card dash-card" data-dashboard-card="codex-pool">
-    <h2>${t("codexPool")}</h2>
+    <h2>${cardIcon(CARD_ICONS.pools, "var(--info)")}${t("codexPool")}</h2>
     ${accounts.length ? `<div class="pool-list">${rows}</div>` : `<div class="footnote" style="margin:0">${t("noAccountsYet")}</div>`}
     <div class="dash-bottom">
       <div class="divider"></div>
@@ -1989,7 +2145,7 @@ function dashboardGatewayCard(status) {
   const running = !!status.running;
   const busy = S.busy || {};
   return `<div class="card dash-card" data-dashboard-card="gateway">
-    <h2>${t("api")}</h2>
+    <h2>${cardIcon(CARD_ICONS.gateway, "var(--ok)")}${t("api")}</h2>
     <div class="row">
       <span class="dot ${running ? "ok" : "err"}"></span>
       <b>${running ? t("running") : t("stopped")}</b>
@@ -2008,6 +2164,28 @@ function dashboardGatewayCard(status) {
   </div>`;
 }
 
+function dashHero(status) {
+  const running = !!status.running;
+  const busy = S.busy || {};
+  return `<div class="dash-hero">
+    <img class="hero-logo" src="logo.png" alt="" />
+    <div class="hero-text">
+      <div class="hero-title">
+        <h1>Melon Tools</h1>
+        <span class="dot ${running ? "ok" : "warn"}"></span>
+        <span style="font-size:10px;font-weight:600;color:${running ? "var(--ok)" : "var(--text2)"}">${running ? t("running") : t("stopped")}</span>
+      </div>
+      <span class="hero-sub">${t("dashSub")}</span>
+    </div>
+    <div class="hero-actions">
+      ${running
+        ? `<button class="ghost small" data-action="gatewayStop" ${busy.stop ? "disabled" : ""}>${t("stop")}</button>`
+        : `<button class="btn small" data-action="gatewayStart" ${busy.start ? "disabled" : ""}>${t("start")}</button>`}
+      <button class="ghost small" data-action="go" data-id="accounts">${t("accounts")}</button>
+    </div>
+  </div>`;
+}
+
 function dashboardPage() {
   const accounts = Array.isArray(S.accounts) ? S.accounts : [];
   const status = S.status || {};
@@ -2018,14 +2196,15 @@ function dashboardPage() {
   const schedule = schedulerSummary(scheduleData, nowRef());
 
   return `
-  ${pageHead("melon tools", t("dashTitle"), t("dashSub"))}
+  ${dashHero(status)}
   <div class="dash-grid">
-    ${cards.pool ? dashboardPoolCard(health) : ""}
-    ${cards.scheduler ? dashboardSchedulerCard(schedule) : ""}
+    ${dashboardProvidersCard()}
+    ${dashboardPoolsCard()}
+    ${cards.pool ? dashboardPoolCard(health, accounts) : ""}
     ${cards.trends ? dashboardTrendsCard(accounts) : ""}
+    ${cards.scheduler ? dashboardSchedulerCard(schedule) : ""}
     ${cards.spend ? dashboardSpendCard(usage) : ""}
-    ${dashboardCodexCard(accounts, health)}
-    ${dashboardGatewayCard(status)}
+    <div class="dash-wide">${dashboardGatewayCard(status)}</div>
   </div>
   ${!accounts.length ? `<div class="card"><div class="muted">${t("warnNoAccounts")}</div></div>` : ""}
   `;

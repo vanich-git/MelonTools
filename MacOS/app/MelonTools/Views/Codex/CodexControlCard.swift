@@ -15,7 +15,7 @@ struct CodexControlCard: View {
     @State private var launching = false
 
     var body: some View {
-        MTCard(title: L("API control"), systemImage: "network") {
+        MTCard(title: L("API control"), systemImage: "network", accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 serviceRow
                 launchRow
@@ -47,21 +47,21 @@ struct CodexControlCard: View {
             }
             Spacer()
             if gateway.isRunning {
-                MTSecondaryButton(title: L("Check API"), systemImage: "checkmark.seal", isLoading: gateway.isChecking) {
+                MTGlassButton(title: L("Check API"), systemImage: "checkmark.seal", size: .small, tint: MTTheme.cyan, isLoading: gateway.isChecking) {
                     Task { await gateway.checkAPI() }
                 }
-                MTSecondaryButton(title: L("Restart"), systemImage: "arrow.clockwise") {
+                MTGlassButton(title: L("Restart"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.amber) {
                     Task { await gateway.restart(accounts: store.accounts, priorities: store.effectivePriorities()) }
                 }
-                MTSecondaryButton(title: L("Stop"), systemImage: "stop.fill") {
+                MTGlassButton(title: L("Stop"), systemImage: "stop.fill", size: .small, tint: MTTheme.ruby) {
                     Task { await gateway.stop() }
                 }
             } else {
-                MTPrimaryButton(title: L("Start gateway"), systemImage: "play.fill", isLoading: gateway.isStarting) {
+                MTGlassButton(title: L("Start gateway"), systemImage: "play.fill", tint: MTTheme.emerald, prominent: true, isLoading: gateway.isStarting) {
                     store.load()
                     Task { await gateway.start(accounts: store.accounts, priorities: store.effectivePriorities()) }
                 }
-                MTSecondaryButton(title: L("Adopt running"), systemImage: "link") {
+                MTGlassButton(title: L("Adopt running"), systemImage: "link", tint: MTTheme.cyan) {
                     store.load()
                     Task { await gateway.start(accounts: store.accounts, priorities: store.effectivePriorities()) }
                 }
@@ -87,15 +87,17 @@ struct CodexControlCard: View {
     private var launchRow: some View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             HStack(spacing: MTTheme.s3) {
-                MTPrimaryButton(
+                MTGlassButton(
                     title: routeIsMelon ? L("Open Codex") : L("Launch Codex"),
                     systemImage: routeIsMelon ? "arrow.up.forward.app" : "play.fill",
+                    tint: MTTheme.cyan,
+                    prominent: true,
                     isLoading: launching
                 ) {
                     launch()
                 }
                 if routeIsMelon {
-                    MTSecondaryButton(title: L("Remove routing"), systemImage: "arrow.uturn.backward") {
+                    MTGlassButton(title: L("Remove routing"), systemImage: "arrow.uturn.backward", tint: MTTheme.amber) {
                         removeRoute()
                     }
                 }
@@ -189,11 +191,11 @@ struct CodexControlCard: View {
 
             HStack(spacing: MTTheme.s2) {
                 if store.accounts.count > 1 {
-                    MTSecondaryButton(title: L("Reset order"), systemImage: "arrow.counterclockwise") {
+                    MTGlassButton(title: L("Reset order"), systemImage: "arrow.counterclockwise", tint: MTTheme.amber) {
                         store.resetPriorityOrder()
                     }
                 }
-                MTPrimaryButton(title: L("Apply routing"), systemImage: "checkmark", isLoading: gateway.isStarting) {
+                MTGlassButton(title: L("Apply routing"), systemImage: "checkmark", tint: MTTheme.emerald, prominent: true, isLoading: gateway.isStarting) {
                     Task { await gateway.applyRouting(accounts: store.accounts, priorities: store.effectivePriorities()) }
                 }
                 Spacer()

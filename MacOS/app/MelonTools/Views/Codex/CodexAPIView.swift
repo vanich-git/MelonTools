@@ -32,7 +32,7 @@ struct CodexAPIView: View {
     }
 
     private var configCard: some View {
-        MTCard(title: L("Configuration"), systemImage: "gear") {
+        MTCard(title: L("Configuration"), systemImage: "gear", accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 HStack(spacing: MTTheme.s3) {
                     Text(L("api key"))
@@ -45,11 +45,11 @@ struct CodexAPIView: View {
                         .textSelection(.enabled)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    MTSecondaryButton(title: L("Copy")) {
+                    MTGlassButton(title: L("Copy"), size: .small, tint: MTTheme.cyan) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(gateway.apiKey, forType: .string)
                     }
-                    MTSecondaryButton(title: L("Rotate")) {
+                    MTGlassButton(title: L("Rotate"), size: .small, tint: MTTheme.amber) {
                         gateway.rotateAPIKey()
                     }
                 }
@@ -61,7 +61,7 @@ struct CodexAPIView: View {
     }
 
     private var endpointsCard: some View {
-        MTCard(title: L("Client setup"), systemImage: "doc.text") {
+        MTCard(title: L("Client setup"), systemImage: "doc.text", accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 snippet(L("Base URL"), gateway.baseURL, copy: true)
                 snippet(L("API key"), gateway.apiKey)

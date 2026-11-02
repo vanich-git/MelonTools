@@ -37,7 +37,14 @@ final class AntigravityPoolStore: ObservableObject {
         guard autoTask == nil else { return }
         autoTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                // The 5-hour windows only change while requests are running, so
+                // an idle gateway does not need a Google round trip every five
+                // minutes: poll fast under load and slowly when nothing uses the
+                // pool. This mirrors the Windows quota loop and avoids both
+                // battery drain and upstream 429s on the quota endpoint.
+                let busy = CodexGatewayService.shared.requestsLastMinute > 0
+                let seconds: UInt64 = busy ? 60 : 900
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 if Task.isCancelled { return }
                 await self?.refresh(forceQuota: true)
             }
@@ -142,13 +149,34 @@ final class AntigravityPoolStore: ObservableObject {
     }
 
     /// Lightweight health probe used for a quarantined account. A successful
-    /// model-list fetch clears only the first-token cooldown; generation quota
-    /// cooldowns are left to the engine.
+    /// model-list fetch clears every first-token cooldown of the account;
+    /// generation quota cooldowns are left to the engine.
     func probe(_ account: AntigravityAccount) async -> Bool {
         guard let file = AntigravityAuthService.authFiles().first(where: { $0.name == account.name }) else { return false }
         let ok = await Self.fetchModelsDirect(for: file)
         guard ok, let authIndex = account.authIndex else { return false }
-        return await Self.clearBootstrapCooldown(authIndex: authIndex, model: account.cooldowns.first?.modelKey ?? "")
+        // One timeout can quarantine several models of the same account: the
+        // engine keys the watchdog state by auth/model, so every 504 cooldown
+        // must be released or the account stays quarantined after a good probe.
+        let models = Self.watchdogModels(in: account.cooldowns)
+        guard !models.isEmpty else { return false }
+        var clearedAll = true
+        for model in models {
+            if await Self.clearBootstrapCooldown(authIndex: authIndex, model: model) == false {
+                clearedAll = false
+            }
+        }
+        return clearedAll
+    }
+
+    /// Models whose cooldown came from the first-token watchdog. Quota and
+    /// sign-in cooldowns stay with the engine; only a 504 is releasable here.
+    nonisolated static func watchdogModels(in cooldowns: [AntigravityCooldown]) -> [String] {
+        let models = cooldowns
+            .filter { $0.httpStatus == 504 }
+            .compactMap(\.modelKey)
+            .filter { !$0.isEmpty }
+        return Array(Set(models)).sorted()
     }
 
     // MARK: - Management API

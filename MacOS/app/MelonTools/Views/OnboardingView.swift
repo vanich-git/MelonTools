@@ -72,7 +72,7 @@ struct OnboardingView: View {
             Text(L("welcome").uppercased())
                 .font(MTTheme.mono(10, weight: .semibold))
                 .tracking(1.6)
-                .foregroundStyle(MTTheme.gold)
+                .foregroundStyle(MTTheme.amber)
             Text(L("Welcome to Melon Tools"))
                 .font(MTTheme.display(26))
                 .foregroundStyle(MTTheme.textPrimary)
@@ -88,7 +88,7 @@ struct OnboardingView: View {
                 .font(MTTheme.mono(11, weight: .semibold))
                 .foregroundStyle(MTTheme.onGold)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(MTTheme.gold))
+                .background(Circle().fill(MTTheme.amber))
             VStack(alignment: .leading, spacing: 2) {
                 Text(step.title)
                     .font(MTTheme.body(13, weight: .semibold))
@@ -301,7 +301,7 @@ struct OnboardingView: View {
             HStack(spacing: MTTheme.s2) {
                 Image(systemName: "stethoscope")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(MTTheme.gold)
+                    .foregroundStyle(MTTheme.emerald)
                 Text(L("Health check"))
                     .font(MTTheme.body(13, weight: .semibold))
                     .foregroundStyle(MTTheme.textPrimary)
@@ -309,7 +309,7 @@ struct OnboardingView: View {
                 Text(String(format: L("Checked %@"), healthCheckedAt.formatted(date: .omitted, time: .shortened)))
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textTertiary)
-                MTSecondaryButton(title: L("Run health check"), systemImage: "arrow.clockwise") {
+                MTGlassButton(title: L("Run health check"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.emerald) {
                     healthCheckedAt = Date()
                     healthNote = nil
                 }
@@ -320,7 +320,7 @@ struct OnboardingView: View {
                 }
             }
             HStack(alignment: .top, spacing: MTTheme.s3) {
-                MTSecondaryButton(title: L("Create demo task"), systemImage: "plus") {
+                MTGlassButton(title: L("Create demo task"), systemImage: "plus", size: .small, tint: MTTheme.amber) {
                     createDemoTask()
                 }
                 if let healthNote {
@@ -334,14 +334,7 @@ struct OnboardingView: View {
         }
         .padding(MTTheme.s3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            MTTheme.cardSoft.opacity(0.5),
-            in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                .strokeBorder(MTTheme.borderColor.opacity(0.7), lineWidth: 0.75)
-        )
+        .mtBentoCard(accent: MTTheme.emerald, cornerRadius: MTTheme.rSmall)
     }
 
     private func healthRowView(_ row: HealthRow) -> some View {
@@ -359,7 +352,7 @@ struct OnboardingView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let section = row.section {
-                MTSecondaryButton(title: L("Open"), systemImage: "arrow.right") {
+                MTGlassButton(title: L("Open"), systemImage: "arrow.right", size: .small, tint: MTTheme.cyan) {
                     go(to: section)
                 }
             }
@@ -394,14 +387,14 @@ struct OnboardingView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             HStack(spacing: MTTheme.s3) {
-                MTSecondaryButton(title: L("Open Connections"), systemImage: "square.stack.3d.up") {
+                MTGlassButton(title: L("Open Connections"), systemImage: "square.stack.3d.up", tint: MTTheme.cyan) {
                     go(to: .providers)
                 }
-                MTSecondaryButton(title: L("Open Accounts"), systemImage: "person.2") {
+                MTGlassButton(title: L("Open Accounts"), systemImage: "person.2", tint: MTTheme.emerald) {
                     go(to: .codexAccounts)
                 }
                 Spacer(minLength: MTTheme.s2)
-                MTSecondaryButton(title: L("Done")) {
+                MTGlassButton(title: L("Done"), tint: MTTheme.textSecondary) {
                     dismiss()
                 }
             }

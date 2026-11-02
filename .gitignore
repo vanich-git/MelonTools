@@ -30,3 +30,9 @@ MacOS/specs/
 .env
 .env.*
 !.env.example
+
+# Local image generation output
+imagegen-output/
+Melon_Amber_*/
+Melon_Amber_macOS*.png
+Melon_Amber_macOS*.icns

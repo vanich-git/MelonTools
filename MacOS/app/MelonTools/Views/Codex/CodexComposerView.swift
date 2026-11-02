@@ -41,7 +41,7 @@ struct CodexComposerView: View {
     // MARK: - Cards
 
     private var toggleCard: some View {
-        MTCard(title: L("Composer chips"), systemImage: "capsule") {
+        MTCard(title: L("Composer chips"), systemImage: "capsule", accent: MTTheme.cyan, isBento: true) {
             Toggle(isOn: $bridge.enabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L("Show pool chips in the Codex composer"))
@@ -53,7 +53,7 @@ struct CodexComposerView: View {
                 }
             }
             .toggleStyle(.switch)
-            .tint(MTTheme.gold)
+            .tint(MTTheme.cyan)
 
             Toggle(isOn: $autoRelaunch) {
                 Text(L("Automatically relaunch Codex when the chips lose their debug port"))
@@ -61,7 +61,7 @@ struct CodexComposerView: View {
                     .foregroundStyle(MTTheme.textSecondary)
             }
             .toggleStyle(.switch)
-            .tint(MTTheme.gold)
+            .tint(MTTheme.cyan)
 
             Toggle(isOn: $bridge.autoRetryEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -74,12 +74,12 @@ struct CodexComposerView: View {
                 }
             }
             .toggleStyle(.switch)
-            .tint(MTTheme.gold)
+            .tint(MTTheme.cyan)
         }
     }
 
     private var statusCard: some View {
-        MTCard(title: L("Status"), systemImage: "dot.radiowaves.left.and.right") {
+        MTCard(title: L("Status"), systemImage: "dot.radiowaves.left.and.right", accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusDot(status: statusTint, size: 8)
@@ -90,11 +90,11 @@ struct CodexComposerView: View {
                 }
 
                 HStack(spacing: MTTheme.s2) {
-                    MTSecondaryButton(title: L("Check now"), systemImage: "arrow.clockwise", isLoading: bridge.busy) {
+                    MTGlassButton(title: L("Check now"), systemImage: "arrow.clockwise", tint: MTTheme.cyan, isLoading: bridge.busy) {
                         bridge.verifyNow()
                     }
                     if bridge.status == .codexNotRunning || bridge.status == .noDebugPort {
-                        MTSecondaryButton(title: L("Relaunch Codex with chips"), systemImage: "arrow.triangle.2.circlepath") {
+                        MTGlassButton(title: L("Relaunch Codex with chips"), systemImage: "arrow.triangle.2.circlepath", tint: MTTheme.amber) {
                             confirmRelaunch = true
                         }
                     }
@@ -111,7 +111,7 @@ struct CodexComposerView: View {
     }
 
     private var helpCard: some View {
-        MTCard(title: L("How it works"), systemImage: "questionmark.circle") {
+        MTCard(title: L("How it works"), systemImage: "questionmark.circle", accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 Text(L("Melon Tools shows live pool chips right inside the Codex window: accounts, 5-hour and weekly quota, and account health."))
                     .font(MTTheme.body(12))

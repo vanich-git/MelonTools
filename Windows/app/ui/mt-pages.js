@@ -402,6 +402,40 @@ function claudeCard(settings) {
   </div>`;
 }
 
+// Why the account is quarantined: a first-token timeout (504 from the QoS
+// watchdog) and a Google quota window look identical in the badge alone.
+function cooldownReason(cooldown) {
+  if (!cooldown) return "";
+  let key = "";
+  if (cooldown.http_status === 504) key = "waitingFirstToken";
+  else
+    switch (cooldown.reason) {
+      case "quota":
+      case "credential_quota":
+        key = "quotaExhausted";
+        break;
+      case "cloudflare_challenge":
+        key = "cloudflareChallenge";
+        break;
+      case "unauthorized":
+      case "invalid_grant":
+        key = "signInAgain";
+        break;
+      case "payment_required":
+        key = "paymentRequired";
+        break;
+      case "model_not_supported":
+        key = "modelNotSupported";
+        break;
+      case "transient_error":
+        key = "upstreamError";
+        break;
+      default:
+        key = "";
+    }
+  return key ? " · " + esc(t(key)) : "";
+}
+
 function antigravityQuotaRow(label, window) {
   if (!window || typeof window.remaining !== "number") return "";
   const percent = Math.max(0, Math.min(100, Math.round(window.remaining * 100)));
@@ -435,6 +469,9 @@ function antigravityCard() {
 
   const rows = accounts.map((account) => {
     const cooldown = (account.cooldowns || [])[0];
+    // Only a first-token cooldown can be released by the probe; a quota or
+    // sign-in cooldown stays with the engine, so the button would only fail.
+    const probeable = (account.cooldowns || []).some((item) => item.http_status === 504);
     const paused = !!account.disabled;
     const until = cooldown && cooldown.retry_at
       ? new Date(cooldown.retry_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -450,10 +487,10 @@ function antigravityCard() {
         <button class="ghost small" title="${esc(t("raisePriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority + 1}">↑</button>
         <button class="ghost small" title="${esc(t("lowerPriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority - 1}">↓</button>
         <button class="ghost small" data-action="antigravityPause" data-id="${esc(account.name)}">${paused ? esc(t("resumeAccount")) : esc(t("pauseAccount"))}</button>
-        ${cooldown ? `<button class="ghost small" data-action="antigravityProbe" data-id="${esc(account.name)}">${esc(t("probe"))}</button>` : ""}
+        ${probeable ? `<button class="ghost small" data-action="antigravityProbe" data-id="${esc(account.name)}">${esc(t("probe"))}</button>` : ""}
         <button class="ghost small" data-action="antigravityRemove" data-id="${esc(account.name)}">${esc(t("removeAccount"))}</button>
       </div>
-      ${cooldown ? `<div class="footnote" style="margin:2px 0 0;color:var(--warn)">${esc(t("quarantinedUntil"))} ${esc(until)}${cooldown.http_status === 504 ? " · " + esc(t("waitingFirstToken")) : ""}</div>` : ""}
+      ${cooldown ? `<div class="footnote" style="margin:2px 0 0;color:var(--warn)">${esc(t("quarantinedUntil"))} ${esc(until)}${cooldownReason(cooldown)}</div>` : ""}
       ${antigravityQuotaRow(t("geminiPool"), account.gemini)}
       ${antigravityQuotaRow(t("claudePool"), account.claude)}
       ${!account.gemini && !account.claude && account.quotaError ? `<div class="footnote" style="margin-top:2px">${esc(account.quotaError)}</div>` : ""}

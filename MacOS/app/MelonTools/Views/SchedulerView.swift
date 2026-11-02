@@ -28,7 +28,7 @@ struct SchedulerView: View {
                 )
 
                 if !gateway.isRunning {
-                    MTCard(title: L("Service"), systemImage: "network") {
+                    MTCard(title: L("Service"), systemImage: "network", accent: MTTheme.ruby, isBento: true) {
                         HStack(spacing: MTTheme.s2) {
                             MTStatusPill(text: L("stopped"), status: .absent)
                             Text(L("Scheduled runs wait until the service is running."))
@@ -90,7 +90,7 @@ struct SchedulerView: View {
     // MARK: - Tasks
 
     private var tasksCard: some View {
-        MTCard(title: L("Tasks"), systemImage: "clock.badge.checkmark") {
+        MTCard(title: L("Tasks"), systemImage: "clock.badge.checkmark", accent: MTTheme.amber, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 HStack(spacing: MTTheme.s1) {
                     Image(systemName: "menubar.rectangle")
@@ -104,12 +104,14 @@ struct SchedulerView: View {
                         if let name = runningTaskName {
                             Text(String(format: L("Running: %@"), name))
                                 .font(MTTheme.mono(9, weight: .semibold))
-                                .foregroundStyle(MTTheme.gold)
+                                .foregroundStyle(MTTheme.amber)
                                 .lineLimit(1)
                         }
-                        MTSecondaryButton(
+                        MTGlassButton(
                             title: store.isCancelling ? L("Cancelling…") : L("Cancel current"),
                             systemImage: "xmark.circle",
+                            size: .small,
+                            tint: MTTheme.ruby,
                             isLoading: store.isCancelling
                         ) {
                             store.cancelCurrent()
@@ -157,7 +159,7 @@ struct SchedulerView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    MTSecondaryButton(title: L("New task"), systemImage: "plus") {
+                    MTGlassButton(title: L("New task"), systemImage: "plus", tint: MTTheme.amber) {
                         editorTarget = EditorTarget(task: nil)
                     }
                 }
@@ -235,16 +237,18 @@ struct SchedulerView: View {
                         .foregroundStyle(MTTheme.textTertiary)
                 }
                 Spacer(minLength: 0)
-                MTSecondaryButton(
+                MTGlassButton(
                     title: L("Run now"),
                     systemImage: "play.fill",
+                    size: .small,
+                    tint: MTTheme.emerald,
                     isLoading: isRunning
                 ) {
                     Task { await store.runNow(id: task.id) }
                 }
                 .help(L("Run now: queues while another task is running"))
 
-                MTSecondaryButton(title: L("Result"), systemImage: "doc.text.magnifyingglass") {
+                MTGlassButton(title: L("Result"), systemImage: "doc.text.magnifyingglass", size: .small, tint: MTTheme.cyan) {
                     resultTarget = task
                 }
                 .disabled(task.lastRunAt == nil)
@@ -317,7 +321,7 @@ struct SchedulerView: View {
     // MARK: - History
 
     private var historyCard: some View {
-        MTCard(title: L("History"), systemImage: "clock.arrow.circlepath") {
+        MTCard(title: L("History"), systemImage: "clock.arrow.circlepath", accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(Array(store.history.prefix(12).enumerated()), id: \.offset) { _, entry in
                     HStack(spacing: MTTheme.s2) {
@@ -482,7 +486,7 @@ private struct SchedulerEditorSheet: View {
                             TextField(L("Optional path for repository context"), text: $workingDirectory)
                                 .textFieldStyle(.roundedBorder)
                                 .font(MTTheme.mono(10))
-                            MTSecondaryButton(title: L("Choose…"), systemImage: "folder") {
+                            MTGlassButton(title: L("Choose…"), systemImage: "folder", size: .small, tint: MTTheme.amber) {
                                 chooseWorkingDirectory()
                             }
                         }
@@ -634,8 +638,8 @@ private struct SchedulerEditorSheet: View {
 
             HStack(spacing: MTTheme.s2) {
                 Spacer()
-                MTSecondaryButton(title: L("Cancel")) { dismiss() }
-                MTPrimaryButton(title: L("Save"), systemImage: "checkmark", isLoading: false) {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
+                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true, isLoading: false) {
                     save()
                 }
                 .disabled(!canSave)
@@ -813,7 +817,7 @@ private struct SchedulerEditorSheet: View {
                         .foregroundStyle(store.modelsError == nil ? MTTheme.textTertiary : MTTheme.danger)
                         .lineLimit(2)
                     Spacer(minLength: 0)
-                    MTSecondaryButton(title: L("Refresh models"), systemImage: "arrow.clockwise", isLoading: store.isLoadingModels) {
+                    MTGlassButton(title: L("Refresh models"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.cyan, isLoading: store.isLoadingModels) {
                         Task { await store.loadModels() }
                     }
                 }
@@ -843,7 +847,7 @@ private struct SchedulerEditorSheet: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: 0)
-                    MTSecondaryButton(title: L("Refresh models"), systemImage: "arrow.clockwise", isLoading: store.isLoadingModels) {
+                    MTGlassButton(title: L("Refresh models"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.cyan, isLoading: store.isLoadingModels) {
                         Task { await store.loadModels() }
                     }
                 }
@@ -1011,7 +1015,7 @@ private struct SchedulerResultSheet: View {
 
             HStack {
                 Spacer()
-                MTSecondaryButton(title: L("Close")) { dismiss() }
+                MTGlassButton(title: L("Close"), tint: MTTheme.textSecondary) { dismiss() }
             }
             .padding(MTTheme.s4)
         }

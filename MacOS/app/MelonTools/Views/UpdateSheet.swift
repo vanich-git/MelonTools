@@ -21,14 +21,14 @@ struct UpdateSheet: View {
 
             HStack(spacing: MTTheme.s2) {
                 Spacer(minLength: 0)
-                MTSecondaryButton(title: L("Cancel")) { dismiss() }
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
                 if case .available = updater.phase {
-                    MTPrimaryButton(title: L("Update"), systemImage: "arrow.down.circle.fill") {
+                    MTGlassButton(title: L("Update"), systemImage: "arrow.down.circle.fill", tint: MTTheme.amber, prominent: true) {
                         Task { await updater.install() }
                     }
                 }
                 if case .failed = updater.phase {
-                    MTPrimaryButton(title: L("Try again"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Try again"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task { await updater.check(manual: true) }
                     }
                 }

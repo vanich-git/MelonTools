@@ -16,6 +16,44 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 5.0.0
+
+- **Liquid Glass interface.** The whole app is rebuilt on Apple's translucent
+  material language: a floating sidebar that hovers over the window instead of
+  sitting inside a fixed column, specular gradient borders, soft depth shadows
+  and a blurred backdrop behind every panel.
+- **Bento card grid.** Dashboard, Accounts, Providers, Scheduler, Settings and
+  the modal sheets are laid out as bento tiles with independent accents, so the
+  screen reads as a set of grouped blocks instead of one long list.
+- **Semantic multi-accent palette.** Green is no longer the only accent. Cyan
+  marks latency, network and Codex routing; amber marks the scheduler, primary
+  actions and updates; emerald marks healthy accounts and running services;
+  ruby marks quota exhaustion and errors; violet marks models and analytics.
+- **Glass buttons.** Primary, secondary and destructive actions share one
+  translucent pill with a specular edge, a prominence glow and an inline
+  spinner, replacing the old flat gold buttons everywhere.
+- **New identity.** The app icon and the in-app logo are the new amber melon
+  slice with a transparent background, used at every size from the Dock to the
+  sidebar header.
+- **Faster interface.** Cards and buttons use a translucent fill with a
+  specular border instead of a backdrop blur each, so scrolling and section
+  switches no longer allocate dozens of visual-effect views per screen.
+- **Build metadata.** macOS build 50; version metadata is aligned at 5.0.0.
+
+## What's new in 4.0.1
+
+- **Probe releases every cooldown.** The watchdog is keyed by auth/model, so one
+  timeout can quarantine several models of the same account. A successful probe
+  now clears all of them instead of only the first.
+- **Idle pool polls less.** Quota refresh follows gateway load: 60 s while
+  requests run, 15 min when the pool is idle.
+- **Logs rotate in long sessions.** The health tick rotates `gateway.log` past
+  32 MB while the pool is idle, so it no longer grows for weeks.
+- **Quarantine reasons.** The account row distinguishes a first-token timeout,
+  exhausted quota, Cloudflare challenge, sign-in failure and payment/plan
+  problems.
+- **Build metadata.** macOS build 41; version metadata is aligned at 4.0.1.
+
 ## What's new in 4.0.0
 
 - **Multi-account Antigravity.** Connect several Google accounts and manage

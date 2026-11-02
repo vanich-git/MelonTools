@@ -71,6 +71,7 @@ final class CodexGatewayService: ObservableObject {
     private var logReadOffset: UInt64 = 0
     private var logRemainder = ""
     private var userInitiatedStop = false
+    private var rotatingLog = false
     /// Proxy URL currently written into config.yaml. The health timer compares
     /// it with the live system proxy so a PAC/VPN change is picked up without
     /// restarting the gateway.
@@ -664,6 +665,40 @@ final class CodexGatewayService: ObservableObject {
         await start(accounts: accounts, priorities: priorities, force: true)
     }
 
+    /// Rotate `gateway.log` when it grew past `maxBytes` during a long run.
+    ///
+    /// The child process holds the file descriptor, so a rename would keep the
+    /// engine writing into the rotated inode. The only safe rotation is a
+    /// restart, and it must wait for an idle pool so an active stream is never
+    /// cut. `prepareLogFile()` performs the actual rename on the next spawn.
+    ///
+    /// The respawn reuses the config and auth files already on disk. It must
+    /// not go through `start(accounts:)`: an empty `accounts` would delete
+    /// every owned auth file.
+    func rotateLogIfOversized(maxBytes: Int = 32 * 1024 * 1024) async {
+        guard isRunning, !isStarting, !rotatingLog, requestsLastMinute == 0 else { return }
+        let size = Int(Self.fileSize(logPath))
+        guard size > maxBytes else { return }
+        rotatingLog = true
+        defer { rotatingLog = false }
+        auditLog("rotating gateway log (\(size) bytes)")
+        await respawnForLogRotation()
+    }
+
+    private func respawnForLogRotation() async {
+        await stop()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        guard let binary = Self.locateBinary() else {
+            finishWithFailure(L("The service component was not found — reinstall the app."))
+            return
+        }
+        status = .starting
+        logLines = []
+        spawn(binary: binary)
+        startHealthCheck()
+        startLogTail(replayLastBytes: true)
+    }
+
     /// Re-sync account files without stopping (the gateway hot-reloads the auth dir).
     /// `poolSlugs` is the visible pool the auth payloads exclude from; `nil`
     /// falls back to the pool on disk.
@@ -976,6 +1011,7 @@ final class CodexGatewayService: ObservableObject {
                     if self.lastError != nil { self.lastError = nil }
                     self.refreshProxyIfNeeded()
                     self.refreshCatalogIfNeeded()
+                    await self.rotateLogIfOversized()
                 case .unauthorized, .unreachable:
                     misses += 1
                     if misses >= 3 {

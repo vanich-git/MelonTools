@@ -19,31 +19,46 @@ enum MTTheme {
         NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
     }
 
-    // MARK: - Accent (golden melon)
+    // MARK: - Accent & Multi-Accent Palette (Apple Liquid Glass)
 
-    /// The one accent: golden melon.
-    static let gold = Color(hex: 0xFAC440)
-    /// Ink on gold — for text and icons placed on the accent.
+    /// The primary golden-melon accent.
+    static let gold = Color(hex: 0xF59E0B)
+    /// Golden melon alias for amber.
+    static let amber = Color(hex: 0xF59E0B)
+    /// Ink on gold/amber — for text and icons placed on prominent accent fills.
     static let onGold = Color(hex: 0x1A1A1C)
 
-    // MARK: - Neutral palette (dark: graphite, light: soft gray)
+    /// Cyan / Electric Blue — network latency, throughput, gateway API, telemetry.
+    static let cyan = Color(hex: 0x38BDF8)
+    /// Emerald Green — usable/healthy accounts, active services, success states.
+    static let emerald = Color(hex: 0x10B981)
+    /// Ruby Red / Coral — quota exhaustion, errors, stopped services, destructive actions.
+    static let ruby = Color(hex: 0xEF4444)
+    /// Violet / Purple — AI models, Codex engine, accounts pool, deep intelligence.
+    static let violet = Color(hex: 0xA855F7)
 
-    /// Window background: dark graphite / light gray.
+    // MARK: - Neutral palette (dark: deep obsidian glass, light: crystalline soft gray)
+
+    /// Window background: deep graphite / light gray.
+    ///
+    /// One flat colour is painted behind both the sidebar and the card board, so
+    /// the whole window reads as a single surface instead of two differently lit
+    /// halves.
     static let background = adaptive("mt.background",
-        dark: rgb(26, 26, 28),       // #1A1A1C
-        light: rgb(238, 238, 242))   // #EEEEF2
+        dark: rgb(17, 17, 19),       // #111113
+        light: rgb(233, 233, 237))   // #E9E9ED
     /// Card surface.
     static let cardBackground = adaptive("mt.card",
-        dark: rgb(38, 38, 41),       // #262629
-        light: rgb(255, 255, 255))
+        dark: rgb(31, 31, 34),       // #1F1F22
+        light: rgb(252, 252, 253))
     /// Chips, input wells, nested surfaces.
     static let cardSoft = adaptive("mt.cardSoft",
-        dark: rgb(48, 48, 51),       // #303033
-        light: rgb(242, 242, 246))   // #F2F2F6
+        dark: rgb(42, 42, 45),       // #2A2A2D
+        light: rgb(240, 240, 244))   // #F0F0F4
     /// Hairline borders.
     static let borderColor = adaptive("mt.border",
-        dark: rgb(64, 64, 68),       // #404044
-        light: rgb(222, 222, 228))   // #DEDEE4
+        dark: rgb(58, 58, 62),       // #3A3A3E
+        light: rgb(219, 219, 225))   // #DBDBE1
 
     /// Primary text.
     static let textPrimary = adaptive("mt.textPrimary",
@@ -60,10 +75,10 @@ enum MTTheme {
 
     // MARK: - Semantic status
 
-    static let ok = Color(nsColor: .systemGreen)
-    static let warn = Color(nsColor: .systemOrange)
-    static let danger = Color(nsColor: .systemRed)
-    static let info = Color(nsColor: .systemBlue)
+    static let ok = emerald
+    static let warn = amber
+    static let danger = ruby
+    static let info = cyan
 
     // MARK: - Compatibility aliases (older call sites)
 
@@ -71,7 +86,6 @@ enum MTTheme {
     static let ink = textPrimary
     static let muted = textSecondary
     static let hairline = borderColor
-    static let amber = Color(nsColor: .systemOrange)
     static let surface = cardBackground
     static let nightBg = background
     static let nightSurface = cardBackground
@@ -92,6 +106,9 @@ enum MTTheme {
 
     static let rSmall: CGFloat = 8
     static let rCard: CGFloat = 14
+    static let rBento: CGFloat = 18
+    static let rSidebar: CGFloat = 20
+    static let rPill: CGFloat = 999
 
     // MARK: - Fonts (SF Pro / SF Mono)
 
@@ -134,12 +151,52 @@ enum MTTheme {
     }
 }
 
-// MARK: - Solid surfaces
+// MARK: - Surfaces
 
 extension View {
-    /// A solid card surface: filled panel with a hairline border. No shadow —
-    /// offscreen shadow passes on scrolling card layers are a known macOS
-    /// SwiftUI jank source, and the hairline already separates the card.
+    /// Card surface: a neutral panel with a hairline border.
+    ///
+    /// The bento layout keeps its plates — what is gone is the decoration: no
+    /// coloured accent stroke, no radial glow, no shadow, no backdrop blur. That
+    /// is what made the board look heavy and made every scroll frame expensive.
+    func mtLiquidGlass(
+        cornerRadius: CGFloat = MTTheme.rCard,
+        accent: Color? = nil,
+        borderWidth: CGFloat = 1.0
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return self
+            .background(shape.fill(MTTheme.cardBackground))
+            .overlay(shape.strokeBorder(MTTheme.borderColor.opacity(0.55), lineWidth: borderWidth))
+    }
+
+    /// Bento Card: neutral plate with a hairline border.
+    ///
+    /// `accent`, `cornerRadius` and `glowIntensity` stay in the signature for the
+    /// existing call sites; the plate itself is colourless.
+    func mtBentoCard(
+        accent: Color? = nil,
+        cornerRadius: CGFloat = MTTheme.rBento,
+        glowIntensity: Double = 0.08
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return self
+            .background(shape.fill(MTTheme.cardBackground))
+            .overlay(shape.strokeBorder(MTTheme.borderColor.opacity(0.55), lineWidth: 1.0))
+    }
+
+    /// Floating Left Sidebar: the same neutral plate as a card, so the window
+    /// keeps one consistent surface behind the navigation and behind the board.
+    func mtFloatingSidebar(
+        cornerRadius: CGFloat = MTTheme.rSidebar
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return self
+            .background(shape.fill(MTTheme.cardBackground))
+            .overlay(shape.strokeBorder(MTTheme.borderColor.opacity(0.55), lineWidth: 1.0))
+    }
+
+    /// A solid card surface: filled panel with a hairline border.
     func mtCardSurface(cornerRadius: CGFloat = MTTheme.rCard) -> some View {
         self
             .background(MTTheme.cardBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -150,22 +207,63 @@ extension View {
     }
 }
 
+/// Button size variant
+enum MTButtonSize {
+    case regular
+    case small
+}
+
 /// Button chrome: solid capsule — golden fill for prominent, soft surface for secondary.
 struct MTSolidButtonStyle: ButtonStyle {
     var tint: Color? = nil
     var prominent = false
+    var size: MTButtonSize = .regular
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(MTTheme.body(12, weight: prominent ? .semibold : .medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
+            .padding(.horizontal, size == .small ? 9 : 14)
+            .padding(.vertical, size == .small ? 4 : 7)
             .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
             .background(
                 Capsule().fill(prominent ? (tint ?? MTTheme.gold) : MTTheme.cardSoft)
             )
             .overlay(
                 Capsule().strokeBorder(prominent ? Color.clear : MTTheme.borderColor, lineWidth: 0.75)
+            )
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .contentShape(Capsule())
+    }
+}
+
+/// Glass Button style: pill with a specular edge.
+///
+/// Prominent buttons are always painted in the golden melon accent — the call to
+/// action of a screen is amber, not a per-screen colour. Secondary buttons stay on
+/// the card surface so the primary action is the only amber thing in the row.
+struct MTGlassButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+    var prominent: Bool = false
+    var size: MTButtonSize = .regular
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
+            .padding(.horizontal, size == .small ? 9 : 14)
+            .padding(.vertical, size == .small ? 4 : 7)
+            .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
+            .background(
+                Capsule()
+                    .fill(prominent ? MTTheme.gold : MTTheme.cardSoft)
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        prominent
+                            ? AnyShapeStyle(Color.white.opacity(0.28))
+                            : AnyShapeStyle(MTTheme.borderColor),
+                        lineWidth: 0.75
+                    )
             )
             .opacity(configuration.isPressed ? 0.78 : 1)
             .contentShape(Capsule())

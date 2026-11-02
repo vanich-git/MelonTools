@@ -1,3 +1,103 @@
+# Melon Tools 5.0.0
+
+A ground-up visual redesign on macOS and Windows: one flat dark canvas, bento
+cards, a floating sidebar and a semantic accent palette. Routing, quota and
+scheduler behaviour is unchanged.
+
+- **Flat dark canvas.** The window paints one `#111113` surface behind the
+  sidebar and the board; cards are `#1F1F22` plates with an 18 pt radius and a
+  neutral hairline. The coloured accent frames, radial glows, drop shadows and
+  per-card backdrop blurs are gone, which also removed the per-frame
+  rasterisation that made long boards stutter while scrolling.
+- **Floating sidebar.** Navigation sits on its own plate with a per-section
+  accent: a selected row takes a soft tint of that accent, a matching glyph and
+  a trailing dot. Hover stays a neutral `white 6%` wash.
+- **Bento dashboard.** The overview is two equal columns whose cards stretch to
+  the row height, so a short card never leaves a hole under itself. New
+  **Providers** and **Account pools** cards answer "what is connected" without
+  opening a second page: every upstream (Codex OAuth, Antigravity, Claude,
+  OpenRouter, OpenCode, DeepInfra, Vercel, Z.ai) with its model count, and each
+  pool (Codex, Antigravity with Gemini/Claude windows, Claude) with its account
+  count and remaining quota.
+- **Pool totals, not averages.** "Codex pool health" and the status bar panel
+  sum the remaining quota across the pool: five accounts at 100% read **500% of
+  500%** for the 5-hour window, matching the account cards instead of showing an
+  average of 100%.
+- **Status bar panel.** The menu extra drops the account list, uses SF Pro
+  instead of the monospaced data face, gains rounded hover states on every row,
+  shows the pool totals and the single gateway status line (the duplicated
+  "service running running" string is gone).
+- **Windows parity.** The Tauri shell ships the same palette, radii, flat
+  plates, hero banner, provider and pool cards, per-section navigation accents
+  and the same summary maths; only the system font differs (Segoe UI instead of
+  SF Pro).
+- **New identity.** The amber melon-slice icon and the transparent logo ship in
+  both apps: Dock icon, About sheet, sidebar, dashboard hero and the Windows
+  installer icon.
+- **Build metadata.** macOS 5.0.0 (build 50); Windows 5.0.0.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v5.0.0/MelonTools-5.0.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v5.0.0/MelonTools-5.0.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v5.0.0/MelonTools-5.0.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+436732a5117b56f451d0a65f79a68556f7fda18786596326c282dc5832ac58c4  MelonTools-5.0.0.dmg
+6cf1a3ab6373962286591bc6f8681af90bf24385baad9c1c9a6fdeaad898cd01  MelonTools-5.0.0-setup.exe
+97b66b6da08058523d7d0b1160d505a79c02abc0525fbd69c96795ee454b4ea1  MelonTools-5.0.0-win-x64-portable.exe
+```
+
+# Melon Tools 4.0.1
+
+Maintenance release: probe clears every Antigravity cooldown, the pool polls
+less while idle, long-running logs rotate, and the quarantine badge names its
+reason.
+
+- **Probe releases every model.** One first-token timeout can quarantine
+  several models of the same account, because the engine keys the watchdog by
+  auth/model. A successful probe now clears all of them on macOS and Windows;
+  before, only the first cooldown was released and the account looked
+  quarantined until the next probe.
+- **Idle pool stops calling Google every five minutes.** The macOS quota poll
+  now follows gateway load like the Windows loop already did: 60 s while
+  requests are running, 15 min when the pool is idle. The 5-hour windows only
+  move under load, so this drops battery use and avoids rate-limiting the
+  quota endpoint.
+- **Logs rotate during long sessions.** `gateway.log` used to be rotated only
+  when the engine restarted, so a machine left running for weeks kept growing
+  the file. The watchdog now rotates it once the file passes 32 MB, and only
+  while the pool is idle so an active stream is never cut.
+- **The quarantine badge names its reason.** A red row now says whether the
+  first token timed out (QoS watchdog), the Google quota window is exhausted,
+  Cloudflare challenged the request, or the sign-in/plan needs attention.
+  macOS and Windows show the same labels in Russian and English.
+- **Build metadata.** macOS build 41 and Windows 4.0.1; version metadata is
+  aligned at 4.0.1.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v4.0.1/MelonTools-4.0.1.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v4.0.1/MelonTools-4.0.1-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v4.0.1/MelonTools-4.0.1-win-x64-portable.exe)
+
+### SHA-256
+
+```
+aa3edd02d256613a8ddb919abd33a766b3026d7a36ac14890da90c2ca65af91a  MelonTools-4.0.1.dmg
+5a3ab2fa8fc1ab493feaa3e29a7b58f5dfad69fbea5d38df3a9dd6ad7250bee3  MelonTools-4.0.1-setup.exe
+6c89e946196a74dac06a6e2e4fa03427ae234901cb8775d58a0b3ff3b6eb181e  MelonTools-4.0.1-win-x64-portable.exe
+6c89e946196a74dac06a6e2e4fa03427ae234901cb8775d58a0b3ff3b6eb181e  MelonTools-4.0.1-win-x64.exe
+```
+
 # Melon Tools 4.0.0
 
 > **Repository move:** Melon Tools now lives at

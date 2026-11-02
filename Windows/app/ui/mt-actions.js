@@ -948,13 +948,19 @@ const A = {
   antigravityProbe(name) {
     const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
     if (!account) return;
-    const cooldown = (account.cooldowns || [])[0];
+    // One timeout can quarantine several models of the same account: release
+    // every first-token cooldown, or the account stays quarantined after a
+    // successful probe.
+    const models = (account.cooldowns || [])
+      .filter((item) => item.http_status === 504)
+      .map((item) => item.model_key)
+      .filter(Boolean);
     run("antigravityProbe", async () => {
       const result = await inv("antigravity_account_action", {
         action: "probe",
         name,
         authIndex: account.authIndex,
-        model: cooldown && cooldown.model_key,
+        models,
       });
       toast(result && result.ok ? t("done") : t("error"), !(result && result.ok));
       await A.antigravityUsageLoad();

@@ -1058,6 +1058,14 @@ fn parse_timestamp(line: &str) -> Option<chrono::NaiveDateTime> {
 /// restarted anyway, so the open-handle rename window is safe.
 const LOG_ROTATE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Current `gateway.log` size. The watchdog uses it to rotate a log that grew
+/// during a long session without waiting for the next app launch.
+pub fn log_size() -> u64 {
+    fs::metadata(paths::log_path())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
 /// Keeps one backup (`gateway.log.1`). Rotation failure is ignored: the engine
 /// may still hold the handle, and the next fresh start retries.
 fn rotate_log(path: &std::path::Path) {

@@ -45,4 +45,34 @@ final class AntigravityPoolTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         XCTAssertTrue(AntigravityPoolStore.catalogOnlyModels(entitled: [], catalogURL: url).isEmpty)
     }
+
+    func testWatchdogModelsCoversEveryFirstTokenCooldown() {
+        let cooldowns = [
+            AntigravityCooldown(scope: "model", modelKey: "gemini-3.8-flash-high",
+                                reason: "transient_error", retryAt: nil,
+                                remainingSeconds: 60, httpStatus: 504),
+            AntigravityCooldown(scope: "model", modelKey: "gemini-2.5-pro",
+                                reason: "transient_error", retryAt: nil,
+                                remainingSeconds: 60, httpStatus: 504),
+            AntigravityCooldown(scope: "model", modelKey: "gemini-3.8-flash-high",
+                                reason: "transient_error", retryAt: nil,
+                                remainingSeconds: 60, httpStatus: 504),
+            AntigravityCooldown(scope: "model", modelKey: "gemini-3.8-flash-low",
+                                reason: "quota", retryAt: nil,
+                                remainingSeconds: 600, httpStatus: 429),
+        ]
+        XCTAssertEqual(
+            AntigravityPoolStore.watchdogModels(in: cooldowns),
+            ["gemini-2.5-pro", "gemini-3.8-flash-high"]
+        )
+    }
+
+    func testWatchdogModelsIgnoresQuotaOnlyCooldowns() {
+        let cooldowns = [
+            AntigravityCooldown(scope: "credential", modelKey: nil,
+                                reason: "credential_quota", retryAt: nil,
+                                remainingSeconds: 600, httpStatus: 429),
+        ]
+        XCTAssertTrue(AntigravityPoolStore.watchdogModels(in: cooldowns).isEmpty)
+    }
 }

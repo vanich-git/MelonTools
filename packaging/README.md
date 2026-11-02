@@ -18,7 +18,31 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 4.0.0
+## Release artifacts for 5.0.0
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-5.0.0.dmg` | `9dd337d5c33632711bd23a21bbb4f07be895423f202b1f9247339fb75d37545c` |
+
+5.0.0 is a macOS-only redesign release; the Windows artifacts stay at 4.0.1
+until the Windows build catches up.
+
+All files and their `.sha256` siblings are attached to the GitHub release for
+tag `v5.0.0`.
+
+## Release artifacts for 4.0.1 (previous macOS + Windows release)
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-4.0.1.dmg` | `aa3edd02d256613a8ddb919abd33a766b3026d7a36ac14890da90c2ca65af91a` |
+| Windows installer | `MelonTools-4.0.1-setup.exe` | `5a3ab2fa8fc1ab493feaa3e29a7b58f5dfad69fbea5d38df3a9dd6ad7250bee3` |
+| Windows portable | `MelonTools-4.0.1-win-x64-portable.exe` | `6c89e946196a74dac06a6e2e4fa03427ae234901cb8775d58a0b3ff3b6eb181e` |
+| Windows legacy alias | `MelonTools-4.0.1-win-x64.exe` | `6c89e946196a74dac06a6e2e4fa03427ae234901cb8775d58a0b3ff3b6eb181e` |
+
+All files and their `.sha256` siblings are attached to the GitHub release for
+tag `v4.0.1`.
+
+## Release artifacts for 4.0.0 (previous release)
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
@@ -134,7 +158,7 @@ keychain, then calls:
 ```bash
 ./packaging/sign-macos.sh \
   "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app" \
-  "MacOS/build/MelonTools-4.0.0.dmg"
+  "MacOS/build/MelonTools-4.0.1.dmg"
 ```
 
 The script:
@@ -158,7 +182,7 @@ and calls:
 
 ```powershell
 ./packaging/sign-windows.ps1 `
-  -File Windows/dist/MelonTools-4.0.0-setup.exe -Require
+  -File Windows/dist/MelonTools-4.0.1-setup.exe -Require
 ```
 
 The script locates `signtool.exe` from the Windows SDK, signs with SHA-256 and
@@ -219,11 +243,11 @@ manifest loses its 64-character SHA-256.
 ## Checksums
 
 ```bash
-shasum -a 256 MacOS/build/MelonTools-4.0.0.dmg
+shasum -a 256 MacOS/build/MelonTools-4.0.1.dmg
 ```
 
 ```powershell
-Get-FileHash .\MelonTools-4.0.0-setup.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-4.0.1-setup.exe -Algorithm SHA256
 ```
 
 The `.sha256` files published next to each artifact use the standard

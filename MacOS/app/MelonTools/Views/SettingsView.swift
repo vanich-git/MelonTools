@@ -55,7 +55,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: MTTheme.s5) {
                 MTPageHeader(kicker: "melon tools", title: L("Settings"), subtitle: L("Settings subtitle"))
 
-                MTCard(title: L("Appearance"), systemImage: "paintbrush") {
+                MTCard(title: L("Appearance"), systemImage: "paintbrush", accent: MTTheme.amber, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Theme"))
@@ -92,7 +92,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             Circle()
-                                .fill(MTTheme.gold)
+                                .fill(MTTheme.amber)
                                 .frame(width: 16, height: 16)
                             Text(L("golden melon"))
                                 .font(MTTheme.mono(11))
@@ -101,7 +101,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Network / Proxy"), systemImage: "network") {
+                MTCard(title: L("Network / Proxy"), systemImage: "network", accent: MTTheme.cyan, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Toggle(L("Use proxy for OpenAI and providers"), isOn: $networkProxyEnabled)
                             .toggleStyle(.switch)
@@ -172,7 +172,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Antigravity first-token failover"), systemImage: "speedometer") {
+                MTCard(title: L("Antigravity first-token failover"), systemImage: "speedometer", accent: MTTheme.emerald, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Toggle(L("Switch Antigravity accounts when the first token is slow"), isOn: Binding(
                             get: { streamBootstrapTimeoutSeconds > 0 },
@@ -206,7 +206,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Dashboard widgets"), systemImage: "square.grid.2x2") {
+                MTCard(title: L("Dashboard widgets"), systemImage: "square.grid.2x2", accent: MTTheme.cyan, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Show pool health"), isOn: $showPoolHealth)
                             .toggleStyle(.switch)
@@ -223,7 +223,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Codex"), systemImage: "arrow.triangle.2.circlepath") {
+                MTCard(title: L("Codex"), systemImage: "arrow.triangle.2.circlepath", accent: MTTheme.violet, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(isOn: $composer.autoRetryEnabled) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -236,7 +236,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(MTTheme.gold)
+                        .tint(MTTheme.amber)
                         if let last = composer.lastAutoRetryAt {
                             Text(L("Last automatic action:") + " " + last.formatted(date: .omitted, time: .shortened))
                                 .font(MTTheme.mono(10))
@@ -245,7 +245,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Service settings"), systemImage: "network") {
+                MTCard(title: L("Service settings"), systemImage: "network", accent: MTTheme.cyan, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Start the service at app launch"), isOn: $gatewayAutoStart)
                             .toggleStyle(.switch)
@@ -264,7 +264,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Quotas section"), systemImage: "gauge.with.dots.needle.33percent") {
+                MTCard(title: L("Quotas section"), systemImage: "gauge.with.dots.needle.33percent", accent: MTTheme.emerald, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Auto-refresh"))
@@ -297,7 +297,7 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("Backup"), systemImage: "externaldrive.badge.timemachine") {
+                MTCard(title: L("Backup"), systemImage: "externaldrive.badge.timemachine", accent: MTTheme.amber, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Text(L("Encrypted backup of the scheduler, settings, accounts with auth files and model sources. Logs and gateway keys are not included."))
                             .font(MTTheme.mono(10))
@@ -313,10 +313,10 @@ struct SettingsView: View {
                                 .frame(width: 240)
                         }
                         HStack(spacing: MTTheme.s2) {
-                            MTPrimaryButton(title: L("Export backup…"), systemImage: "square.and.arrow.up") {
+                            MTGlassButton(title: L("Export backup…"), systemImage: "square.and.arrow.up", tint: MTTheme.amber, prominent: true) {
                                 exportBackup()
                             }
-                            MTSecondaryButton(title: L("Import backup…"), systemImage: "square.and.arrow.down") {
+                            MTGlassButton(title: L("Import backup…"), systemImage: "square.and.arrow.down", tint: MTTheme.amber) {
                                 chooseBackupToImport()
                             }
                         }
@@ -350,12 +350,12 @@ struct SettingsView: View {
                     Text(String(format: L("The live scheduler, settings, accounts and auth files will be replaced by “%@”."), url.lastPathComponent))
                 }
 
-                MTCard(title: L("Support bundle"), systemImage: "ladybug") {
+                MTCard(title: L("Support bundle"), systemImage: "ladybug", accent: MTTheme.ruby, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Text(L("Export a redacted diagnostics file: versions, gateway state, log tails and file sizes. Tokens and keys are removed."))
                             .font(MTTheme.mono(10))
                             .foregroundStyle(MTTheme.textSecondary)
-                        MTSecondaryButton(title: L("Export support bundle…"), systemImage: "square.and.arrow.up") {
+                        MTGlassButton(title: L("Export support bundle…"), systemImage: "square.and.arrow.up", tint: MTTheme.ruby) {
                             exportSupportBundle()
                         }
                         if let supportNotice {
@@ -366,12 +366,9 @@ struct SettingsView: View {
                     }
                 }
 
-                MTCard(title: L("About"), systemImage: "info.circle") {
+                MTCard(title: L("About"), systemImage: "info.circle", accent: MTTheme.amber, isBento: true) {
                     HStack(alignment: .center, spacing: MTTheme.s3) {
-                        Image(nsImage: MelonAssets.logo)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: 44, height: 44)
+                        MelonAssets.logoImage(size: 48)
                         VStack(alignment: .leading, spacing: MTTheme.s2) {
                             Text("Melon Tools \(appVersion)")
                                 .font(MTTheme.mono(11, weight: .semibold))
@@ -518,6 +515,11 @@ struct SettingsView: View {
 
 /// Menu bar panel: compact pool totals, quick actions and the live service
 /// state. Everything is one click away without opening the main window.
+///
+/// The panel is a plain SwiftUI window (`.menuBarExtraStyle(.window)`), so it has
+/// no AppKit menu chrome: rows need their own hover highlight, and the labels use
+/// SF Pro like the rest of the app instead of the monospaced data face — a mono
+/// menu read as "strange font" at 10 pt.
 struct MenuBarView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.openWindow) private var openWindow
@@ -530,33 +532,21 @@ struct MenuBarView: View {
     private static var schedulerWindow: NSWindow?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MTTheme.s3) {
+        VStack(alignment: .leading, spacing: MTTheme.s2) {
             header
             poolTotals
-            Divider()
+            divider
             quickActions
-            Divider()
-            accountsSection
-            Divider()
+            divider
             serviceRow
             if gateway.isRunning {
-                Button {
+                MenuBarActionRow(icon: "arrow.up.forward.app", title: L("Launch Codex")) {
                     gateway.launchThroughGateway()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 10))
-                        Text(L("Launch Codex"))
-                            .font(MTTheme.mono(10))
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(MTTheme.s3)
-        .frame(width: 320)
+        .frame(width: 300)
         .onAppear {
             codex.load()
             scheduler.start()
@@ -564,46 +554,58 @@ struct MenuBarView: View {
         }
     }
 
+    private var divider: some View {
+        Rectangle()
+            .fill(MTTheme.borderColor.opacity(0.6))
+            .frame(height: 1)
+            .padding(.vertical, 2)
+    }
+
     // MARK: - Header and totals
 
     private var header: some View {
         HStack(spacing: MTTheme.s2) {
-            Image(nsImage: MelonAssets.logo)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 16, height: 16)
+            MelonAssets.logoImage(size: 16)
             Text("Melon Tools")
-                .font(MTTheme.body(12, weight: .bold))
+                .font(MTTheme.body(12.5, weight: .semibold))
+                .foregroundStyle(MTTheme.textPrimary)
             Spacer()
             Button(action: openMainWindow) {
                 Image(systemName: "macwindow")
-                    .font(.system(size: 11))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(L("Open window"))
         }
     }
 
+    /// Pool totals, not averages: five accounts at 100% must read 500%, so the
+    /// number always means "how much quota is left across the whole pool".
     private var poolTotals: some View {
-        let health = DashboardMetrics.poolHealth(accounts: codex.accounts)
-        return HStack(spacing: MTTheme.s3) {
-            compactMetric(title: L("5 h"), value: health.hourlyAverage)
-            compactMetric(title: L("Week"), value: health.weeklyAverage)
-            Spacer()
+        let totals = DashboardMetrics.quotaTotals(accounts: codex.accounts)
+        return HStack(alignment: .bottom, spacing: MTTheme.s5) {
+            compactMetric(title: L("5 h"), value: totals.hourly)
+            compactMetric(title: L("Week"), value: totals.weekly)
+            Spacer(minLength: 0)
             Text(String(format: L("Accounts in pool: %d"), codex.accounts.count))
-                .font(MTTheme.mono(9))
+                .font(MTTheme.body(10))
                 .foregroundStyle(MTTheme.textTertiary)
+                .padding(.bottom, 1)
         }
     }
 
     private func compactMetric(title: String, value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(title.uppercased())
-                .font(MTTheme.mono(8, weight: .semibold))
+                .font(MTTheme.body(9, weight: .semibold))
                 .tracking(0.6)
                 .foregroundStyle(MTTheme.textTertiary)
             Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
-                .font(MTTheme.mono(13, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
+                .monospacedDigit()
                 .foregroundStyle(value == nil ? MTTheme.textTertiary : MTTheme.textPrimary)
         }
     }
@@ -615,14 +617,14 @@ struct MenuBarView: View {
     }
 
     private var quickActions: some View {
-        VStack(alignment: .leading, spacing: MTTheme.s1) {
-            actionRow(icon: "macwindow", title: L("Open Melon Tools")) {
+        VStack(alignment: .leading, spacing: 1) {
+            MenuBarActionRow(icon: "macwindow", title: L("Open Melon Tools")) {
                 openMainWindow()
             }
-            actionRow(icon: "clock.badge.checkmark", title: L("Scheduler")) {
+            MenuBarActionRow(icon: "clock.badge.checkmark", title: L("Scheduler")) {
                 openSchedulerWindow()
             }
-            actionRow(
+            MenuBarActionRow(
                 icon: "play.circle",
                 title: L("Run next due task") + (dueTasks.isEmpty ? "" : " (\(dueTasks.count))"),
                 disabled: dueTasks.isEmpty || !gateway.isRunning || scheduler.isRunning
@@ -630,40 +632,17 @@ struct MenuBarView: View {
                 guard let task = dueTasks.first else { return }
                 Task { await scheduler.runNow(id: task.id) }
             }
-            actionRow(
+            MenuBarActionRow(
                 icon: gateway.isRunning ? "pause.circle" : "play.circle",
                 title: gateway.isRunning ? L("Pause API") : L("Resume API"),
                 disabled: gateway.isStarting
             ) {
                 toggleGateway()
             }
-            actionRow(icon: "power", title: L("Quit Melon Tools")) {
+            MenuBarActionRow(icon: "power", title: L("Quit Melon Tools")) {
                 NSApp.terminate(nil)
             }
         }
-    }
-
-    private func actionRow(
-        icon: String,
-        title: String,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: icon)
-                    .font(.system(size: 10))
-                    .frame(width: 14)
-                Text(title)
-                    .font(MTTheme.mono(10))
-                Spacer()
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, 2)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .foregroundStyle(disabled ? MTTheme.textTertiary : MTTheme.textPrimary)
     }
 
     private func openMainWindow() {
@@ -706,50 +685,53 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: - Account preview and service
-
-    private var accountsSection: some View {
-        VStack(alignment: .leading, spacing: MTTheme.s1) {
-            Text(L("Codex").uppercased())
-                .font(MTTheme.mono(9, weight: .semibold))
-                .tracking(1.2)
-                .foregroundStyle(MTTheme.textSecondary)
-            if codex.accounts.isEmpty {
-                Text(L("no accounts"))
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.textSecondary)
-            } else {
-                ForEach(codex.accounts.prefix(3)) { account in
-                    HStack(spacing: 6) {
-                        MTQuotaRing(fraction: account.quota?.weeklyRemainingPercent.map { $0 / 100.0 }, size: 20)
-                        Text(account.displayName)
-                            .font(MTTheme.mono(10))
-                            .lineLimit(1)
-                        Spacer()
-                        if codex.currentAccountId == account.id {
-                            Text(L("active"))
-                                .font(MTTheme.mono(8, weight: .semibold))
-                                .foregroundStyle(MTTheme.ok)
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // MARK: - Service
 
     private var serviceRow: some View {
         HStack(spacing: MTTheme.s2) {
             Circle()
                 .fill(gateway.isRunning ? MTTheme.ok : MTTheme.textTertiary)
                 .frame(width: 7, height: 7)
-            Text(String(format: L("service %@"), gateway.status.label))
-                .font(MTTheme.mono(10))
-            Spacer()
-            if gateway.isRunning {
-                Text(L("running"))
-                    .font(MTTheme.mono(9))
-                    .foregroundStyle(MTTheme.ok)
-            }
+            Text(gateway.isRunning ? L("service running") : L("service stopped"))
+                .font(MTTheme.body(11))
+                .foregroundStyle(MTTheme.textSecondary)
+            Spacer(minLength: 0)
         }
+    }
+}
+
+/// One clickable row of the menu bar panel with an AppKit-like hover highlight.
+private struct MenuBarActionRow: View {
+    let icon: String
+    let title: String
+    var disabled: Bool = false
+    let action: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: MTTheme.s2) {
+                Image(systemName: icon)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .frame(width: 16, alignment: .leading)
+                Text(title)
+                    .font(MTTheme.body(12))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, MTTheme.s2)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovered && !disabled ? Color.white.opacity(0.09) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .foregroundStyle(disabled ? MTTheme.textTertiary : MTTheme.textPrimary)
+        .onHover { hovered = $0 }
     }
 }

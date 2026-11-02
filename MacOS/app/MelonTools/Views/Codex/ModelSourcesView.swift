@@ -108,7 +108,7 @@ struct CodexProvidersView: View {
     /// Compact, read-only health summary: gateway `/v1/models`, auth files or
     /// keys, model counts and the last quota poll. The probe never writes.
     private var diagnosticsCard: some View {
-        MTCard(title: L("Connection check"), systemImage: "checklist") {
+        MTCard(title: L("Connection check"), systemImage: "checklist", accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(alignment: .top, spacing: MTTheme.s3) {
                     if let evidence = diagnostics.evidence {
@@ -136,7 +136,7 @@ struct CodexProvidersView: View {
                             .foregroundStyle(MTTheme.textSecondary)
                     }
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Check"), systemImage: "arrow.clockwise", isLoading: diagnostics.isRunning) {
+                    MTGlassButton(title: L("Check"), systemImage: "arrow.clockwise", tint: MTTheme.cyan, isLoading: diagnostics.isRunning) {
                         Task { await diagnostics.run() }
                     }
                 }
@@ -240,7 +240,7 @@ struct CodexProvidersView: View {
     // MARK: - Board: the pool
 
     private var poolCard: some View {
-        MTCard(title: L("Codex pool"), systemImage: "person.2") {
+        MTCard(title: L("Codex pool"), systemImage: "person.2", accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(alignment: .firstTextBaseline, spacing: MTTheme.s2) {
                     Text("\(store.accounts.count)")
@@ -266,10 +266,10 @@ struct CodexProvidersView: View {
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
                 HStack(spacing: MTTheme.s3) {
-                    MTSecondaryButton(title: L("Accounts"), systemImage: "person.2") {
+                    MTGlassButton(title: L("Accounts"), systemImage: "person.2", tint: MTTheme.cyan) {
                         selection = .codexAccounts
                     }
-                    MTSecondaryButton(title: L("Models"), systemImage: "square.grid.2x2") {
+                    MTGlassButton(title: L("Models"), systemImage: "square.grid.2x2", tint: MTTheme.violet) {
                         route = .codexPool
                     }
                     Spacer(minLength: 0)
@@ -367,7 +367,7 @@ struct CodexProvidersView: View {
 
     private var openCodeCard: some View {
         let configured = !sources.openCodeKey.isEmpty
-        return MTCard(title: "OpenCode", systemImage: ProviderRoute.openCode.systemImage) {
+        return MTCard(title: "OpenCode", systemImage: ProviderRoute.openCode.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
@@ -391,12 +391,12 @@ struct CodexProvidersView: View {
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textTertiary)
                 HStack(spacing: MTTheme.s3) {
-                    MTSecondaryButton(title: L("Open console"), systemImage: "arrow.up.forward.app") {
+                    MTGlassButton(title: L("Open console"), systemImage: "arrow.up.forward.app", tint: MTTheme.cyan) {
                         if let url = URL(string: "https://opencode.ai/console") {
                             NSWorkspace.shared.open(url)
                         }
                     }
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .openCode
                     }
                     Spacer(minLength: 0)
@@ -415,7 +415,7 @@ struct CodexProvidersView: View {
             guard let limit = stats?.keyLimit, let used = stats?.keyUsage else { return nil }
             return max(0, limit - used)
         }()
-        return MTCard(title: "OpenRouter", systemImage: ProviderRoute.openRouter.systemImage) {
+        return MTCard(title: "OpenRouter", systemImage: ProviderRoute.openRouter.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
@@ -438,7 +438,7 @@ struct CodexProvidersView: View {
                             title: L("Credits spent"),
                             value: stats.creditsUsage.map(money) ?? "—",
                             caption: stats.creditsTotal.map { L("Lifetime") + " · " + L("Purchased").lowercased() + " " + money($0) },
-                            valueColor: MTTheme.gold,
+                            valueColor: MTTheme.amber,
                             reservesMeterSpace: true
                         )
                         MTMetricTile(
@@ -446,7 +446,7 @@ struct CodexProvidersView: View {
                             value: keyRemaining.map(money) ?? "—",
                             caption: stats.keyLimit.map { L("Key limit").lowercased() + " " + money($0) },
                             fraction: fraction(keyRemaining, stats.keyLimit),
-                            tint: MTTheme.info
+                            tint: MTTheme.cyan
                         )
                     }
                     if let error = stats.error {
@@ -465,13 +465,13 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Refresh"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Refresh"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task {
                             await usage.refresh(force: true)
                             await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID)
                         }
                     }
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .openRouter
                     }
                 }
@@ -485,7 +485,7 @@ struct CodexProvidersView: View {
         let configured = !sources.deepInfraKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let source = sources.deepInfraSource
         let spend = usage.sessionSpend?.stats(for: "deepinfra")
-        return MTCard(title: "DeepInfra", systemImage: ProviderRoute.deepInfra.systemImage) {
+        return MTCard(title: "DeepInfra", systemImage: ProviderRoute.deepInfra.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
@@ -505,7 +505,7 @@ struct CodexProvidersView: View {
                 }
                 HStack(spacing: MTTheme.s3) {
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .deepInfra
                     }
                 }
@@ -519,7 +519,7 @@ struct CodexProvidersView: View {
         let configured = !sources.vercelKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let source = sources.vercelSource
         let stats = usage.vercel
-        return MTCard(title: "Vercel", systemImage: ProviderRoute.vercel.systemImage) {
+        return MTCard(title: "Vercel", systemImage: ProviderRoute.vercel.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
@@ -535,7 +535,7 @@ struct CodexProvidersView: View {
                         title: L("Available"),
                         value: stats?.balance.map(money) ?? "—",
                         caption: L("Team balance"),
-                        tint: MTTheme.ok
+                        tint: MTTheme.emerald
                     )
                     MTMetricTile(
                         title: L("Lifetime spend"),
@@ -559,13 +559,13 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Refresh"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Refresh"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task {
                             await usage.refresh(force: true)
                             await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID)
                         }
                     }
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .vercel
                     }
                 }
@@ -578,7 +578,7 @@ struct CodexProvidersView: View {
     private var zaiCard: some View {
         let configured = !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let source = sources.zaiSource
-        return MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage) {
+        return MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage, accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
@@ -601,7 +601,7 @@ struct CodexProvidersView: View {
                     .foregroundStyle(MTTheme.textTertiary)
                 HStack(spacing: MTTheme.s3) {
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .zai
                     }
                 }
@@ -614,7 +614,7 @@ struct CodexProvidersView: View {
     private var claudeCard: some View {
         let stats = usage.claude
         let connected = stats?.connected == true
-        return MTCard(title: "Claude", systemImage: ProviderRoute.claude.systemImage) {
+        return MTCard(title: "Claude", systemImage: ProviderRoute.claude.systemImage, accent: MTTheme.amber, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(text: connected ? L("Connected") : L("Not connected"), status: connected ? .ok : .idle)
@@ -634,7 +634,7 @@ struct CodexProvidersView: View {
                             value: percentText(stats.fiveHourPercent),
                             caption: resetCaption(prefix: L("left"), date: stats.fiveHourReset),
                             fraction: stats.fiveHourPercent.map { min(1, max(0, $0 / 100)) },
-                            tint: MTTheme.ok
+                            tint: MTTheme.emerald
                         )
                         MTMetricTile(
                             title: L("Week"),
@@ -669,13 +669,13 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Refresh"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Refresh"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task {
                             await usage.refresh(force: true)
                             await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID)
                         }
                     }
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .claude
                     }
                 }
@@ -688,7 +688,7 @@ struct CodexProvidersView: View {
     private var antigravityCard: some View {
         let accounts = antigravityPool.accounts
         let connected = !accounts.isEmpty || usage.antigravity?.connected == true
-        return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage) {
+        return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage, accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     MTStatusPill(
@@ -763,16 +763,16 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Add Google account"), systemImage: "person.badge.plus", isLoading: antigravityAuth.login.isBusy) {
+                    MTGlassButton(title: L("Add Google account"), systemImage: "person.badge.plus", tint: MTTheme.violet, isLoading: antigravityAuth.login.isBusy) {
                         Task { await antigravityAuth.startLogin() }
                     }
-                    MTSecondaryButton(title: L("Refresh"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Refresh"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task {
                             await antigravityPool.refresh(forceQuota: true)
                             antigravityIssue = AntigravityAuthService.latestVerificationIssue()
                         }
                     }
-                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .antigravity
                     }
                 }
@@ -855,7 +855,9 @@ struct CodexProvidersView: View {
                         Label(account.isPaused ? L("Resume account") : L("Pause account"),
                               systemImage: account.isPaused ? "play.circle" : "pause.circle")
                     }
-                    if account.activeCooldown != nil {
+                    // Only a first-token cooldown can be released by the probe;
+                    // a quota or sign-in cooldown stays with the engine.
+                    if !AntigravityPoolStore.watchdogModels(in: account.cooldowns).isEmpty {
                         Button {
                             Task {
                                 _ = await antigravityPool.probe(account)
@@ -896,8 +898,8 @@ struct CodexProvidersView: View {
                         .font(.system(size: 9, weight: .semibold))
                     Text(L("Quarantined until") + " " + (cooldown.retryAt.map { Self.resetFormatter.string(from: $0) } ?? "—"))
                         .font(MTTheme.mono(9))
-                    if cooldown.httpStatus == 504 {
-                        Text("· " + L("Waiting for the first token"))
+                    if let reason = Self.cooldownReason(cooldown) {
+                        Text("· " + reason)
                             .font(MTTheme.mono(9))
                     }
                 }
@@ -971,7 +973,7 @@ struct CodexProvidersView: View {
     }
 
     private var connectAntigravityButton: some View {
-        MTPrimaryButton(title: L("Connect Antigravity"), systemImage: "link", isLoading: antigravityAuth.login.isBusy) {
+        MTGlassButton(title: L("Connect Antigravity"), systemImage: "link", tint: MTTheme.emerald, prominent: true, isLoading: antigravityAuth.login.isBusy) {
             Task { await antigravityAuth.startLogin() }
         }
     }
@@ -1016,6 +1018,21 @@ struct CodexProvidersView: View {
         formatter.timeStyle = .short
         return formatter
     }()
+
+    /// Why the account is quarantined: the badge alone cannot tell a
+    /// first-token timeout from an exhausted Google quota window.
+    private static func cooldownReason(_ cooldown: AntigravityCooldown) -> String? {
+        if cooldown.httpStatus == 504 { return L("Waiting for the first token") }
+        switch cooldown.reason {
+        case "quota", "credential_quota": return L("Quota exhausted")
+        case "cloudflare_challenge": return L("Cloudflare challenge")
+        case "unauthorized", "invalid_grant": return L("Sign in again")
+        case "payment_required": return L("Payment required")
+        case "model_not_supported": return L("Model not supported")
+        case "transient_error": return L("Upstream error")
+        default: return nil
+        }
+    }
 
     // MARK: - Shared rows
 
@@ -1131,7 +1148,7 @@ struct CodexProvidersView: View {
     @ViewBuilder
     private func settingsPage(_ route: ProviderRoute) -> some View {
         HStack(spacing: MTTheme.s3) {
-            MTSecondaryButton(title: L("Back"), systemImage: "chevron.left") {
+            MTGlassButton(title: L("Back"), systemImage: "chevron.left", tint: MTTheme.textSecondary) {
                 self.route = nil
             }
             Spacer(minLength: 0)
@@ -1176,7 +1193,7 @@ struct CodexProvidersView: View {
     }
 
     private var openRouterSettings: some View {
-        MTCard(title: "OpenRouter", systemImage: ProviderRoute.openRouter.systemImage) {
+        MTCard(title: "OpenRouter", systemImage: ProviderRoute.openRouter.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 keyRow(key: $sources.openRouterKey) {
                     Task { await sources.loadOpenRouterModels() }
@@ -1193,7 +1210,7 @@ struct CodexProvidersView: View {
     }
 
     private var openCodeSettings: some View {
-        MTCard(title: "OpenCode", systemImage: ProviderRoute.openCode.systemImage) {
+        MTCard(title: "OpenCode", systemImage: ProviderRoute.openCode.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 keyRow(key: $sources.openCodeKey) {
                     Task { await sources.loadOpenCodeModels() }
@@ -1217,7 +1234,7 @@ struct CodexProvidersView: View {
     }
 
     private var deepInfraSettings: some View {
-        MTCard(title: "DeepInfra", systemImage: ProviderRoute.deepInfra.systemImage) {
+        MTCard(title: "DeepInfra", systemImage: ProviderRoute.deepInfra.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 keyRow(key: $sources.deepInfraKey) {
                     Task { await sources.loadDeepInfraModels() }
@@ -1240,7 +1257,7 @@ struct CodexProvidersView: View {
     }
 
     private var vercelSettings: some View {
-        MTCard(title: "Vercel", systemImage: ProviderRoute.vercel.systemImage) {
+        MTCard(title: "Vercel", systemImage: ProviderRoute.vercel.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 keyRow(key: $sources.vercelKey) {
                     Task { await sources.loadVercelModels() }
@@ -1263,7 +1280,7 @@ struct CodexProvidersView: View {
     }
 
     private var zaiSettings: some View {
-        MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage) {
+        MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage, accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 keyRow(key: $sources.zaiKey) {
                     Task { await sources.loadZaiModels() }
@@ -1289,19 +1306,19 @@ struct CodexProvidersView: View {
     private var claudeSettings: some View {
         let stats = usage.claude
         let connected = stats?.connected == true
-        return MTCard(title: "Claude", systemImage: ProviderRoute.claude.systemImage) {
+        return MTCard(title: "Claude", systemImage: ProviderRoute.claude.systemImage, accent: MTTheme.amber, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 if connected {
                     keyValueRow(L("Account"), stats?.email ?? "—")
                     keyValueRow(L("Plan"), stats?.plan ?? "—")
                     HStack(spacing: MTTheme.s3) {
-                        MTSecondaryButton(title: L("Refresh login"), systemImage: "arrow.clockwise") {
+                        MTGlassButton(title: L("Refresh login"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                             Task {
                                 _ = await claudeAuth.refreshCredential()
                                 await usage.refreshClaudeNow()
                             }
                         }
-                        MTSecondaryButton(title: L("Disconnect"), systemImage: "xmark.circle") {
+                        MTGlassButton(title: L("Disconnect"), systemImage: "xmark.circle", tint: MTTheme.ruby) {
                             confirmClaudeDisconnect = true
                         }
                         Spacer(minLength: 0)
@@ -1315,7 +1332,7 @@ struct CodexProvidersView: View {
                                 .font(MTTheme.mono(10))
                                 .foregroundStyle(MTTheme.textSecondary)
                         }
-                        MTSecondaryButton(title: L("Cancel login"), systemImage: "xmark") {
+                        MTGlassButton(title: L("Cancel login"), systemImage: "xmark", tint: MTTheme.ruby) {
                             Task { await claudeAuth.cancelLogin() }
                         }
                     case .failed(let message):
@@ -1336,7 +1353,7 @@ struct CodexProvidersView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(MTTheme.mono(11))
                         .frame(maxWidth: 360)
-                    MTPrimaryButton(title: L("Load models"), systemImage: "arrow.down.circle", isLoading: sources.isBusy) {
+                    MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan, prominent: true, isLoading: sources.isBusy) {
                         Task { await sources.loadClaudeModels() }
                     }
                     Spacer()
@@ -1365,7 +1382,7 @@ struct CodexProvidersView: View {
 
     private var antigravitySettings: some View {
         let accounts = antigravityPool.accounts
-        return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage) {
+        return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage, accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 if accounts.isEmpty {
                     Text(L("Connect your Google account to use Antigravity models."))
@@ -1389,7 +1406,7 @@ struct CodexProvidersView: View {
                             .font(MTTheme.mono(10))
                             .foregroundStyle(MTTheme.textSecondary)
                     }
-                    MTSecondaryButton(title: L("Cancel login"), systemImage: "xmark") {
+                    MTGlassButton(title: L("Cancel login"), systemImage: "xmark", tint: MTTheme.ruby) {
                         Task { await antigravityAuth.cancelLogin() }
                     }
                 case .failed(let message):
@@ -1400,11 +1417,11 @@ struct CodexProvidersView: View {
                     EmptyView()
                 }
                 HStack(spacing: MTTheme.s3) {
-                    MTSecondaryButton(title: L("Add Google account"), systemImage: "person.badge.plus", isLoading: antigravityAuth.login.isBusy) {
+                    MTGlassButton(title: L("Add Google account"), systemImage: "person.badge.plus", tint: MTTheme.violet, isLoading: antigravityAuth.login.isBusy) {
                         Task { await antigravityAuth.startLogin() }
                     }
                     if !accounts.isEmpty {
-                        MTSecondaryButton(title: L("Disconnect all"), systemImage: "xmark.circle") {
+                        MTGlassButton(title: L("Disconnect all"), systemImage: "xmark.circle", tint: MTTheme.ruby) {
                             confirmAntigravityDisconnect = true
                         }
                     }
@@ -1419,7 +1436,7 @@ struct CodexProvidersView: View {
                     .foregroundStyle(MTTheme.textTertiary)
 
                 HStack(spacing: MTTheme.s2) {
-                    MTPrimaryButton(title: L("Load models"), systemImage: "arrow.down.circle", isLoading: sources.isBusy) {
+                    MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.emerald, prominent: true, isLoading: sources.isBusy) {
                         Task { await sources.loadAntigravityModels() }
                     }
                     Spacer()
@@ -1482,14 +1499,14 @@ struct CodexProvidersView: View {
     /// every account at once; an account that would end with no model blocks
     /// the whole change (see `CodexStore.setPoolModel`).
     private var codexPoolSettings: some View {
-        MTCard(title: L("Codex models"), systemImage: ProviderRoute.codexPool.systemImage) {
+        MTCard(title: L("Codex models"), systemImage: ProviderRoute.codexPool.systemImage, accent: MTTheme.cyan, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
                     Text(String(format: L("Models in pool: %d of %d"), poolUnionCount, pool.models.count))
                         .font(MTTheme.mono(10, weight: .semibold))
                         .foregroundStyle(MTTheme.textPrimary)
                     Spacer(minLength: MTTheme.s2)
-                    MTSecondaryButton(title: L("Load models"), systemImage: "arrow.down.circle") {
+                    MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan) {
                         pool.refresh()
                     }
                 }
@@ -1610,7 +1627,7 @@ struct CodexProvidersView: View {
     }
 
     private var connectClaudeButton: some View {
-        MTPrimaryButton(title: L("Connect Claude"), systemImage: "link", isLoading: claudeAuth.login.isBusy) {
+        MTGlassButton(title: L("Connect Claude"), systemImage: "link", tint: MTTheme.amber, prominent: true, isLoading: claudeAuth.login.isBusy) {
             Task { await claudeAuth.startLogin() }
         }
     }
@@ -1623,7 +1640,7 @@ struct CodexProvidersView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(MTTheme.mono(11))
                 .frame(maxWidth: 360)
-            MTPrimaryButton(title: L("Load models"), systemImage: "arrow.down.circle", isLoading: sources.isBusy, action: action)
+            MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan, prominent: true, isLoading: sources.isBusy, action: action)
             Spacer()
         }
     }
@@ -1770,13 +1787,13 @@ struct CodexProvidersView: View {
     // MARK: - Apply
 
     private var applyCard: some View {
-        MTCard(title: L("Apply"), systemImage: "checkmark.seal") {
+        MTCard(title: L("Apply"), systemImage: "checkmark.seal", accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s3) {
-                    MTPrimaryButton(title: L("Apply"), systemImage: "checkmark") {
+                    MTGlassButton(title: L("Apply"), systemImage: "checkmark", tint: MTTheme.emerald, prominent: true) {
                         Task { await sources.apply() }
                     }
-                    MTSecondaryButton(title: L("Apply and relaunch Codex"), systemImage: "arrow.clockwise") {
+                    MTGlassButton(title: L("Apply and relaunch Codex"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task { await sources.applyAndRelaunch() }
                     }
                     Spacer()
@@ -1831,8 +1848,8 @@ private struct SelectAllControls: View {
                 .textFieldStyle(.roundedBorder)
                 .font(MTTheme.mono(10))
                 .frame(width: 170)
-            MTSecondaryButton(title: L("Select all")) { onSelectAll(search) }
-            MTSecondaryButton(title: L("Clear")) { onClear(search) }
+            MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) { onSelectAll(search) }
+            MTGlassButton(title: L("Clear"), size: .small, tint: MTTheme.textSecondary) { onClear(search) }
         }
     }
 }

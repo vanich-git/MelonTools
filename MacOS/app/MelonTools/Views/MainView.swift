@@ -34,6 +34,21 @@ enum MTSection: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Semantic accent color for Apple-style multi-accent navigation and glowing indicators.
+    var accentColor: Color {
+        switch self {
+        case .dashboard: return MTTheme.cyan
+        case .scheduler: return MTTheme.amber
+        case .codexAccounts: return MTTheme.violet
+        case .codexAPI: return MTTheme.cyan
+        case .providers: return MTTheme.emerald
+        case .codexComposer: return MTTheme.cyan
+        case .codexInstances: return MTTheme.amber
+        case .settings: return MTTheme.textSecondary
+        case .donate: return MTTheme.ruby
+        }
+    }
+
     struct Group {
         let title: String
         let sections: [MTSection]
@@ -59,7 +74,7 @@ struct MainView: View {
     /// First-run guide: shown once, then never again on this account.
     @AppStorage("onboardingDone") private var onboardingDone = false
 
-    private static let sidebarWidth: CGFloat = 228
+    private static let sidebarWidth: CGFloat = 236
 
     var body: some View {
         HStack(spacing: 0) {
@@ -111,16 +126,14 @@ struct MainView: View {
         )
     }
 
-    /// Sidebar update control, almost full width: a quiet «Проверить
-    /// обновление» while up to date, a gold CTA «Обновить» and a visible
-    /// notice the moment a newer release is known.
+    /// Sidebar update control: Apple Liquid Glass translucent capsule CTA.
     private var updateRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             if case .available(let version, _) = updater.phase {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MTTheme.gold)
+                        .foregroundStyle(MTTheme.amber)
                     Text(String(format: L("Update %@ is available"), version))
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textSecondary)
@@ -133,24 +146,30 @@ struct MainView: View {
                 updater.sheetPresented = true
                 Task { await updater.check(manual: true) }
             } label: {
-                Text(isUpdateAvailable ? L("Update") : L("Check for updates"))
-                    .font(MTTheme.body(12, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(isUpdateAvailable ? MTTheme.onGold : MTTheme.textPrimary)
-                    .background(
-                        RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                            .fill(isUpdateAvailable ? MTTheme.gold : MTTheme.cardSoft.opacity(0.65))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                            .strokeBorder(
-                                isUpdateAvailable ? Color.clear : MTTheme.borderColor.opacity(0.7),
-                                lineWidth: 0.75
-                            )
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
+                HStack(spacing: 6) {
+                    if isUpdateAvailable {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(isUpdateAvailable ? L("Update") : L("Check for updates"))
+                        .font(MTTheme.body(11.5, weight: isUpdateAvailable ? .semibold : .medium))
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .foregroundStyle(isUpdateAvailable ? MTTheme.onGold : MTTheme.textPrimary)
+                .background(
+                    RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                        .fill(isUpdateAvailable ? MTTheme.gold : MTTheme.cardSoft.opacity(0.75))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                        .strokeBorder(
+                            isUpdateAvailable ? MTTheme.gold.opacity(0.4) : MTTheme.borderColor,
+                            lineWidth: 0.75
+                        )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
             }
             .buttonStyle(.plain)
         }
@@ -159,7 +178,7 @@ struct MainView: View {
         .padding(.bottom, MTTheme.s1)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(MTTheme.borderColor.opacity(0.35))
+                .fill(Color.white.opacity(0.08))
                 .frame(height: 0.75)
         }
     }
@@ -169,7 +188,7 @@ struct MainView: View {
         return false
     }
 
-    // MARK: - Sidebar card
+    // MARK: - Floating Sidebar Card
 
     private var sidebarBoard: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -201,22 +220,15 @@ struct MainView: View {
         }
         .frame(width: Self.sidebarWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(MTTheme.cardBackground, in: RoundedRectangle(cornerRadius: MTTheme.rCard, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: MTTheme.rCard, style: .continuous)
-                .strokeBorder(MTTheme.borderColor.opacity(0.7), lineWidth: 0.75)
-        )
-        .padding(.leading, MTTheme.s3)
-        .padding(.vertical, MTTheme.s3)
-        .padding(.trailing, MTTheme.s2)
+        .mtFloatingSidebar(cornerRadius: MTTheme.rSidebar)
+        .padding(.leading, MTTheme.s4)
+        .padding(.vertical, MTTheme.s4)
+        .padding(.trailing, MTTheme.s3)
     }
 
     private var brandHeader: some View {
-        HStack(spacing: MTTheme.s2) {
-            Image(nsImage: MelonAssets.logo)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 24, height: 24)
+        HStack(spacing: MTTheme.s2 + 2) {
+            MelonAssets.logoImage(size: 26)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Melon Tools")
                     .font(MTTheme.body(13, weight: .bold))
@@ -228,18 +240,16 @@ struct MainView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, MTTheme.s3)
-        .padding(.top, MTTheme.s3)
+        .padding(.top, MTTheme.s3 + 2)
         .padding(.bottom, MTTheme.s3)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(MTTheme.borderColor.opacity(0.55))
+                .fill(Color.white.opacity(0.08))
                 .frame(height: 0.75)
         }
     }
 
-    /// A sidebar row with its own hover state: hover stays local, so moving
-    /// the pointer over the sidebar re-renders just the row instead of the
-    /// whole main layout (sidebar + active detail page body).
+    /// A sidebar row with its own hover state and Apple-style Liquid Glass highlight.
     private struct NavRow: View {
         let section: MTSection
         let isSelected: Bool
@@ -252,30 +262,46 @@ struct MainView: View {
             } label: {
                 HStack(spacing: MTTheme.s3) {
                     Image(systemName: section.systemImage)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(section.accentColor)
                         .frame(width: 18, alignment: .center)
+
                     Text(section.title)
                         .font(MTTheme.body(12.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? MTTheme.textPrimary : (hovered ? MTTheme.textPrimary : MTTheme.textSecondary))
                         .lineLimit(1)
+
                     Spacer(minLength: 0)
+
+                    if isSelected {
+                        Circle()
+                            .fill(section.accentColor)
+                            .frame(width: 5, height: 5)
+                    }
                 }
-                .foregroundStyle(isSelected ? MTTheme.onGold : MTTheme.textPrimary)
                 .padding(.horizontal, MTTheme.s3)
-                .padding(.vertical, 6.5)
+                .padding(.vertical, 7)
                 .background(
-                    RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                        .fill(isSelected ? MTTheme.gold : (hovered ? MTTheme.cardSoft.opacity(0.7) : Color.clear))
+                    RoundedRectangle(cornerRadius: MTTheme.rSmall + 2, style: .continuous)
+                        .fill(isSelected ? section.accentColor.opacity(0.22) : (hovered ? Color.white.opacity(0.06) : Color.clear))
                 )
-                .contentShape(RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MTTheme.rSmall + 2, style: .continuous)
+                        .strokeBorder(
+                            isSelected
+                                ? section.accentColor.opacity(0.45)
+                                : (hovered ? MTTheme.borderColor : Color.clear),
+                            lineWidth: 0.75
+                        )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: MTTheme.rSmall + 2, style: .continuous))
             }
             .buttonStyle(.plain)
             .onHover { hovered = $0 }
         }
     }
 
-/// Sidebar footer: the only place that needs the gateway live status. Kept as
-/// a separate view so gateway traffic cannot invalidate the whole main layout
-/// (sidebar + active detail page) on every log line.
+/// Sidebar footer: live gateway status indicator and version badge.
 private struct GatewayFooter: View {
     @ObservedObject private var gateway = CodexGatewayService.shared
 
@@ -283,20 +309,32 @@ private struct GatewayFooter: View {
         HStack(spacing: MTTheme.s2) {
             Circle()
                 .fill(gateway.status.color)
-                .frame(width: 6, height: 6)
+                .frame(width: 7, height: 7)
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.3), lineWidth: 0.5))
+
             Text(gateway.status.label)
                 .font(MTTheme.mono(9))
                 .foregroundStyle(MTTheme.textSecondary)
+
             Spacer(minLength: 0)
-            Text(MainView.appVersion)
-                .font(MTTheme.mono(9))
+
+            Text("v" + MainView.appVersion)
+                .font(MTTheme.mono(9, weight: .medium))
                 .foregroundStyle(MTTheme.textTertiary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule().fill(Color.white.opacity(0.05))
+                )
+                .overlay(
+                    Capsule().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                )
         }
         .padding(.horizontal, MTTheme.s3)
-        .padding(.vertical, MTTheme.s2)
+        .padding(.vertical, MTTheme.s2 + 2)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(MTTheme.borderColor.opacity(0.55))
+                .fill(Color.white.opacity(0.08))
                 .frame(height: 0.75)
         }
     }

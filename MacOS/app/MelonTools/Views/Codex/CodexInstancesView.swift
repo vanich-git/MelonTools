@@ -21,7 +21,7 @@ struct CodexInstancesView: View {
                 )
 
                 HStack(spacing: MTTheme.s3) {
-                    MTPrimaryButton(title: L("New instance"), systemImage: "plus") {
+                    MTGlassButton(title: L("New instance"), systemImage: "plus", tint: MTTheme.cyan, prominent: true) {
                         showCreate = true
                     }
                     Spacer()
@@ -34,7 +34,7 @@ struct CodexInstancesView: View {
                 }
 
                 if instances.instances.isEmpty {
-                    MTCard {
+                    MTCard(accent: MTTheme.cyan, isBento: true) {
                         MTEmptyState(
                             systemImage: "square.on.square",
                             title: L("No instances"),
@@ -86,7 +86,7 @@ struct CodexInstancesView: View {
     }
 
     private func instanceRow(_ instance: CodexInstance) -> some View {
-        MTCard {
+        MTCard(accent: MTTheme.cyan, isBento: true) {
             HStack(spacing: MTTheme.s3) {
                 MTStatusDot(status: instance.accountId == store.currentAccountId ? .ok : .idle)
                 VStack(alignment: .leading, spacing: 2) {
@@ -98,10 +98,10 @@ struct CodexInstancesView: View {
                         .foregroundStyle(MTTheme.textSecondary)
                 }
                 Spacer()
-                MTSecondaryButton(title: L("Launch"), systemImage: "play.fill") {
+                MTGlassButton(title: L("Launch"), systemImage: "play.fill", tint: MTTheme.emerald) {
                     instances.launch(instance, accounts: store.accounts)
                 }
-                MTSecondaryButton(title: L("Reveal"), systemImage: "folder") {
+                MTGlassButton(title: L("Reveal"), systemImage: "folder", tint: MTTheme.cyan) {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: instance.homePath)
                 }
                 Button {
@@ -109,7 +109,7 @@ struct CodexInstancesView: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 11))
-                        .foregroundStyle(MTTheme.textSecondary)
+                        .foregroundStyle(MTTheme.ruby)
                 }
                 .buttonStyle(.plain)
                 .help(L("Delete"))
@@ -149,8 +149,8 @@ struct CodexInstancesView: View {
             }
             HStack {
                 Spacer()
-                MTSecondaryButton(title: L("Cancel")) { showCreate = false }
-                MTPrimaryButton(title: L("Create"), systemImage: "checkmark") {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { showCreate = false }
+                MTGlassButton(title: L("Create"), systemImage: "checkmark", tint: MTTheme.cyan, prominent: true) {
                     if instances.create(name: newName, accountId: newAccountId, accounts: store.accounts) {
                         showCreate = false
                         newName = ""

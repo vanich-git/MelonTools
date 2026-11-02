@@ -17,7 +17,7 @@ struct DonateView: View {
                     subtitle: L("Donate subtitle")
                 )
 
-                MTCard(title: L("USDT · TRON (TRC20)"), systemImage: "qrcode") {
+                MTCard(title: L("USDT · TRON (TRC20)"), systemImage: "qrcode", accent: MTTheme.emerald, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s4) {
                         HStack(alignment: .top, spacing: MTTheme.s5) {
                             qrCard
@@ -34,7 +34,7 @@ struct DonateView: View {
                                     .textSelection(.enabled)
                                     .lineLimit(2)
                                     .minimumScaleFactor(0.7)
-                                MTSecondaryButton(title: L("Copy address"), systemImage: "doc.on.doc") {
+                                MTGlassButton(title: L("Copy address"), systemImage: "doc.on.doc", tint: MTTheme.emerald) {
                                     NSPasteboard.general.clearContents()
                                     NSPasteboard.general.setString(Self.walletAddress, forType: .string)
                                 }
@@ -45,7 +45,7 @@ struct DonateView: View {
                         }
                         Text(L("Thank you for supporting Melon Tools! 🍉"))
                             .font(MTTheme.body(13, weight: .medium))
-                            .foregroundStyle(MTTheme.gold)
+                            .foregroundStyle(MTTheme.amber)
                     }
                 }
             }
@@ -75,7 +75,6 @@ struct DonateView: View {
                 Circle()
                     .fill(Color.white)
                     .frame(width: 44, height: 44)
-                    .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
                 Circle()
                     .fill(Self.usdtGreen)
                     .frame(width: 36, height: 36)

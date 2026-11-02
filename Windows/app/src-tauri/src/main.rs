@@ -64,6 +64,11 @@ pub struct Watchdog {
     pub health_ok: bool,
     pub restarts: u32,
     pub last_restart: Option<String>,
+    /// One-shot guard: a long-running log is rotated by a restart once per
+    /// session, so a rotation that cannot shrink the file (adopted engine that
+    /// keeps its handle) does not restart the gateway on every health tick.
+    #[serde(skip)]
+    pub log_rotated: bool,
 }
 
 impl AppState {
@@ -1580,6 +1585,7 @@ async fn antigravity_account_action(
     name: String,
     auth_index: Option<String>,
     model: Option<String>,
+    models: Option<Vec<String>>,
     value: Option<i64>,
 ) -> Result<Value, String> {
     match action.as_str() {
@@ -1603,12 +1609,13 @@ async fn antigravity_account_action(
         }
         "probe" => {
             let settings = state.settings();
+            let targets = antigravity::probe_targets(models, model);
             Ok(json!({
                 "ok": antigravity::probe_account(
                     &settings,
                     &name,
                     auth_index.as_deref().unwrap_or_default(),
-                    model.as_deref().unwrap_or_default(),
+                    &targets,
                 )
                 .await
             }))
@@ -1673,6 +1680,24 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
         if let Ok(mut guard) = state.watchdog.lock() {
             guard.misses = 0;
             guard.health_ok = true;
+        }
+        // A long-running engine keeps `gateway.log` open, so the file can only
+        // be rotated by a restart. Rotate once per session, and only while the
+        // pool is idle so an active stream is never cut.
+        let needs_rotation = gateway::log_size() > 32 * 1024 * 1024
+            && gateway::requests_last_minute() == 0
+            && state
+                .watchdog
+                .lock()
+                .map(|guard| !guard.log_rotated)
+                .unwrap_or(false);
+        if needs_rotation {
+            let _ = gateway::stop(&state.gw);
+            let outcome = gateway::start(&state.gw, &settings).await;
+            if let Ok(mut guard) = state.watchdog.lock() {
+                guard.log_rotated = outcome.is_ok();
+            }
+            return;
         }
         // Keep the catalog overlay on the engine's refresh cadence. It is
         // written outside the watchdog path so a slow fetch cannot delay the

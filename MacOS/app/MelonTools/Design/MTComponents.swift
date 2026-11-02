@@ -27,11 +27,17 @@ struct MTPageHeader: View {
     }
 }
 
-// MARK: - Card (solid surface)
+// MARK: - Card & Bento Surfaces
 
 struct MTCard<Content: View>: View {
     var title: String? = nil
     var systemImage: String? = nil
+    var accent: Color? = nil
+    var isBento: Bool = true
+    /// Stretch the plate to the full height of its bento row, so two cards side
+    /// by side end on the same baseline instead of leaving a hole under the
+    /// shorter one.
+    var fillsHeight: Bool = false
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -41,7 +47,7 @@ struct MTCard<Content: View>: View {
                     if let systemImage {
                         Image(systemName: systemImage)
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(MTTheme.gold)
+                            .foregroundStyle(accent ?? MTTheme.gold)
                     }
                     Text(title)
                         .font(MTTheme.body(13, weight: .semibold))
@@ -50,10 +56,24 @@ struct MTCard<Content: View>: View {
                 }
             }
             content
+            if fillsHeight { Spacer(minLength: 0) }
         }
         .padding(MTTheme.s4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .mtCardSurface()
+        .frame(maxWidth: .infinity, maxHeight: fillsHeight ? .infinity : nil, alignment: .topLeading)
+        .modifier(CardBackingModifier(accent: accent, isBento: isBento))
+    }
+}
+
+private struct CardBackingModifier: ViewModifier {
+    let accent: Color?
+    let isBento: Bool
+
+    func body(content: Content) -> some View {
+        if isBento {
+            content.mtBentoCard(accent: accent)
+        } else {
+            content.mtCardSurface()
+        }
     }
 }
 
@@ -67,7 +87,7 @@ struct MTStatusDot: View {
         Circle()
             .fill(status.color)
             .frame(width: size, height: size)
-            .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+            .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
     }
 }
 
@@ -83,10 +103,14 @@ struct MTStatusPill: View {
                 .textCase(.uppercase)
                 .tracking(0.8)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(status.color.opacity(0.14))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 3.5)
+        .background(status.color.opacity(0.12))
         .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .strokeBorder(status.color.opacity(0.3), lineWidth: 0.75)
+        )
         .foregroundStyle(status.color)
     }
 }
@@ -165,6 +189,49 @@ struct MTSecondaryButton: View {
     }
 }
 
+struct MTGlassButton: View {
+    let title: String
+    var systemImage: String? = nil
+    var size: MTButtonSize = .regular
+    var tint: Color? = nil
+    var prominent: Bool = false
+    var isLoading: Bool = false
+    let action: () -> Void
+
+    init(
+        title: String,
+        systemImage: String? = nil,
+        size: MTButtonSize = .regular,
+        tint: Color? = nil,
+        prominent: Bool = false,
+        isLoading: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.size = size
+        self.tint = tint
+        self.prominent = prominent
+        self.isLoading = isLoading
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: size == .small ? 4 : 6) {
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else if let systemImage {
+                    Image(systemName: systemImage).font(.system(size: size == .small ? 10.5 : 12, weight: .semibold))
+                }
+                Text(title)
+            }
+        }
+        .buttonStyle(MTGlassButtonStyle(tint: tint, prominent: prominent, size: size))
+        .disabled(isLoading)
+    }
+}
+
 // MARK: - Quota ring
 
 struct MTQuotaRing: View {
@@ -172,12 +239,15 @@ struct MTQuotaRing: View {
     let fraction: Double?
     var label: String? = nil
     var size: CGFloat = 44
+    var ringTint: Color? = nil
+    var strokeWidth: CGFloat? = nil
 
     private var color: Color {
+        if let ringTint { return ringTint }
         guard let f = fraction else { return MTTheme.textTertiary }
-        if f > 0.5 { return MTTheme.gold }
-        if f > 0.15 { return MTTheme.warn }
-        return MTTheme.danger
+        if f > 0.5 { return MTTheme.emerald }
+        if f > 0.15 { return MTTheme.amber }
+        return MTTheme.ruby
     }
 
     var body: some View {
@@ -186,17 +256,25 @@ struct MTQuotaRing: View {
             if let fraction { return "\(Int((fraction * 100).rounded()))%" }
             return "—"
         }()
+        let width = strokeWidth ?? max(3.5, size * 0.09)
         ZStack {
             Circle()
-                .stroke(MTTheme.borderColor, lineWidth: 4)
+                .stroke(Color.white.opacity(0.1), lineWidth: width)
             if let f = fraction {
                 Circle()
                     .trim(from: 0, to: max(0.01, min(1, f)))
-                    .stroke(color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .stroke(
+                        LinearGradient(
+                            colors: [color.opacity(0.7), color],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        style: StrokeStyle(lineWidth: width, lineCap: .round)
+                    )
                     .rotationEffect(.degrees(-90))
             }
             Text(text)
-                .font(MTTheme.mono(9, weight: .semibold))
+                .font(MTTheme.mono(max(9, size * 0.22), weight: .semibold))
                 .foregroundStyle(MTTheme.textPrimary)
         }
         .frame(width: size, height: size)
@@ -205,11 +283,7 @@ struct MTQuotaRing: View {
 
 // MARK: - Meter + bento stat tile
 
-/// Horizontal meter: a pure-SwiftUI capsule bar. ProgressView hosted an
-/// AppKit control per instance (and there are many on every page) — hosting
-/// churn during scroll showed up as jank. The fill is scaled with
-/// `scaleEffect` (a render-transform, no layout pass), so the meter works
-/// without a GeometryReader inside scrolling content.
+/// Horizontal meter: a pure-SwiftUI capsule bar with glass depth.
 struct MTMeter: View {
     /// 0...1, nil = unknown.
     let fraction: Double?
@@ -219,10 +293,17 @@ struct MTMeter: View {
     var body: some View {
         ZStack(alignment: .leading) {
             Capsule()
-                .fill(MTTheme.borderColor.opacity(0.6))
+                .fill(Color.white.opacity(0.08))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
             if let fraction {
                 Capsule()
-                    .fill(tint)
+                    .fill(
+                        LinearGradient(
+                            colors: [tint.opacity(0.85), tint],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
                     .scaleEffect(x: min(1, max(0, fraction)), y: 1, anchor: .leading)
             }
         }
@@ -261,13 +342,11 @@ struct MTMetricTile: View {
             }
             if let caption {
                 Text(caption)
-                    .font(MTTheme.mono(9))
-                    .foregroundStyle(MTTheme.textSecondary)
+                .font(MTTheme.mono(9))
+                .foregroundStyle(MTTheme.textSecondary)
             }
         }
-        .padding(MTTheme.s3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MTTheme.cardSoft.opacity(0.55), in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
     }
 }
 
