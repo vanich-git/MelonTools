@@ -89,8 +89,8 @@ blocked account does not wait for the next slow refresh.
 
 ### How does Melon Tools update itself?
 
-The sidebar has a check/update control. Automatic checks run at most once a
-day. When a newer GitHub release exists, the app downloads the matching asset,
+The sidebar has a check/update control. Automatic checks run at most once an
+hour. When a newer GitHub release exists, the app downloads the matching asset,
 verifies its SHA-256 against the release digest or the `.sha256` sibling, and
 only then installs it.
 
