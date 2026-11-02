@@ -38,7 +38,7 @@ final class CodexModelCatalogTests: XCTestCase {
     /// Claude rides its own band above OpenCode/OpenRouter, with the
     /// `Claude` provider tag used by the picker grouping.
     func testClaudeBandAndProviderTag() {
-        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 500)
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 600)
         XCTAssertEqual(CodexModelCatalog.providerTag(for: .claude), "Claude")
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .openRouter), 200)
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .openCode), 100)
@@ -46,9 +46,9 @@ final class CodexModelCatalogTests: XCTestCase {
 
     /// Antigravity sits in the last band (600) with its own picker tag.
     func testAntigravityBandAndProviderTag() {
-        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .antigravity), 600)
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .antigravity), 700)
         XCTAssertEqual(CodexModelCatalog.providerTag(for: .antigravity), "Antigravity")
-        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 500)
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 600)
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .openRouter), 200)
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .openCode), 100)
     }
@@ -56,10 +56,12 @@ final class CodexModelCatalogTests: XCTestCase {
     func testDeepInfraAndVercelBandsAndTags() {
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .deepInfra), 300)
         XCTAssertEqual(CodexModelCatalog.priorityBase(for: .vercel), 400)
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .zai), 500)
         XCTAssertEqual(CodexModelCatalog.providerTag(for: .deepInfra), "deepinfra")
         XCTAssertEqual(CodexModelCatalog.providerTag(for: .vercel), "vercel")
-        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 500)
-        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .antigravity), 600)
+        XCTAssertEqual(CodexModelCatalog.providerTag(for: .zai), "zai")
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .claude), 600)
+        XCTAssertEqual(CodexModelCatalog.priorityBase(for: .antigravity), 700)
     }
 
     /// The per-provider index is capped at 99, so a 200-model DeepInfra list

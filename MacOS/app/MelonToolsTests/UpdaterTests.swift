@@ -21,7 +21,7 @@ final class UpdaterTests: XCTestCase {
 
     func testOnlyGitHubHostsOverHTTPSAreAllowed() {
         XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://api.github.com/repos/x/y/releases/latest")!))
-        XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://github.com/ivankuprin/MelonTools/releases/download/v1/x.dmg")!))
+        XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://github.com/vanich-git/MelonTools/releases/download/v1/x.dmg")!))
         XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://objects.githubusercontent.com/blob")!))
         XCTAssertFalse(UpdaterStore.isAllowed(URL(string: "http://github.com/x")!))
         XCTAssertFalse(UpdaterStore.isAllowed(URL(string: "https://evil.example.com/x")!))

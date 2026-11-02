@@ -113,7 +113,7 @@ Closing Codex or disabling the bridge removes the listener.
 ## Updater trust
 
 The updater fetches release metadata from
-`https://api.github.com/repos/ivankuprin/MelonTools/releases/latest` and assets
+`https://api.github.com/repos/vanich-git/MelonTools/releases/latest` and assets
 from HTTPS GitHub hosts only:
 
 - `api.github.com`
@@ -164,5 +164,5 @@ that is already compromised.
 ## Reporting
 
 Report suspected vulnerabilities through
-[GitHub private vulnerability reporting](https://github.com/ivankuprin/MelonTools/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/vanich-git/MelonTools/security/advisories/new).
 Do not post credentials, tokens, or exploitable details in a public issue.

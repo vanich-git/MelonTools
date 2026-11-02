@@ -1,166 +1,146 @@
 <div align="center">
-  <img src="MacOS/Logo.png" alt="Melon Tools logo" width="128">
+  <img src="MacOS/Logo.png" alt="Melon Tools" width="120">
   <h1>Melon Tools</h1>
-  <p>A desktop companion for Codex accounts, model providers, and scheduled model tasks on macOS and Windows.</p>
+  <p><strong>Your Codex accounts, model providers and scheduled tasks — in one local desktop app for macOS and Windows.</strong></p>
   <p>
-    <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools.dmg"><strong>Download for macOS</strong></a>
-    · <a href="https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe"><strong>Download for Windows</strong></a>
-    · <a href="MacOS/README.md">Documentation</a>
-    · <a href="MacOS/RELEASE_NOTES.md">Release notes</a>
-    · <a href="https://github.com/ivankuprin/MelonTools/issues">Report an issue</a>
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools.dmg"><strong>Download for macOS</strong></a>
+    ·
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-setup.exe"><strong>Download for Windows</strong></a>
+    ·
+    <a href="MacOS/RELEASE_NOTES.md">Release notes</a>
+    ·
+    <a href="docs/FAQ.md">FAQ</a>
   </p>
   <p>
-    <img alt="Latest release" src="https://img.shields.io/github/v/release/ivankuprin/MelonTools?display_name=tag">
-    <img alt="macOS 14 or later" src="https://img.shields.io/badge/macOS-14%2B-1f6b45">
-    <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-2563eb">
-    <img alt="MIT license" src="https://img.shields.io/github/license/ivankuprin/MelonTools">
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/vanich-git/MelonTools?display_name=tag"></a>
+    <a href="https://github.com/vanich-git/MelonTools/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/vanich-git/MelonTools/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+    <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-1f6b45">
+    <img alt="Windows 10 x64" src="https://img.shields.io/badge/Windows-10%20x64-2563eb">
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/vanich-git/MelonTools"></a>
   </p>
+  <p><a href="README.ru.md">Русская версия</a></p>
 </div>
 
-![Melon Tools, a developer utility for macOS and Windows](assets/social-preview.png)
+![Melon Tools for macOS and Windows](assets/social-preview.png)
 
-## What it does
+## What Melon Tools does
 
-- **Manage Codex accounts** in a local vault, refresh usage, and route requests across an account pool.
-- **Run a local OpenAI-compatible gateway** for Codex accounts on `127.0.0.1:18317`.
-- **Connect model providers.** Claude and Google Antigravity use OAuth; OpenRouter,
-  OpenCode, DeepInfra and Vercel AI Gateway connect by API key. Selected models
-  appear in the Codex picker, and the Connections page shows provider details.
-- **Show account and usage chips** in the Codex desktop composer.
-- **Continue after transient capacity errors.** Melon Tools presses Codex's
-  Retry action automatically, then sends a short continuation if Retry is no
-  longer offered. A quota-aware guard stays silent while the account pool is
-  paused or the 5-hour quota is nearly exhausted.
-- **Automate model tasks.** Pick a model from the local gateway, write a prompt,
-  and choose an interval or a five-field cron schedule with a time zone. Five
-  templates cover digests, PR review, repository summaries, log checks and
-  spend reports; `{{repo}}`, `{{branch}}` and `{{path}}` are filled on save.
-  Tasks keep running while Melon Tools stays in the menu bar or tray, with
-  history, results, enable/disable and Run now.
+Melon Tools is a desktop companion for people who work with Codex every day. It keeps your Codex accounts in a local vault, shows live quota, and runs a small OpenAI-compatible gateway on `127.0.0.1:18317` so Codex and other tools can use the accounts you configured.
 
-The macOS app includes the complete Codex integration, model providers and the task scheduler. The Windows port includes account and provider management, a local gateway, composer chips and the same scheduler; see [Windows documentation](Windows/README.md) for current coverage.
+It also connects third-party model providers, labels every model in the Codex picker, keeps Codex working through transient capacity errors, and runs prompt-based tasks on a schedule while the app sits in the menu bar or tray.
 
-## What's new in 3.3.0
+Everything runs on your machine. Credentials stay local, the gateway listens on loopback only, and Melon Tools sends account data nowhere except the provider you signed in to.
 
-- Codex keeps every third-party `[model_providers.*]` table and gains the
-  `codex_local_access` alias, so old chats keep working.
-- Single-instance is a named OS mutex; a stale `app.lock` no longer blocks
-  startup, and a second launch focuses the tray window.
-- Windows assigns `cliproxyapi.exe` to a kill-on-close Job Object, so the
-  engine cannot survive Melon and hold port 18317.
-- One JSON export now imports Codex, Claude and Antigravity accounts.
-- Includes 3.2.0: gold **Обновить** button, update notice, hourly checks.
+## Features
 
-## What's new in 3.2.0
-
-- The sidebar button becomes a gold **Обновить** when a new version exists, on
-  macOS and Windows.
-- macOS adds a sidebar notice; Windows adds a toast.
-- Update checks run hourly and on launch.
-
-## What's new in 3.1.2
-
-- The API control card now lists every account on macOS instead of
-  “+N more”; Windows already shows the full list.
-- Includes the 3.1.1 live quota totals.
-
-## What's new in 3.1.1
-
-- **Лимиты квот** now show live pool totals on macOS and Windows, not history
-  averages. Five accounts at 100% read 500%.
-- Includes the 3.1.0 Codex config and Windows composer-chips fixes.
-
-## What's new in 3.1.0
-
-- **Codex route safety:** third-party `[model_providers.*]` tables are kept,
-  and a legacy `codex_local_access` alias prevents “Model provider not found”
-  in old chats.
-- **Windows composer chips** now attach for both `ChatGPT.exe` and `Codex.exe`;
-  the launch debug port is remembered.
-- Includes the 3.0.1 custom fields and account-settings dialog.
-
-## What's new in 3.0.1
-
-- **Custom dark fields** for text, numbers, selects and checkboxes.
-- **Account settings dialog** with the macOS-style sliders button; reserve and
-  role controls no longer clutter the account card.
-- **«Лимиты квот»** replaces the “Тренды квот” label.
-- Version 3.0.1, macOS build 31.
-
-## What's new in 3.0.0
-
-- **Windows matches the macOS layout.** Sidebar card, grouped navigation, bento
-  cards, Segoe UI Variable, capsule buttons, switches and a native Windows title
-  bar with right-side window controls.
-- **Quota trends show pool totals.** Five accounts at 100% read 500%, not a
-  100% average. The bars match the account quota style.
-- **Launch Codex from the app.** The Windows API page starts the service,
-  applies the route and opens Codex. A missing `ChatGPT.exe` opens a clear
-  picker dialog instead of a technical environment-variable error.
-- **Preserves the 2.4.4 feature set.** Network/proxy support, bulk JSON import,
-  the official model refresh, the tray menu fix and earlier security/reliability
-  work are included. macOS is functionally unchanged and moves to build 30.
-
-See [release notes](MacOS/RELEASE_NOTES.md) for the full changelog.
+| | |
+|---|---|
+| **Codex account pool** | Add Codex accounts to a local vault, refresh usage, enable or disable accounts, and route requests across the pool. |
+| **Quota at a glance** | Per-account and pooled quota with reset times, the 5-hour window, and a quota-aware guard that pauses automation before limits run out. |
+| **Local OpenAI-compatible gateway** | A loopback gateway on `127.0.0.1:18317` with an API key you control, usage metrics and an audit log. |
+| **Model providers** | Claude and Google Antigravity use OAuth; OpenRouter, OpenCode, DeepInfra, Vercel AI Gateway and Z.ai GLM Coding Plan connect with an API key. |
+| **Antigravity pool** | Connect several Google accounts, see each account's models and 5-hour quota, pause or refresh one account, and let the engine fail over when the first token is slow. |
+| **Codex composer chips** | Account and usage chips inside the Codex composer, so the active account and remaining quota stay visible while you prompt. |
+| **Survives capacity errors** | Presses Codex's Retry automatically, then sends a short continuation if Retry is gone — and stays quiet when the pool is paused or nearly exhausted. |
+| **Scheduled tasks** | Run a prompt on an interval or a five-field cron schedule with a time zone. Five templates cover digests, PR review, repository summaries, log checks and spend reports. |
+| **Two native apps** | A SwiftUI app for macOS and a Tauri app for Windows share the same feature set and the same local data model. |
 
 ## Screenshots
 
-**Melon Tools — model provider management**
-
-![Melon Tools model provider management](assets/screenshots/melontools-models.jpg)
-
-**Melon Tools inside Codex — model picker, account pool, and usage chips**
-
-![Melon Tools integration in the Codex model picker](assets/screenshots/codex-model-picker.jpg)
+| Model providers | Inside Codex |
+|---|---|
+| ![Provider management](assets/screenshots/melontools-models.jpg) | ![Model picker and usage chips](assets/screenshots/codex-model-picker.jpg) |
 
 ## Download and install
 
 ### macOS
 
-Download [MelonTools for macOS](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools.dmg), open the DMG, and drag **Melon Tools.app** to **Applications**. The universal app supports Apple Silicon and Intel Macs running macOS 14 or later. It is ad-hoc signed and not notarized; use **right-click → Open** if Gatekeeper blocks the first launch.
+1. Download **[MelonTools.dmg](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools.dmg)**.
+2. Open the image and drag **Melon Tools.app** to **Applications**.
+3. On first launch use **right-click → Open** if Gatekeeper blocks the app.
+
+The universal build runs on Apple Silicon and Intel Macs with macOS 14 (Sonoma) or later. The app is ad-hoc signed and not notarized yet, so Gatekeeper shows its usual warning until an Apple Developer certificate is configured.
 
 ### Windows
 
-Download the [Melon Tools Windows installer (x64)](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-setup.exe) and choose any writable install folder, or run the [portable single-file build](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe) without installing. WebView2 Runtime is required. The installer creates Start Menu and optional desktop shortcuts and registers an uninstaller in Windows Settings; your data stays in `%APPDATA%\MelonTools` when you uninstall. The installer and the portable build are not Authenticode-signed, so SmartScreen may show "Windows protected your PC" — choose **More info → Run anyway** after verifying the download. A warning-free launch requires a code-signing certificate (BLOCKED until provided). Verify the portable build with the [SHA-256 checksum](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe.sha256). See [Windows documentation](Windows/README.md) for supported features and setup details.
+1. Download the **[installer](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-setup.exe)** and choose any writable folder, or use the **[portable build](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe)** without installing.
+2. Requires Windows 10 (1809) or later, x64, and the WebView2 Runtime (already present on current Windows).
+3. The app is not Authenticode-signed yet, so SmartScreen may show *Windows protected your PC*. Choose **More info → Run anyway** after verifying the checksum.
 
-Codex CLI and the Codex desktop app are optional integrations.
+Your data lives in `%APPDATA%\MelonTools` and survives an uninstall.
+
+### Verify a download
+
+Every file has a `.sha256` companion, and each release ships a single `SHA256SUMS`:
+
+```bash
+shasum -a 256 -c MelonTools.dmg.sha256          # macOS
+certutil -hashfile MelonTools-setup.exe SHA256  # Windows
+```
+
+## What's new in 4.0.0
+
+- **Antigravity is a real account pool.** Connect any number of Google accounts; each row shows identity, project, model count, pause/resume, sign-in refresh and removal. The engine routes across the pool instead of the newest auth file.
+- **A quota you can see.** `fetchAvailableModels` exposes `quotaInfo`; the app groups it into the Gemini and Claude/GPT pools, shows the remaining share of the 5-hour window and its reset time, and does not invent the weekly window the API does not expose.
+- **Catalog-only models are explained.** A grey block lists model ids the catalog defines but no connected account can use, with the reason.
+- **First-token failover.** If an Antigravity stream produces no first payload within `stream-bootstrap-timeout-seconds` (default 60), the engine retries on another account and quarantines the slow one for 60 s → 5 min → 30 min → 2 h. Codex, Claude and API-key providers are unaffected.
+- **Update checks follow this repository.** The in-app updater asks `api.github.com/repos/vanich-git/MelonTools` on both platforms.
+
+Read the [full changelog](MacOS/RELEASE_NOTES.md) for every release.
+
+## Requirements
+
+- **macOS:** 14.0 or later, Apple Silicon or Intel.
+- **Windows:** 10 (1809) or later, x64, WebView2 Runtime.
+- **Optional:** the Codex CLI or the Codex desktop app, if you want the gateway and composer integration.
 
 ## Build from source
 
-Prerequisites: Xcode 27+, XcodeGen and Go 1.26.10. `create-dmg` is optional.
+macOS:
 
 ```bash
 ./MacOS/scripts/fetch-sources.sh
 ./MacOS/build.sh
 ```
 
-The fetch script checks out the pinned CLIProxyAPI source into the ignored `MacOS/_sources/` directory. The build creates a universal app and DMG under `MacOS/build/`.
+Requires Xcode 27+, XcodeGen and Go 1.26.10. The script produces a universal app and a DMG under `MacOS/build/`.
 
-Before building on an exFAT volume, run `./scripts/doctor.sh`. It reports AppleDouble sidecars, a non-monotonic git index and unexpected executable bits without modifying anything.
-
-Run the unit tests with:
+Windows (cross-compiled on macOS, or natively on Windows):
 
 ```bash
-xcodebuild \
-  -project MacOS/app/MelonTools.xcodeproj \
-  -scheme MelonTools \
-  -configuration Debug \
-  -derivedDataPath "$HOME/Library/Developer/MelonTools" \
-  CODE_SIGNING_ALLOWED=NO test
+./Windows/build-windows.sh
 ```
+
+The [Windows guide](Windows/README.md) documents the Rust/Tauri toolchain, the gateway sidecar and the NSIS installer.
+
+Run the tests with:
+
+```bash
+xcodebuild -project MacOS/app/MelonTools.xcodeproj -scheme MelonTools \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath "$HOME/Library/Developer/MelonTools" CODE_SIGNING_ALLOWED=NO test
+
+cd Windows/app/src-tauri && cargo test
+```
+
+On an exFAT volume, run `./scripts/doctor.sh` first: it reports AppleDouble sidecars and unexpected file modes without changing anything.
 
 ## Documentation
 
-- [FAQ](docs/FAQ.md) — providers, quota, updates, terms-of-service risk, and troubleshooting.
-- [Security model](docs/SECURITY-MODEL.md) — local data, loopback gateway, CDP trust, and updater verification.
-- [macOS guide](MacOS/README.md) and [Windows guide](Windows/README.md) — setup, data locations, and build details.
-- [Packaging and signing](packaging/README.md) — release secrets, checksums, Homebrew Cask, and winget manifests.
+- [FAQ](docs/FAQ.md) — providers, quota, updates and troubleshooting.
+- [Security model](docs/SECURITY-MODEL.md) — local data, the loopback gateway, CDP trust and updater verification.
+- [macOS guide](MacOS/README.md) and [Windows guide](Windows/README.md) — setup, data locations and build details.
+- [Packaging and signing](packaging/README.md) — release secrets, checksums, Homebrew Cask and winget manifests.
 
-## Privacy and security
+## Security and privacy
 
-Account credentials and provider keys are stored on the user's device. The local gateway binds to loopback; requests go to OpenAI or to the providers the user configures. The project does not include account credentials. See [the app documentation](MacOS/README.md) and [Windows documentation](Windows/README.md) for data locations and implementation details.
+Account credentials and provider keys are stored on your device. The local gateway binds to loopback; requests go to OpenAI or to the providers you configure. The repository contains no credentials and no telemetry.
 
-Please report security issues through [GitHub private vulnerability reporting](https://github.com/ivankuprin/MelonTools/security/advisories/new) when available, or contact the maintainer privately.
+Report a vulnerability through [GitHub private vulnerability reporting](https://github.com/vanich-git/MelonTools/security/advisories/new) instead of a public issue.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). For a larger change, open an issue first so the scope can be discussed.
 
 ## License
 

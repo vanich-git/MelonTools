@@ -25,7 +25,7 @@ Unicode true
 
 !define PRODUCT_NAME "Melon Tools"
 !define PRODUCT_PUBLISHER "Melon Tools"
-!define PRODUCT_URL "https://github.com/ivankuprin/MelonTools"
+!define PRODUCT_URL "https://github.com/vanich-git/MelonTools"
 !define APP_REG_KEY "Software\Melon Tools"
 !define UNINSTALL_REG_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\MelonTools"
 

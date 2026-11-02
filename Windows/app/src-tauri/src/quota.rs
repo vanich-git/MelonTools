@@ -2,7 +2,7 @@
 
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use crate::vault::{self, now_ref, Account, Quota, Tokens, APPLE_REF_UNIX_OFFSET};
@@ -10,11 +10,16 @@ use crate::vault::{self, now_ref, Account, Quota, Tokens, APPLE_REF_UNIX_OFFSET}
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+const RESET_CREDITS_ENDPOINT: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const CONSUME_RESET_CREDIT_ENDPOINT: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 const USER_AGENT: &str = "Codex Desktop (Windows)";
 const ORIGINATOR: &str = "Codex Desktop";
 const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 
 static SHARED_CLIENTS: OnceLock<Mutex<HashMap<String, Client>>> = OnceLock::new();
+static RESET_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 /// Client for loopback gateway calls; never follows the upstream proxy.
 pub fn local_client() -> Result<Client, String> {
@@ -272,13 +277,11 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
             if let Some(models) = model_availability(&raw) {
                 extra.insert("modelAvailability".to_string(), models);
             }
-            if let Ok((available, next_expiry)) =
-                fetch_reset_credits(client, account, &tokens).await
-            {
-                if let Some(available) = available {
+            if let Ok(resets) = fetch_reset_credits(client, account, &tokens).await {
+                if let Some(available) = resets.available {
                     extra.insert("resetCreditsAvailable".to_string(), json!(available));
                 }
-                if let Some(expiry) = next_expiry {
+                if let Some(expiry) = resets.next_expiry {
                     extra.insert(
                         "resetCreditsNextExpiry".to_string(),
                         json!(expiry - APPLE_REF_UNIX_OFFSET),
@@ -342,18 +345,36 @@ fn model_availability(raw: &str) -> Option<Value> {
     Some(Value::Array(list))
 }
 
-/// 5h reset credits: how many are usable and when the nearest expires.
+/// One banked reset credit. The id is sent back on redemption; only
+/// spendable records (available/granted) are kept.
+#[derive(Clone, Debug, PartialEq)]
+struct ResetCreditRecord {
+    id: String,
+    status: String,
+    expires_at: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ResetCreditDetails {
+    available: Option<i64>,
+    next_expiry: Option<f64>,
+    credits: Vec<ResetCreditRecord>,
+}
+
+/// 5h reset credits: how many are usable, when the nearest expires, and the
+/// individual records used to redeem the soonest-expiring one.
 async fn fetch_reset_credits(
     client: &Client,
     account: &Account,
     tokens: &Tokens,
-) -> Result<(Option<i64>, Option<f64>), String> {
+) -> Result<ResetCreditDetails, String> {
     let access = tokens.access_token.clone().ok_or("нет access_token")?;
     let mut request = client
-        .get("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")
+        .get(RESET_CREDITS_ENDPOINT)
         .header("Authorization", format!("Bearer {}", access))
         .header("User-Agent", USER_AGENT)
-        .header("originator", ORIGINATOR);
+        .header("originator", ORIGINATOR)
+        .header("Accept", "application/json");
     let account_id = account.account_id.clone().or(tokens.account_id.clone());
     if let Some(id) = account_id.filter(|v| !v.is_empty()) {
         request = request.header("ChatGPT-Account-Id", id);
@@ -361,6 +382,10 @@ async fn fetch_reset_credits(
     let resp = request.send().await.map_err(|e| e.to_string())?;
     let text = resp.text().await.map_err(|e| e.to_string())?;
     let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(parse_reset_credits(&value))
+}
+
+fn parse_reset_credits(value: &Value) -> ResetCreditDetails {
     let nested = value.get("data");
     let available = value
         .get("available_count")
@@ -370,13 +395,18 @@ async fn fetch_reset_credits(
             nested
                 .and_then(|d| d.get("available_count"))
                 .and_then(|v| v.as_i64())
+        })
+        .or_else(|| {
+            nested
+                .and_then(|d| d.get("availableCount"))
+                .and_then(|v| v.as_i64())
         });
     let records = value.get("credits").and_then(|v| v.as_array()).or_else(|| {
         nested
             .and_then(|d| d.get("credits"))
             .and_then(|v| v.as_array())
     });
-    let mut next_expiry: Option<f64> = None;
+    let mut credits = Vec::new();
     if let Some(records) = records {
         for record in records {
             let status = record
@@ -387,20 +417,173 @@ async fn fetch_reset_credits(
             if !status.is_empty() && status != "available" && status != "granted" {
                 continue;
             }
-            let raw_date = record
-                .get("expires_at")
-                .or_else(|| record.get("expiresAt"))
-                .or_else(|| record.get("expiry"))
-                .and_then(|v| v.as_str());
-            let Some(date) = raw_date.and_then(parse_any_date) else {
+            let id = record
+                .get("id")
+                .and_then(|v| v.as_str())
+                .or_else(|| record.get("credit_id").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            if id.is_empty() {
                 continue;
-            };
-            if next_expiry.map(|current| date < current).unwrap_or(true) {
-                next_expiry = Some(date);
             }
+            credits.push(ResetCreditRecord {
+                id: id.to_string(),
+                status,
+                expires_at: reset_credit_date(record),
+            });
         }
     }
-    Ok((available, next_expiry))
+    let next_expiry = credits
+        .iter()
+        .filter_map(|credit| credit.expires_at)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let resolved_available = available.or_else(|| records.map(|_| credits.len() as i64));
+    ResetCreditDetails {
+        available: resolved_available,
+        next_expiry,
+        credits,
+    }
+}
+
+fn reset_credit_date(record: &Value) -> Option<f64> {
+    for key in ["expires_at", "expiresAt", "expiry"] {
+        let Some(value) = record.get(key) else {
+            continue;
+        };
+        if let Some(raw) = value.as_str() {
+            return parse_any_date(raw);
+        }
+        if let Some(number) = value.as_f64() {
+            return Some(if number > 1_000_000_000_000.0 {
+                number / 1000.0
+            } else {
+                number
+            });
+        }
+    }
+    None
+}
+
+/// The nearest-expiring redeemable credit, or `None` when the details are
+/// unavailable. Credits without an expiry sort last.
+fn soonest_reset_credit(credits: Vec<ResetCreditRecord>) -> Option<String> {
+    credits
+        .into_iter()
+        .filter(|credit| credit.status.is_empty() || credit.status == "available")
+        .min_by(|left, right| match (left.expires_at, right.expires_at) {
+            (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.id.cmp(&right.id),
+        })
+        .map(|credit| credit.id)
+}
+
+/// `redeem_request_id` is a UUID v4; the backend uses it as the idempotency
+/// key, so a retry cannot spend a second credit.
+fn reset_request_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{:02x}", byte)).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+fn parse_reset_outcome(value: &Value) -> Option<&'static str> {
+    let nested = value.get("data");
+    let raw = value
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("code").and_then(|v| v.as_str()))
+        .or_else(|| {
+            nested
+                .and_then(|d| d.get("outcome"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| nested.and_then(|d| d.get("code")).and_then(|v| v.as_str()))?;
+    match raw {
+        "reset" => Some("reset"),
+        "nothing_to_reset" | "nothingToReset" => Some("nothing_to_reset"),
+        "no_credit" | "noCredit" => Some("no_credit"),
+        "already_redeemed" | "alreadyRedeemed" => Some("already_redeemed"),
+        _ => None,
+    }
+}
+
+/// Mark an account as being reset. Returns false when a redemption for the
+/// same account is already in flight.
+pub fn begin_reset(id: &str) -> bool {
+    if let Ok(mut guard) = RESET_IN_FLIGHT
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        guard.insert(id.to_string())
+    } else {
+        false
+    }
+}
+
+pub fn end_reset(id: &str) {
+    if let Ok(mut guard) = RESET_IN_FLIGHT
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        guard.remove(id);
+    }
+}
+
+/// Redeem one banked reset. The backend picks the credit when the detailed
+/// list is unavailable; otherwise the nearest-expiring credit is used.
+pub async fn consume_reset_credit(
+    client: &Client,
+    account: &Account,
+) -> Result<&'static str, String> {
+    let tokens = ensure_fresh(client, account).await?;
+    let access = tokens.access_token.clone().ok_or("нет access_token")?;
+    let credit_id = match fetch_reset_credits(client, account, &tokens).await {
+        Ok(details) => soonest_reset_credit(details.credits),
+        Err(_) => None,
+    };
+    let mut body = json!({ "redeem_request_id": reset_request_id() });
+    if let Some(id) = credit_id {
+        body["credit_id"] = json!(id);
+    }
+    let mut request = client
+        .post(CONSUME_RESET_CREDIT_ENDPOINT)
+        .header("Authorization", format!("Bearer {}", access))
+        .header("User-Agent", USER_AGENT)
+        .header("originator", ORIGINATOR)
+        .header("Accept", "application/json")
+        .json(&body);
+    let account_id = account.account_id.clone().or(tokens.account_id.clone());
+    if let Some(id) = account_id.filter(|v| !v.is_empty()) {
+        request = request.header("ChatGPT-Account-Id", id);
+    }
+    let resp = request.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "reset {}: {}",
+            status.as_u16(),
+            text.chars().take(300).collect::<String>()
+        ));
+    }
+    let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    parse_reset_outcome(&value).ok_or_else(|| {
+        format!(
+            "неизвестный ответ сброса: {}",
+            text.chars().take(200).collect::<String>()
+        )
+    })
 }
 
 /// Subscription URL with the account id percent-encoded: the id is opaque and
@@ -453,9 +636,13 @@ fn parse_any_date(raw: &str) -> Option<f64> {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
         return Some(dt.timestamp() as f64);
     }
-    if let Ok(ms) = raw.parse::<f64>() {
-        // Numeric values are milliseconds.
-        return Some(ms / 1000.0);
+    if let Ok(number) = raw.parse::<f64>() {
+        // Reset-credit timestamps arrive as Unix seconds or milliseconds.
+        return Some(if number > 1_000_000_000_000.0 {
+            number / 1000.0
+        } else {
+            number
+        });
     }
     None
 }
@@ -511,11 +698,155 @@ pub fn reset_notification_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        block_window, parse_live_signals, reset_notification_key, should_notify_quota_reset,
-        subscription_url,
+        block_window, parse_live_signals, parse_reset_credits, parse_reset_outcome,
+        reset_notification_key, reset_request_id, should_notify_quota_reset, soonest_reset_credit,
+        subscription_url, ResetCreditRecord,
     };
     use crate::vault::APPLE_REF_UNIX_OFFSET;
+    use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn reset_credits_keep_available_records_and_the_nearest_expiry() {
+        let value = json!({
+            "available_count": 2,
+            "credits": [
+                {
+                    "id": "RateLimitResetCredit_b",
+                    "status": "available",
+                    "title": "Full reset (Weekly + 5 hr)",
+                    "expires_at": "2026-08-20T10:00:00Z"
+                },
+                {
+                    "id": "RateLimitResetCredit_a",
+                    "status": "available",
+                    "expires_at": "2026-08-10T10:00:00Z"
+                },
+                {
+                    "id": "RateLimitResetCredit_used",
+                    "status": "redeemed",
+                    "expires_at": "2026-07-01T10:00:00Z"
+                }
+            ]
+        });
+
+        let details = parse_reset_credits(&value);
+
+        assert_eq!(details.available, Some(2));
+        assert_eq!(
+            details
+                .credits
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["RateLimitResetCredit_b", "RateLimitResetCredit_a"]
+        );
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-08-10T10:00:00Z")
+            .unwrap()
+            .timestamp() as f64;
+        assert_eq!(details.next_expiry, Some(expected));
+    }
+
+    #[test]
+    fn reset_credits_parse_the_nested_camel_case_shape_and_numeric_seconds() {
+        let value = json!({
+            "data": {
+                "availableCount": 1,
+                "credits": [
+                    { "credit_id": "credit-1", "status": "available", "expires_at": 1_800_000_000 }
+                ]
+            }
+        });
+
+        let details = parse_reset_credits(&value);
+
+        assert_eq!(details.available, Some(1));
+        assert_eq!(details.credits.len(), 1);
+        assert_eq!(details.credits[0].id, "credit-1");
+        assert_eq!(details.next_expiry, Some(1_800_000_000.0));
+    }
+
+    #[test]
+    fn reset_credits_fall_back_to_record_count_when_available_is_missing() {
+        let value = json!({
+            "credits": [
+                { "id": "a", "status": "", "expires_at": "2026-08-10T10:00:00Z" },
+                { "id": "b", "status": "granted" }
+            ]
+        });
+
+        let details = parse_reset_credits(&value);
+
+        assert_eq!(details.available, Some(2));
+        assert_eq!(details.credits.len(), 2);
+    }
+
+    #[test]
+    fn soonest_reset_credit_prefers_expiry_and_skips_spent_records() {
+        let credits = vec![
+            ResetCreditRecord {
+                id: "later".to_string(),
+                status: "available".to_string(),
+                expires_at: Some(200.0),
+            },
+            ResetCreditRecord {
+                id: "sooner".to_string(),
+                status: "available".to_string(),
+                expires_at: Some(100.0),
+            },
+            ResetCreditRecord {
+                id: "no-expiry".to_string(),
+                status: "available".to_string(),
+                expires_at: None,
+            },
+            ResetCreditRecord {
+                id: "spent".to_string(),
+                status: "redeemed".to_string(),
+                expires_at: Some(1.0),
+            },
+        ];
+
+        assert_eq!(soonest_reset_credit(credits), Some("sooner".to_string()));
+    }
+
+    #[test]
+    fn reset_outcome_accepts_both_naming_styles_and_nested_payloads() {
+        assert_eq!(
+            parse_reset_outcome(&json!({"outcome": "reset"})),
+            Some("reset")
+        );
+        assert_eq!(
+            parse_reset_outcome(&json!({"outcome": "nothing_to_reset"})),
+            Some("nothing_to_reset")
+        );
+        assert_eq!(
+            parse_reset_outcome(&json!({"code": "nothingToReset"})),
+            Some("nothing_to_reset")
+        );
+        assert_eq!(
+            parse_reset_outcome(&json!({"outcome": "no_credit"})),
+            Some("no_credit")
+        );
+        assert_eq!(
+            parse_reset_outcome(&json!({"data": {"code": "alreadyRedeemed"}})),
+            Some("already_redeemed")
+        );
+        assert_eq!(parse_reset_outcome(&json!({"outcome": "mystery"})), None);
+        assert_eq!(parse_reset_outcome(&json!({})), None);
+    }
+
+    #[test]
+    fn reset_request_id_is_a_uuid_v4() {
+        let id = reset_request_id();
+        assert_eq!(id.len(), 36);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12]
+        );
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+    }
 
     #[test]
     fn subscription_url_percent_encodes_account_id() {

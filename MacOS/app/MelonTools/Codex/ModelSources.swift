@@ -13,6 +13,9 @@ struct ModelSource: Identifiable, Codable, Equatable {
         case openCode
         case deepInfra
         case vercel
+        /// Z.ai GLM Coding Plan: OpenAI-compatible Coding endpoint with an
+        /// API key from Personal Coding Plan → Plan Overview.
+        case zai
         /// Anthropic Claude: served from the engine OAuth account by default
         /// (no key); `apiKey` holds the optional API-key fallback.
         case claude
@@ -54,6 +57,15 @@ struct SourceModel: Identifiable, Codable, Equatable {
     var supportsImages: Bool?
 }
 
+/// One model from the Z.ai Coding Plan `/models` response, or from the
+/// built-in fallback catalog when that endpoint is unavailable.
+struct ZaiModel: Equatable {
+    var id: String
+    var display: String
+    var contextLength: Int?
+    var supportsImages: Bool?
+}
+
 /// Registry ids served by Antigravity (CLIProxyAPI `models.json`). Used in two
 /// places: as the Antigravity allowlist when `/v1/models` omits ownership, and
 /// as the subtraction set for the Claude loader. Top-level (not actor-bound)
@@ -66,6 +78,9 @@ enum AntigravityModelRegistry {
         "claude-sonnet-5-5-high",
         "gemini-4-argon-high",
         "gemini-3.8-flash-high",
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-2.5-pro",
         "gemini-3-flash",
         "gemini-3.1-flash-image",
         "gpt-oss-120b-medium",
@@ -104,6 +119,11 @@ final class ModelSourcesStore: ObservableObject {
     static let vercelModelsURL = "https://ai-gateway.vercel.sh/v1/models"
     static let vercelBaseURL = "https://ai-gateway.vercel.sh/v1"
     static let vercelCreditsURL = "https://ai-gateway.vercel.sh/v1/credits"
+    /// Z.ai GLM Coding Plan. The Coding-only endpoint is required for plan
+    /// quota; the general `/api/paas/v4` endpoint is a pay-as-you-go surface.
+    static let zaiBaseURL = "https://api.z.ai/api/coding/paas/v4"
+    static let zaiModelsURL = "https://api.z.ai/api/coding/paas/v4/models"
+    static let zaiAliasPrefix = "zai/"
 
     @Published private(set) var sources: [ModelSource] = [] {
         didSet { priceIndex = nil }
@@ -112,6 +132,7 @@ final class ModelSourcesStore: ObservableObject {
     @Published var openCodeKey: String = ""
     @Published var deepInfraKey: String = ""
     @Published var vercelKey: String = ""
+    @Published var zaiKey: String = ""
     /// Optional Anthropic API key (fallback when no OAuth account is used).
     @Published var claudeKey: String = ""
     @Published private(set) var note: String?
@@ -129,6 +150,7 @@ final class ModelSourcesStore: ObservableObject {
         var openCodeKey: String?
         var deepInfraKey: String?
         var vercelKey: String?
+        var zaiKey: String?
         var claudeKey: String?
         var sources: [ModelSource]?
     }
@@ -139,6 +161,7 @@ final class ModelSourcesStore: ObservableObject {
         var openCodeKey: String?
         var deepInfraKey: String?
         var vercelKey: String?
+        var zaiKey: String?
         var claudeKey: String?
     }
 
@@ -157,6 +180,7 @@ final class ModelSourcesStore: ObservableObject {
             openCodeKey = persisted.openCodeKey ?? ""
             deepInfraKey = persisted.deepInfraKey ?? ""
             vercelKey = persisted.vercelKey ?? ""
+            zaiKey = persisted.zaiKey ?? persisted.sources?.first { $0.kind == .zai }?.apiKey ?? ""
             claudeKey = persisted.claudeKey ?? persisted.sources?.first { $0.kind == .claude }?.apiKey ?? ""
             sources = persisted.sources ?? []
             // Backfill known capabilities once for stores written before the
@@ -171,6 +195,7 @@ final class ModelSourcesStore: ObservableObject {
             openCodeKey = keys.openCodeKey ?? ""
             deepInfraKey = keys.deepInfraKey ?? ""
             vercelKey = keys.vercelKey ?? ""
+            zaiKey = keys.zaiKey ?? ""
             claudeKey = keys.claudeKey ?? ""
         }
     }
@@ -198,6 +223,7 @@ final class ModelSourcesStore: ObservableObject {
             openCodeKey: openCodeKey,
             deepInfraKey: deepInfraKey,
             vercelKey: vercelKey,
+            zaiKey: zaiKey,
             claudeKey: claudeKey,
             sources: sources
         )
@@ -243,6 +269,8 @@ final class ModelSourcesStore: ObservableObject {
                     images = true
                 case .antigravity:
                     images = Self.antigravitySupportsImages(id)
+                case .zai:
+                    images = Self.zaiSupportsImages(id)
                 case .openRouter, .openCode, .deepInfra, .vercel:
                     images = nil
                 }
@@ -263,6 +291,8 @@ final class ModelSourcesStore: ObservableObject {
     var deepInfraSource: ModelSource? { sources.first { $0.id == "deepinfra" } }
 
     var vercelSource: ModelSource? { sources.first { $0.id == "vercel" } }
+
+    var zaiSource: ModelSource? { sources.first { $0.id == "zai" } }
 
     var claudeSource: ModelSource? { sources.first { $0.id == "claude" } }
 
@@ -841,6 +871,142 @@ final class ModelSourcesStore: ObservableObject {
             models: models
         ))
         vercelKey = key
+        save()
+    }
+
+    // MARK: - Z.ai (GLM Coding Plan, API key)
+
+    nonisolated static func zaiAlias(_ id: String) -> String {
+        id.hasPrefix(zaiAliasPrefix) ? id : zaiAliasPrefix + id
+    }
+
+    /// Current Coding Plan models, used when the provider's `/models`
+    /// endpoint is missing or returns an unexpected shape. Z.ai documents
+    /// GLM-5.3 and GLM-5.3-Flash for the current plan; older ids are routed
+    /// to these two server-side.
+    nonisolated static let zaiFallbackModels: [ZaiModel] = [
+        ZaiModel(id: "glm-5.3", display: "GLM-5.3", contextLength: 1_000_000, supportsImages: false),
+        ZaiModel(id: "glm-5.3-flash", display: "GLM-5.3 Flash", contextLength: 1_000_000, supportsImages: true),
+    ]
+
+    nonisolated static func zaiSupportsImages(_ id: String) -> Bool? {
+        let lower = id.lowercased()
+        if lower == "glm-5.3-flash" || lower.hasPrefix("glm-5.3-flash-") { return true }
+        if lower.contains("vision") || lower.hasSuffix("v") || lower.contains("-v") {
+            return true
+        }
+        if lower.hasPrefix("glm-5.3") { return false }
+        return nil
+    }
+
+    /// Parse the OpenAI-compatible `/models` response, tolerating both the
+    /// standard `data` array and a `models` wrapper.
+    nonisolated static func parseZaiModels(_ data: Data) -> [ZaiModel] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        let rows = (root["data"] as? [[String: Any]])
+            ?? (root["models"] as? [[String: Any]])
+            ?? []
+        return rows.compactMap { row -> ZaiModel? in
+            guard let id = (row["id"] as? String) ?? (row["slug"] as? String),
+                  !id.isEmpty else { return nil }
+            let name = (row["name"] as? String)
+                ?? (row["display_name"] as? String)
+                ?? (row["displayName"] as? String)
+            let context = (row["context_length"] as? Int)
+                ?? (row["context_window"] as? Int)
+                ?? ((row["metadata"] as? [String: Any])?["context_length"] as? Int)
+            let modalities = ((row["architecture"] as? [String: Any])?["input_modalities"] as? [String])
+                ?? ((row["modalities"] as? [String: Any])?["input"] as? [String])
+                ?? (row["input_modalities"] as? [String])
+                ?? (row["input"] as? [String])
+            let images = modalities.map { values in
+                values.contains { $0.caseInsensitiveCompare("image") == .orderedSame }
+            }
+            return ZaiModel(
+                id: id,
+                display: displayName(id: id, fallback: name),
+                contextLength: context,
+                supportsImages: images ?? zaiSupportsImages(id)
+            )
+        }
+        .sorted { $0.id.lowercased() < $1.id.lowercased() }
+    }
+
+    func loadZaiModels() async {
+        let key = zaiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            note = L("Enter a Z.ai key first.")
+            return
+        }
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let result = try await fetchZaiModels(key: key)
+            mergeZai(models: result.models, key: key)
+            note = result.usedFallback
+                ? L("Z.ai: built-in GLM catalog (the model list was unavailable).")
+                : String(format: L("Z.ai: %d models"), result.models.count)
+        } catch {
+            note = L("Z.ai did not accept the key.")
+        }
+    }
+
+    private func fetchZaiModels(key: String) async throws -> (models: [ZaiModel], usedFallback: Bool) {
+        var request = URLRequest(url: URL(string: Self.zaiModelsURL)!)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue(Self.appUserAgent, forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 30
+        let (data, response) = try await NetworkProxy.session().data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw URLError(.userAuthenticationRequired)
+        }
+        if http.statusCode == 200 {
+            let parsed = Self.parseZaiModels(data)
+            if !parsed.isEmpty {
+                return (parsed, false)
+            }
+        }
+        // A missing or differently shaped catalogue must not block the
+        // provider: the current Coding Plan model set is small and stable.
+        return (Self.zaiFallbackModels, true)
+    }
+
+    private func mergeZai(models: [ZaiModel], key: String) {
+        let existing = zaiSource
+        var enabledById: [String: Bool] = [:]
+        var imagesById: [String: Bool] = [:]
+        for model in existing?.models ?? [] {
+            enabledById[model.id] = model.enabled
+            if let images = model.supportsImages { imagesById[model.id] = images }
+        }
+        let sourceModels = models
+            .map { model in
+                SourceModel(
+                    id: model.id,
+                    display: model.display,
+                    contextLength: model.contextLength,
+                    enabled: enabledById[model.id] ?? false,
+                    alias: Self.zaiAlias(model.id),
+                    supportsImages: imagesById[model.id] ?? model.supportsImages
+                )
+            }
+            .sorted { $0.id.lowercased() < $1.id.lowercased() }
+        replace(ModelSource(
+            id: "zai",
+            kind: .zai,
+            title: "Z.ai",
+            baseURL: Self.zaiBaseURL,
+            apiKey: key,
+            enabled: existing?.enabled ?? true,
+            models: sourceModels
+        ))
+        zaiKey = key
         save()
     }
 

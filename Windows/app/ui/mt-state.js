@@ -7,6 +7,7 @@ const S = {
   history: [],
   status: null,
   settings: null,
+  proxyUrlDraft: null,
   providers: null,
   vercel: null,
   vercelLoaded: false,

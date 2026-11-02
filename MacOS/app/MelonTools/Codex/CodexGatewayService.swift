@@ -29,6 +29,17 @@ final class CodexGatewayService: ObservableObject {
         }
     }
 
+    struct QoSMetric: Identifiable, Equatable {
+        let id = UUID()
+        let time: Date
+        let auth: String
+        let model: String
+        let ttftMS: Int?
+        let cooldownSeconds: Int?
+        let strike: Int?
+        let timedOut: Bool
+    }
+
     struct GatewayRequest: Identifiable {
         let id = UUID()
         let time: Date
@@ -46,6 +57,8 @@ final class CodexGatewayService: ObservableObject {
     private(set) var logLines: [String] = []
     private(set) var requests: [GatewayRequest] = []
     @Published private(set) var adopted = false
+    @Published private(set) var lastQoS: QoSMetric?
+    @Published private(set) var qosHistory: [QoSMetric] = []
     @Published private(set) var isStarting = false
     @Published private(set) var checkResult: String?
     @Published private(set) var checkPassed = false
@@ -299,6 +312,23 @@ final class CodexGatewayService: ObservableObject {
     /// Rewrite config.yaml after the Network/Proxy settings change. The engine
     /// watches the file; a running service picks up the new proxy without a
     /// restart.
+    /// 0 disables the first-token watchdog. The engine watches config.yaml, so
+    /// a running gateway picks the new threshold up without a restart.
+    static var streamBootstrapTimeoutSeconds: Int {
+        let stored = UserDefaults.standard.object(forKey: "streamBootstrapTimeoutSeconds") as? Int
+        return min(300, max(0, stored ?? 60))
+    }
+
+    func applyStreamBootstrapTimeout() {
+        guard isRunning else { return }
+        do {
+            try writeConfig()
+            auditLog("stream bootstrap timeout applied: \(Self.streamBootstrapTimeoutSeconds)s")
+        } catch {
+            lastError = L("Apply failed") + ": " + error.localizedDescription
+        }
+    }
+
     func applyNetworkSettings() {
         NetworkProxy.invalidate()
         guard isRunning else { return }
@@ -342,9 +372,15 @@ final class CodexGatewayService: ObservableObject {
         max-retry-interval: 45
         transient-error-cooldown-seconds: 20
 
+        # Fail over before the client commits when the first token is slow.
+        stream-bootstrap-timeout-seconds: \(Self.streamBootstrapTimeoutSeconds)
+
         requests:
           proxy-url: "\(ModelSourcesStore.yamlEscape(NetworkProxy.activeURL() ?? ""))"
         """
+        // The overlay adds the Antigravity ids the official catalog misses.
+        // Only referenced once the file exists: a dangling path is refused.
+        yaml += ModelCatalogOverlay.gatewayYAML()
         // External model sources (OpenRouter, OpenCode) ride in the same config;
         // the running service hot-reloads the file.
         yaml += ModelSourcesStore.shared.gatewayYAML()
@@ -365,6 +401,24 @@ final class CodexGatewayService: ObservableObject {
             auditLog("network proxy changed; gateway config updated")
         } catch {
             auditLog("network proxy update failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// The overlay carries the Antigravity ids the official catalog omits.
+    /// Refreshed off the health probe path so a slow fetch never delays it;
+    /// a successful refresh also rewrites the config in case the overlay file
+    /// appeared after the gateway started.
+    private func refreshCatalogIfNeeded() {
+        guard ModelCatalogOverlay.needsRefresh() else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard await ModelCatalogOverlay.refreshIfNeeded(timeout: 45) else { return }
+            do {
+                try self.writeConfig()
+                self.auditLog("model catalog overlay refreshed")
+            } catch {
+                self.auditLog("model catalog overlay config write failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -498,6 +552,10 @@ final class CodexGatewayService: ObservableObject {
         // A (forced) start must not leave the previous process running:
         // spawning again on the same port fails with “address in use”.
         if isRunning { await stop() }
+
+        // Finish the model catalog before the config points at it. Bounded:
+        // an unreachable host must not hold the gateway at `.starting`.
+        await ModelCatalogOverlay.refreshIfNeeded(timeout: 8)
 
         // 1. Adopt an already-running gateway when it answers our key.
         if !force {
@@ -917,6 +975,7 @@ final class CodexGatewayService: ObservableObject {
                     // Assign only on change: every write invalidates the views.
                     if self.lastError != nil { self.lastError = nil }
                     self.refreshProxyIfNeeded()
+                    self.refreshCatalogIfNeeded()
                 case .unauthorized, .unreachable:
                     misses += 1
                     if misses >= 3 {
@@ -1097,6 +1156,14 @@ final class CodexGatewayService: ObservableObject {
         var parsed: [GatewayRequest] = []
         for line in newLines {
             if let request = Self.parseRequestLine(line) { parsed.append(request) }
+            if let metric = Self.parseQoSLine(line) {
+                qosHistory.insert(metric, at: 0)
+                if qosHistory.count > 30 { qosHistory.removeLast(qosHistory.count - 30) }
+                lastQoS = metric
+                if metric.timedOut {
+                    auditLog("qos failover auth=\(metric.auth) model=\(metric.model) cooldown=\(metric.cooldownSeconds ?? 0)s")
+                }
+            }
         }
         if !parsed.isEmpty {
             requests.insert(contentsOf: parsed, at: 0)
@@ -1161,6 +1228,37 @@ final class CodexGatewayService: ObservableObject {
             return 0
         }
         return size
+    }
+
+    /// Parses the engine's `[qos]` telemetry lines emitted by the first-token
+    /// watchdog. Logrus prefixes the message, so the parser only looks for the
+    /// known key/value tokens.
+    nonisolated static func parseQoSLine(_ line: String) -> QoSMetric? {
+        guard line.contains("[qos]") else { return nil }
+        let timedOut = line.contains("first_token_timeout")
+        guard timedOut || line.contains("first_token") else { return nil }
+        guard line.contains("provider=antigravity") else { return nil }
+        func value(_ key: String) -> Int? {
+            guard let range = line.range(of: key + "=") else { return nil }
+            let rest = line[range.upperBound...]
+            let digits = rest.prefix { $0.isNumber }
+            return Int(digits)
+        }
+        func text(_ key: String) -> String? {
+            guard let range = line.range(of: key + "=") else { return nil }
+            let rest = line[range.upperBound...]
+            let token = rest.prefix { !$0.isWhitespace && $0 != "\"" }
+            return token.isEmpty ? nil : String(token)
+        }
+        return QoSMetric(
+            time: Date(),
+            auth: text("auth") ?? "—",
+            model: text("model") ?? "—",
+            ttftMS: value("ttft_ms"),
+            cooldownSeconds: value("cooldown_s"),
+            strike: value("strike"),
+            timedOut: timedOut
+        )
     }
 
     /// Parse CLIProxyAPI gin logger lines (4+ pipe-separated columns):

@@ -206,6 +206,10 @@ Object.assign(DICT.ru, {
   "vercel": "Vercel",
   "vcKey": "Ключ Vercel AI Gateway",
   "vcHint": "Ключ Vercel AI Gateway (AI_GATEWAY_API_KEY), не личный токен Vercel. Баланс и расход — общие для команды. После загрузки перезапустите шлюз.",
+  "zai": "Z.ai",
+  "zaiKey": "Ключ Z.ai Coding Plan (id.secret)",
+  "zaiHint": "Ключ из Personal Coding Plan → Plan Overview, не обычный API-ключ. Coding-эндпоинт: api.z.ai/api/coding/paas/v4. GLM Coding Plan разрешён только в поддерживаемых Z.ai инструментах — прямое использование через шлюз на ваш риск. После загрузки перезапустите шлюз.",
+  "sgZai": "Z.ai",
   "sessionSpend": "Расход сессии",
   "teamBalance": "Баланс команды",
   "lifetimeSpend": "Всего израсходовано",
@@ -760,6 +764,10 @@ Object.assign(DICT.en, {
   "vercel": "Vercel",
   "vcKey": "Vercel AI Gateway key",
   "vcHint": "Use a Vercel AI Gateway key (AI_GATEWAY_API_KEY), not a personal Vercel token. Balance and spend are shared by the team. Restart the gateway after loading.",
+  "zai": "Z.ai",
+  "zaiKey": "Z.ai Coding Plan key (id.secret)",
+  "zaiHint": "Use a key from Personal Coding Plan → Plan Overview, not a standard API key. Coding endpoint: api.z.ai/api/coding/paas/v4. GLM Coding Plan is limited to Z.ai's supported tools — direct gateway use is at your own risk. Restart the gateway after loading.",
+  "sgZai": "Z.ai",
   "sessionSpend": "Session spend",
   "teamBalance": "Team balance",
   "lifetimeSpend": "Lifetime spend",
@@ -1344,9 +1352,17 @@ function quotaBlock(title, percent, resetUnix, present) {
 const ACCOUNT_SETTINGS_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.1"/><circle cx="7" cy="17" r="2.1"/></svg>';
 
 function accountCard(account) {
-  const resetsText = account.resetCreditsAvailable === null || account.resetCreditsAvailable === undefined
-    ? t("resetsNone")
-    : `${account.resetCreditsAvailable} ${t("available")}${account.resetCreditsNextExpiry ? " · " + resetText(account.resetCreditsNextExpiry) : ""}`;
+  const resetCount = Number(account.resetCreditsAvailable);
+  const hasResets = Number.isFinite(resetCount) && resetCount > 0;
+  const resetBusy = !!S.busy["reset-" + account.id];
+  const resetTitle = account.resetCreditsNextExpiry
+    ? fmt(t("resetExpires"), {
+        date: new Date(account.resetCreditsNextExpiry * 1000).toLocaleDateString(),
+      })
+    : t("resetActivate");
+  const resetControl = hasResets
+    ? `<button class="btn small" data-action="resetActivate" data-id="${esc(account.id)}" title="${esc(resetTitle)}" ${resetBusy ? "disabled" : ""}>↻ ${esc(resetBusy ? t("resetInFlight") : resetCountLabel(resetCount))}</button>`
+    : `<span class="footnote">${t("resetsAvailable")}: ${t("resetsNone")}</span>`;
   const models = account.modelAvailability || [];
   const modelsBlock = models.length
     ? `<details><summary class="footnote" style="cursor:pointer">${t("accountModels")} (${models.length})</summary>
@@ -1380,7 +1396,8 @@ function accountCard(account) {
         ${account.blocked ? `<div class="footnote">⏸ ${esc(blockText(account.blockInfo))}</div>` : ""}
         <div class="row">
           ${account.subscriptionActiveUntil ? `<span class="footnote">${esc(subscriptionText(account.subscriptionActiveUntil))}</span>` : ""}
-          <span class="footnote">${t("resetsAvailable")}: ${esc(resetsText)}</span>
+          <span class="spacer"></span>
+          ${resetControl}
         </div>
         <div class="footnote">${t("quotaAge")}: ${esc(ageText(account.quotaUpdatedAt))} · ${t(account.quotaSource === "gateway" ? "quotaLive" : "quotaUsage")}${account.quotaError ? " · " + esc(account.quotaError) : ""}</div>
         ${modelsBlock}
@@ -1586,6 +1603,10 @@ function settingsPage() {
   const settings = S.settings || {};
   const info = S.info || {};
   const interval = Number(settings.quotaInterval ?? 300);
+  const proxyUrlDraft = S.proxyUrlDraft !== null && S.proxyUrlDraft !== undefined
+    ? String(S.proxyUrlDraft)
+    : String(settings.proxyUrl || "");
+  const proxyUrlDirty = proxyUrlDraft.trim() !== String(settings.proxyUrl || "").trim();
   const intervalOptions = [
     [0, t("off")],
     [60, t("oneMin")],
@@ -1619,10 +1640,11 @@ function settingsPage() {
         <input type="checkbox" id="set-proxy-enabled" ${settings.proxyEnabled ? "checked" : ""}>
         <span>${t("useProxy")}</span>
       </label>
-      <div class="row">
+      <div class="row" style="align-items:flex-end">
         <label class="field" style="flex:1">${t("proxyUrl")}
-          <input id="set-proxy-url" class="mono" placeholder="socks5h://127.0.0.1:1080" value="${esc(settings.proxyUrl || "")}">
+          <input id="set-proxy-url" class="mono" placeholder="socks5h://127.0.0.1:1080" value="${esc(proxyUrlDraft)}" data-action="proxyUrlChanged" data-on="input">
         </label>
+        <button class="proxy-save" id="proxy-save" data-action="saveProxyUrl" title="${t("saveProxyUrl")}" aria-label="${t("saveProxyUrl")}" ${proxyUrlDirty ? "" : "hidden"}>✓</button>
         <label class="field" style="flex:1">${t("proxyBypass")}
           <input id="set-proxy-bypass" class="mono" value="${esc(settings.proxyBypass || "127.0.0.1,localhost")}">
         </label>

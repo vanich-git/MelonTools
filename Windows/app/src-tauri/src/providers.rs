@@ -240,6 +240,142 @@ fn parse_vercel_models(value: &Value) -> Vec<ProviderModel> {
     models
 }
 
+/// Z.ai GLM Coding Plan. The Coding-only endpoint is required for plan
+/// quota; the general `/api/paas/v4` endpoint is billed per token.
+pub const ZAI_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
+pub const ZAI_MODELS_URL: &str = "https://api.z.ai/api/coding/paas/v4/models";
+
+/// Current Coding Plan models, used when `/models` is missing or returns an
+/// unexpected shape. Older ids are routed server-side to these two.
+pub fn zai_models_fallback() -> Vec<ProviderModel> {
+    [
+        ("glm-5.3", "GLM-5.3", 1_000_000u64, false),
+        ("glm-5.3-flash", "GLM-5.3 Flash", 1_000_000u64, true),
+    ]
+    .into_iter()
+    .map(|(id, display, context, images)| ProviderModel {
+        id: id.to_string(),
+        display: display.to_string(),
+        context_window: Some(context),
+        supports_images: Some(images),
+        ..Default::default()
+    })
+    .collect()
+}
+
+fn zai_supports_images(id: &str) -> Option<bool> {
+    let lower = id.to_lowercase();
+    if lower == "glm-5.3-flash" || lower.starts_with("glm-5.3-flash-") {
+        return Some(true);
+    }
+    if lower.contains("vision") || lower.ends_with('v') || lower.contains("-v") {
+        return Some(true);
+    }
+    if lower.starts_with("glm-5.3") {
+        return Some(false);
+    }
+    None
+}
+
+pub async fn zai_models(key: &str) -> Result<Vec<ProviderModel>, String> {
+    if key.trim().is_empty() {
+        return Err("ключ Z.ai не задан".to_string());
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(ZAI_MODELS_URL)
+        .bearer_auth(key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(format!(
+            "Z.ai: HTTP {} — {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    if status.is_success() {
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            let models = parse_zai_models(&value);
+            if !models.is_empty() {
+                return Ok(models);
+            }
+        }
+    }
+    Ok(zai_models_fallback())
+}
+
+fn parse_zai_models(value: &Value) -> Vec<ProviderModel> {
+    let entries = value
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| value.get("models").and_then(Value::as_array));
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    let mut models: Vec<ProviderModel> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .or_else(|| entry.get("slug").and_then(Value::as_str))?
+                .to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let display = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| entry.get("display_name").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    crate::codex_route::prettify(id.rsplit('/').next().unwrap_or(&id))
+                });
+            let context_window = entry
+                .get("context_length")
+                .and_then(Value::as_u64)
+                .or_else(|| entry.get("context_window").and_then(Value::as_u64))
+                .or_else(|| {
+                    entry
+                        .pointer("/metadata/context_length")
+                        .and_then(Value::as_u64)
+                });
+            let supports_images = entry
+                .pointer("/architecture/input_modalities")
+                .or_else(|| entry.pointer("/modalities/input"))
+                .or_else(|| entry.get("input_modalities"))
+                .or_else(|| entry.get("input"))
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|value| value.eq_ignore_ascii_case("image"))
+                })
+                .or_else(|| zai_supports_images(&id));
+            Some(ProviderModel {
+                id,
+                display,
+                context_window,
+                supports_images,
+                ..Default::default()
+            })
+        })
+        .collect();
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models
+}
+
 /// Claude (Anthropic) metrics for the Providers page: connection status, the
 /// account email, the two quota windows and the model count the gateway
 /// serves. Without an auth file the account is not connected; without a usage
@@ -300,21 +436,42 @@ pub fn claude_metrics(
 /// identity (email, Google project id) and the model count. There is no
 /// Antigravity quota endpoint, so no percentages are reported.
 pub async fn antigravity(settings: &Settings) -> Result<Value, String> {
-    let model_count = antigravity::models(settings.port, &settings.api_key)
-        .await
-        .ok()
-        .and_then(|value| value.get("count").and_then(|c| c.as_u64()))
-        .unwrap_or(0) as usize;
-    let Some(file) = antigravity::newest_auth_file() else {
-        return Ok(antigravity_metrics(false, None, None, model_count, None));
-    };
-    Ok(antigravity_metrics(
-        true,
-        file.email.clone(),
-        file.project_id.clone(),
-        model_count,
-        None,
-    ))
+    let pool = crate::antigravity::account_views(settings).await;
+    let accounts = pool
+        .get("accounts")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let first = accounts.first();
+    let mut models = std::collections::HashSet::new();
+    for account in &accounts {
+        if let Some(ids) = account.get("models").and_then(|value| value.as_array()) {
+            for id in ids.iter().filter_map(|value| value.as_str()) {
+                models.insert(id.to_string());
+            }
+        }
+    }
+    let connected = !accounts.is_empty();
+    let email = first
+        .and_then(|account| account.get("email"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let project = first
+        .and_then(|account| account.get("projectId"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "connected": connected,
+        "email": email,
+        "projectId": project,
+        "modelCount": models.len(),
+        "updatedAt": if connected { json!(chrono::Utc::now().to_rfc3339()) } else { Value::Null },
+        "error": Value::Null,
+        "status": "ok",
+        "accounts": accounts,
+        "catalogOnly": pool.get("catalogOnly").cloned().unwrap_or_else(|| json!([])),
+        "lastQos": crate::gateway::last_qos_event(),
+    }))
 }
 
 /// Assembles the Antigravity metrics object. Pure, so the nil-tolerance is
@@ -341,7 +498,7 @@ pub fn antigravity_metrics(
 mod tests {
     use super::{
         antigravity_metrics, claude_metrics, parse_deepinfra_models, parse_vercel_models,
-        vercel_metrics,
+        parse_zai_models, vercel_metrics, zai_models_fallback, zai_supports_images,
     };
     use crate::claude::UsageSnapshot;
     use serde_json::json;
@@ -476,5 +633,40 @@ mod tests {
         assert_eq!(value["balance"], 42.5);
         assert_eq!(value["totalUsed"], 100.0);
         assert_eq!(value["status"], "ok");
+    }
+
+    #[test]
+    fn zai_parses_openai_compatible_models_and_image_capability() {
+        let value = json!({"data":[
+            {"id":"glm-5.3","name":"GLM-5.3","context_length":1000000},
+            {"id":"glm-5.3-flash","name":"GLM-5.3 Flash","context_window":1000000,
+             "architecture":{"input_modalities":["text","image"]}}
+        ]});
+        let models = parse_zai_models(&value);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "glm-5.3");
+        assert_eq!(models[0].display, "GLM-5.3");
+        assert_eq!(models[0].context_window, Some(1_000_000));
+        assert_eq!(models[0].supports_images, Some(false));
+        assert_eq!(models[1].id, "glm-5.3-flash");
+        assert_eq!(models[1].supports_images, Some(true));
+    }
+
+    #[test]
+    fn zai_fallback_catalog_matches_the_current_plan() {
+        let models = zai_models_fallback();
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, vec!["glm-5.3", "glm-5.3-flash"]);
+        assert_eq!(models[0].supports_images, Some(false));
+        assert_eq!(models[1].supports_images, Some(true));
+    }
+
+    #[test]
+    fn zai_image_defaults_cover_flash_and_vision_ids() {
+        assert_eq!(zai_supports_images("glm-5.3"), Some(false));
+        assert_eq!(zai_supports_images("glm-5.3-flash"), Some(true));
+        assert_eq!(zai_supports_images("glm-5.3-flash-high"), Some(true));
+        assert_eq!(zai_supports_images("glm-4.6v"), Some(true));
+        assert_eq!(zai_supports_images("some-other-model"), None);
     }
 }

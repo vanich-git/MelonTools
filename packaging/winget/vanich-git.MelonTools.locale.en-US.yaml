@@ -1,16 +1,16 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
-PackageIdentifier: ivankuprin.MelonTools
-PackageVersion: 3.3.0
+PackageIdentifier: vanich-git.MelonTools
+PackageVersion: 4.0.0
 PackageLocale: en-US
 Publisher: Ivan Kuprin
-PublisherUrl: https://github.com/ivankuprin
-PublisherSupportUrl: https://github.com/ivankuprin/MelonTools/issues
-PrivacyUrl: https://github.com/ivankuprin/MelonTools/blob/main/docs/SECURITY-MODEL.md
+PublisherUrl: https://github.com/vanich-git
+PublisherSupportUrl: https://github.com/vanich-git/MelonTools/issues
+PrivacyUrl: https://github.com/vanich-git/MelonTools/blob/main/docs/SECURITY-MODEL.md
 Author: Ivan Kuprin
 PackageName: Melon Tools
-PackageUrl: https://github.com/ivankuprin/MelonTools
+PackageUrl: https://github.com/vanich-git/MelonTools
 License: MIT
-LicenseUrl: https://github.com/ivankuprin/MelonTools/blob/main/LICENSE
+LicenseUrl: https://github.com/vanich-git/MelonTools/blob/main/LICENSE
 Copyright: Copyright (c) 2026 Melon Tools
 ShortDescription: Codex account pool, local OpenAI-compatible gateway, and scheduled model tasks.
 Description: >-
@@ -25,6 +25,6 @@ Tags:
   - gateway
   - developer-tools
   - ai
-ReleaseNotesUrl: https://github.com/ivankuprin/MelonTools/releases/tag/v3.3.0
+ReleaseNotesUrl: https://github.com/vanich-git/MelonTools/releases/tag/v4.0.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

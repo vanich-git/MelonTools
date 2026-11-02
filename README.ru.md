@@ -1,0 +1,148 @@
+<div align="center">
+  <img src="MacOS/Logo.png" alt="Melon Tools" width="120">
+  <h1>Melon Tools</h1>
+  <p><strong>Аккаунты Codex, модели-провайдеры и задачи по расписанию — в одном локальном приложении для macOS и Windows.</strong></p>
+  <p>
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools.dmg"><strong>Скачать для macOS</strong></a>
+    ·
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-setup.exe"><strong>Скачать для Windows</strong></a>
+    ·
+    <a href="MacOS/RELEASE_NOTES.md">Список изменений</a>
+    ·
+    <a href="docs/FAQ.md">FAQ</a>
+  </p>
+  <p>
+    <a href="https://github.com/vanich-git/MelonTools/releases/latest"><img alt="Последний релиз" src="https://img.shields.io/github/v/release/vanich-git/MelonTools?display_name=tag"></a>
+    <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-1f6b45">
+    <img alt="Windows 10 x64" src="https://img.shields.io/badge/Windows-10%20x64-2563eb">
+    <a href="LICENSE"><img alt="Лицензия MIT" src="https://img.shields.io/github/license/vanich-git/MelonTools"></a>
+  </p>
+  <p><a href="README.md">English version</a></p>
+</div>
+
+![Melon Tools для macOS и Windows](assets/social-preview.png)
+
+## Что делает Melon Tools
+
+Melon Tools — настольный помощник для тех, кто каждый день работает с Codex. Приложение хранит аккаунты Codex в локальном хранилище, показывает актуальные квоты и поднимает небольшой OpenAI-совместимый шлюз на `127.0.0.1:18317`, чтобы Codex и другие инструменты могли пользоваться настроенными аккаунтами.
+
+Кроме этого Melon Tools подключает сторонних провайдеров моделей, подписывает модели в списке Codex, помогает пережить временные ошибки мощности и запускает задачи по расписанию, пока приложение висит в строке меню или в трее.
+
+Всё работает на вашей машине. Учётные данные остаются локально, шлюз слушает только loopback, а данные аккаунтов никуда не отправляются, кроме провайдера, в котором вы вошли.
+
+## Возможности
+
+| | |
+|---|---|
+| **Пул аккаунтов Codex** | Добавляйте аккаунты в локальное хранилище, обновляйте расход, включайте и выключайте их, распределяйте запросы по пулу. |
+| **Квоты перед глазами** | Квоты по каждому аккаунту и по пулу, время сброса, 5-часовое окно и защита, которая останавливает автоматизацию до исчерпания лимита. |
+| **Локальный OpenAI-совместимый шлюз** | Шлюз на `127.0.0.1:18317` со своим API-ключом, метриками использования и журналом аудита. |
+| **Провайдеры моделей** | Claude и Google Antigravity подключаются по OAuth; OpenRouter, OpenCode, DeepInfra, Vercel AI Gateway и Z.ai GLM Coding Plan — по API-ключу. |
+| **Пул Antigravity** | Несколько Google-аккаунтов: у каждого свои модели и 5-часовой лимит, можно поставить на паузу или обновить вход, а движок переключится на другой аккаунт, если первый токен задерживается. |
+| **Чипы в композере Codex** | Аккаунт и остаток квоты видны прямо в поле ввода Codex. |
+| **Переживает ошибки мощности** | Приложение само нажимает Retry в Codex, а если кнопки уже нет — отправляет короткое продолжение. Молчит, когда пул на паузе или лимит почти исчерпан. |
+| **Задачи по расписанию** | Запуск промпта по интервалу или cron-выражению из пяти полей с часовым поясом. Пять шаблонов: дайджест, ревью PR, сводка по репозиторию, проверка логов и отчёт по расходам. |
+| **Два нативных приложения** | SwiftUI-приложение для macOS и Tauri-приложение для Windows с одинаковым набором функций и общей моделью данных. |
+
+## Скриншоты
+
+| Провайдеры моделей | Внутри Codex |
+|---|---|
+| ![Управление провайдерами](assets/screenshots/melontools-models.jpg) | ![Список моделей и чипы использования](assets/screenshots/codex-model-picker.jpg) |
+
+## Скачивание и установка
+
+### macOS
+
+1. Скачайте **[MelonTools.dmg](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools.dmg)**.
+2. Откройте образ и перетащите **Melon Tools.app** в **Applications**.
+3. При первом запуске, если Gatekeeper блокирует приложение, используйте **правый клик → Открыть**.
+
+Универсальная сборка работает на Apple Silicon и Intel с macOS 14 (Sonoma) или новее. Приложение подписано ad-hoc и пока не нотаризовано, поэтому Gatekeeper показывает предупреждение, пока не настроен сертификат Apple Developer.
+
+### Windows
+
+1. Скачайте **[установщик](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-setup.exe)** и выберите любую папку для установки — или возьмите **[портативную сборку](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe)** без установки.
+2. Нужны Windows 10 (1809) или новее, x64 и WebView2 Runtime (в актуальной Windows уже есть).
+3. Приложение пока не подписано Authenticode, поэтому SmartScreen может показать *Windows protected your PC*. Выберите **More info → Run anyway**, предварительно проверив контрольную сумму.
+
+Данные лежат в `%APPDATA%\MelonTools` и сохраняются после удаления приложения.
+
+### Как проверить скачанный файл
+
+У каждого файла есть соседний `.sha256`, а в релизе лежит общий `SHA256SUMS`:
+
+```bash
+shasum -a 256 -c MelonTools.dmg.sha256          # macOS
+certutil -hashfile MelonTools-setup.exe SHA256  # Windows
+```
+
+## Что нового в 4.0.0
+
+- **Antigravity стал настоящим пулом аккаунтов.** Подключайте сколько угодно Google-аккаунтов: у каждого своя строка с именем, проектом, числом моделей, паузой, повторным входом и удалением. Движок распределяет запросы по пулу, а не берёт самый свежий auth-файл.
+- **Квоту видно.** `fetchAvailableModels` отдаёт `quotaInfo`; приложение группирует её в пулы Gemini и Claude/GPT, показывает остаток 5-часового окна и время сброса и не придумывает недельное окно, которого API не отдаёт.
+- **Модели только из каталога объяснены.** Серый блок перечисляет id, которые есть в каталоге, но недоступны ни одному подключённому аккаунту, с причиной.
+- **Переключение по первому токену.** Если поток Antigravity не присылает первый пакет за `stream-bootstrap-timeout-seconds` (по умолчанию 60), движок повторяет запрос на другом аккаунте и отправляет медленный в карантин: 60 с → 5 мин → 30 мин → 2 ч. Codex, Claude и провайдеры по API-ключу это не затрагивает.
+- **Проверка обновлений смотрит в этот репозиторий.** Встроенный апдейтер на обеих платформах обращается к `api.github.com/repos/vanich-git/MelonTools`.
+
+Полный список изменений — в [changelog](MacOS/RELEASE_NOTES.md).
+
+## Требования
+
+- **macOS:** 14.0 или новее, Apple Silicon или Intel.
+- **Windows:** 10 (1809) или новее, x64, WebView2 Runtime.
+- **Опционально:** Codex CLI или десктопное приложение Codex, если нужны шлюз и интеграция с композером.
+
+## Сборка из исходников
+
+macOS:
+
+```bash
+./MacOS/scripts/fetch-sources.sh
+./MacOS/build.sh
+```
+
+Нужны Xcode 27+, XcodeGen и Go 1.26.10. Скрипт собирает универсальное приложение и DMG в `MacOS/build/`.
+
+Windows (кросс-сборка на macOS или нативная сборка на Windows):
+
+```bash
+./Windows/build-windows.sh
+```
+
+[Windows-гайд](Windows/README.md) описывает тулчейн Rust/Tauri, сайдкар шлюза и установщик NSIS.
+
+Тесты:
+
+```bash
+xcodebuild -project MacOS/app/MelonTools.xcodeproj -scheme MelonTools \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath "$HOME/Library/Developer/MelonTools" CODE_SIGNING_ALLOWED=NO test
+
+cd Windows/app/src-tauri && cargo test
+```
+
+На exFAT-томе сначала запустите `./scripts/doctor.sh`: скрипт покажет AppleDouble-файлы и неожиданные права, ничего не меняя.
+
+## Документация
+
+- [FAQ](docs/FAQ.md) — провайдеры, квоты, обновления и решение проблем.
+- [Модель безопасности](docs/SECURITY-MODEL.md) — локальные данные, loopback-шлюз, доверие к CDP и проверка обновлений.
+- [Гайд по macOS](MacOS/README.md) и [гайд по Windows](Windows/README.md) — настройка, расположение данных и сборка.
+- [Пакетирование и подпись](packaging/README.md) — секреты релиза, контрольные суммы, Homebrew Cask и манифесты winget.
+
+## Безопасность и приватность
+
+Учётные данные аккаунтов и ключи провайдеров хранятся на вашем устройстве. Локальный шлюз слушает loopback; запросы уходят в OpenAI или к тем провайдерам, которых вы настроили. В репозитории нет учётных данных и нет телеметрии.
+
+Об уязвимости сообщайте через [приватный отчёт GitHub](https://github.com/vanich-git/MelonTools/security/advisories/new), а не в публичный issue.
+
+## Участие
+
+Багрепорты и небольшие pull request'ы приветствуются — см. [CONTRIBUTING.md](CONTRIBUTING.md). Для крупного изменения сначала откройте issue, чтобы обсудить объём.
+
+## Лицензия
+
+Melon Tools распространяется по [лицензии MIT](LICENSE). Происхождение сторонних компонентов описано в [MacOS/README.md](MacOS/README.md).
+
+Melon Tools — независимый проект: он не связан с OpenAI и не одобрен компанией.

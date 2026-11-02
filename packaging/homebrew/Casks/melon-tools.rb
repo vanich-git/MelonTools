@@ -1,11 +1,11 @@
 cask "melon-tools" do
-  version "3.3.0"
-  sha256 "394c8dc6dbe7b4077fd37018baff1898864587d47b5ebffa54780abe424689be"
+  version "4.0.0"
+  sha256 "3deb12c07d59f6bcf12bf0717d455bcb495713f31327ea01eec04eb2abb13220"
 
-  url "https://github.com/ivankuprin/MelonTools/releases/download/v#{version}/MelonTools-#{version}.dmg"
+  url "https://github.com/vanich-git/MelonTools/releases/download/v#{version}/MelonTools-#{version}.dmg"
   name "Melon Tools"
   desc "Codex account pool, local gateway, and scheduled model tasks"
-  homepage "https://github.com/ivankuprin/MelonTools"
+  homepage "https://github.com/vanich-git/MelonTools"
 
   livecheck do
     url :url

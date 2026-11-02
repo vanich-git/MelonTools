@@ -13,6 +13,7 @@ function statusSignature() {
     account.hourlyRemaining, account.weeklyRemaining,
     account.hourlyResetAt, account.weeklyResetAt, account.quotaUpdatedAt,
     account.preferredFirst, account.isBackup,
+    account.resetCreditsAvailable, account.resetCreditsNextExpiry,
     account.blockInfo && account.blockInfo.code,
   ]);
   return JSON.stringify([
@@ -60,6 +61,7 @@ render = function renderWithScroll() {
 
 A.go = function go(section) {
   S.accountSettings = null;
+  S.proxyUrlDraft = null;
   baseGo.call(A, section);
   const detail = document.querySelector(".detail");
   if (detail) detail.scrollTop = 0;
@@ -67,6 +69,7 @@ A.go = function go(section) {
 
 A.onboardingGo = function onboardingGo(section) {
   S.accountSettings = null;
+  S.proxyUrlDraft = null;
   baseOnboardingGo.call(A, section);
   const detail = document.querySelector(".detail");
   if (detail) detail.scrollTop = 0;

@@ -24,6 +24,8 @@ struct CodexProvidersView: View {
     @State private var confirmClaudeDisconnect = false
     @State private var confirmAntigravityDisconnect = false
     @State private var antigravityIssue: AntigravityAuthService.VerificationIssue?
+    @ObservedObject private var antigravityPool = AntigravityPoolStore.shared
+    @State private var pendingAntigravityRemoval: AntigravityAccount?
 
     /// Sub-pages of the provider board.
     enum ProviderRoute: String, Identifiable {
@@ -31,6 +33,7 @@ struct CodexProvidersView: View {
         case openCode
         case deepInfra
         case vercel
+        case zai
         case claude
         case antigravity
         case codexPool
@@ -43,6 +46,7 @@ struct CodexProvidersView: View {
             case .openCode: return "OpenCode"
             case .deepInfra: return "DeepInfra"
             case .vercel: return "Vercel"
+            case .zai: return "Z.ai"
             case .claude: return "Claude"
             case .antigravity: return "Antigravity"
             case .codexPool: return "Codex"
@@ -55,6 +59,7 @@ struct CodexProvidersView: View {
             case .openCode: return "chevron.left.forwardslash.chevron.right"
             case .deepInfra: return "server.rack"
             case .vercel: return "triangle"
+            case .zai: return "atom"
             case .claude: return "sparkles"
             case .antigravity: return "globe.americas"
             case .codexPool: return "person.2"
@@ -75,6 +80,7 @@ struct CodexProvidersView: View {
                     openCodeCard
                     deepInfraCard
                     vercelCard
+                    zaiCard
                     claudeCard
                     antigravityCard
                     applyCard
@@ -567,6 +573,42 @@ struct CodexProvidersView: View {
         }
     }
 
+    // MARK: - Board: Z.ai
+
+    private var zaiCard: some View {
+        let configured = !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let source = sources.zaiSource
+        return MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(spacing: MTTheme.s2) {
+                    MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
+                    Spacer(minLength: MTTheme.s2)
+                }
+                HStack(alignment: .top, spacing: MTTheme.s3) {
+                    MTMetricTile(
+                        title: L("Models"),
+                        value: "\(source?.models.count ?? 0)",
+                        caption: L("Available")
+                    )
+                    MTMetricTile(
+                        title: L("Plan"),
+                        value: "GLM",
+                        caption: L("Coding Plan")
+                    )
+                }
+                Text(L("GLM-5.3 and GLM-5.3-Flash are served through the Z.ai Coding endpoint."))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+                HStack(spacing: MTTheme.s3) {
+                    Spacer(minLength: MTTheme.s2)
+                    MTSecondaryButton(title: L("Settings"), systemImage: "slider.horizontal.3") {
+                        route = .zai
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Board: Claude
 
     private var claudeCard: some View {
@@ -644,21 +686,42 @@ struct CodexProvidersView: View {
     // MARK: - Board: Antigravity
 
     private var antigravityCard: some View {
-        let stats = usage.antigravity
-        let connected = stats?.connected == true
+        let accounts = antigravityPool.accounts
+        let connected = !accounts.isEmpty || usage.antigravity?.connected == true
         return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
-                    MTStatusPill(text: connected ? L("Connected") : L("Not connected"), status: connected ? .ok : .idle)
+                    MTStatusPill(
+                        text: connected ? String(format: L("Accounts in the pool: %d"), accounts.count) : L("Not connected"),
+                        status: connected ? .ok : .idle
+                    )
                     Spacer(minLength: MTTheme.s2)
-                    if let updated = stats?.updatedAt {
+                    if let updated = antigravityPool.lastUpdated ?? usage.antigravity?.updatedAt {
                         Text(L("Updated") + " " + Self.timeFormatter.string(from: updated))
                             .font(MTTheme.mono(9))
                             .foregroundStyle(MTTheme.textTertiary)
                     }
                 }
-                keyValueRow(L("Account"), stats?.email ?? "—")
-                keyValueRow(L("Project"), stats?.projectID ?? "—")
+                if let qos = gateway.lastQoS {
+                    HStack(spacing: MTTheme.s1) {
+                        Image(systemName: qos.timedOut ? "arrow.triangle.2.circlepath" : "bolt.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(qos.timedOut
+                             ? L("Last switch") + ": " + qos.auth + " · " + qos.model + " · " + String(qos.cooldownSeconds ?? 0) + " " + L("sec")
+                             : L("First token") + ": " + String(qos.ttftMS ?? 0) + " ms · " + qos.model)
+                            .font(MTTheme.mono(9))
+                    }
+                    .foregroundStyle(qos.timedOut ? MTTheme.warn : MTTheme.textTertiary)
+                }
+                if accounts.isEmpty {
+                    Text(L("Connect your Google account to use Antigravity models."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                } else {
+                    ForEach(accounts) { account in
+                        antigravityAccountRow(account)
+                    }
+                }
                 if let issue = antigravityIssue {
                     HStack(alignment: .top, spacing: MTTheme.s2) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -683,34 +746,29 @@ struct CodexProvidersView: View {
                     .padding(MTTheme.s2)
                     .background(MTTheme.warn.opacity(0.10), in: RoundedRectangle(cornerRadius: MTTheme.rSmall))
                 }
-                if let stats {
-                    HStack(alignment: .top, spacing: MTTheme.s3) {
-                        MTMetricTile(
-                            title: L("Models"),
-                            value: "\(stats.modelCount)",
-                            caption: L("Selected for Codex")
-                        )
-                    }
-                    if let error = stats.error {
-                        Text(error)
-                            .font(MTTheme.mono(9))
-                            .foregroundStyle(MTTheme.danger)
-                    }
-                } else {
-                    Text(L("Connect your Google account to use Antigravity models."))
-                        .font(MTTheme.mono(10))
-                        .foregroundStyle(MTTheme.textSecondary)
+                if let error = antigravityPool.lastError {
+                    Text(error)
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.danger)
                 }
+                if !antigravityPool.catalogOnly.isEmpty {
+                    antigravityCatalogOnlyBlock
+                }
+                Text(L("The first-token timeout applies only to Antigravity accounts."))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
                 sessionLine(provider: "Antigravity")
                 HStack(spacing: MTTheme.s3) {
                     Text(L("Google account login; no API key is needed."))
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textTertiary)
                     Spacer(minLength: MTTheme.s2)
+                    MTSecondaryButton(title: L("Add Google account"), systemImage: "person.badge.plus", isLoading: antigravityAuth.login.isBusy) {
+                        Task { await antigravityAuth.startLogin() }
+                    }
                     MTSecondaryButton(title: L("Refresh"), systemImage: "arrow.clockwise") {
                         Task {
-                            _ = await antigravityAuth.refreshCredential()
-                            await usage.refreshAntigravityNow()
+                            await antigravityPool.refresh(forceQuota: true)
                             antigravityIssue = AntigravityAuthService.latestVerificationIssue()
                         }
                     }
@@ -722,6 +780,193 @@ struct CodexProvidersView: View {
         }
         .onAppear {
             antigravityIssue = AntigravityAuthService.latestVerificationIssue()
+            antigravityPool.start()
+            Task { await antigravityPool.refresh(forceQuota: false) }
+        }
+        .onDisappear { antigravityPool.stop() }
+        .onChange(of: antigravityAuth.login) { value in
+            if case .connected = value {
+                Task { await antigravityPool.refresh(forceQuota: true) }
+            }
+        }
+        .confirmationDialog(
+            L("Remove this account from the pool?"),
+            isPresented: Binding(
+                get: { pendingAntigravityRemoval != nil },
+                set: { if !$0 { pendingAntigravityRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L("Remove account"), role: .destructive) {
+                if let account = pendingAntigravityRemoval {
+                    pendingAntigravityRemoval = nil
+                    Task {
+                        await antigravityPool.remove(account)
+                        _ = await antigravityAuth.refreshCredential()
+                        await usage.refreshAntigravityNow()
+                    }
+                }
+            }
+            Button(L("Cancel"), role: .cancel) { pendingAntigravityRemoval = nil }
+        } message: {
+            Text(pendingAntigravityRemoval?.email ?? pendingAntigravityRemoval?.name ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func antigravityAccountRow(_ account: AntigravityAccount) -> some View {
+        let cooldown = account.activeCooldown
+        let status: MTStatus = account.isPaused ? .idle : cooldown != nil ? .warn : .ok
+        let statusText = account.isPaused ? L("Paused") : cooldown != nil ? L("Quarantined") : L("Connected")
+        VStack(alignment: .leading, spacing: MTTheme.s2) {
+            HStack(spacing: MTTheme.s2) {
+                MTStatusPill(text: statusText, status: status)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(account.email ?? account.name)
+                        .font(MTTheme.mono(10, weight: .semibold))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    if let project = account.projectID, !project.isEmpty {
+                        Text(project)
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                }
+                Spacer(minLength: MTTheme.s2)
+                Text(String(format: L("Models in account: %d"), account.modelIDs.count))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+                if account.priority != 0 {
+                    Text("P\(account.priority)")
+                        .font(MTTheme.mono(9, weight: .semibold))
+                        .foregroundStyle(MTTheme.gold)
+                }
+                Menu {
+                    Button {
+                        Task {
+                            _ = await antigravityAuth.refreshCredential(name: account.name)
+                            await antigravityPool.refresh(forceQuota: true)
+                        }
+                    } label: {
+                        Label(L("Refresh sign-in"), systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        Task { _ = await antigravityPool.setPaused(account, paused: !account.isPaused) }
+                    } label: {
+                        Label(account.isPaused ? L("Resume account") : L("Pause account"),
+                              systemImage: account.isPaused ? "play.circle" : "pause.circle")
+                    }
+                    if account.activeCooldown != nil {
+                        Button {
+                            Task {
+                                _ = await antigravityPool.probe(account)
+                                await antigravityPool.refresh(forceQuota: true)
+                            }
+                        } label: {
+                            Label(L("Probe"), systemImage: "waveform.path.ecg")
+                        }
+                    }
+                    Divider()
+                    Button {
+                        Task { _ = await antigravityPool.setPriority(account, priority: account.priority + 1) }
+                    } label: {
+                        Label(L("Raise priority"), systemImage: "arrow.up")
+                    }
+                    Button {
+                        Task { _ = await antigravityPool.setPriority(account, priority: account.priority - 1) }
+                    } label: {
+                        Label(L("Lower priority"), systemImage: "arrow.down")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        pendingAntigravityRemoval = account
+                    } label: {
+                        Label(L("Remove account"), systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            if let cooldown {
+                HStack(spacing: MTTheme.s1) {
+                    Image(systemName: "hourglass")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(L("Quarantined until") + " " + (cooldown.retryAt.map { Self.resetFormatter.string(from: $0) } ?? "—"))
+                        .font(MTTheme.mono(9))
+                    if cooldown.httpStatus == 504 {
+                        Text("· " + L("Waiting for the first token"))
+                            .font(MTTheme.mono(9))
+                    }
+                }
+                .foregroundStyle(MTTheme.warn)
+            }
+            if let gemini = account.geminiQuota {
+                antigravityQuotaRow(title: L("Gemini pool"), window: gemini)
+            }
+            if let claude = account.claudeQuota {
+                antigravityQuotaRow(title: L("Claude / GPT pool"), window: claude)
+            }
+            if account.geminiQuota == nil, account.claudeQuota == nil, let error = account.quotaError {
+                Text(error)
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+        }
+        .padding(MTTheme.s2)
+        .background(MTTheme.cardSoft, in: RoundedRectangle(cornerRadius: MTTheme.rSmall))
+    }
+
+    @ViewBuilder
+    private func antigravityQuotaRow(title: String, window: AntigravityQuotaWindow) -> some View {
+        HStack(spacing: MTTheme.s2) {
+            Text(title)
+                .font(MTTheme.mono(9))
+                .foregroundStyle(MTTheme.textSecondary)
+                .frame(width: 92, alignment: .leading)
+            ProgressView(value: min(1, max(0, window.remaining)))
+                .progressViewStyle(.linear)
+                .tint(window.remaining > 0.5 ? MTTheme.ok : window.remaining > 0.2 ? MTTheme.warn : MTTheme.danger)
+                .frame(maxWidth: 220)
+            Text("\(Int((window.remaining * 100).rounded()))%")
+                .font(MTTheme.mono(9, weight: .semibold))
+                .foregroundStyle(MTTheme.textPrimary)
+                .frame(width: 38, alignment: .trailing)
+            if let reset = window.resetAt {
+                Text(L("Reset") + " " + Self.resetFormatter.string(from: reset))
+                    .font(MTTheme.mono(8))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var antigravityCatalogOnlyBlock: some View {
+        VStack(alignment: .leading, spacing: MTTheme.s1) {
+            Divider()
+            Text(L("In the catalog, unavailable to the account"))
+                .font(MTTheme.mono(9, weight: .semibold))
+                .foregroundStyle(MTTheme.textTertiary)
+            ForEach(antigravityPool.catalogOnly) { model in
+                HStack(spacing: MTTheme.s2) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                    Text(model.displayName)
+                        .font(MTTheme.mono(9))
+                    Text(model.id)
+                        .font(MTTheme.mono(8))
+                        .foregroundStyle(MTTheme.textTertiary)
+                }
+                .foregroundStyle(MTTheme.textTertiary)
+            }
+            Text(L("The model is defined in the catalog, but none of the connected Google accounts is entitled to it."))
+                .font(MTTheme.mono(8))
+                .foregroundStyle(MTTheme.textTertiary)
+            Text(L("The gateway does not expose a weekly Antigravity window; only the current 5-hour window is shown."))
+                .font(MTTheme.mono(8))
+                .foregroundStyle(MTTheme.textTertiary)
         }
     }
 
@@ -905,6 +1150,8 @@ struct CodexProvidersView: View {
             deepInfraSettings
         case .vercel:
             vercelSettings
+        case .zai:
+            zaiSettings
         case .claude:
             claudeSettings
         case .antigravity:
@@ -921,6 +1168,7 @@ struct CodexProvidersView: View {
         case .openCode: return L("Paid models use your OpenCode account balance.")
         case .deepInfra: return L("Chat models served by DeepInfra with your API key.")
         case .vercel: return L("Language models served by the Vercel AI Gateway with your gateway key.")
+        case .zai: return L("GLM Coding Plan models served by Z.ai with your Coding Plan API key.")
         case .claude: return L("Connect your Claude subscription or paste an Anthropic API key.")
         case .antigravity: return L("Connect your Google account to use Antigravity models.")
         case .codexPool: return L("Codex models subtitle")
@@ -1014,6 +1262,30 @@ struct CodexProvidersView: View {
         }
     }
 
+    private var zaiSettings: some View {
+        MTCard(title: "Z.ai", systemImage: ProviderRoute.zai.systemImage) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                keyRow(key: $sources.zaiKey) {
+                    Task { await sources.loadZaiModels() }
+                }
+                if let source = sources.zaiSource {
+                    modelBlock(source: source)
+                } else {
+                    Text(L("Paste the Z.ai Coding Plan key to load the model list."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("Use a key from Personal Coding Plan → Plan Overview, not a standard API key."))
+                    Text(L("The Coding endpoint is required for plan quota; the general API endpoint is billed per token."))
+                    Text(L("GLM Coding Plan is limited to Z.ai's supported tools. Direct gateway use is at your own risk."))
+                }
+                .font(MTTheme.mono(10))
+                .foregroundStyle(MTTheme.textTertiary)
+            }
+        }
+    }
+
     private var claudeSettings: some View {
         let stats = usage.claude
         let connected = stats?.connected == true
@@ -1092,47 +1364,57 @@ struct CodexProvidersView: View {
     }
 
     private var antigravitySettings: some View {
-        let stats = usage.antigravity
-        let connected = stats?.connected == true
+        let accounts = antigravityPool.accounts
         return MTCard(title: "Antigravity", systemImage: ProviderRoute.antigravity.systemImage) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
-                if connected {
-                    keyValueRow(L("Account"), stats?.email ?? "—")
-                    keyValueRow(L("Project"), stats?.projectID ?? "—")
-                    HStack(spacing: MTTheme.s3) {
-                        MTSecondaryButton(title: L("Refresh login"), systemImage: "arrow.clockwise") {
-                            Task {
-                                _ = await antigravityAuth.refreshCredential()
-                                await usage.refreshAntigravityNow()
-                            }
-                        }
-                        MTSecondaryButton(title: L("Disconnect"), systemImage: "xmark.circle") {
-                            confirmAntigravityDisconnect = true
-                        }
-                        Spacer(minLength: 0)
-                    }
+                if accounts.isEmpty {
+                    Text(L("Connect your Google account to use Antigravity models."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
                 } else {
-                    switch antigravityAuth.login {
-                    case .starting, .waiting:
-                        HStack(spacing: MTTheme.s2) {
-                            ProgressView().controlSize(.small)
-                            Text(L("Waiting for the browser…"))
-                                .font(MTTheme.mono(10))
-                                .foregroundStyle(MTTheme.textSecondary)
-                        }
-                        MTSecondaryButton(title: L("Cancel login"), systemImage: "xmark") {
-                            Task { await antigravityAuth.cancelLogin() }
-                        }
-                    case .failed(let message):
-                        Text(message)
-                            .font(MTTheme.mono(10))
-                            .foregroundStyle(MTTheme.danger)
-                        connectAntigravityButton
-                    default:
-                        connectAntigravityButton
+                    ForEach(accounts) { account in
+                        antigravityAccountRow(account)
                     }
                 }
+                if let error = antigravityPool.lastError {
+                    Text(error)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.danger)
+                }
+                switch antigravityAuth.login {
+                case .starting, .waiting:
+                    HStack(spacing: MTTheme.s2) {
+                        ProgressView().controlSize(.small)
+                        Text(L("Waiting for the browser…"))
+                            .font(MTTheme.mono(10))
+                            .foregroundStyle(MTTheme.textSecondary)
+                    }
+                    MTSecondaryButton(title: L("Cancel login"), systemImage: "xmark") {
+                        Task { await antigravityAuth.cancelLogin() }
+                    }
+                case .failed(let message):
+                    Text(message)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.danger)
+                default:
+                    EmptyView()
+                }
+                HStack(spacing: MTTheme.s3) {
+                    MTSecondaryButton(title: L("Add Google account"), systemImage: "person.badge.plus", isLoading: antigravityAuth.login.isBusy) {
+                        Task { await antigravityAuth.startLogin() }
+                    }
+                    if !accounts.isEmpty {
+                        MTSecondaryButton(title: L("Disconnect all"), systemImage: "xmark.circle") {
+                            confirmAntigravityDisconnect = true
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
                 Text(L("The login opens in your browser; the service stores the account itself."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
+
+                Text(L("The first-token timeout applies only to Antigravity accounts."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textTertiary)
 
@@ -1145,6 +1427,9 @@ struct CodexProvidersView: View {
                 Text(L("Antigravity models are served by the engine from the connected Google account."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textTertiary)
+                if !antigravityPool.catalogOnly.isEmpty {
+                    antigravityCatalogOnlyBlock
+                }
                 if let source = sources.antigravitySource {
                     modelBlock(source: source)
                 } else {
@@ -1154,13 +1439,40 @@ struct CodexProvidersView: View {
                 }
             }
         }
+        .onAppear {
+            antigravityPool.start()
+            Task { await antigravityPool.refresh(forceQuota: false) }
+        }
+        .onDisappear { antigravityPool.stop() }
         .confirmationDialog(L("Disconnect this Antigravity account?"), isPresented: $confirmAntigravityDisconnect, titleVisibility: .visible) {
             Button(L("Disconnect"), role: .destructive) {
                 disconnectAntigravity()
             }
             Button(L("Cancel"), role: .cancel) {}
         } message: {
-            Text(usage.antigravity?.email ?? "")
+            Text(String(format: L("Accounts in the pool: %d"), accounts.count))
+        }
+        .confirmationDialog(
+            L("Remove this account from the pool?"),
+            isPresented: Binding(
+                get: { pendingAntigravityRemoval != nil },
+                set: { if !$0 { pendingAntigravityRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L("Remove account"), role: .destructive) {
+                if let account = pendingAntigravityRemoval {
+                    pendingAntigravityRemoval = nil
+                    Task {
+                        await antigravityPool.remove(account)
+                        _ = await antigravityAuth.refreshCredential()
+                        await usage.refreshAntigravityNow()
+                    }
+                }
+            }
+            Button(L("Cancel"), role: .cancel) { pendingAntigravityRemoval = nil }
+        } message: {
+            Text(pendingAntigravityRemoval?.email ?? pendingAntigravityRemoval?.name ?? "")
         }
     }
 

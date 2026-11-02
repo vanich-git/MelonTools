@@ -56,7 +56,7 @@ sign_windows_file() {
     -pkcs12 "$WINDOWS_CERT_PFX" \
     -pass "$WINDOWS_CERT_PASSWORD" \
     -n "Melon Tools" \
-    -i "https://github.com/ivankuprin/MelonTools" \
+    -i "https://github.com/vanich-git/MelonTools" \
     -ts "http://timestamp.digicert.com" \
     -h sha256 \
     -in "$file" \
@@ -66,6 +66,7 @@ sign_windows_file() {
 }
 
 echo "==> 1/6 gateway sidecar (Go, windows/amd64)"
+"$ROOT/../MacOS/scripts/apply-engine-patches.sh"
 if [ -d "$CLI_SRC" ]; then
   mkdir -p app/src-tauri/binaries
   (cd "$CLI_SRC" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" \

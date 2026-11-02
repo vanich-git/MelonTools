@@ -11,8 +11,11 @@ struct SettingsView: View {
     @AppStorage("gatewayAutoStart") private var gatewayAutoStart = true
     @AppStorage("gatewayStopOnQuit") private var gatewayStopOnQuit = false
     @AppStorage("networkProxyEnabled") private var networkProxyEnabled = false
-    @AppStorage("networkProxyURL") private var networkProxyURL = ""
+    @AppStorage("networkProxyURL") private var savedProxyURL = ""
     @AppStorage("networkProxyBypass") private var networkProxyBypass = "127.0.0.1,localhost"
+    @State private var proxyURLDraft = ""
+    @State private var proxyURLSaved = false
+    @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = 60
     @AppStorage("quotaRefreshInterval") private var quotaRefreshInterval = 300
     @AppStorage("quotaNotifications") private var quotaNotifications = false
     @AppStorage("taskNotifications") private var taskNotifications = true
@@ -29,6 +32,23 @@ struct SettingsView: View {
     @State private var backupRefresh = 0
     @State private var supportNotice: String?
     @State private var pendingImportURL: URL?
+
+    private var proxyURLIsDirty: Bool {
+        proxyURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            != savedProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func saveProxyURL() {
+        let trimmed = proxyURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        proxyURLDraft = trimmed
+        savedProxyURL = trimmed
+        CodexGatewayService.shared.applyNetworkSettings()
+        withAnimation(.easeOut(duration: 0.15)) { proxyURLSaved = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            withAnimation(.easeOut(duration: 0.2)) { proxyURLSaved = false }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -91,10 +111,30 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
-                            TextField("socks5h://127.0.0.1:1080", text: $networkProxyURL)
-                                .textFieldStyle(.roundedBorder)
-                                .font(MTTheme.mono(11))
-                                .frame(width: 300)
+                            HStack(spacing: MTTheme.s2) {
+                                TextField("socks5h://127.0.0.1:1080", text: $proxyURLDraft)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(MTTheme.mono(11))
+                                    .frame(width: 300)
+                                    .onSubmit { saveProxyURL() }
+                                if proxyURLIsDirty {
+                                    Button(action: saveProxyURL) {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(MTTheme.onGold)
+                                            .frame(width: 27, height: 27)
+                                            .background(Circle().fill(MTTheme.gold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(L("Save proxy URL"))
+                                    .accessibilityLabel(L("Save proxy URL"))
+                                    .transition(.scale.combined(with: .opacity))
+                                } else if proxyURLSaved {
+                                    MTStatusPill(text: L("Saved"), status: .ok)
+                                        .transition(.opacity)
+                                }
+                            }
+                            .animation(.easeOut(duration: 0.15), value: proxyURLIsDirty)
                         }
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Bypass"))
@@ -111,14 +151,58 @@ struct SettingsView: View {
                             .foregroundStyle(MTTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .onChange(of: networkProxyEnabled) { _ in
-                        CodexGatewayService.shared.applyNetworkSettings()
+                    .onAppear {
+                        // A new visit starts from the saved value: an unsaved
+                        // edit must not survive navigating away and back.
+                        proxyURLDraft = savedProxyURL
+                        proxyURLSaved = false
                     }
-                    .onChange(of: networkProxyURL) { _ in
+                    .onDisappear {
+                        proxyURLDraft = savedProxyURL
+                        proxyURLSaved = false
+                    }
+                    .onChange(of: savedProxyURL) { newValue in
+                        if !proxyURLIsDirty { proxyURLDraft = newValue }
+                    }
+                    .onChange(of: networkProxyEnabled) { _ in
                         CodexGatewayService.shared.applyNetworkSettings()
                     }
                     .onChange(of: networkProxyBypass) { _ in
                         CodexGatewayService.shared.applyNetworkSettings()
+                    }
+                }
+
+                MTCard(title: L("Antigravity first-token failover"), systemImage: "speedometer") {
+                    VStack(alignment: .leading, spacing: MTTheme.s3) {
+                        Toggle(L("Switch Antigravity accounts when the first token is slow"), isOn: Binding(
+                            get: { streamBootstrapTimeoutSeconds > 0 },
+                            set: { enabled in
+                                streamBootstrapTimeoutSeconds = enabled ? 60 : 0
+                                CodexGatewayService.shared.applyStreamBootstrapTimeout()
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .font(MTTheme.body(12))
+
+                        HStack(spacing: MTTheme.s3) {
+                            Text(L("First token timeout"))
+                                .font(MTTheme.mono(11))
+                                .foregroundStyle(MTTheme.textSecondary)
+                                .frame(width: 180, alignment: .leading)
+                            Stepper(value: Binding(
+                                get: { max(15, streamBootstrapTimeoutSeconds) },
+                                set: { streamBootstrapTimeoutSeconds = $0; CodexGatewayService.shared.applyStreamBootstrapTimeout() }
+                            ), in: 15...300, step: 15) {
+                                Text("\(streamBootstrapTimeoutSeconds) " + L("sec"))
+                                    .font(MTTheme.mono(11))
+                                    .foregroundStyle(streamBootstrapTimeoutSeconds > 0 ? MTTheme.textPrimary : MTTheme.textTertiary)
+                            }
+                            .disabled(streamBootstrapTimeoutSeconds == 0)
+                        }
+                        Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. The slow account cools down for 60 s, then 5 min, 30 min and 2 h on repeated failures."))
+                            .font(MTTheme.mono(10))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 

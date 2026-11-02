@@ -57,6 +57,7 @@ function mock(cmd, args) {
       hourlyRemaining: 100, weeklyRemaining: 85, hourlyResetAt: nowSec + 16698, weeklyResetAt: nowSec + 583541,
       hourlyWindowPresent: true, weeklyWindowPresent: true, quotaUpdatedAt: nowSec - 40,
       hourlyReservePercent: 5, weeklyReservePercent: null, preferredFirst: true, hasTokens: true,
+      resetCreditsAvailable: 1, resetCreditsNextExpiry: nowSec + 12 * 86400,
       selectedModels: null,
     },
     {
@@ -66,6 +67,7 @@ function mock(cmd, args) {
       hourlyRemaining: 4, weeklyRemaining: 85, hourlyResetAt: nowSec + 3600, weeklyResetAt: nowSec + 583000,
       hourlyWindowPresent: true, weeklyWindowPresent: true, quotaUpdatedAt: nowSec - 120,
       hourlyReservePercent: 5, weeklyReservePercent: null, preferredFirst: false, hasTokens: true,
+      resetCreditsAvailable: 0, resetCreditsNextExpiry: null,
       selectedModels: ["gpt-6.1-sol"],
     },
   ];
@@ -87,8 +89,8 @@ function mock(cmd, args) {
     ...historySeries("openrouter", 60, 30),
   ];
   const mocks = {
-    app_info: { name: "Melon Tools", version: "3.3.0", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
-    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, deepinfraModels: [], vercelModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
+    app_info: { name: "Melon Tools", version: "4.0.0", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
+    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
     codex_pool_models: () => demoPoolSnapshot(),
@@ -107,6 +109,15 @@ function mock(cmd, args) {
     apply_codex_models: () => ({ pool: demoPoolSnapshot(), accounts: demoAccounts, custom: 0 }),
     quota_history: historyMocks,
     quota_refresh: { accounts: demoAccounts, errors: [], syncedAccounts: 2 },
+    reset_activate: (a) => {
+      const account = demoAccounts.find((item) => item.id === a.id);
+      if (account) {
+        account.resetCreditsAvailable = Math.max(0, (account.resetCreditsAvailable || 0) - 1);
+        account.hourlyRemaining = 100;
+        account.hourlyResetAt = nowSec + 5 * 3600;
+      }
+      return { accounts: demoAccounts, outcome: "reset", errors: [], syncedAccounts: 2 };
+    },
     gateway_status: { running: true, port: 18317, requestsLastMinute: 0, sidecarFound: true, dataDir: "…", logPath: "…\\gateway.log" },
     gateway_start: "started", gateway_stop: "stopped", gateway_sync: { syncedAccounts: 2 },
     gateway_check: '{"model":"gpt-6-luna","choices":[{"message":{"content":"Понг! 🏓"}}]}',
@@ -121,6 +132,11 @@ function mock(cmd, args) {
       ? { count: 2, models: [
           { id: "deepseek-ai/DeepSeek-V4", display: "DeepSeek V4", contextWindow: 131072, promptPerToken: 0.00000027, completionPerToken: 0.0000011, supportsImages: true },
           { id: "Qwen/Qwen3.5-235B", display: "Qwen 3.5 235B", contextWindow: 262144, promptPerToken: 0.0000002, completionPerToken: 0.0000008, supportsImages: false },
+        ] }
+      : a.provider === "zai"
+      ? { count: 2, models: [
+          { id: "glm-5.3", display: "GLM-5.3", contextWindow: 1000000, supportsImages: false },
+          { id: "glm-5.3-flash", display: "GLM-5.3 Flash", contextWindow: 1000000, supportsImages: true },
         ] }
       : { count: 2, models: [
           { id: "anthropic/claude-sonnet-4.6", display: "Claude Sonnet 4.6", contextWindow: 200000, promptPerToken: 0.000003, completionPerToken: 0.000015, supportsImages: true },
@@ -235,6 +251,7 @@ function mock(cmd, args) {
       { id: "opencode", ids: ["opencode/grok-4.7"] },
       { id: "deepinfra", ids: ["deepinfra/deepseek-ai/DeepSeek-V4"] },
       { id: "vercel", ids: ["vercel/anthropic/claude-sonnet-4.6"] },
+      { id: "zai", ids: ["zai/glm-5.3"] },
     ] },
     instances_list: [],
     instance_create: [],

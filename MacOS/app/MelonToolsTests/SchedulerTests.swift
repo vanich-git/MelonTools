@@ -564,6 +564,7 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(SchedulerModelGroup.group(for: "openrouter/openai/gpt-5"), .openRouter)
         XCTAssertEqual(SchedulerModelGroup.group(for: "deepinfra/deepseek-ai/DeepSeek-V4"), .deepInfra)
         XCTAssertEqual(SchedulerModelGroup.group(for: "vercel/anthropic/claude-sonnet-4.6"), .vercel)
+        XCTAssertEqual(SchedulerModelGroup.group(for: "zai/glm-5.3"), .zai)
         XCTAssertEqual(SchedulerModelGroup.group(for: "claude-haiku-4-5"), .claude)
         XCTAssertEqual(SchedulerModelGroup.group(for: "gemini-3-flash"), .antigravity)
         XCTAssertEqual(SchedulerModelGroup.group(for: "gpt-5.1-codex-mini"), .pool)

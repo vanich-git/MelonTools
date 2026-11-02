@@ -18,6 +18,8 @@ git -C _sources/CLIProxyAPI checkout --quiet --force 1f917e77c4562623aa49e9804d9
   GOTOOLCHAIN=go1.26.10 go mod tidy
 )
 
+"$(dirname "$0")/apply-engine-patches.sh"
+
 echo "gateway source ready:"
 git -C _sources/CLIProxyAPI rev-parse --short HEAD
 grep -E 'golang.org/x/(net|crypto|text)|go-git/go-git|klauspost/compress' _sources/CLIProxyAPI/go.mod

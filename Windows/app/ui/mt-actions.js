@@ -324,7 +324,8 @@ const A = {
             ? gatewayIds.filter((id) => !id.startsWith("opencode/")
               && !id.startsWith("openrouter/")
               && !id.startsWith("deepinfra/")
-              && !id.startsWith("vercel/")).length
+              && !id.startsWith("vercel/")
+              && !id.startsWith("zai/")).length
             : null),
           quota: codexQuota ? { text: ageText(codexQuota), cls: "ok" } : { text: "—", cls: "" },
         },
@@ -354,6 +355,12 @@ const A = {
           quota: has("vercelMetrics")
             ? quotaCell(data.vercelMetrics && data.vercelMetrics.updatedAt)
             : { text: "—", cls: "" },
+        },
+        {
+          name: t("zai"), reach: viaGateway,
+          auth: keyAuth(settings.zaiKey),
+          models: countCell(has("gatewayModels") ? countPrefix("zai/") : null),
+          quota: { text: "—", cls: "" },
         },
         {
           name: t("claude"), reach: viaGateway,
@@ -386,6 +393,7 @@ const A = {
     const opencode = document.getElementById("oc-enabled");
     const deepinfra = document.getElementById("di-enabled");
     const vercel = document.getElementById("vc-enabled");
+    const zai = document.getElementById("zai-enabled");
     const claude = document.getElementById("claude-enabled");
     S.settings = {
       ...S.settings,
@@ -393,6 +401,7 @@ const A = {
       ...(opencode ? { opencodeEnabled: opencode.checked } : {}),
       ...(deepinfra ? { deepinfraEnabled: deepinfra.checked } : {}),
       ...(vercel ? { vercelEnabled: vercel.checked } : {}),
+      ...(zai ? { zaiEnabled: zai.checked } : {}),
       ...(claude ? { claudeEnabled: claude.checked } : {}),
     };
     inv("settings_set", { settings: S.settings })
@@ -433,6 +442,36 @@ const A = {
       S.accounts = result.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+    });
+  },
+
+  resetActivate(id) {
+    const account = (S.accounts || []).find((a) => a.id === id);
+    const name = account ? account.email || account.displayName : id;
+    if (!window.confirm(fmt(t("resetConfirm"), { name }))) return;
+    run("reset-" + id, async () => {
+      let result;
+      try {
+        result = await inv("reset_activate", { id });
+      } catch (error) {
+        const code = errorText(error);
+        if (code === "reset_in_progress") throw new Error(t("resetAlreadyRunning"));
+        if (code === "no_credit") throw new Error(t("resetNoCredit"));
+        throw error;
+      }
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state").catch(() => S.routing);
+      await A.historyLoad();
+      const key = {
+        reset: "resetActivated",
+        nothing_to_reset: "resetNothingToReset",
+        no_credit: "resetNoCredit",
+        already_redeemed: "resetAlreadyRedeemed",
+      }[result.outcome] || "resetActivated";
+      const details = result.errors && result.errors.length
+        ? " · " + result.errors.join("; ")
+        : "";
+      toast(t(key) + details);
     });
   },
 
@@ -549,10 +588,12 @@ const A = {
     const opencodeNode = document.getElementById("oc-key");
     const deepinfraNode = document.getElementById("di-key");
     const vercelNode = document.getElementById("vc-key");
+    const zaiNode = document.getElementById("zai-key");
     const openrouterEnabledNode = document.getElementById("or-enabled");
     const opencodeEnabledNode = document.getElementById("oc-enabled");
     const deepinfraEnabledNode = document.getElementById("di-enabled");
     const vercelEnabledNode = document.getElementById("vc-enabled");
+    const zaiEnabledNode = document.getElementById("zai-enabled");
     const openrouterKey = openrouterNode
       ? openrouterNode.value.trim()
       : (S.settings.openrouterKey || "");
@@ -565,6 +606,9 @@ const A = {
     const vercelKey = vercelNode
       ? vercelNode.value.trim()
       : (S.settings.vercelKey || "");
+    const zaiKey = zaiNode
+      ? zaiNode.value.trim()
+      : (S.settings.zaiKey || "");
     const openrouterEnabled = openrouterEnabledNode
       ? openrouterEnabledNode.checked
       : !!S.settings.openrouterEnabled;
@@ -577,10 +621,14 @@ const A = {
     const vercelEnabled = vercelEnabledNode
       ? vercelEnabledNode.checked
       : !!S.settings.vercelEnabled;
+    const zaiEnabled = zaiEnabledNode
+      ? zaiEnabledNode.checked
+      : !!S.settings.zaiEnabled;
     const previous = {
       openrouter: S.settings.openrouterKey || "",
       deepinfra: S.settings.deepinfraKey || "",
       vercel: S.settings.vercelKey || "",
+      zai: S.settings.zaiKey || "",
     };
     run("keys", async () => {
       S.settings = await inv("settings_set", {
@@ -590,10 +638,12 @@ const A = {
           opencodeKey,
           deepinfraKey,
           vercelKey,
+          zaiKey,
           openrouterEnabled,
           opencodeEnabled,
           deepinfraEnabled,
           vercelEnabled,
+          zaiEnabled,
         },
       });
       // Metrics and cached model lists belong to the key they were fetched
@@ -607,12 +657,15 @@ const A = {
         S.vercel = null;
         S.vercelLoaded = false;
       }
+      if (zaiKey !== previous.zai) {
+        S.providerModelsError.zai = null;
+      }
       toast(t("done"));
     });
   },
 
   loadProviderModels(provider) {
-    const prefix = provider === "deepinfra" ? "di" : "vc";
+    const prefix = provider === "deepinfra" ? "di" : provider === "vercel" ? "vc" : provider;
     const keyNode = document.getElementById(prefix + "-key");
     const field = provider + "Key";
     const modelsField = provider + "Models";
@@ -848,6 +901,67 @@ const A = {
     inv("antigravity_login_cancel", { stateToken: login.state }).catch(() => {});
   },
 
+  antigravityPriority(name, priority) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    run("antigravityPriority", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "priority",
+        name,
+        value: Number.isFinite(priority) ? priority : account.priority + 1,
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityPause(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    run("antigravityPause", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: account.disabled ? "resume" : "pause",
+        name,
+        authIndex: account.authIndex,
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      toast(t("done"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityRemove(name) {
+    if (!window.confirm(t("confirmAntigravityRemove"))) return;
+    run("antigravityRemove", async () => {
+      const result = await inv("antigravity_account_action", { action: "remove", name });
+      if (!result || !result.ok) throw new Error(t("error"));
+      S.models = null;
+      toast(t("done"));
+      await A.antigravityUsageLoad();
+      A.modelsLoad();
+      render();
+    });
+  },
+
+  antigravityProbe(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    const cooldown = (account.cooldowns || [])[0];
+    run("antigravityProbe", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "probe",
+        name,
+        authIndex: account.authIndex,
+        model: cooldown && cooldown.model_key,
+      });
+      toast(result && result.ok ? t("done") : t("error"), !(result && result.ok));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
   antigravityDisconnect() {
     // Destructive: the engine-written auth files are deleted, so the account
     // must be reconnected. Same confirmation pattern as Claude.
@@ -956,12 +1070,17 @@ const A = {
     const proxyEnabledNode = document.getElementById("set-proxy-enabled");
     const proxyUrlNode = document.getElementById("set-proxy-url");
     const proxyBypassNode = document.getElementById("set-proxy-bypass");
+    const streamTimeoutNode = document.getElementById("set-stream-timeout");
     const lang = langNode ? langNode.value : S.lang;
     const port = parseInt(portNode ? portNode.value : "", 10);
     const quotaInterval = parseInt(intervalNode ? intervalNode.value : "", 10);
     const proxyEnabled = proxyEnabledNode ? proxyEnabledNode.checked : !!(S.settings && S.settings.proxyEnabled);
     const proxyUrl = proxyUrlNode ? proxyUrlNode.value.trim() : ((S.settings && S.settings.proxyUrl) || "");
     const proxyBypass = proxyBypassNode ? proxyBypassNode.value.trim() : ((S.settings && S.settings.proxyBypass) || "127.0.0.1,localhost");
+    const parsedTimeout = parseInt(streamTimeoutNode ? streamTimeoutNode.value : "", 10);
+    const streamBootstrapTimeoutSeconds = Number.isFinite(parsedTimeout)
+      ? Math.max(0, Math.min(300, parsedTimeout))
+      : ((S.settings && S.settings.streamBootstrapTimeoutSeconds) ?? 60);
     run("settings", async () => {
       S.settings = await inv("settings_set", {
         settings: {
@@ -972,11 +1091,43 @@ const A = {
           proxyEnabled,
           proxyUrl,
           proxyBypass,
+          streamBootstrapTimeoutSeconds,
         },
       });
+      S.proxyUrlDraft = null;
       S.lang = lang;
       toast(t("done"));
       await A.refreshStatus();
+    });
+  },
+
+  proxyUrlChanged(value) {
+    S.proxyUrlDraft = value;
+    const button = document.getElementById("proxy-save");
+    if (!button) return;
+    const saved = String((S.settings && S.settings.proxyUrl) || "").trim();
+    button.hidden = String(value || "").trim() === saved;
+  },
+
+  saveProxyUrl() {
+    const node = document.getElementById("set-proxy-url");
+    const value = (node ? node.value : (S.proxyUrlDraft || "")).trim();
+    const saved = String((S.settings && S.settings.proxyUrl) || "").trim();
+    if (value === saved) {
+      S.proxyUrlDraft = null;
+      const button = document.getElementById("proxy-save");
+      if (button) button.hidden = true;
+      return;
+    }
+    run("proxy-save", async () => {
+      S.settings = await inv("settings_set", {
+        settings: { ...S.settings, proxyUrl: value },
+      });
+      S.proxyUrlDraft = null;
+      const button = document.getElementById("proxy-save");
+      if (button) button.hidden = true;
+      if (node) node.value = value;
+      toast(t("proxySaved"));
     });
   },
 

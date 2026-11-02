@@ -12,12 +12,12 @@
   },
   "compressed": {
     "file": "cliproxyapi.exe.z",
-    "bytes": 24244153,
-    "sha256": "8663b001807fd4dec2b78ad886d033d9a1e31d0145ded7b2f87078908d286e95"
+    "bytes": 24253914,
+    "sha256": "6c3dcc8301b701029a51bd37183eda0537898df72c412e344ae82b64d10b43ce"
   },
   "payload": {
     "file": "cliproxyapi.exe",
-    "bytes": 74461184,
-    "sha256": "174c78a3d6a55355edc411a8d1cb4f44b859baada4ed2f13c51975aec475dd2d"
+    "bytes": 74483200,
+    "sha256": "7f3cfddfd04fe2726982b14cf722d63519da5a1319256a5ecee2039b17d91119"
   }
 }

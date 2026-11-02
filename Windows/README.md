@@ -1,18 +1,37 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **3.3.0**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **4.0.0**.
 
-Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/ivankuprin/MelonTools/releases/latest/download/MelonTools-3.3.0-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
+Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
 **WebView2 Runtime**. Файл не подписан Authenticode, поэтому Windows может
 показать предупреждение. SHA-256 опубликован рядом с файлом; в PowerShell
 проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-3.3.0-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-4.0.0-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
+
+## Что нового в 4.0.0
+
+- **Пул Antigravity.** Несколько Google-аккаунтов в одной карточке: модели,
+  пауза/возобновление, обновление входа и удаление по каждому. Шлюз сам
+  распределяет запросы по пулу.
+- **Квота по аккаунтам.** Два 5-часовых окна — Gemini и Claude/GPT — с
+  процентом остатка и временем сброса. Недельное окно Google через API не
+  отдаёт, поэтому оно не показывается.
+- **Серый блок «есть в каталоге, аккаунту недоступно».** Список id, которые
+  определены в каталоге, но недоступны ни одному подключённому аккаунту.
+- **Failover Antigravity по первому токену.** Только для Google/Antigravity
+  streaming-аккаунтов. Если первый payload не пришёл за
+  `stream-bootstrap-timeout-seconds` (по умолчанию 60, 0 — выключено), шлюз
+  повторяет запрос на другом Antigravity-аккаунте до отдачи заголовков клиенту.
+  Codex, Claude и API-провайдеры не затрагиваются. Медленный аккаунт получает
+  карантин 60 с → 5 мин → 30 мин → 2 ч; кнопка «Проверить» снимает карантин
+  после успешной пробы. TTFT и последнее переключение видны в карточке и
+  audit log.
 
 ## Что умеет эта сборка
 
@@ -24,13 +43,24 @@ Get-FileHash .\MelonTools-3.3.0-win-x64-portable.exe -Algorithm SHA256
   «Сделать текущим» — пишет `%USERPROFILE%\.codex\auth.json` в **полном формате**
   (`auth_mode` + `tokens.account_id` — фикс из macOS 1.4.5), обновление логина и
   квоты, удаление.
+- **Активация сбросов**: если на аккаунте есть банковские сбросы, карточка
+  показывает активную золотую кнопку **«1 сброс»**. Нажатие открывает
+  подтверждение, тратит один сброс и очищает текущий лимит Codex; сначала
+  используется сброс с ближайшей датой истечения, квота обновляется сразу.
 - **Живая синхронизация с шлюзом**: пауза/разблокировка по квотам пишется в
   auth-файлы шлюза сразу после обновления квот (сигнатура доступности).
-- **Подключения**: API-ключи OpenRouter, OpenCode, DeepInfra и Vercel AI Gateway;
-  модели `openrouter/*`, `opencode/*`, `deepinfra/*` и `vercel/*` появляются после
-  загрузки каталога и перезапуска шлюза. Карточка OpenRouter показывает баланс,
-  расходы и остаток лимита ключа; DeepInfra — число моделей и расход сессии;
-  Vercel — баланс команды, общий расход и число моделей.
+- **Подключения**: API-ключи OpenRouter, OpenCode, DeepInfra, Vercel AI Gateway
+  и Z.ai GLM Coding Plan; модели `openrouter/*`, `opencode/*`, `deepinfra/*`,
+  `vercel/*` и `zai/*` появляются после загрузки каталога и перезапуска шлюза.
+  Карточка OpenRouter показывает баланс, расходы и остаток лимита ключа;
+  DeepInfra — число моделей и расход сессии; Vercel — баланс команды, общий
+  расход и число моделей; Z.ai — модели GLM Coding Plan и ключ `id.secret`.
+- **Antigravity: полный каталог.** Приложение дополняет каталог движка тремя
+  моделями, которые есть на аккаунте, но отсутствовали в `models.json`:
+  Gemini 3.8 Flash (Low), Gemini 3.8 Flash (Medium) и Gemini 2.5 Pro. Файл
+  `gateway/models.json` пишет само приложение, а `config.yaml` ссылается на
+  него через `models.catalog`, поэтому модели не теряются при перезапуске и
+  сохранении настроек.
 - **Интерфейс как в macOS**: сайдбар-карточка, группы «Обзор / Планировщик /
   Codex / Приложение», bento-карточки, шрифт Segoe UI Variable, капсульные
   кнопки и переключатели. Окно использует нативную рамку Windows с кнопками
@@ -124,7 +154,7 @@ brew install lld llvm
 cd Windows/app/src-tauri
 cargo build --release --locked
 cd ../..
-makensis /DVERSION=3.3.0 /DSOURCE_EXE=..\dist\MelonTools-3.3.0-win-x64-portable.exe installer\MelonTools.nsi
+makensis /DVERSION=4.0.0 /DSOURCE_EXE=..\dist\MelonTools-4.0.0-win-x64-portable.exe installer\MelonTools.nsi
 ```
 
 `cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий

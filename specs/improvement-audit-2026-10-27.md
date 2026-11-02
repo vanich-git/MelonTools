@@ -516,7 +516,7 @@ cron, composer payload. `MacOS/app/Resources/composer-chips.js` — 1 518
 ### REL-1. Тег v2.4.0 содержит манифесты с хешами 2.3.7
 
 **Где:** `packaging/homebrew/Casks/melon-tools.rb:2-3`,
-`packaging/winget/ivankuprin.MelonTools.installer.yaml:12` в теге `v2.4.0`
+`packaging/winget/vanich-git.MelonTools.installer.yaml:12` в теге `v2.4.0`
 (коммит `4112c0c`).
 
 **Проблема:** Cask объявляет `version "2.4.0"`, но `sha256` равен digest

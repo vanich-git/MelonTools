@@ -104,9 +104,11 @@ final class AntigravityAuthTests: XCTestCase {
     }
 
     func testAntigravityRegistryAllowlistMatchesVerifiedEngineIds() {
-        XCTAssertEqual(AntigravityModelRegistry.ids.count, 11)
+        XCTAssertEqual(AntigravityModelRegistry.ids.count, 14)
         XCTAssertTrue(AntigravityModelRegistry.ids.contains("claude-opus-5-5-high"))
         XCTAssertTrue(AntigravityModelRegistry.ids.contains("gemini-3.5-flash-lite"))
+        XCTAssertTrue(AntigravityModelRegistry.ids.contains("gemini-3.8-flash-medium"))
+        XCTAssertTrue(AntigravityModelRegistry.ids.contains("gemini-2.5-pro"))
         XCTAssertFalse(AntigravityModelRegistry.ids.contains("claude-opus-4-5"))
     }
 

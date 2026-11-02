@@ -29,16 +29,19 @@ pub struct Settings {
     pub opencode_key: String,
     pub deepinfra_key: String,
     pub vercel_key: String,
-    /// opencode / openrouter / deepinfra / vercel upstreams in the gateway
-    /// config.
+    pub zai_key: String,
+    /// opencode / openrouter / deepinfra / vercel / zai upstreams in the
+    /// gateway config.
     pub opencode_enabled: bool,
     pub openrouter_enabled: bool,
     pub deepinfra_enabled: bool,
     pub vercel_enabled: bool,
+    pub zai_enabled: bool,
     /// Filtered model lists from the last successful key check. They are
     /// emitted explicitly into the gateway config.
     pub deepinfra_models: Vec<ProviderModel>,
     pub vercel_models: Vec<ProviderModel>,
+    pub zai_models: Vec<ProviderModel>,
     /// Claude (Anthropic) provider: engine-managed OAuth account and/or the
     /// API-key fallback.
     pub claude_enabled: bool,
@@ -75,6 +78,9 @@ pub struct Settings {
     pub proxy_enabled: bool,
     pub proxy_url: String,
     pub proxy_bypass: String,
+    /// 0 disables the first-token watchdog; the engine retries the request on
+    /// another account when no payload arrives within this window.
+    pub stream_bootstrap_timeout_seconds: i64,
     /// User-selected path to `ChatGPT.exe`. Empty means automatic discovery.
     /// The environment override stays available as a hidden fallback.
     pub codex_exe_path: String,
@@ -96,12 +102,15 @@ impl Default for Settings {
             opencode_key: String::new(),
             deepinfra_key: String::new(),
             vercel_key: String::new(),
+            zai_key: String::new(),
             opencode_enabled: true,
             openrouter_enabled: true,
             deepinfra_enabled: true,
             vercel_enabled: true,
+            zai_enabled: true,
             deepinfra_models: Vec::new(),
             vercel_models: Vec::new(),
+            zai_models: Vec::new(),
             claude_enabled: false,
             claude_api_key: String::new(),
             management_secret: String::new(),
@@ -120,6 +129,7 @@ impl Default for Settings {
             proxy_enabled: false,
             proxy_url: String::new(),
             proxy_bypass: "127.0.0.1,localhost".to_string(),
+            stream_bootstrap_timeout_seconds: 60,
             codex_exe_path: String::new(),
             schema_version: crate::schema::CURRENT,
             schema_error: None,
@@ -141,6 +151,11 @@ pub fn carry_provider_models(merged: &mut Settings, old: &Settings) {
         merged.vercel_models.clear();
     } else if merged.vercel_models.is_empty() {
         merged.vercel_models = old.vercel_models.clone();
+    }
+    if merged.zai_key != old.zai_key {
+        merged.zai_models.clear();
+    } else if merged.zai_models.is_empty() {
+        merged.zai_models = old.zai_models.clone();
     }
 }
 
@@ -220,13 +235,14 @@ pub fn save_to(path: &std::path::Path, s: &Settings) -> Result<(), String> {
 }
 
 /// The secrets stored in `settings.json`. Vault tokens use the same helpers.
-fn secret_fields(s: &mut Settings) -> [&mut String; 7] {
+fn secret_fields(s: &mut Settings) -> [&mut String; 8] {
     [
         &mut s.api_key,
         &mut s.openrouter_key,
         &mut s.opencode_key,
         &mut s.deepinfra_key,
         &mut s.vercel_key,
+        &mut s.zai_key,
         &mut s.claude_api_key,
         &mut s.management_secret,
     ]
@@ -278,6 +294,7 @@ mod tests {
         s.opencode_key = "sk-oc-legacy".to_string();
         s.deepinfra_key = "sk-di-legacy".to_string();
         s.vercel_key = "sk-vc-legacy".to_string();
+        s.zai_key = "id.secret-legacy".to_string();
         s.claude_api_key = "sk-ant-legacy".to_string();
         s.management_secret = "melon-mgmt-legacy".to_string();
         s
@@ -292,6 +309,7 @@ mod tests {
         assert_eq!(s.opencode_key, "sk-oc-legacy");
         assert_eq!(s.deepinfra_key, "sk-di-legacy");
         assert_eq!(s.vercel_key, "sk-vc-legacy");
+        assert_eq!(s.zai_key, "id.secret-legacy");
         assert_eq!(s.claude_api_key, "sk-ant-legacy");
         assert_eq!(s.management_secret, "melon-mgmt-legacy");
     }
@@ -321,6 +339,7 @@ mod tests {
         assert_eq!(stored.opencode_key, original.opencode_key);
         assert_eq!(stored.deepinfra_key, original.deepinfra_key);
         assert_eq!(stored.vercel_key, original.vercel_key);
+        assert_eq!(stored.zai_key, original.zai_key);
         assert_eq!(stored.claude_api_key, original.claude_api_key);
         assert_eq!(stored.management_secret, original.management_secret);
     }
@@ -346,6 +365,7 @@ mod tests {
         s.opencode_key = "dpapi:not-base64!!!".to_string();
         s.deepinfra_key = "dpapi2:".to_string();
         s.vercel_key = "dpapi:not-base64!!!".to_string();
+        s.zai_key = "dpapi2:".to_string();
         s.claude_api_key = "dpapi2:".to_string();
         s.management_secret = "dpapi:not-base64!!!".to_string();
         unprotect_secrets(&mut s);
@@ -382,22 +402,28 @@ mod tests {
         old.deepinfra_models = vec![cached_model("deepseek-ai/DeepSeek-V4")];
         old.vercel_key = "vc-old".to_string();
         old.vercel_models = vec![cached_model("anthropic/claude-sonnet-4.6")];
+        old.zai_key = "zai-old".to_string();
+        old.zai_models = vec![cached_model("glm-5.3")];
 
         // An unchanged key with an empty payload keeps the cached list.
         let mut same = old.clone();
         same.deepinfra_models.clear();
         same.vercel_models.clear();
+        same.zai_models.clear();
         carry_provider_models(&mut same, &old);
         assert_eq!(same.deepinfra_models, old.deepinfra_models);
         assert_eq!(same.vercel_models, old.vercel_models);
+        assert_eq!(same.zai_models, old.zai_models);
 
         // A new key clears the list even when the payload still carries it.
         let mut changed = old.clone();
         changed.deepinfra_key = "di-new".to_string();
         changed.vercel_key = "vc-new".to_string();
+        changed.zai_key = "zai-new".to_string();
         carry_provider_models(&mut changed, &old);
         assert!(changed.deepinfra_models.is_empty());
         assert!(changed.vercel_models.is_empty());
+        assert!(changed.zai_models.is_empty());
     }
 
     #[test]

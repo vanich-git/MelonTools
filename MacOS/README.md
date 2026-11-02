@@ -16,6 +16,65 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 4.0.0
+
+- **Multi-account Antigravity.** Connect several Google accounts and manage
+  each one from the Providers card: per-account models, pause/resume, sign-in
+  refresh and removal. The engine pools them automatically.
+- **Quota per account.** The 5-hour Gemini and Claude/GPT windows come from
+  `fetchAvailableModels` with reset times; the weekly window is not exposed and
+  is not shown.
+- **Catalog-only block.** Grey rows list catalog ids none of the connected
+  accounts is entitled to.
+- **Antigravity first-token failover.** Only Google/Antigravity streaming
+  accounts. When the first payload misses `stream-bootstrap-timeout-seconds`
+  (default 60, 0 disables), the engine retries on another Antigravity account
+  before the client sees the stream, then applies the 60 s → 5 min → 30 min →
+  2 h quarantine ladder. Codex, Claude and API-key providers are not affected.
+  The card shows the latest TTFT or switch, and a probe button releases a
+  recovered account.
+- **Build metadata.** macOS build 40; version metadata is aligned at 4.0.0.
+
+## What's new in 3.4.2
+
+- **The full Antigravity catalog.** Gemini 3.8 Flash (Low), Gemini 3.8 Flash
+  (Medium) and Gemini 2.5 Pro are entitled on the connected account but were
+  missing from the engine catalog. The app now completes the catalog on disk
+  and points `models.catalog` at it, so all three appear in the Codex picker.
+- **Survives a config rewrite.** The completed catalog lives in
+  `gateway/models.json`; `config.yaml` only references it. Restarts and settings
+  saves no longer drop the models.
+- **Self-healing.** The overlay follows the engine's three-hour refresh cadence,
+  removes duplicate ids (the engine rejects a catalog with a duplicate) and
+  retries after a failed fetch.
+- **Build metadata.** macOS build 39; version metadata is aligned at 3.4.2.
+
+## What's new in 3.4.1
+
+- **Explicit proxy URL save.** A round gold check button appears as soon as the
+  proxy URL differs from the saved value. Click it or press Return; a short
+  “Saved” confirmation follows. Windows has the same control and toast.
+- **Authenticated proxies work.** SOCKS5 and HTTP proxy credentials are passed
+  to URLSession. The old build produced `NSURLErrorBadURL` («неверный URL») on
+  every quota refresh when the proxy required a login.
+- **Z.ai GLM Coding Plan.** Add the provider by API key on macOS and Windows;
+  GLM-5.3 and GLM-5.3-Flash use the Coding endpoint and fall back to a built-in
+  catalogue when `/models` is unavailable.
+
+## What's new in 3.4.0
+
+- **Reset credits are now redeemable from the account card.** When an account
+  has banked resets, the counter becomes a gold button («1 сброс»). A
+  confirmation dialog spends one credit and clears the current Codex usage
+  limit. The nearest-expiring credit is redeemed first.
+- **Windows gets the same control.** The Windows app adds the gold button,
+  native confirmation, backend consume call and immediate quota refresh.
+- **Clear outcomes.** Success, “nothing to reset”, “no credit” and
+  “already redeemed” are reported in the message card, and the quota refreshes
+  right after redemption.
+- **Expiry stays visible.** The button tooltip still shows the nearest credit
+  expiry so a banked reset is not lost.
+
 ## What's new in 3.3.0
 
 - Codex keeps every third-party `[model_providers.*]` table and gains the
@@ -524,7 +583,7 @@ is optional — the script falls back to a plain `hdiutil` image.
 
 ```bash
 ./build.sh            # full pipeline: gateway → icon → xcode → dmg
-open build/MelonTools-3.3.0.dmg
+open build/MelonTools-3.4.0.dmg
 ```
 
 The app is ad-hoc signed (personal build, not notarized). On first launch use

@@ -381,6 +381,9 @@ function claudeCard(settings) {
       </div>
       ${historyStrip("claude")}
       ${u && u.error ? `<div class="footnote">${esc(u.error)}</div>` : ""}
+      ${u && u.lastQos ? `<div class="footnote" style="margin-top:0">${u.lastQos.timedOut
+        ? `${esc(t("lastSwitch"))}: ${esc(u.lastQos.auth || "—")} · ${esc(u.lastQos.model || "—")} · ${u.lastQos.cooldownSeconds || 0} ${esc(t("sec"))}`
+        : `${esc(t("firstToken"))}: ${u.lastQos.ttftMs || 0} ms · ${esc(u.lastQos.model || "—")}`}</div>` : ""}
       ${u && u.updatedAt ? `<div class="footnote">${t("quotaAge")}: ${esc(claudeAgeText(u.updatedAt))}</div>` : ""}
       <div class="row">${actions}</div>
 
@@ -399,34 +402,84 @@ function claudeCard(settings) {
   </div>`;
 }
 
+function antigravityQuotaRow(label, window) {
+  if (!window || typeof window.remaining !== "number") return "";
+  const percent = Math.max(0, Math.min(100, Math.round(window.remaining * 100)));
+  const color = percent > 50 ? "ok" : percent > 20 ? "warn" : "danger";
+  const reset = window.resetAt ? new Date(window.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+  return `<div class="row" style="gap:8px;align-items:center">
+    <span class="muted" style="width:92px;font-size:10px">${esc(label)}</span>
+    <div class="quota-track" style="flex:1;max-width:220px"><div class="quota-fill ${color}" style="width:${percent}%"></div></div>
+    <span class="mono" style="font-size:10px;font-weight:600">${percent}%</span>
+    <span class="footnote" style="margin:0">${esc(t("reset"))} ${esc(reset)}</span>
+  </div>`;
+}
+
 function antigravityCard() {
   const u = S.antigravity;
   const login = S.antigravityLogin;
-  const connected = !!(u && u.connected);
+  const accounts = (u && Array.isArray(u.accounts)) ? u.accounts : [];
+  const connected = accounts.length > 0;
   const pillClass = login ? "warn" : connected ? "ok" : u && u.error ? "danger" : "";
-  const pillText = login ? t("antigravityConnecting") : connected ? t("antigravityConnected") : u && u.error ? t("error") : t("antigravityNotConnected");
+  const pillText = login
+    ? t("antigravityConnecting")
+    : connected
+      ? fmt(t("accountsInPool"), { n: accounts.length })
+      : u && u.error ? t("error") : t("antigravityNotConnected");
   const actions = login
     ? `<button class="btn small" disabled>${t("antigravityConnecting")}</button>
        <button class="ghost small" data-action="antigravityCancel">${t("antigravityCancel")}</button>`
-    : `${connected ? "" : `<button class="btn small" data-action="antigravityConnect" ${S.busy.antigravityConnect ? "disabled" : ""}>${t("antigravityConnect")}</button>`}
+    : `<button class="btn small" data-action="antigravityConnect" ${S.busy.antigravityConnect ? "disabled" : ""}>${t("addGoogleAccount")}</button>
        <button class="ghost small" data-action="antigravityRefresh" ${S.busy.antigravityUsage ? "disabled" : ""}>${t("refresh")}</button>
-       ${connected ? `<button class="ghost small" data-action="antigravityDisconnect" ${S.busy.antigravityDisconnect ? "disabled" : ""}>${t("antigravityDisconnect")}</button>` : ""}`;
+       ${connected ? `<button class="ghost small" data-action="antigravityDisconnect" ${S.busy.antigravityDisconnect ? "disabled" : ""}>${t("disconnectAll")}</button>` : ""}`;
 
-  // No quota tiles: the engine exposes no Antigravity quota API, and the spec
-  // forbids fabricating percentages (AC8).
+  const rows = accounts.map((account) => {
+    const cooldown = (account.cooldowns || [])[0];
+    const paused = !!account.disabled;
+    const until = cooldown && cooldown.retry_at
+      ? new Date(cooldown.retry_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "—";
+    return `<div class="account-row">
+      <div class="row" style="gap:8px;align-items:center">
+        <span class="pill ${paused ? "" : cooldown ? "warn" : "ok"}">${paused ? esc(t("paused")) : cooldown ? esc(t("quarantined")) : esc(t("antigravityConnected"))}</span>
+        <span class="mono" style="font-size:11px;font-weight:600">${esc(account.email || account.name)}</span>
+        ${account.projectId ? `<span class="pill gold">${esc(account.projectId)}</span>` : ""}
+        <span class="footnote" style="margin:0">${fmt(t("modelsInAccount"), { n: (account.models || []).length })}</span>
+        ${account.priority ? `<span class="pill gold">P${account.priority}</span>` : ""}
+        <span style="flex:1"></span>
+        <button class="ghost small" title="${esc(t("raisePriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority + 1}">↑</button>
+        <button class="ghost small" title="${esc(t("lowerPriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority - 1}">↓</button>
+        <button class="ghost small" data-action="antigravityPause" data-id="${esc(account.name)}">${paused ? esc(t("resumeAccount")) : esc(t("pauseAccount"))}</button>
+        ${cooldown ? `<button class="ghost small" data-action="antigravityProbe" data-id="${esc(account.name)}">${esc(t("probe"))}</button>` : ""}
+        <button class="ghost small" data-action="antigravityRemove" data-id="${esc(account.name)}">${esc(t("removeAccount"))}</button>
+      </div>
+      ${cooldown ? `<div class="footnote" style="margin:2px 0 0;color:var(--warn)">${esc(t("quarantinedUntil"))} ${esc(until)}${cooldown.http_status === 504 ? " · " + esc(t("waitingFirstToken")) : ""}</div>` : ""}
+      ${antigravityQuotaRow(t("geminiPool"), account.gemini)}
+      ${antigravityQuotaRow(t("claudePool"), account.claude)}
+      ${!account.gemini && !account.claude && account.quotaError ? `<div class="footnote" style="margin-top:2px">${esc(account.quotaError)}</div>` : ""}
+    </div>`;
+  }).join("");
+
+  const catalogOnly = (u && Array.isArray(u.catalogOnly)) ? u.catalogOnly : [];
+  const unavailable = catalogOnly.length
+    ? `<div class="footnote" style="margin-top:10px">${esc(t("catalogOnlyTitle"))}</div>
+       ${catalogOnly.map((model) => `<div class="row" style="gap:6px;opacity:.65">
+          <span>🔒</span><span class="mono" style="font-size:10px">${esc(model.displayName)}</span>
+          <span class="footnote" style="margin:0">${esc(model.id)}</span>
+       </div>`).join("")}
+       <div class="footnote">${esc(t("catalogOnlyHint"))}</div>`
+    : "";
+
   return `
   <div class="card">
     <h2>${t("antigravity")} <span class="pill ${pillClass}">${pillText}</span></h2>
     <div class="stack">
-      <div class="row">
-        <span class="muted">${esc((u && u.email) || "—")}</span>
-        ${u && u.projectId ? `<span class="pill gold">${t("projectId")}: ${esc(u.projectId)}</span>` : ""}
-        <span class="pill">${t("models")}: ${u && u.modelCount !== null && u.modelCount !== undefined ? u.modelCount : "—"}</span>
-      </div>
+      ${accounts.length ? rows : `<div class="footnote">${t("antigravityHint")}</div>`}
       ${u && u.error ? `<div class="footnote">${esc(u.error)}</div>` : ""}
-      ${u && u.updatedAt ? `<div class="footnote">${t("quotaAge")}: ${esc(claudeAgeText(u.updatedAt))}</div>` : ""}
+      ${unavailable}
       <div class="row">${actions}</div>
-      <div class="footnote">${t("antigravityHint")}</div>
+      <div class="footnote">${t("antigravityQosScope")}</div>
+      <div class="footnote">${t("antigravityWeeklyHint")}</div>
     </div>
   </div>`;
 }
@@ -672,6 +725,37 @@ function vercelCard(settings) {
   </div>`;
 }
 
+// MARK: - Z.ai provider
+
+function zaiCard(settings) {
+  const configured = !!(settings.zaiKey || "").trim();
+  const error = S.providerModelsError.zai;
+  return `
+  <div class="card provider-card">
+    <h2>${t("zai")} ${providerKeyPill(configured)}</h2>
+    <div class="stat-grid">
+      ${providerMetric(t("modelsAvailable"), providerModelCount("zai"))}
+      ${providerMetric(t("sessionSpend"), formatMoney(sessionProviderSpend("zai")))}
+    </div>
+    <div class="stack" style="margin-top:12px">
+      <label class="field">${t("zaiKey")}
+        <input type="password" id="zai-key" value="${esc(settings.zaiKey || "")}" placeholder="id.secret">
+      </label>
+      <div class="row">
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+          <input type="checkbox" id="zai-enabled" ${settings.zaiEnabled ? "checked" : ""} data-action="providerToggleChanged" data-on="change">
+          <span>${t("sourceEnabled")}</span>
+        </label>
+        <span class="spacer"></span>
+        <button class="btn small" data-action="saveKeys">${t("save")}</button>
+        <button class="ghost small" data-action="loadProviderModels" data-id="zai" ${S.busy["models-zai"] ? "disabled" : ""}>${t("loadModels")}</button>
+      </div>
+      ${error ? `<div class="footnote mono">${esc(error)}</div>` : ""}
+      <div class="footnote">${t("zaiHint")}</div>
+    </div>
+  </div>`;
+}
+
 // MARK: - Codex model pool
 
 function poolFilteredModels() {
@@ -851,6 +935,7 @@ function providersPage() {
   ${openCodeCard(settings)}
   ${deepInfraCard(settings)}
   ${vercelCard(settings)}
+  ${zaiCard(settings)}
   ${claudeCard(settings)}
   ${antigravityCard()}
   ${diagnosticsCard()}
@@ -872,6 +957,7 @@ function providersPage() {
           : id.startsWith("openrouter/") ? "OpenRouter"
           : id.startsWith("deepinfra/") ? "DeepInfra"
           : id.startsWith("vercel/") ? "Vercel"
+          : id.startsWith("zai/") ? "Z.ai"
           : id.startsWith("claude-") ? "Claude" : "OpenAI";
         return `<div class="row" style="padding:3px 0;gap:8px">
           <span class="pill ${provider === "OpenAI" ? "gold" : ""}">${provider}</span>
@@ -927,6 +1013,10 @@ function renderDonateQr() {
 function settingsPage() {
   const settings = S.settings || {};
   const info = S.info || {};
+  const proxyUrlDraft = S.proxyUrlDraft !== null && S.proxyUrlDraft !== undefined
+    ? String(S.proxyUrlDraft)
+    : String(settings.proxyUrl || "");
+  const proxyUrlDirty = proxyUrlDraft.trim() !== String(settings.proxyUrl || "").trim();
   return `
   ${pageHead("melon tools", t("settings"), t("settingsSub"))}
   <div class="card">
@@ -985,15 +1075,26 @@ function settingsPage() {
         <input type="checkbox" id="set-proxy-enabled" ${settings.proxyEnabled ? "checked" : ""}>
         <span>${t("useProxy")}</span>
       </label>
-      <div class="row">
+      <div class="row" style="align-items:flex-end">
         <label class="field" style="flex:1">${t("proxyUrl")}
-          <input id="set-proxy-url" class="mono" placeholder="socks5h://127.0.0.1:1080" value="${esc(settings.proxyUrl || "")}">
+          <input id="set-proxy-url" class="mono" placeholder="socks5h://127.0.0.1:1080" value="${esc(proxyUrlDraft)}" data-action="proxyUrlChanged" data-on="input">
         </label>
+        <button class="proxy-save" id="proxy-save" data-action="saveProxyUrl" title="${t("saveProxyUrl")}" aria-label="${t("saveProxyUrl")}" ${proxyUrlDirty ? "" : "hidden"}>✓</button>
         <label class="field" style="flex:1">${t("proxyBypass")}
           <input id="set-proxy-bypass" class="mono" value="${esc(settings.proxyBypass || "127.0.0.1,localhost")}">
         </label>
       </div>
       <div class="footnote" style="margin-top:0">${t("proxyHint")}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>${t("qosCard")}</h2>
+    <div class="stack">
+      <label class="field">${t("firstTokenTimeout")}
+        <input class="small" type="number" id="set-stream-timeout" min="0" max="300" step="15" value="${settings.streamBootstrapTimeoutSeconds ?? 60}">
+      </label>
+      <div class="footnote" style="margin-top:0">${t("qosHint")}</div>
     </div>
   </div>
 
@@ -1117,6 +1218,7 @@ function schedulerGroupLabel(id) {
     case "openrouter": return t("sgOpenRouter");
     case "deepinfra": return t("sgDeepInfra");
     case "vercel": return t("sgVercel");
+    case "zai": return t("sgZai");
     default: return t("sgGateway");
   }
 }

@@ -49,6 +49,18 @@ function resetText(unixTs) {
   return `${t("resetIn")} ${days} ${unit("d", "дн")} ${hours % 24} ${unit("h", "ч")}`;
 }
 
+// «1 сброс», «2 сброса», «5 сбросов» — Russian plural rule; English has two forms.
+function resetCountLabel(count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (S.lang === "en") return n === 1 ? "1 reset" : `${n} resets`;
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  let noun = "сбросов";
+  if (mod10 === 1 && mod100 !== 11) noun = "сброс";
+  else if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) noun = "сброса";
+  return `${n} ${noun}`;
+}
+
 // Claude usage resets arrive as RFC-3339; render them relative like the
 // account quota captions, in the current UI language.
 function claudeResetText(iso) {

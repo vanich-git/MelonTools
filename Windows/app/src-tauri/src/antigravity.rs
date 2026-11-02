@@ -28,6 +28,9 @@ pub const ANTIGRAVITY_MODEL_IDS: &[&str] = &[
     "claude-sonnet-5-5-high",
     "gemini-4-argon-high",
     "gemini-3.8-flash-high",
+    "gemini-3.8-flash-low",
+    "gemini-3.8-flash-medium",
+    "gemini-2.5-pro",
     "gemini-3-flash",
     "gemini-3.1-flash-image",
     "gpt-oss-120b-medium",
@@ -139,8 +142,17 @@ pub fn auth_files() -> Vec<AuthFile> {
 }
 
 /// The newest auth file in the live gateway auth dir.
+#[allow(dead_code)]
 pub fn newest_auth_file() -> Option<AuthFile> {
     newest_auth_file_in(&paths::auths_dir())
+}
+
+/// Removes one account file, leaving the rest of the pool untouched.
+pub fn remove_auth_file(name: &str) -> bool {
+    if !is_antigravity_auth_file_name(name) {
+        return false;
+    }
+    std::fs::remove_file(paths::auths_dir().join(name)).is_ok()
 }
 
 /// Removes only Antigravity auth files from `dir`; returns
@@ -470,6 +482,8 @@ mod tests {
         assert!(!is_antigravity_auth_file_name("antigravity-user.json.bak"));
         assert!(is_antigravity_model_id("gemini-3-flash"));
         assert!(is_antigravity_model_id("claude-opus-4-6-thinking"));
+        assert!(is_antigravity_model_id("gemini-3.8-flash-medium"));
+        assert!(is_antigravity_model_id("gemini-2.5-pro"));
         assert!(!is_antigravity_model_id("claude-opus-5-5"));
     }
 
@@ -718,5 +732,374 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0]["name"], "antigravity-a@example.com.json");
         assert_eq!(filtered[1]["name"], "antigravity.json");
+    }
+}
+
+// MARK: - Pool projection
+
+impl Management {
+    /// `GET /v0/management/auth-files`: every account the engine loaded, with
+    /// cooldowns and priority.
+    pub async fn auth_files(&self) -> Result<Value, String> {
+        let (status, text) = self
+            .call(reqwest::Method::GET, "/v0/management/auth-files", None)
+            .await?;
+        if status != 200 {
+            return Err(format!("auth-files ({status})"));
+        }
+        Ok(Self::body_json(&text))
+    }
+
+    /// `GET /v0/management/auth-files/models?name=…`: models registered for
+    /// one auth file.
+    pub async fn auth_models(&self, name: &str) -> Vec<String> {
+        let path = format!(
+            "/v0/management/auth-files/models?name={}",
+            crate::claude::url_query(name)
+        );
+        let Ok((status, text)) = self.call(reqwest::Method::GET, &path, None).await else {
+            return Vec::new();
+        };
+        if status != 200 {
+            return Vec::new();
+        }
+        let body = Self::body_json(&text);
+        body.get("models")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("id").and_then(|value| value.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub async fn set_disabled(&self, name: &str, auth_index: Option<&str>, disabled: bool) -> bool {
+        let mut body = json!({ "name": name, "disabled": disabled });
+        if let Some(index) = auth_index.filter(|value| !value.is_empty()) {
+            body["auth_index"] = json!(index);
+        }
+        matches!(
+            self.call(
+                reqwest::Method::PATCH,
+                "/v0/management/auth-files/status",
+                Some(body)
+            )
+            .await,
+            Ok((status, _)) if (200..300).contains(&status)
+        )
+    }
+
+    pub async fn set_priority(&self, name: &str, priority: i64) -> bool {
+        matches!(
+            self.call(
+                reqwest::Method::PATCH,
+                "/v0/management/auth-files/fields",
+                Some(json!({ "name": name, "priority": priority }))
+            )
+            .await,
+            Ok((status, _)) if (200..300).contains(&status)
+        )
+    }
+
+    pub async fn clear_bootstrap_cooldown(&self, auth_index: &str, model: &str) -> bool {
+        if model.is_empty() {
+            return false;
+        }
+        matches!(
+            self.call(
+                reqwest::Method::POST,
+                "/v0/management/routing/bootstrap-cooldown/reset",
+                Some(json!({ "auth_index": auth_index, "model": model }))
+            )
+            .await,
+            Ok((status, _)) if (200..300).contains(&status)
+        )
+    }
+}
+
+/// Lightweight health probe for a quarantined account: a model-list request
+/// must succeed before the first-token cooldown is released.
+pub async fn probe_account(settings: &Settings, name: &str, auth_index: &str, model: &str) -> bool {
+    if model.is_empty() || auth_index.is_empty() {
+        return false;
+    }
+    let Some(file) = auth_files_in(&paths::auths_dir())
+        .into_iter()
+        .find(|candidate| candidate.name == name)
+    else {
+        return false;
+    };
+    let Some(token) = file.access_token.as_deref() else {
+        return false;
+    };
+    let Ok(client) = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(Duration::from_secs(15))
+        .build()
+    else {
+        return false;
+    };
+    if request_quota(
+        &client,
+        token,
+        file.project_id.as_deref().unwrap_or_default(),
+    )
+    .await
+    .is_none()
+    {
+        return false;
+    }
+    match Management::new(settings) {
+        Ok(manager) => manager.clear_bootstrap_cooldown(auth_index, model).await,
+        Err(_) => false,
+    }
+}
+
+/// A per-account quota pool from `quotaInfo`. Gemini models share one window;
+/// the Anthropic/OpenAI models share the other.
+fn quota_window(models: &serde_json::Map<String, Value>, google: bool) -> Option<Value> {
+    let mut remaining = f64::MAX;
+    let mut reset = String::new();
+    let mut ids: Vec<String> = Vec::new();
+    for (id, raw) in models {
+        let Some(entry) = raw.as_object() else {
+            continue;
+        };
+        let provider = entry
+            .get("modelProvider")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if (provider == "MODEL_PROVIDER_GOOGLE") != google {
+            continue;
+        }
+        let Some(quota) = entry.get("quotaInfo").and_then(|value| value.as_object()) else {
+            continue;
+        };
+        let Some(fraction) = quota
+            .get("remainingFraction")
+            .and_then(|value| value.as_f64())
+        else {
+            continue;
+        };
+        remaining = remaining.min(fraction);
+        if reset.is_empty() {
+            if let Some(stamp) = quota.get("resetTime").and_then(|value| value.as_str()) {
+                reset = stamp.to_string();
+            }
+        }
+        ids.push(id.clone());
+    }
+    if remaining == f64::MAX {
+        return None;
+    }
+    Some(json!({
+        "remaining": remaining,
+        "resetAt": if reset.is_empty() { Value::Null } else { json!(reset) },
+        "modelIds": ids,
+    }))
+}
+
+async fn fetch_quota(settings: &Settings, file: &AuthFile) -> Value {
+    let Some(token) = file.access_token.clone() else {
+        return json!({ "error": "Войдите заново, чтобы прочитать квоту." });
+    };
+    let client = match crate::proxy::apply(reqwest::Client::builder())
+        .timeout(Duration::from_secs(20))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => return json!({ "error": error.to_string() }),
+    };
+    let project = file.project_id.clone().unwrap_or_default();
+    let quota = request_quota(&client, &token, &project).await;
+    match quota {
+        Some(value) => value,
+        None => {
+            // A stale access token is the common failure. Refresh through the
+            // engine and retry once with the token it wrote back.
+            if let Ok(management) = Management::new(settings) {
+                let _ = management.refresh(Some(&file.name)).await;
+            }
+            if let Some(refreshed) = auth_files_in(&paths::auths_dir())
+                .into_iter()
+                .find(|candidate| candidate.name == file.name)
+            {
+                if refreshed.access_token.as_deref() != Some(token.as_str()) {
+                    if let Some(value) = request_quota(
+                        &client,
+                        refreshed.access_token.as_deref().unwrap_or_default(),
+                        refreshed.project_id.as_deref().unwrap_or_default(),
+                    )
+                    .await
+                    {
+                        return value;
+                    }
+                }
+            }
+            json!({ "error": "Квота сейчас недоступна." })
+        }
+    }
+}
+
+async fn request_quota(client: &reqwest::Client, token: &str, project: &str) -> Option<Value> {
+    let response = client
+        .post("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels")
+        .bearer_auth(token)
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            "antigravity/hub/2.24.0 (aidev_client; os_type=windows; arch=amd64)",
+        )
+        .json(&json!({ "project": project }))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: Value = response.json().await.ok()?;
+    let models = body.get("models")?.as_object()?;
+    let gemini = quota_window(models, true);
+    let claude = quota_window(models, false);
+    if gemini.is_none() && claude.is_none() {
+        return None;
+    }
+    Some(json!({ "gemini": gemini, "claude": claude }))
+}
+
+/// Catalog entries the connected accounts cannot use. The catalog file is the
+/// same one the app writes for the engine; a missing file simply hides the
+/// section.
+fn catalog_only(entitled: &std::collections::HashSet<String>) -> Vec<Value> {
+    let Ok(data) = std::fs::read_to_string(crate::catalog::catalog_path()) else {
+        return Vec::new();
+    };
+    let Ok(root) = serde_json::from_str::<Value>(&data) else {
+        return Vec::new();
+    };
+    let Some(entries) = root.get("antigravity").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut result: Vec<Value> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id")?.as_str()?;
+            if entitled.contains(id) {
+                return None;
+            }
+            let display = entry
+                .get("display_name")
+                .and_then(|value| value.as_str())
+                .unwrap_or(id);
+            Some(json!({ "id": id, "displayName": display }))
+        })
+        .collect();
+    result.sort_by(|left, right| {
+        left["displayName"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["displayName"].as_str().unwrap_or(""))
+    });
+    result
+}
+
+/// Full pool snapshot for the Providers card: one entry per auth file with
+/// identity, models, cooldowns and both quota windows.
+pub async fn account_views(settings: &Settings) -> Value {
+    let files = auth_files_in(&paths::auths_dir());
+    let management = Management::new(settings).ok();
+    let snapshot = match &management {
+        Some(manager) => manager.auth_files().await.unwrap_or(Value::Null),
+        None => Value::Null,
+    };
+    let entries = snapshot
+        .get("files")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut accounts: Vec<Value> = Vec::new();
+    let mut entitled = std::collections::HashSet::new();
+    for file in &files {
+        let entry = entries.iter().find(|item| {
+            item.get("name").and_then(|value| value.as_str()) == Some(file.name.as_str())
+        });
+        let mut models = match &management {
+            Some(manager) => manager.auth_models(&file.name).await,
+            None => Vec::new(),
+        };
+        let quota = fetch_quota(settings, file).await;
+        // The per-auth models endpoint can be empty for a moment while the
+        // engine registers a freshly loaded account. The quota response carries
+        // the same ids, so use it as a fallback instead of showing zero models.
+        if models.is_empty() {
+            for pool in ["gemini", "claude"] {
+                if let Some(ids) = quota
+                    .get(pool)
+                    .and_then(|value| value.get("modelIds"))
+                    .and_then(|value| value.as_array())
+                {
+                    for id in ids.iter().filter_map(|value| value.as_str()) {
+                        if !models.iter().any(|model| model == id) {
+                            models.push(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        for model in &models {
+            entitled.insert(model.clone());
+        }
+        accounts.push(json!({
+            "name": file.name,
+            "email": file.email,
+            "projectId": file.project_id,
+            "authIndex": entry.and_then(|item| item.get("auth_index")).and_then(|value| value.as_str()),
+            "priority": entry.and_then(|item| item.get("priority")).and_then(|value| value.as_i64()).unwrap_or(0),
+            "disabled": entry.and_then(|item| item.get("disabled")).and_then(|value| value.as_bool()).unwrap_or(false),
+            "status": entry.and_then(|item| item.get("status")).and_then(|value| value.as_str()),
+            "statusMessage": entry.and_then(|item| item.get("status_message")).and_then(|value| value.as_str()),
+            "unavailable": entry.and_then(|item| item.get("unavailable")).and_then(|value| value.as_bool()).unwrap_or(false),
+            "cooldowns": entry.and_then(|item| item.get("cooldowns")).cloned().unwrap_or(Value::Null),
+            "models": models,
+            "gemini": quota.get("gemini").cloned().unwrap_or(Value::Null),
+            "claude": quota.get("claude").cloned().unwrap_or(Value::Null),
+            "quotaError": quota.get("error").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    accounts.sort_by(|left, right| {
+        let lp = left["priority"].as_i64().unwrap_or(0);
+        let rp = right["priority"].as_i64().unwrap_or(0);
+        rp.cmp(&lp)
+    });
+    json!({ "accounts": accounts, "catalogOnly": catalog_only(&entitled) })
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    #[test]
+    fn quota_window_groups_google_and_third_party_models() {
+        let raw = json!({
+            "gemini-a": {"modelProvider": "MODEL_PROVIDER_GOOGLE", "quotaInfo": {"remainingFraction": 0.8, "resetTime": "2026-11-01T16:15:53Z"}},
+            "gemini-b": {"modelProvider": "MODEL_PROVIDER_GOOGLE", "quotaInfo": {"remainingFraction": 0.6, "resetTime": "2026-11-01T16:15:53Z"}},
+            "claude-a": {"modelProvider": "MODEL_PROVIDER_ANTHROPIC", "quotaInfo": {"remainingFraction": 0.95, "resetTime": "2026-11-01T20:47:28Z"}}
+        });
+        let models = raw.as_object().unwrap();
+        let gemini = quota_window(models, true).unwrap();
+        assert!((gemini["remaining"].as_f64().unwrap() - 0.6).abs() < f64::EPSILON);
+        assert_eq!(gemini["modelIds"].as_array().unwrap().len(), 2);
+        let claude = quota_window(models, false).unwrap();
+        assert!((claude["remaining"].as_f64().unwrap() - 0.95).abs() < f64::EPSILON);
+        assert_eq!(claude["modelIds"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn quota_window_without_quota_info_is_none() {
+        let raw = json!({"m": {"modelProvider": "MODEL_PROVIDER_GOOGLE"}});
+        assert!(quota_window(raw.as_object().unwrap(), true).is_none());
     }
 }

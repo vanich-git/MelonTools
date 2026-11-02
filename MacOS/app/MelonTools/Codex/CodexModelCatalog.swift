@@ -126,7 +126,7 @@ enum CodexModelCatalog {
                 if var entry = makeEntry(from: template, model: model, source: source) {
                     // The Codex picker sorts its list by `priority`, so one
                     // band per provider keeps the models grouped in the menu
-                    // (pool → OpenCode → OpenRouter → DeepInfra → Vercel →
+                    // (pool → OpenCode → OpenRouter → DeepInfra → Vercel → Z.ai →
                     // Claude → Antigravity). Cap the per-provider index so a
                     // large list cannot spill into the next band.
                     entry["priority"] = priorityBase(for: source.kind) + min(position, 99)
@@ -312,8 +312,9 @@ enum CodexModelCatalog {
         case .openRouter: return 200
         case .deepInfra: return 300
         case .vercel: return 400
-        case .claude: return 500
-        case .antigravity: return 600
+        case .zai: return 500
+        case .claude: return 600
+        case .antigravity: return 700
         }
     }
 
@@ -324,6 +325,7 @@ enum CodexModelCatalog {
         case .openRouter: return "openrouter"
         case .deepInfra: return "deepinfra"
         case .vercel: return "vercel"
+        case .zai: return "zai"
         case .claude: return "Claude"
         case .antigravity: return "Antigravity"
         }

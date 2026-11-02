@@ -23,7 +23,9 @@ const INJECTED_SCRIPT: &str = include_str!("../../../../shared/composer-chips.js
 
 /// Both the classic ChatGPT desktop app and the newer Codex package use the
 /// same renderer, but their process names differ.
+#[cfg_attr(not(windows), allow(dead_code))]
 const CODEX_PROCESS_NAMES: [&str; 2] = ["ChatGPT.exe", "Codex.exe"];
+#[cfg_attr(not(windows), allow(dead_code))]
 const CODEX_IMAGE_PREFIXES: [&str; 2] = ["chatgpt", "codex"];
 
 /// Port chosen by our own launch. Process-command discovery can fail for a
@@ -369,7 +371,8 @@ fn injection_source(lang: &str) -> String {
             "opencode": "OpenCode",
             "openrouter": "OpenRouter",
             "deepinfra": "DeepInfra",
-            "vercel": "Vercel"
+            "vercel": "Vercel",
+            "zai": "Z.ai"
         },
     });
     format!(
@@ -387,6 +390,8 @@ fn provider_of(model: &str) -> &'static str {
         "deepinfra"
     } else if model.starts_with("vercel/") {
         "vercel"
+    } else if model.starts_with("zai/") {
+        "zai"
     } else {
         "openai"
     }
@@ -528,7 +533,12 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
     let openrouter_key = settings.openrouter_key.trim();
     let vercel_key = settings.vercel_key.trim();
     let deepinfra_key = settings.deepinfra_key.trim();
-    if openrouter_key.is_empty() && vercel_key.is_empty() && deepinfra_key.is_empty() {
+    let zai_key = settings.zai_key.trim();
+    if openrouter_key.is_empty()
+        && vercel_key.is_empty()
+        && deepinfra_key.is_empty()
+        && zai_key.is_empty()
+    {
         return json!({});
     }
     if let Ok(guard) = state.providers.lock() {
@@ -589,6 +599,17 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
             json!({
                 "title": "DeepInfra",
                 "modelCount": settings.deepinfra_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
+    if !zai_key.is_empty() {
+        providers.insert(
+            "zai".to_string(),
+            json!({
+                "title": "Z.ai",
+                "modelCount": settings.zai_models.len(),
                 "updatedAt": Value::Null,
                 "error": Value::Null,
             }),
@@ -1235,7 +1256,10 @@ fn kill_chatgpt_processes(force: bool) {
 /// an already running instance cannot gain the flags any other way).
 #[cfg(test)]
 mod tests {
-    use super::{provider_pricing, session_cost, valid_codex_exe};
+    use super::{
+        provider_pricing, session_cost, store_exe_paths, store_location_from_output,
+        valid_codex_exe,
+    };
     use crate::settings::{ProviderModel, Settings};
     use serde_json::json;
 
@@ -1315,6 +1339,20 @@ mod tests {
             "total": {"input": 10, "cached": 0, "output": 5, "total": 15},
         });
         assert!(session_cost(&session, &settings).is_none());
+    }
+
+    #[test]
+    fn store_location_and_candidates_parsing() {
+        let ps_output = "warning: some powershell noise\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64\r\n";
+        assert_eq!(
+            store_location_from_output(ps_output),
+            Some("C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64".to_string())
+        );
+        assert_eq!(store_location_from_output("no backslash output"), None);
+
+        let candidates = store_exe_paths("C:\\Program Files\\WindowsApps\\OpenAI.Codex");
+        assert_eq!(candidates.len(), 4);
+        assert!(candidates[0].ends_with("ChatGPT.exe") || candidates[0].ends_with("ChatGPT.exe"));
     }
 }
 

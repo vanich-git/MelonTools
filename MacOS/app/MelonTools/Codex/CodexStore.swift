@@ -335,6 +335,8 @@ final class CodexStore: ObservableObject {
     @Published private(set) var accounts: [CodexAccount] = []
     @Published private(set) var currentAccountId: String?
     @Published private(set) var busyAccountIds: Set<String> = []
+    /// Accounts with a reset-credit redemption in flight.
+    @Published private(set) var resettingAccountIds: Set<String> = []
     @Published private(set) var lastMessage: String?
 
     /// High-level pool routing mode (persisted). Changing it re-applies the
@@ -1492,10 +1494,14 @@ final class CodexStore: ObservableObject {
             if (quota.resetCreditsAvailable ?? 0) > 0 {
                 if let resets = try? await CodexService.fetchResetCredits(account: account) {
                     quota.resetCreditsNextExpiry = resets.nextExpiry
+                    quota.resetCredits = resets.credits
                     if let available = resets.available {
                         quota.resetCreditsAvailable = available
                     }
                 }
+            } else {
+                quota.resetCredits = nil
+                quota.resetCreditsNextExpiry = nil
             }
             account.quota = quota
             account.quotaUpdatedAt = Date()
@@ -1549,6 +1555,61 @@ final class CodexStore: ObservableObject {
         }
         save(immediately: false)
         applyRoutingIfNeeded(reason: L("quota refreshed"))
+    }
+
+    /// Redeem one banked Codex reset. The backend picks the credit when its id
+    /// is unknown; otherwise the nearest-expiring record is redeemed first.
+    func activateResetCredit(for accountId: String) async {
+        guard let account = accounts.first(where: { $0.id == accountId }) else { return }
+        guard let available = account.quota?.resetCreditsAvailable, available > 0 else {
+            lastMessage = L("No reset credits are available.")
+            return
+        }
+        guard !resettingAccountIds.contains(accountId) else { return }
+        resettingAccountIds.insert(accountId)
+        defer { resettingAccountIds.remove(accountId) }
+
+        var creditId = Self.soonestExpiringCredit(in: account.quota?.resetCredits)?.id
+        if creditId == nil, let details = try? await CodexService.fetchResetCredits(account: account) {
+            creditId = details.credits.min(by: Self.resetCreditOrder)?.id
+        }
+        do {
+            let outcome = try await CodexService.consumeResetCredit(account: account, creditId: creditId)
+            switch outcome {
+            case .reset:
+                lastMessage = L("Reset activated — the current usage limit has been cleared.")
+            case .nothingToReset:
+                lastMessage = L("No active usage limit needs resetting.")
+            case .noCredit:
+                lastMessage = L("No reset credits are available.")
+            case .alreadyRedeemed:
+                lastMessage = L("That reset credit was already redeemed.")
+            }
+            await refreshQuota(for: accountId)
+        } catch {
+            lastMessage = L("Could not activate the reset") + ": " + error.localizedDescription
+        }
+    }
+
+    private static func soonestExpiringCredit(in credits: [CodexResetCredit]?) -> CodexResetCredit? {
+        credits?
+            .filter { $0.status == nil || $0.status == "available" }
+            .min(by: resetCreditOrder)
+    }
+
+    /// Nearest expiry first; credits without an expiry go last.
+    private static func resetCreditOrder(_ lhs: CodexResetCredit, _ rhs: CodexResetCredit) -> Bool {
+        switch (lhs.expiresAt, rhs.expiresAt) {
+        case let (left?, right?):
+            if left != right { return left < right }
+        case (nil, .some):
+            return false
+        case (.some, nil):
+            return true
+        case (nil, nil):
+            break
+        }
+        return lhs.id < rhs.id
     }
 
     func refreshAllQuotas(forceTokens: Bool = false) async {

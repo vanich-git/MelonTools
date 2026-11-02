@@ -33,6 +33,7 @@ echo "==> building pinned engine"
   git checkout --quiet --force "$(python3 -c "import json;print(json.load(open('$PROVENANCE'))['sourceCommit'])")"
   GOTOOLCHAIN=go1.26.10 go get github.com/klauspost/compress@v1.18.7 >/dev/null
   GOTOOLCHAIN=go1.26.10 go mod tidy >/dev/null
+  "$ROOT/MacOS/scripts/apply-engine-patches.sh"
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
     go build -trimpath -ldflags "-s -w" -o "$TMP/cliproxyapi.exe" ./cmd/server
 )

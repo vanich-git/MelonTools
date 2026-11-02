@@ -17,6 +17,8 @@ struct CodexAccountsView: View {
     @State private var confirmDeleteSelection = false
     @State private var deleteTarget: CodexAccount?
     @State private var confirmDelete = false
+    @State private var resetTarget: CodexAccount?
+    @State private var confirmReset = false
 
     var body: some View {
         ScrollView {
@@ -99,6 +101,19 @@ struct CodexAccountsView: View {
             Button(L("Cancel"), role: .cancel) { deleteTarget = nil }
         } message: {
             Text(deleteTarget?.displayName ?? "")
+        }
+        .confirmationDialog(L("Activate a reset credit?"), isPresented: $confirmReset, titleVisibility: .visible) {
+            Button(L("Activate reset")) {
+                let id = resetTarget?.id
+                resetTarget = nil
+                if let id { Task { await store.activateResetCredit(for: id) } }
+            }
+            Button(L("Cancel"), role: .cancel) { resetTarget = nil }
+        } message: {
+            Text(String(
+                format: L("This consumes 1 reset credit and clears the current Codex usage limit for %@. Continue?"),
+                resetTarget?.displayName ?? ""
+            ))
         }
     }
 
@@ -270,23 +285,7 @@ struct CodexAccountsView: View {
                         weeklyTitle: L("weekly")
                     )
                     HStack(spacing: MTTheme.s3) {
-                        if let credits = account.quota?.resetCreditsAvailable {
-                            if credits > 0 {
-                                HStack(spacing: 4) {
-                                    Text("\(credits)")
-                                        .font(MTTheme.mono(11, weight: .bold))
-                                        .foregroundStyle(MTTheme.textPrimary)
-                                    Text(L("resets"))
-                                        .font(MTTheme.mono(9))
-                                        .foregroundStyle(MTTheme.textSecondary)
-                                }
-                                .help(resetHelp(account))
-                            } else {
-                                Text(L("No resets available"))
-                                    .font(MTTheme.mono(9))
-                                    .foregroundStyle(MTTheme.textTertiary)
-                            }
-                        }
+                        resetCreditControl(account)
                         if account.quota?.unlimitedCredits == true {
                             MTStatusPill(text: L("Credits"), status: .ok)
                         } else if let balance = account.quota?.creditsBalance, balance != "0", !balance.isEmpty {
@@ -478,6 +477,66 @@ struct CodexAccountsView: View {
 
     // MARK: - Subscription & resets
 
+    /// Banked resets are actionable: the gold button redeems the
+    /// soonest-expiring credit after a confirmation.
+    @ViewBuilder
+    private func resetCreditControl(_ account: CodexAccount) -> some View {
+        if let credits = account.quota?.resetCreditsAvailable {
+            if credits > 0 {
+                let isResetting = store.resettingAccountIds.contains(account.id)
+                Button {
+                    resetTarget = account
+                    confirmReset = true
+                } label: {
+                    HStack(spacing: 4) {
+                        if isResetting {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(MTTheme.onGold)
+                        } else {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        Text(resetButtonTitle(credits))
+                    }
+                    .font(MTTheme.mono(10, weight: .semibold))
+                    .foregroundStyle(MTTheme.onGold)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(MTTheme.gold, in: Capsule())
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isResetting)
+                .help(resetHelp(account))
+                .accessibilityLabel(resetButtonTitle(credits))
+                .accessibilityHint(L("Click to activate one reset credit"))
+            } else {
+                Text(L("No resets available"))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+        }
+    }
+
+    /// «1 сброс», «2 сброса», «5 сбросов» — Russian plural rule.
+    private func resetButtonTitle(_ count: Int) -> String {
+        guard L10n.shared.code == "ru" else {
+            return count == 1 ? "1 reset" : "\(count) resets"
+        }
+        let mod10 = count % 10
+        let mod100 = count % 100
+        let noun: String
+        if mod10 == 1 && mod100 != 11 {
+            noun = "сброс"
+        } else if (2...4).contains(mod10) && !(12...14).contains(mod100) {
+            noun = "сброса"
+        } else {
+            noun = "сбросов"
+        }
+        return "\(count) \(noun)"
+    }
+
     /// Subscription end date with a relative reminder, like the Cockpit cards.
     @ViewBuilder
     private func subscriptionRow(_ account: CodexAccount) -> some View {
@@ -532,7 +591,7 @@ struct CodexAccountsView: View {
         if let expiry = account.quota?.resetCreditsNextExpiry {
             text += "\n" + String(format: L("Next reset credit expires %@"), Self.subscriptionDate.string(from: expiry))
         }
-        return text
+        return text + "\n" + L("Click to activate one reset credit")
     }
 
     private static let subscriptionDate: DateFormatter = {

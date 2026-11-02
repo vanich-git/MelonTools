@@ -17,6 +17,7 @@ enum CodexService {
     static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     static let subscriptionEndpoint = URL(string: "https://chatgpt.com/backend-api/subscriptions")!
     static let resetCreditsEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+    static let consumeResetCreditEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")!
     /// Official Codex client model catalog. This is the list the Codex desktop
     /// app itself uses; it is not the same as the gateway `/v1/models` list.
     static let modelsEndpoint = URL(string: "https://chatgpt.com/backend-api/codex/models")!
@@ -318,20 +319,40 @@ enum CodexService {
         return models
     }
 
-    /// Refresh-credit records for the 5-hour window: how many are available and
-    /// when the nearest one expires.
-    static func fetchResetCredits(account: CodexAccount) async throws -> (available: Int?, nextExpiry: Date?) {
+    /// Refresh-credit records for the 5-hour window: how many are available,
+    /// when the nearest one expires, and the individual records with ids.
+    static func fetchResetCredits(account: CodexAccount) async throws -> ResetCreditDetails {
         let tokens = try await freshTokens(for: account)
         guard let access = tokens.access_token else { throw CodexError.refreshUnavailable }
         var request = URLRequest(url: resetCreditsEndpoint)
         request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(originator, forHTTPHeaderField: "originator")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let accountId = safeAccountId(effectiveAccountId(account, tokens: tokens)), !accountId.isEmpty {
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
         }
         let (data, response) = try await NetworkProxy.session().data(for: request)
         try ensureOK(response, data)
+        return try parseResetCredits(data)
+    }
+
+    struct ResetCreditDetails: Equatable {
+        var available: Int?
+        var nextExpiry: Date?
+        var credits: [CodexResetCredit]
+    }
+
+    enum ResetCreditOutcome: Equatable {
+        case reset
+        case nothingToReset
+        case noCredit
+        case alreadyRedeemed
+    }
+
+    /// Parse the read-only reset-credit response. The endpoint has returned
+    /// both flat and `data`-nested shapes.
+    static func parseResetCredits(_ data: Data) throws -> ResetCreditDetails {
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CodexError.decoding("reset credits response not an object")
         }
@@ -339,20 +360,71 @@ enum CodexService {
         let available = (obj["available_count"] as? Int)
             ?? (obj["availableCount"] as? Int)
             ?? (nested?["available_count"] as? Int)
+            ?? (nested?["availableCount"] as? Int)
         let records = (obj["credits"] as? [[String: Any]])
             ?? (nested?["credits"] as? [[String: Any]])
             ?? []
-        var expiry: Date?
-        var usableRecords = 0
+        var credits: [CodexResetCredit] = []
         for record in records {
             let status = (record["status"] as? String)?.lowercased()
-            if let status, status != "available", status != "granted" { continue }
-            usableRecords += 1
-            guard let date = resetCreditDate(record["expires_at"] ?? record["expiresAt"] ?? record["expiry"]) else { continue }
-            if expiry == nil || date < expiry! { expiry = date }
+            // Only spendable records can be redeemed.
+            guard status == nil || status == "available" || status == "granted" else { continue }
+            guard let id = (record["id"] as? String) ?? (record["credit_id"] as? String),
+                  !id.isEmpty else { continue }
+            credits.append(CodexResetCredit(
+                id: id,
+                status: status,
+                title: record["title"] as? String,
+                grantedAt: resetCreditDate(record["granted_at"] ?? record["grantedAt"]),
+                expiresAt: resetCreditDate(record["expires_at"] ?? record["expiresAt"] ?? record["expiry"])
+            ))
         }
-        let resolvedAvailable = available ?? (records.isEmpty ? nil : usableRecords)
-        return (resolvedAvailable, expiry)
+        let nextExpiry = credits.compactMap(\.expiresAt).min()
+        let resolvedAvailable = available ?? (records.isEmpty ? nil : credits.count)
+        return ResetCreditDetails(available: resolvedAvailable, nextExpiry: nextExpiry, credits: credits)
+    }
+
+    /// Redeem one banked reset. `redeem_request_id` makes the request
+    /// idempotent; the nearest-expiring credit is passed when its id is known.
+    static func consumeResetCredit(account: CodexAccount, creditId: String?) async throws -> ResetCreditOutcome {
+        let tokens = try await freshTokens(for: account)
+        guard let access = tokens.access_token else { throw CodexError.refreshUnavailable }
+        var request = URLRequest(url: consumeResetCreditEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(originator, forHTTPHeaderField: "originator")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let accountId = safeAccountId(effectiveAccountId(account, tokens: tokens)), !accountId.isEmpty {
+            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
+        }
+        var body: [String: String] = ["redeem_request_id": UUID().uuidString.lowercased()]
+        if let creditId, !creditId.isEmpty {
+            body["credit_id"] = creditId
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
+        try ensureOK(response, data)
+        return try parseResetCreditOutcome(data)
+    }
+
+    static func parseResetCreditOutcome(_ data: Data) throws -> ResetCreditOutcome {
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexError.decoding("reset response not an object")
+        }
+        let nested = obj["data"] as? [String: Any]
+        let raw = (obj["outcome"] as? String)
+            ?? (obj["code"] as? String)
+            ?? (nested?["outcome"] as? String)
+            ?? (nested?["code"] as? String)
+        switch raw {
+        case "reset": return .reset
+        case "nothing_to_reset", "nothingToReset": return .nothingToReset
+        case "no_credit", "noCredit": return .noCredit
+        case "already_redeemed", "alreadyRedeemed": return .alreadyRedeemed
+        default: throw CodexError.decoding("unexpected reset outcome: \(raw ?? "missing")")
+        }
     }
 
     /// Reset-credit timestamps arrive as ISO strings, Unix seconds or millis.

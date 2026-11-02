@@ -139,6 +139,8 @@ enum NetworkProxy {
               let host = url.host, !host.isEmpty else { return nil }
         let scheme = (url.scheme ?? "http").lowercased()
         let port = url.port ?? (scheme.hasPrefix("socks") ? 1080 : 8080)
+        let user = (url.user ?? "").removingPercentEncoding ?? url.user ?? ""
+        let password = (url.password ?? "").removingPercentEncoding ?? url.password ?? ""
         let exceptions = bypass
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -150,6 +152,10 @@ enum NetworkProxy {
             dictionary["SOCKSEnable"] = 1
             dictionary["SOCKSProxy"] = host
             dictionary["SOCKSPort"] = port
+            if !user.isEmpty {
+                dictionary["SOCKSUser"] = user
+                dictionary["SOCKSPassword"] = password
+            }
         } else {
             dictionary["HTTPEnable"] = 1
             dictionary["HTTPProxy"] = host
@@ -157,6 +163,12 @@ enum NetworkProxy {
             dictionary["HTTPSEnable"] = 1
             dictionary["HTTPSProxy"] = host
             dictionary["HTTPSPort"] = port
+            if !user.isEmpty {
+                dictionary["HTTPUser"] = user
+                dictionary["HTTPPassword"] = password
+                dictionary["HTTPSUser"] = user
+                dictionary["HTTPSPassword"] = password
+            }
         }
         return dictionary
     }

@@ -1,4 +1,194 @@
-# Melon Tools 3.3.0
+# Melon Tools 4.0.0
+
+> **Repository move:** Melon Tools now lives at
+> [`vanich-git/MelonTools`](https://github.com/vanich-git/MelonTools). Releases
+> before 4.0.0 were published from the previous repository and their download
+> links no longer resolve; the changelog below is kept for history.
+
+Antigravity becomes a real account pool, shows its 5-hour quota, explains
+catalog-only models, and fails over before a slow first token reaches the
+client.
+
+- **Multi-account Antigravity pool.** Connect any number of Google accounts;
+  each one gets its own row with identity, project, model count, pause/resume,
+  sign-in refresh and per-account removal. The engine routes across the pool,
+  and the UI no longer collapses everything to the newest auth file.
+- **Quota that is actually available.** `fetchAvailableModels` exposes
+  `quotaInfo` per model. The app groups it into the two pools Google uses
+  (Gemini and Claude/GPT), shows the remaining share of the current 5-hour
+  window and its reset time for every account. The weekly Antigravity window is
+  not exposed by the API and is not fabricated.
+- **Catalog-only models are labelled.** A grey block lists ids present in the
+  catalog but absent from every connected account, with the reason: the model
+  is defined, the account is not entitled to it (plan or region).
+- **Antigravity first-token failover.** New engine key
+  `stream-bootstrap-timeout-seconds` (0 disables, default 60), scoped to
+  Google/Antigravity streaming accounts. If no first payload arrives before the
+  deadline, the engine retries the request on another Antigravity account before
+  headers are committed. The slow account gets a quarantine ladder of
+  60 s → 5 min → 30 min → 2 h. Codex, Claude and API-key providers keep their
+  previous behaviour.
+- **Health probe and telemetry.** A quarantined account can be probed with a
+  lightweight model-list request; a success clears only the first-token
+  cooldown. The Providers card shows the latest TTFT or the last switch, and
+  every switch is written to the audit log. macOS and Windows share the same
+  behaviour.
+- **Update checks follow the new repository.** The in-app updater on macOS and
+  Windows now asks `api.github.com/repos/vanich-git/MelonTools`. Builds older
+  than 4.0.0 still look at the retired `ivankuprin/MelonTools` repository and
+  cannot see this release, so install 4.0.0 manually once; later updates work
+  from inside the app.
+- **Build metadata.** macOS build 40 and Windows 4.0.0; version metadata is
+  aligned at 4.0.0.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v4.0.0/MelonTools-4.0.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v4.0.0/MelonTools-4.0.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v4.0.0/MelonTools-4.0.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+3deb12c07d59f6bcf12bf0717d455bcb495713f31327ea01eec04eb2abb13220  MelonTools-4.0.0.dmg
+f515ef6d0abb86690b070f1eb5b0f88532079ba5e7ba0fbb7d22851ce3f0ab1d  MelonTools-4.0.0-setup.exe
+6bba8457add3a0c347e3a39fca6c2a568f47f74108a318e79f01df4c2ba7bab8  MelonTools-4.0.0-win-x64-portable.exe
+6bba8457add3a0c347e3a39fca6c2a568f47f74108a318e79f01df4c2ba7bab8  MelonTools-4.0.0-win-x64.exe
+```
+
+# Melon Tools 3.4.2
+
+The three Antigravity models Google entitles on the account but the engine
+catalog omitted now reach the Codex picker on macOS and Windows.
+
+- **Gemini 3.8 Flash (Low) and (Medium).** Google lists both thinking levels as
+  separate ids (`gemini-3.8-flash-low`, `gemini-3.8-flash-medium`) with their own
+  quota. The engine catalog ships only `gemini-3.8-flash-high`, so the two ids
+  never passed the catalog ∩ account intersection. Both now reach `/v1/models`
+  and the picker.
+- **Gemini 2.5 Pro.** `gemini-2.5-pro` is entitled on the Antigravity account but
+  was absent from the Antigravity section of the engine catalog. It is now
+  served through the same provider.
+- **Written by the app.** The app fetches the official catalog, adds the three
+  definitions, validates the result and writes `gateway/models.json`;
+  `config.yaml` points `models.catalog` at that file, so the fix survives
+  restarts and settings saves. The engine binary is unchanged.
+- **Safe refresh.** The overlay follows the engine's three-hour catalog cadence,
+  deduplicates every section before writing (one duplicate id makes the engine
+  reject the whole catalog), and retries fifteen minutes after a failed fetch.
+- **Both platforms.** macOS and Windows write the same file and YAML block.
+- **Plan-gated ids stay hidden.** Claude Opus/Sonnet 5.5 and Gemini 4 Argon
+  are already in the official catalog, but the engine serves only ids the
+  signed-in Google account reports. They appear automatically when the
+  plan includes them; the overlay never force-adds an unentitled id.
+- **Build metadata.** macOS build 39 and Windows 3.4.2; version metadata is
+  aligned at 3.4.2.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.4.2/MelonTools-3.4.2.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.4.2/MelonTools-3.4.2-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.4.2/MelonTools-3.4.2-win-x64-portable.exe)
+
+### SHA-256
+
+```
+624c90b7bd8a17fba827fc8e9c93405d749465478c9ef4bdce9dbcd48fc8db61  MelonTools-3.4.2.dmg
+fa3a7fb206008bf584ec61303f25b89e89cac320a59fe0d9d3adbb21706d01e5  MelonTools-3.4.2-setup.exe
+f6e35fe81d77905b5b534f132f80f01e1770497f515d5c7c69868640237323df  MelonTools-3.4.2-win-x64-portable.exe
+f6e35fe81d77905b5b534f132f80f01e1770497f515d5c7c69868640237323df  MelonTools-3.4.2-win-x64.exe
+```
+
+## 3.4.1
+
+Proxy URL saving, proxy authentication, and the Z.ai provider.
+
+- **Explicit proxy URL save.** A round gold check button appears to the right of
+  the proxy URL field as soon as the value differs from the saved one. Click it
+  (or press Return) to apply the URL and show a short “Saved” confirmation.
+  Windows gets the same button and toast.
+- **Authenticated SOCKS and HTTP proxies work.** The macOS proxy dictionary now
+  carries `SOCKSUser`/`SOCKSPassword` and the HTTP/HTTPS credential fields.
+  Previously an authenticated SOCKS5 URL produced `NSURLErrorBadURL`
+  («неверный URL») on every quota refresh even though the local gateway and
+  DSH kept working.
+- **Z.ai GLM Coding Plan provider.** A new API-key source on macOS and Windows:
+  paste a key from Personal Coding Plan → Plan Overview, load the model list,
+  and use GLM-5.3 / GLM-5.3-Flash through the Coding endpoint
+  `https://api.z.ai/api/coding/paas/v4`. The built-in catalogue is used when
+  `/models` is unavailable.
+- **Build metadata.** macOS build 38 and Windows 3.4.1; version metadata is
+  aligned at 3.4.1.
+- **Windows switches render correctly.** The settings, dashboard and account
+  toggles use a clean pill with a properly inset knob instead of inheriting the
+  square-checkbox checkmark.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.4.1/MelonTools-3.4.1.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.4.1/MelonTools-3.4.1-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.4.1/MelonTools-3.4.1-win-x64-portable.exe)
+
+### SHA-256
+
+```
+fe3e9956dd067de43cbabc08375f2495fca823a533792cb464a13f2ff35b8677  MelonTools-3.4.1.dmg
+72b42da27e0689ea1d436aa635cc6847e12e8707e9509ef9b48767d561c36d75  MelonTools-3.4.1-setup.exe
+ac035405a320b3ee0690b7627a28dece7050f6f497bc92ddda68e9ce19f4ab6a  MelonTools-3.4.1-win-x64-portable.exe
+ac035405a320b3ee0690b7627a28dece7050f6f497bc92ddda68e9ce19f4ab6a  MelonTools-3.4.1-win-x64.exe
+```
+
+## 3.4.0
+
+Reset credits are now redeemable from the Codex account card on macOS and Windows.
+
+- **The counter is a button.** When an account has banked resets, the card
+  shows an active gold button — «1 сброс», «2 сброса», «5 сбросов» — instead
+  of a read-only counter. With zero credits the old “Нет доступных сбросов”
+  label remains.
+- **Confirmation before spending.** The button opens a confirmation dialog
+  that names the account and explains that one credit will clear the current
+  Codex usage limit.
+- **The nearest expiry is redeemed first.** The app reads the reset-credit
+  records and sends the id of the soonest-expiring credit; a request id makes
+  the consume call idempotent, so a retry cannot spend a second credit.
+- **Clear outcomes.** Success, “nothing to reset”, “no credit” and “already
+  redeemed” are reported in the message card. Quotas refresh immediately after
+  redemption, and the button shows a spinner while the request is in flight.
+- **Windows parity.** The Windows app gets the same gold reset button, native
+  confirmation, backend consume call, in-flight guard and immediate quota
+  refresh.
+- **Build metadata.** macOS build 37 and Windows 3.4.0; version metadata is
+  aligned at 3.4.0.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.4.0/MelonTools-3.4.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.4.0/MelonTools-3.4.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.4.0/MelonTools-3.4.0-win-x64-portable.exe)
+
+### SHA-256
+
+```
+b604bc8cfc9fb69ac75a6fe6511c655f810c4c828b831644120e71933d574ded  MelonTools-3.4.0.dmg
+bef5cfcaea2612f213cb4d39601376ee44777396814743a90017bf6a4da600ba  MelonTools-3.4.0-setup.exe
+877dbe803f56a8c7723ea22e0888759d5e5d53e7263106f14a266bc7c5a3c0b4  MelonTools-3.4.0-win-x64-portable.exe
+877dbe803f56a8c7723ea22e0888759d5e5d53e7263106f14a266bc7c5a3c0b4  MelonTools-3.4.0-win-x64.exe
+```
+
+## 3.3.0
 
 Windows stability fixes and cross-provider JSON import.
 
@@ -31,9 +221,9 @@ Windows stability fixes and cross-provider JSON import.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.3.0/MelonTools-3.3.0-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -63,9 +253,9 @@ Update notifications on macOS and Windows.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.2.0/MelonTools-3.2.0-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -93,9 +283,9 @@ Account list fix in the API control card.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.1.2/MelonTools-3.1.2-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -125,9 +315,9 @@ Quota-limit totals on macOS and Windows.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.1.1/MelonTools-3.1.1-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -164,9 +354,9 @@ Codex route compatibility and Windows composer chips.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.1.0/MelonTools-3.1.0-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -197,9 +387,9 @@ UI polish for the Windows 3.0 release.
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1.dmg)
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-setup.exe)
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-win-x64-portable.exe)
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.0.1/MelonTools-3.0.1-win-x64-portable.exe)
 
 ### SHA-256
 
@@ -251,9 +441,9 @@ Windows UI parity with macOS. Both platforms share the 3.0.0 version and the
 
 ### Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v3.0.0/MelonTools-3.0.0-win-x64-portable.exe) — single file, no install.
 
 ### SHA-256
 
@@ -391,9 +581,9 @@ a smaller macOS app, and a reproducible Windows engine.
 
 ## Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v2.4.1/MelonTools-2.4.1-win-x64-portable.exe) — single file, no install.
 
 ## 2.4.0
 
@@ -416,9 +606,9 @@ a smaller macOS app, and a reproducible Windows engine.
 
 ## Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v2.4.0/MelonTools-2.4.0-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.7
 
@@ -438,9 +628,9 @@ a smaller macOS app, and a reproducible Windows engine.
 
 ## Downloads
 
-- [macOS universal DMG](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7.dmg) — macOS 14 or later, Apple Silicon and Intel.
-- [Windows installer](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-setup.exe) — custom install path, WebView2 required.
-- [Windows portable](https://github.com/ivankuprin/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-win-x64-portable.exe) — single file, no install.
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7.dmg) — macOS 14 or later, Apple Silicon and Intel.
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-setup.exe) — custom install path, WebView2 required.
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v2.3.7/MelonTools-2.3.7-win-x64-portable.exe) — single file, no install.
 
 ## 2.3.6
 

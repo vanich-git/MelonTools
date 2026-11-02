@@ -95,9 +95,9 @@ $ git rev-parse --short HEAD
 1cf6a8e
 $ git status --short | wc -l
 28          # 27 tracked modifications from the 2.2.3 worktree + this new spec
-$ gh api repos/ivankuprin/MelonTools/git/ref/heads/main --jq .object.sha
+$ gh api repos/vanich-git/MelonTools/git/ref/heads/main --jq .object.sha
 e803618e8f2163308386f15024129b7ddb18f346
-$ gh run list -R ivankuprin/MelonTools -w Release -L 30 --json status,conclusion \
+$ gh run list -R vanich-git/MelonTools -w Release -L 30 --json status,conclusion \
     --jq 'group_by(.conclusion) | map({conclusion: .[0].conclusion, count: length})'
 [{"conclusion":"cancelled","count":8},{"conclusion":"failure","count":9}]
 ```

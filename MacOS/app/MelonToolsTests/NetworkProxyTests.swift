@@ -13,6 +13,26 @@ final class NetworkProxyTests: XCTestCase {
         XCTAssertEqual(dictionary["ExceptionsList"] as? [String], ["127.0.0.1", "localhost"])
     }
 
+    func testSOCKSProxyDictionaryCarriesCredentials() throws {
+        let dictionary = try XCTUnwrap(NetworkProxy.proxyDictionary(
+            for: "socks5://user:p%40ss@proxy.example:1080",
+            bypass: "127.0.0.1,localhost"
+        ))
+        XCTAssertEqual(dictionary["SOCKSUser"] as? String, "user")
+        XCTAssertEqual(dictionary["SOCKSPassword"] as? String, "p@ss")
+    }
+
+    func testHTTPProxyDictionaryCarriesCredentials() throws {
+        let dictionary = try XCTUnwrap(NetworkProxy.proxyDictionary(
+            for: "http://user:secret@proxy.example:8080",
+            bypass: "127.0.0.1,localhost"
+        ))
+        XCTAssertEqual(dictionary["HTTPUser"] as? String, "user")
+        XCTAssertEqual(dictionary["HTTPPassword"] as? String, "secret")
+        XCTAssertEqual(dictionary["HTTPSUser"] as? String, "user")
+        XCTAssertEqual(dictionary["HTTPSPassword"] as? String, "secret")
+    }
+
     func testHTTPProxyDictionaryCoversHTTPAndHTTPS() throws {
         let dictionary = try XCTUnwrap(NetworkProxy.proxyDictionary(
             for: "http://proxy.example:8080",

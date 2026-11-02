@@ -114,6 +114,17 @@ struct CodexQuotaBlock: Codable, Equatable {
     var actualText: String { Self.percentText(remainingPercent) }
 }
 
+/// One banked usage-limit reset credit returned by
+/// `wham/rate-limit-reset-credits`. The id is needed to redeem a specific
+/// credit through `wham/rate-limit-reset-credits/consume`.
+struct CodexResetCredit: Codable, Equatable, Identifiable {
+    var id: String
+    var status: String?
+    var title: String?
+    var grantedAt: Date?
+    var expiresAt: Date?
+}
+
 struct CodexQuota: Codable, Equatable {
     var planType: String?
     /// Percentage of the hourly (primary) window still available, 0...100.
@@ -129,6 +140,8 @@ struct CodexQuota: Codable, Equatable {
     var resetCreditsAvailable: Int?
     /// Nearest expiry of the available reset credits (`wham/rate-limit-reset-credits`).
     var resetCreditsNextExpiry: Date?
+    /// Available reset-credit records, used to redeem the soonest-expiring one.
+    var resetCredits: [CodexResetCredit]?
     /// Model availability list (`model_usage` dict, key = model id).
     var modelAvailability: [CodexModelAvailability]?
     /// Credits block.

@@ -535,6 +535,16 @@ final class ComposerBridge: ObservableObject {
             entry["error"] = NSNull()
             payload["vercel"] = entry
         }
+        if !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var entry: [String: Any] = [
+                "title": "Z.ai",
+                "modelCount": sources.zaiSource?.models.count ?? 0,
+                "selectedCount": sources.zaiSource?.selectedModels.count ?? 0,
+            ]
+            entry["updatedAt"] = NSNull()
+            entry["error"] = NSNull()
+            payload["zai"] = entry
+        }
         if let stats = providerUsage.claude {
             var entry: [String: Any] = ["title": "Claude", "connected": stats.connected, "modelCount": stats.modelCount]
             entry["email"] = Self.maskedEmail(stats.email)

@@ -330,6 +330,21 @@ final class AntigravityAuthService: ObservableObject {
         login = .idle
     }
 
+    /// Removes one account file. The engine watches the auth directory and
+    /// drops the credential without touching the other pool members.
+    @discardableResult
+    func deleteAuthFile(named name: String) -> Bool {
+        guard Self.isAuthFileName(name) else { return false }
+        let url = CodexGatewayService.authDir.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return !FileManager.default.fileExists(atPath: url.path)
+        } catch {
+            return false
+        }
+    }
+
     /// Disconnects the account: removes only the engine-written Antigravity
     /// auth files (the engine hot-reloads the auth dir) and resets the login
     /// state. Claude and Codex credentials are untouched.

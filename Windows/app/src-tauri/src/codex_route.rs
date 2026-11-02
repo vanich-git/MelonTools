@@ -418,6 +418,8 @@ pub fn vision_capable(model_id: &str, owned_by: Option<&str>) -> bool {
         || tail.contains("pixtral")
         || tail.contains("internvl")
         || tail.contains("llava")
+        || tail == "glm-5.3-flash"
+        || tail.starts_with("glm-5.3-flash-")
         || (tail.starts_with("glm-") && glm_vision_suffix(tail))
     {
         return true;
@@ -436,14 +438,14 @@ fn glm_vision_suffix(tail: &str) -> bool {
 
 /// Priority band and provider tag of a gateway model id. One band per provider
 /// keeps the Codex picker grouped (pool → OpenCode → OpenRouter → DeepInfra →
-/// Vercel → Claude → Antigravity); `None` for ids this app does not publish.
+/// Vercel → Z.ai → Claude → Antigravity); `None` for ids this app does not publish.
 ///
 /// Antigravity also serves `claude-*` ids, so its registry allowlist is checked
 /// before the Claude prefix. Callers that have the `/v1/models` entry should
 /// use [`third_party_band_for_model`] so ownership wins over id overlap.
 pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
     if crate::antigravity::is_antigravity_model_id(id) {
-        Some(("Antigravity", 600))
+        Some(("Antigravity", 700))
     } else if id.starts_with("opencode/") {
         Some(("opencode", 100))
     } else if id.starts_with("openrouter/") {
@@ -452,8 +454,10 @@ pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
         Some(("deepinfra", 300))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
+    } else if id.starts_with("zai/") {
+        Some(("zai", 500))
     } else if crate::claude::is_claude_model_id(id) {
-        Some(("Claude", 500))
+        Some(("Claude", 600))
     } else {
         None
     }
@@ -465,7 +469,7 @@ pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
 pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> {
     let id = entry.get("id").and_then(|value| value.as_str())?;
     if crate::antigravity::is_antigravity_model_entry(entry) {
-        Some(("Antigravity", 600))
+        Some(("Antigravity", 700))
     } else if id.starts_with("opencode/") {
         Some(("opencode", 100))
     } else if id.starts_with("openrouter/") {
@@ -474,8 +478,10 @@ pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> 
         Some(("deepinfra", 300))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
+    } else if id.starts_with("zai/") {
+        Some(("zai", 500))
     } else if crate::claude::is_claude_model_id(id) {
-        Some(("Claude", 500))
+        Some(("Claude", 600))
     } else {
         None
     }
@@ -988,6 +994,7 @@ fn provider_display_name(tag: &str) -> &str {
         "openrouter" => "OpenRouter",
         "deepinfra" => "DeepInfra",
         "vercel" => "Vercel",
+        "zai" => "Z.ai",
         other => other,
     }
 }
@@ -1207,7 +1214,7 @@ mod tests {
     use super::{
         append_unique_catalog_entries, build_catalog_models, custom_catalog_entry,
         effective_selected_models, entry_slug, excluded_models_for, inject_catalog_schema,
-        merge_pool_entries, models_cache_entries, models_cache_from_value, pool_models_in,
+        merge_pool_entries, models_cache_from_value, pool_models_in,
         prettify, provider_display_name, provider_tag, remove_route, selected_pool_slugs_in,
         strip_private_catalog_metadata, third_party_band, third_party_band_for_model, upsert_route,
         visible_pool_slugs_in, vision_capable, LEGACY_PROVIDER_ID, PROVIDER_ID,
@@ -1217,11 +1224,11 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn claude_ids_get_band_500_and_the_claude_tag() {
-        assert_eq!(third_party_band("claude-opus-5-5"), Some(("Claude", 500)));
+    fn claude_ids_get_band_600_and_the_claude_tag() {
+        assert_eq!(third_party_band("claude-opus-5-5"), Some(("Claude", 600)));
         assert_eq!(
             third_party_band("claude-haiku-4-5-20251001"),
-            Some(("Claude", 500))
+            Some(("Claude", 600))
         );
         assert_eq!(provider_tag("claude-opus-5-5"), "Claude");
         // The existing bands stay untouched.
@@ -1239,20 +1246,20 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_ids_get_band_600_and_the_antigravity_tag() {
+    fn antigravity_ids_get_band_700_and_the_antigravity_tag() {
         assert_eq!(
             third_party_band("gemini-3-flash"),
-            Some(("Antigravity", 600))
+            Some(("Antigravity", 700))
         );
         assert_eq!(
             third_party_band("claude-opus-4-6-thinking"),
-            Some(("Antigravity", 600))
+            Some(("Antigravity", 700))
         );
         // Antigravity also serves claude-* ids; its allowlist must win over
         // the Claude prefix.
         assert_eq!(
             third_party_band("claude-sonnet-4-6"),
-            Some(("Antigravity", 600))
+            Some(("Antigravity", 700))
         );
         assert_eq!(provider_tag("gemini-3-flash"), "Antigravity");
         assert_eq!(provider_tag("claude-opus-4-6-thinking"), "Antigravity");
@@ -1265,7 +1272,7 @@ mod tests {
                 "owned_by": "anthropic",
                 "type": "claude"
             })),
-            Some(("Claude", 500))
+            Some(("Claude", 600))
         );
         assert_eq!(
             third_party_band_for_model(&json!({
@@ -1273,12 +1280,12 @@ mod tests {
                 "owned_by": "antigravity",
                 "type": "antigravity"
             })),
-            Some(("Antigravity", 600))
+            Some(("Antigravity", 700))
         );
         // Without ownership the registry allowlist is the fallback.
         assert_eq!(
             third_party_band_for_model(&json!({"id": "gemini-3-flash"})),
-            Some(("Antigravity", 600))
+            Some(("Antigravity", 700))
         );
 
         // The existing bands stay untouched.
@@ -1303,8 +1310,10 @@ mod tests {
             third_party_band("vercel/anthropic/claude-sonnet-4.6"),
             Some(("vercel", 400))
         );
+        assert_eq!(third_party_band("zai/glm-5.3"), Some(("zai", 500)));
         assert_eq!(provider_tag("deepinfra/x"), "deepinfra");
         assert_eq!(provider_tag("vercel/y"), "vercel");
+        assert_eq!(provider_tag("zai/glm-5.3"), "zai");
         assert_eq!(
             third_party_band_for_model(&json!({"id": "deepinfra/x", "owned_by": "deepinfra"})),
             Some(("deepinfra", 300))
@@ -1315,6 +1324,7 @@ mod tests {
         );
         assert_eq!(provider_display_name("deepinfra"), "DeepInfra");
         assert_eq!(provider_display_name("vercel"), "Vercel");
+        assert_eq!(provider_display_name("zai"), "Z.ai");
     }
 
     #[test]
@@ -1437,6 +1447,8 @@ mod tests {
         assert!(!vision_capable("gpt-image-1", Some("openai")));
         assert!(!vision_capable("text-embedding-3-large", Some("openai")));
         assert!(!vision_capable("glm-5.3", None));
+        assert!(vision_capable("glm-5.3-flash", Some("zai")));
+        assert!(vision_capable("glm-5.3-flash-high", Some("zai")));
         assert!(!vision_capable("unknown-model", None));
     }
 

@@ -1691,6 +1691,8 @@ pub fn model_group(id: &str) -> &'static str {
         "deepinfra"
     } else if id.starts_with("vercel/") {
         "vercel"
+    } else if id.starts_with("zai/") {
+        "zai"
     } else if id.starts_with("claude-") {
         "claude"
     } else {
@@ -1708,6 +1710,7 @@ pub fn model_groups(ids: &[String]) -> Vec<Value> {
         "openrouter",
         "deepinfra",
         "vercel",
+        "zai",
     ]
     .iter()
     .filter_map(|group| {
@@ -2151,6 +2154,7 @@ mod tests {
             "openrouter/meta/llama",
             "deepinfra/deepseek-ai/DeepSeek-V4",
             "vercel/anthropic/claude-sonnet-4.6",
+            "zai/glm-5.3",
             "gpt-6-luna",
         ]
         .iter()
@@ -2180,8 +2184,10 @@ mod tests {
             vec!["deepinfra/deepseek-ai/DeepSeek-V4"]
         );
         assert_eq!(ids_of("vercel"), vec!["vercel/anthropic/claude-sonnet-4.6"]);
+        assert_eq!(ids_of("zai"), vec!["zai/glm-5.3"]);
         assert_eq!(groups[0]["id"], "gateway");
         assert_eq!(model_group("claude-opus-5-5"), "claude");
+        assert_eq!(model_group("zai/glm-5.3"), "zai");
     }
 
     #[test]

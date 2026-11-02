@@ -7,6 +7,7 @@ build/
 derived/
 *.dmg
 *.exe
+*.sha256
 Windows/dist/
 
 # Xcode user state

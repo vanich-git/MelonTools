@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const RELEASE_API: &str = "https://api.github.com/repos/ivankuprin/MelonTools/releases/latest";
+const RELEASE_API: &str = "https://api.github.com/repos/vanich-git/MelonTools/releases/latest";
 const ALLOWED_HOSTS: [&str; 4] = [
     "api.github.com",
     "github.com",
@@ -470,7 +470,7 @@ mod tests {
             "version": "1.6.3",
             "newer": true,
             "assetName": "MelonTools-1.6.3-win-x64.exe",
-            "assetURL": "https://github.com/ivankuprin/MelonTools/releases/download/v1.6.3/MelonTools-1.6.3-win-x64.exe",
+            "assetURL": "https://github.com/vanich-git/MelonTools/releases/download/v1.6.3/MelonTools-1.6.3-win-x64.exe",
             "digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         })
     }
@@ -487,8 +487,8 @@ mod tests {
     #[test]
     fn cached_update_rejects_untrusted_urls() {
         for url in [
-            "http://github.com/ivankuprin/MelonTools/releases/download/v1.6.3/MelonTools-1.6.3-win-x64.exe",
-            "https://api.github.com/repos/ivankuprin/MelonTools/releases/assets/1",
+            "http://github.com/vanich-git/MelonTools/releases/download/v1.6.3/MelonTools-1.6.3-win-x64.exe",
+            "https://api.github.com/repos/vanich-git/MelonTools/releases/assets/1",
             "https://github.com.evil.example/MelonTools-1.6.3-win-x64.exe",
             "https://evil.example/MelonTools-1.6.3-win-x64.exe",
         ] {
@@ -502,7 +502,6 @@ mod tests {
         ));
     }
 
-    #[test]
     #[test]
     fn asset_names_accept_portable_and_legacy_but_not_the_installer() {
         assert!(is_asset_name("MelonTools-2.0.3-win-x64-portable.exe"));
@@ -521,6 +520,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn cached_update_requires_asset_name_and_digest() {
         let mut payload = check_payload();
         payload["assetName"] = json!("MelonTools-setup.msi");

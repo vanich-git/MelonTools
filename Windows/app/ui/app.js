@@ -173,6 +173,7 @@ function providerOfModel(model) {
   if (id.startsWith("openrouter/")) return "openrouter";
   if (id.startsWith("deepinfra/")) return "deepinfra";
   if (id.startsWith("vercel/")) return "vercel";
+  if (id.startsWith("zai/")) return "zai";
   if (id.startsWith("claude-")) return "claude";
   return "gateway";
 }
@@ -185,6 +186,7 @@ function providerName(provider) {
     case "openrouter": return t("sgOpenRouter");
     case "deepinfra": return t("sgDeepInfra");
     case "vercel": return t("sgVercel");
+    case "zai": return t("sgZai");
     default: return String(provider || "—");
   }
 }
@@ -654,6 +656,8 @@ function actionArgs(action, el) {
     case "movePriority":
     case "poolToggleGlobal":
       return [el.dataset.id, el.dataset.value === "true"];
+    case "antigravityPriority":
+      return [el.dataset.id, Number(el.dataset.value)];
     case "notifyDetailToggle":
     case "dashboardCardToggle":
     case "schedulerToggle":
@@ -672,6 +676,7 @@ function actionArgs(action, el) {
     case "schedulerTemplateApply":
     case "poolSearch":
     case "modelsSearch":
+    case "proxyUrlChanged":
       return [el.value];
     case "copy":
       return [el.dataset.text || ""];
@@ -707,6 +712,12 @@ document.addEventListener("change", (event) => {
 document.addEventListener("input", (event) => {
   const el = event.target.closest('[data-action][data-on="input"]');
   if (el) dispatchAction(el);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target && event.target.id === "set-proxy-url") {
+    event.preventDefault();
+    A.saveProxyUrl();
+  }
 });
 
 // Tray events arrive as `tray-action`: navigation and run-next are owned by the

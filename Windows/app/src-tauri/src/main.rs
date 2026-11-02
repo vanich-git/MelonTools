@@ -8,6 +8,7 @@ mod account_import;
 mod antigravity;
 mod backup;
 mod bridge;
+mod catalog;
 mod claude;
 mod codex_models;
 mod codex_route;
@@ -403,6 +404,69 @@ async fn quota_refresh(
 #[tauri::command]
 fn quota_history() -> Vec<Value> {
     history::ipc_samples()
+}
+
+/// Redeem one banked Codex reset credit and refresh that account immediately.
+/// The UI confirms before calling this command; `redeem_request_id` makes the
+/// backend call idempotent, and the in-flight guard blocks double clicks.
+#[tauri::command]
+async fn reset_activate(state: State<'_, AppState>, id: String) -> Result<Value, String> {
+    let account = vault::accounts()
+        .into_iter()
+        .find(|account| account.id == id)
+        .ok_or_else(|| "аккаунт не найден".to_string())?;
+    let available = vault::list_views()
+        .into_iter()
+        .find(|view| view.get("id").and_then(|value| value.as_str()) == Some(id.as_str()))
+        .and_then(|view| {
+            view.get("resetCreditsAvailable")
+                .and_then(|value| value.as_i64())
+        })
+        .unwrap_or(0);
+    if available <= 0 {
+        return Err("no_credit".to_string());
+    }
+    let client = quota::client()?;
+    if !quota::begin_reset(&id) {
+        return Err("reset_in_progress".to_string());
+    }
+    let outcome = match quota::consume_reset_credit(&client, &account).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            quota::end_reset(&id);
+            return Err(error);
+        }
+    };
+    // Keep the card truthful even if the follow-up quota fetch fails: a
+    // successful redemption always spends one credit.
+    if outcome == "reset" {
+        let remaining = (available - 1).max(0);
+        let _ = vault::set_account_field(&id, move |item| {
+            if !item
+                .get("quota")
+                .map(|value| value.is_object())
+                .unwrap_or(false)
+            {
+                item["quota"] = json!({});
+            }
+            item["quota"]["resetCreditsAvailable"] = json!(remaining);
+        });
+    }
+    let errors = quota::refresh_all(&client, Some(&id)).await;
+    quota::end_reset(&id);
+    let settings = state.settings();
+    live_quota::tick(&settings).await;
+    let synced = if gateway::health(settings.port, &settings.api_key).await {
+        gateway::sync_accounts(&settings).unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(json!({
+        "accounts": vault::list_views(),
+        "outcome": outcome,
+        "errors": errors,
+        "syncedAccounts": synced,
+    }))
 }
 
 /// Toast when a refreshed window crosses below its account reserve (10 % when
@@ -1364,6 +1428,7 @@ async fn provider_models_load(
     let models = match provider.as_str() {
         "deepinfra" => providers::deepinfra_models(&settings.deepinfra_key).await?,
         "vercel" => providers::vercel_models(&settings.vercel_key).await?,
+        "zai" => providers::zai_models(&settings.zai_key).await?,
         other => return Err(format!("неизвестный провайдер: {other}")),
     };
     Ok(json!({ "models": models, "count": models.len() }))
@@ -1509,6 +1574,50 @@ async fn antigravity_refresh(
 /// Disconnects every Antigravity account: removes only the engine-written
 /// `antigravity*.json` auth files and reports what is left.
 #[tauri::command]
+async fn antigravity_account_action(
+    state: State<'_, AppState>,
+    action: String,
+    name: String,
+    auth_index: Option<String>,
+    model: Option<String>,
+    value: Option<i64>,
+) -> Result<Value, String> {
+    match action.as_str() {
+        "remove" => Ok(json!({ "ok": antigravity::remove_auth_file(&name) })),
+        "pause" | "resume" => {
+            let manager = antigravity_management(&state)?;
+            let disabled = action == "pause";
+            Ok(json!({
+                "ok": manager.set_disabled(&name, auth_index.as_deref(), disabled).await
+            }))
+        }
+        "priority" => {
+            let manager = antigravity_management(&state)?;
+            Ok(json!({
+                "ok": manager.set_priority(&name, value.unwrap_or(0)).await
+            }))
+        }
+        "refresh" => {
+            let manager = antigravity_management(&state)?;
+            Ok(manager.refresh(Some(&name)).await)
+        }
+        "probe" => {
+            let settings = state.settings();
+            Ok(json!({
+                "ok": antigravity::probe_account(
+                    &settings,
+                    &name,
+                    auth_index.as_deref().unwrap_or_default(),
+                    model.as_deref().unwrap_or_default(),
+                )
+                .await
+            }))
+        }
+        other => Err(format!("unknown antigravity action: {other}")),
+    }
+}
+
+#[tauri::command]
 async fn antigravity_disconnect() -> Result<Value, String> {
     let (removed, remaining) = antigravity::disconnect_in(&paths::auths_dir());
     Ok(json!({ "removed": removed, "remaining": remaining }))
@@ -1546,7 +1655,7 @@ async fn open_url(url: String) -> Result<(), String> {
 // MARK: - Entry point
 
 /// Restarts the engine when it dies while we believe it should run.
-async fn watchdog_check(state: &AppState) {
+async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
     let (supervised, user_stopped, misses, restarts) = match state.watchdog.lock() {
         Ok(guard) => (
             guard.supervised,
@@ -1564,6 +1673,20 @@ async fn watchdog_check(state: &AppState) {
         if let Ok(mut guard) = state.watchdog.lock() {
             guard.misses = 0;
             guard.health_ok = true;
+        }
+        // Keep the catalog overlay on the engine's refresh cadence. It is
+        // written outside the watchdog path so a slow fetch cannot delay the
+        // next health probe; a new file also rewrites the config in case the
+        // overlay appeared after the gateway started.
+        if crate::catalog::needs_refresh() && !crate::catalog::is_refreshing() {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if crate::catalog::refresh_in_background().await {
+                    let state = handle.state::<AppState>();
+                    let settings = state.settings();
+                    let _ = crate::gateway::write_config(&settings);
+                }
+            });
         }
         return;
     }
@@ -1822,7 +1945,7 @@ fn main() {
                         bridge::tick(&state.bridge, &settings).await;
                         tick += 1;
                         if tick % 6 == 0 {
-                            watchdog_check(&state).await;
+                            watchdog_check(&state, &handle).await;
                         }
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -1932,6 +2055,7 @@ fn main() {
             gateway_models,
             vault_list,
             quota_refresh,
+            reset_activate,
             quota_history,
             switch_account,
             import_current_auth,
@@ -2003,6 +2127,7 @@ fn main() {
             antigravity_metrics,
             antigravity_refresh,
             antigravity_disconnect,
+            antigravity_account_action,
             open_url,
         ])
         .run(tauri::generate_context!())

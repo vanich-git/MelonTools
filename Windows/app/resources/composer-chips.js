@@ -66,7 +66,7 @@
   }, CFG.labels || {});
   const PROVIDERS = Object.assign({
     openai: 'OpenAI', opencode: 'OpenCode', openrouter: 'OpenRouter',
-    deepinfra: 'DeepInfra', vercel: 'Vercel',
+    deepinfra: 'DeepInfra', vercel: 'Vercel', zai: 'Z.ai',
   }, CFG.providers || {});
 
   // ---------------------------------------------------------------- helpers
@@ -514,6 +514,7 @@
     if (kind === 'claude') return 'melon-dot-green';
     if (kind === 'deepinfra') return 'melon-dot-blue';
     if (kind === 'vercel') return 'melon-dot-purple';
+    if (kind === 'zai') return 'melon-dot-blue';
     return 'melon-dot-orange';
   }
 
@@ -737,6 +738,9 @@
     } else if (kind === 'vercel' && stats) {
       body.appendChild(popRow(LABELS.available, stats.balance != null ? formatMoney(stats.balance) : LABELS.noData));
       body.appendChild(popRow(LABELS.creditsSpent + ' · ' + LABELS.lifetime, stats.totalUsed != null ? formatMoney(stats.totalUsed) : LABELS.noData));
+      body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
+      if (stats.error) body.appendChild(popRow('—', String(stats.error)));
+    } else if (kind === 'zai' && stats) {
       body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
       if (stats.error) body.appendChild(popRow('—', String(stats.error)));
     } else if (kind === 'antigravity' && stats) {

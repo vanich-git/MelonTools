@@ -189,7 +189,9 @@ pub fn write_config(settings: &Settings) -> Result<(), String> {
         &settings.api_key,
         &auth_dir,
         &settings.management_secret,
+        settings.stream_bootstrap_timeout_seconds,
     );
+    yaml.push_str(&crate::catalog::config_block());
     yaml.push_str(&api_keys_yaml(settings));
 
     // Atomic replace: a crash mid-write must not leave a broken config the
@@ -203,7 +205,13 @@ pub fn write_config(settings: &Settings) -> Result<(), String> {
 /// The fixed part of config.yaml. `secret` is the plaintext management secret:
 /// the engine bcrypt-hashes it on load and every management call authenticates
 /// with the plaintext value.
-fn base_config(port: u16, api_key: &str, auth_dir: &str, secret: &str) -> String {
+fn base_config(
+    port: u16,
+    api_key: &str,
+    auth_dir: &str,
+    secret: &str,
+    stream_bootstrap_timeout: i64,
+) -> String {
     format!(
         r#"# Melon Tools — Codex API gateway config (CLIProxyAPI)
 config-version: 8
@@ -226,6 +234,7 @@ routing:
 request-retry: 3
 max-retry-interval: 45
 transient-error-cooldown-seconds: 20
+stream-bootstrap-timeout-seconds: {stream_bootstrap_timeout}
 requests:
   proxy-url: "{proxy}"
 "#,
@@ -234,6 +243,7 @@ requests:
         auth_dir = auth_dir,
         secret = yaml_escape(secret),
         proxy = yaml_escape(&crate::proxy::engine_url()),
+        stream_bootstrap_timeout = stream_bootstrap_timeout.max(0),
     )
 }
 
@@ -264,14 +274,17 @@ pub fn api_keys_yaml(settings: &Settings) -> String {
     let vercel = settings.vercel_enabled
         && !settings.vercel_key.trim().is_empty()
         && !settings.vercel_models.is_empty();
+    let zai = settings.zai_enabled
+        && !settings.zai_key.trim().is_empty()
+        && !settings.zai_models.is_empty();
     let claude = settings.claude_enabled && !settings.claude_api_key.trim().is_empty();
-    if !opencode && !openrouter && !deepinfra && !vercel && !claude {
+    if !opencode && !openrouter && !deepinfra && !vercel && !zai && !claude {
         return String::new();
     }
 
     let mut yaml = String::from("api-keys:\n");
 
-    if opencode || openrouter || deepinfra || vercel {
+    if opencode || openrouter || deepinfra || vercel || zai {
         yaml.push_str("  openai-compatibility:\n");
         if opencode {
             yaml.push_str("    - name: \"opencode-go\"\n");
@@ -315,6 +328,18 @@ pub fn api_keys_yaml(settings: &Settings) -> String {
                 yaml_escape(&settings.vercel_key)
             ));
             push_cached_models(&mut yaml, "vercel", &settings.vercel_models);
+        }
+        if zai {
+            yaml.push_str("    - name: \"zai\"\n");
+            yaml.push_str(&format!(
+                "      base-url: \"{}\"\n",
+                crate::providers::ZAI_BASE_URL
+            ));
+            yaml.push_str(&format!(
+                "      keys:\n        - api-key: \"{}\"\n",
+                yaml_escape(&settings.zai_key)
+            ));
+            push_cached_models(&mut yaml, "zai", &settings.zai_models);
         }
     }
 
@@ -365,7 +390,7 @@ fn push_cached_models(
 
 /// YAML values are double-quoted: escape the quote and the backslash, and drop
 /// control characters (a pasted key must not break the config).
-fn yaml_escape(value: &str) -> String {
+pub(crate) fn yaml_escape(value: &str) -> String {
     value
         .chars()
         .filter(|c| !c.is_control())
@@ -732,6 +757,10 @@ pub async fn health(port: u16, api_key: &str) -> bool {
 
 pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, String> {
     rotate_log(&paths::log_path());
+    // Complete the engine catalog before the config points at it: the engine
+    // refuses a `models.catalog` path it cannot read. Bounded so an
+    // unreachable host never holds the gateway down.
+    let _ = crate::catalog::refresh_for_start().await;
     if health(settings.port, &settings.api_key).await {
         write_config(settings)?;
         sync_accounts(settings)?;
@@ -972,6 +1001,51 @@ pub fn requests_last_minute() -> usize {
         .count()
 }
 
+/// Latest `[qos]` watchdog line from the gateway log. The app uses it for the
+/// Antigravity telemetry strip; no auth secret is present in these lines.
+pub fn last_qos_event() -> Option<Value> {
+    let text = log_tail(128 * 1024);
+    for line in text.lines().rev() {
+        if !line.contains("[qos]") {
+            continue;
+        }
+        let timed_out = line.contains("first_token_timeout");
+        if !timed_out && !line.contains("first_token") {
+            continue;
+        }
+        if !line.contains("provider=antigravity") {
+            continue;
+        }
+        let value = |key: &str| -> Option<i64> {
+            let marker = format!("{key}=");
+            let start = line.find(&marker)? + marker.len();
+            let digits: String = line[start..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect();
+            digits.parse().ok()
+        };
+        let text_value = |key: &str| -> Option<String> {
+            let marker = format!("{key}=");
+            let start = line.find(&marker)? + marker.len();
+            let token: String = line[start..]
+                .chars()
+                .take_while(|ch| !ch.is_whitespace() && *ch != '"')
+                .collect();
+            (!token.is_empty()).then_some(token)
+        };
+        return Some(json!({
+            "timedOut": timed_out,
+            "auth": text_value("auth"),
+            "model": text_value("model"),
+            "ttftMs": value("ttft_ms"),
+            "cooldownSeconds": value("cooldown_s"),
+            "strike": value("strike"),
+        }));
+    }
+    None
+}
+
 fn parse_timestamp(line: &str) -> Option<chrono::NaiveDateTime> {
     let start = line.find('[')? + 1;
     let end = line[start..].find(']')? + start;
@@ -1120,6 +1194,7 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
                         && !id.starts_with("openrouter/")
                         && !id.starts_with("deepinfra/")
                         && !id.starts_with("vercel/")
+                        && !id.starts_with("zai/")
                 })
                 .or_else(|| {
                     arr.iter()
@@ -1173,7 +1248,7 @@ mod tests {
 
     #[test]
     fn base_config_carries_the_plaintext_management_secret() {
-        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "melon-mgmt-1234");
+        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "melon-mgmt-1234", 60);
         assert!(yaml.contains("secret-key: \"melon-mgmt-1234\""));
         // The old hard-coded bcrypt hash must be gone.
         assert!(!yaml.contains("$2a$"));
@@ -1250,6 +1325,37 @@ mod tests {
         assert!(yaml.contains("    - name: \"vercel\"\n"));
         assert!(yaml.contains("      base-url: \"https://ai-gateway.vercel.sh/v1\"\n"));
         assert!(yaml.contains("alias: \"vercel/anthropic/claude-sonnet-4.6\"\n"));
+    }
+
+    #[test]
+    fn api_keys_yaml_carries_zai_coding_models() {
+        let mut s = settings();
+        s.zai_key = "id.secret".to_string();
+        s.zai_models = vec![
+            crate::settings::ProviderModel {
+                id: "glm-5.3".to_string(),
+                display: "GLM-5.3".to_string(),
+                context_window: Some(1_000_000),
+                supports_images: Some(false),
+                ..Default::default()
+            },
+            crate::settings::ProviderModel {
+                id: "glm-5.3-flash".to_string(),
+                display: "GLM-5.3 Flash".to_string(),
+                context_window: Some(1_000_000),
+                supports_images: Some(true),
+                ..Default::default()
+            },
+        ];
+        let yaml = api_keys_yaml(&s);
+        assert_eq!(yaml.matches("api-keys:").count(), 1);
+        assert!(yaml.contains("  openai-compatibility:\n"));
+        assert!(yaml.contains("    - name: \"zai\"\n"));
+        assert!(yaml.contains("      base-url: \"https://api.z.ai/api/coding/paas/v4\"\n"));
+        assert!(yaml.contains("        - api-key: \"id.secret\"\n"));
+        assert!(yaml.contains("        - name: \"glm-5.3\"\n          alias: \"zai/glm-5.3\"\n"));
+        assert!(yaml.contains("          display-name: \"GLM-5.3 Flash\"\n"));
+        assert!(yaml.contains("          max-context-length: 1000000\n"));
     }
 
     #[test]

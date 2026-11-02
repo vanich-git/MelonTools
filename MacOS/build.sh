@@ -21,6 +21,7 @@ fi
 echo "==> release version: $VERSION"
 
 echo "==> 1/6 gateway engine (CLIProxyAPI, universal: arm64 + x86_64, stripped)"
+"$ROOT/scripts/apply-engine-patches.sh"
 mkdir -p build
 (
   cd _sources/CLIProxyAPI

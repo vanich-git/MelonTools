@@ -43,9 +43,9 @@ from typing import Dict, Iterable, List, Optional
 ROOT = Path(__file__).resolve().parents[1]
 
 CASK_PATH = ROOT / "packaging/homebrew/Casks/melon-tools.rb"
-WINGET_INSTALLER = ROOT / "packaging/winget/ivankuprin.MelonTools.installer.yaml"
-WINGET_VERSION = ROOT / "packaging/winget/ivankuprin.MelonTools.yaml"
-WINGET_LOCALE = ROOT / "packaging/winget/ivankuprin.MelonTools.locale.en-US.yaml"
+WINGET_INSTALLER = ROOT / "packaging/winget/vanich-git.MelonTools.installer.yaml"
+WINGET_VERSION = ROOT / "packaging/winget/vanich-git.MelonTools.yaml"
+WINGET_LOCALE = ROOT / "packaging/winget/vanich-git.MelonTools.locale.en-US.yaml"
 
 HEX64 = re.compile(r"(?m)^[0-9a-fA-F]{64}\b")
 SUMS_LINE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$")
@@ -311,7 +311,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"does not match {version}"
             )
         if not installer_url.startswith(
-            "https://github.com/ivankuprin/MelonTools/releases/download/"
+            "https://github.com/vanich-git/MelonTools/releases/download/"
         ):
             report.error("winget installer: URL is not a GitHub release URL")
 

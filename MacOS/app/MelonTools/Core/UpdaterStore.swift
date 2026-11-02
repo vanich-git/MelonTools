@@ -14,7 +14,7 @@ import Foundation
 final class UpdaterStore: ObservableObject {
     static let shared = UpdaterStore()
 
-    static let releaseAPI = URL(string: "https://api.github.com/repos/ivankuprin/MelonTools/releases/latest")!
+    static let releaseAPI = URL(string: "https://api.github.com/repos/vanich-git/MelonTools/releases/latest")!
     nonisolated static let allowedHosts: Set<String> = [
         "api.github.com",
         "github.com",

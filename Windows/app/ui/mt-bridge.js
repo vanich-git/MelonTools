@@ -21,6 +21,7 @@
     "vault_list",
     "quota_history",
     "quota_refresh",
+    "reset_activate",
     "gateway_status",
     "gateway_start",
     "gateway_stop",
