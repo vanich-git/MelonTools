@@ -1,7 +1,11 @@
 #!/bin/bash
 # Fetch the pinned third-party source required to build the gateway engine.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# Resolve the script directory before changing into the macOS tree: a relative
+# invocation ("$ ./MacOS/scripts/fetch-sources.sh") must not change the path
+# used to call apply-engine-patches.sh.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
 mkdir -p _sources
 
 if [ ! -d _sources/CLIProxyAPI ]; then
@@ -12,13 +16,16 @@ git -C _sources/CLIProxyAPI fetch --all --tags --quiet || true
 # x/text 0.42.0. It still pins klauspost/compress 1.17.4, so bump that one
 # dependency to the fixed 1.18.7 before building.
 git -C _sources/CLIProxyAPI checkout --quiet --force 1f917e77c4562623aa49e9804d999524151a2f96
+# The QoS patch adds files that the checkout leaves untracked; drop them so a
+# second fetch does not collide with the previous patch application.
+git -C _sources/CLIProxyAPI clean --quiet -ffd
 (
   cd _sources/CLIProxyAPI
   GOTOOLCHAIN=go1.26.10 go get github.com/klauspost/compress@v1.18.7
   GOTOOLCHAIN=go1.26.10 go mod tidy
 )
 
-"$(dirname "$0")/apply-engine-patches.sh"
+"$SCRIPT_DIR/apply-engine-patches.sh"
 
 echo "gateway source ready:"
 git -C _sources/CLIProxyAPI rev-parse --short HEAD
