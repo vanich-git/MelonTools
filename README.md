@@ -78,7 +78,15 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.5.6
+## What's new in 5.5.7
+
+- **Windows compact metrics.** The pill now reads 5-hour total, weekly total, the number of connected Codex accounts, then the green API-status dot.
+- **Windows click-to-open is stable.** A click expands the card in one native resize with a fade, instead of tweening the window; this removes the collapse/jump loop.
+- **15-second auto-fold.** After the pointer leaves the open card it folds back to the pill after 15 seconds; returning cancels the timer. Escape still closes it immediately.
+- **Build metadata.** macOS build 54 and Windows 5.5.7.
+
+## Earlier: 5.5.6
+
 
 - **One silhouette.** The island is flush with the top edge and rounded only at the bottom in both apps; Windows no longer rounds the top corners.
 - **Windows opens on click.** Hover no longer resizes the compact island or makes it disappear. A click expands it with a 220 ms tween; moving the pointer away or pressing Escape collapses it.

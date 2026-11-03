@@ -45,6 +45,8 @@
       start: "Старт",
       run: "Запустить",
       unit: "5 ч",
+      hourShort: "5ч",
+      weekShort: "7д",
       minute: "мин",
       hour: "ч",
       now: "сейчас"
@@ -66,6 +68,8 @@
       start: "Start",
       run: "Run",
       unit: "5 h",
+      hourShort: "5h",
+      weekShort: "7d",
       minute: "min",
       hour: "h",
       now: "now"
@@ -105,11 +109,12 @@
     $("compact-dot").className = dotClass;
     $("head-dot").className = dotClass;
 
-    $("compact-quota").textContent = pct(codex.hourly);
-    $("compact-count").textContent = codex.accounts || 0;
+    $("compact-hour-label").textContent = tr.hourShort;
+    $("compact-week-label").textContent = tr.weekShort;
+    $("compact-hourly").textContent = pct(codex.hourly);
+    $("compact-weekly").textContent = pct(codex.weekly);
+    $("compact-accounts").textContent = codex.accounts || 0;
     var due = scheduler.due || 0;
-    $("compact-due").hidden = due === 0;
-    $("compact-due").innerHTML = ICONS.clock + due;
 
     $("head-state").textContent = gateway.running ? tr.running : tr.stopped;
     $("head-state").className = "state" + (gateway.running ? " ok" : "");
@@ -173,6 +178,7 @@
   var currentWidth = 185;
   var currentHeight = 30;
   var resizeFrame = null;
+  var animating = false;
 
   function applySize(width, height) {
     if (!api || !api.available) return;
@@ -190,12 +196,13 @@
     var toWidth = next ? 420 : 185;
     var toHeight = next ? 242 : 30;
     if (resizeFrame) {
-      window.cancelAnimationFrame(resizeFrame);
+      window.clearTimeout(resizeFrame);
       resizeFrame = null;
     }
     if (!animate) {
       currentWidth = toWidth;
       currentHeight = toHeight;
+      animating = false;
       applySize(toWidth, toHeight);
       return;
     }
@@ -203,6 +210,7 @@
     var fromHeight = currentHeight;
     var started = performance.now();
     var duration = next ? 220 : 180;
+    animating = true;
     function frame(now) {
       var t = Math.min(1, (now - started) / duration);
       var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -210,18 +218,40 @@
       currentHeight = fromHeight + (toHeight - fromHeight) * eased;
       applySize(currentWidth, currentHeight);
       if (t < 1) {
-        resizeFrame = window.requestAnimationFrame(frame);
+        resizeFrame = window.setTimeout(function () {
+          frame(performance.now());
+        }, 16);
       } else {
         resizeFrame = null;
         currentWidth = toWidth;
         currentHeight = toHeight;
+        animating = false;
       }
     }
-    resizeFrame = window.requestAnimationFrame(frame);
+    resizeFrame = window.setTimeout(function () {
+      frame(performance.now());
+    }, 16);
   }
 
   var collapseTimer = null;
+  var autoCollapseTimer = null;
   var resizeGuardUntil = 0;
+  var AUTO_COLLAPSE_MS = 15000;
+
+  function stopAutoCollapse() {
+    if (autoCollapseTimer) {
+      window.clearTimeout(autoCollapseTimer);
+      autoCollapseTimer = null;
+    }
+  }
+
+  function scheduleAutoCollapse() {
+    stopAutoCollapse();
+    autoCollapseTimer = window.setTimeout(function () {
+      autoCollapseTimer = null;
+      if (expanded) setExpanded(false);
+    }, AUTO_COLLAPSE_MS);
+  }
 
   function setExpanded(next) {
     if (expanded === next) return;
@@ -233,9 +263,10 @@
       }
       document.body.classList.remove("closing");
       document.body.classList.add("expanded");
-      resizeGuardUntil = Date.now() + 350;
+      resizeGuardUntil = Date.now() + 400;
       resize(true, true);
     } else {
+      stopAutoCollapse();
       document.body.classList.add("closing");
       collapseTimer = window.setTimeout(function () {
         collapseTimer = null;
@@ -267,13 +298,24 @@
     if (!api || !api.available) return;
     var island = $("island");
     // Hover must not resize the window: on Windows that makes the compact
-    // island flicker and disappear. A click opens the card; leaving it closes.
+    // island flicker and disappear. A click opens the card; after the pointer
+    // leaves, the card waits 15 seconds before folding back to the pill.
+    island.addEventListener("mouseenter", function () {
+      stopAutoCollapse();
+    });
     island.addEventListener("mouseleave", function () {
       if (!expanded) return;
-      window.setTimeout(function () {
-        if (!expanded || Date.now() < resizeGuardUntil) return;
-        if (!island.matches(":hover")) setExpanded(false);
-      }, 380);
+      var check = function () {
+        if (!expanded) return;
+        if (animating || Date.now() < resizeGuardUntil) {
+          window.setTimeout(check, 300);
+          return;
+        }
+        if (island.matches(":hover")) return;
+        scheduleAutoCollapse();
+      };
+      // Ignore the mouseleave that the native resize itself can emit.
+      check();
     });
     island.addEventListener("click", function (event) {
       if (!expanded && !event.target.closest("[data-act]")) setExpanded(true);

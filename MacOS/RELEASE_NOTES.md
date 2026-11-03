@@ -1,4 +1,20 @@
-# Melon Tools 5.5.6
+# Melon Tools 5.5.7
+
+Windows island interaction and compact-metrics fix.
+
+- **Compact metrics.** The pill now shows the 5-hour pool total, the weekly
+  pool total, the number of connected Codex accounts, and the API status dot,
+  in that order. The dot is green while the gateway is running.
+- **Click opens; no hover resize.** The compact island stays put on hover. A
+  click expands the card with one native resize and the existing fade.
+- **15-second auto-fold.** After the pointer leaves the open card it folds back
+  after 15 seconds; returning cancels the timer. Escape closes it immediately.
+- **No tween loop.** Tweening `set_size`/`set_position` on Windows emitted
+  mouseleave events and made the card collapse and jump; the resize is now a
+  single call.
+- **Build metadata.** macOS build 54 and Windows 5.5.7.
+
+## 5.5.6
 
 Island shape and interaction fix.
 

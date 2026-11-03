@@ -16,7 +16,14 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 5.5.6
+## What's new in 5.5.7
+
+- **Build metadata.** macOS build 54; version metadata is aligned at 5.5.7.
+- The island silhouette is unchanged from 5.5.6: flush top, 18 pt bottom
+  corners.
+
+## Earlier: 5.5.6
+
 
 - **One silhouette.** The card is flush with the top edge and rounded only at
   the bottom, matching the Windows island.

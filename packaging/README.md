@@ -18,21 +18,21 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 5.5.6
+## Release artifacts for 5.5.7
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.5.6.dmg` | `36352df6119aafa1dce2222c4e133daf4e740e62f401b28e6cee976787a4ada2` |
-| Windows installer | `MelonTools-5.5.6-setup.exe` | `2fae5686c80aa1c90a65b155fbe8c6d67f6992f705a7a3a4a1d19772b0cfb7b6` |
-| Windows portable | `MelonTools-5.5.6-win-x64-portable.exe` | `b006365160f2aff1ab251c62930e50044e5c069222fd44a76966345b5d1733e0` |
+| macOS DMG | `MelonTools-5.5.7.dmg` | `99b2ec4ee42a34ede401ecf4b96f26b51d1d401b64ddb484f72a833a5f43c849` |
+| Windows installer | `MelonTools-5.5.7-setup.exe` | `dd9e88c3684f11c758842ea463ea17eb82d31c7d636843d16abfd0cdbaf73e7c` |
+| Windows portable | `MelonTools-5.5.7-win-x64-portable.exe` | `5f366f7c40affe43ca2df0b27b590d811db364eccc4bcdc3a7068e6dbe93c5a9` |
 
-5.5.6 gives both apps the same island silhouette (flush top, rounded bottom),
-makes the Windows card open on click instead of hover, and keeps the
-side-by-side layout on displays without a notch. It also carries the background
-polling and window-handling fixes from 5.5.5.
+5.5.7 adds the Windows compact metrics (5-hour total, weekly total, Codex
+account count, API status dot) and a 15-second auto-fold after the pointer
+leaves the open card. A click expands the card without the tween that caused
+the resize loop. The macOS build keeps the 5.5.6 silhouette at build 54.
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v5.5.6`.
+tag `v5.5.7`.
 
 ## Release artifacts for 5.0.0 (previous release)
 

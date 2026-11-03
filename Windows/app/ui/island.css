@@ -31,8 +31,19 @@ body {
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 0 12px;
+  cursor: pointer;
+}
+
+.metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.compact .dot {
+  margin-left: auto;
 }
 
 .expanded { display: none; }
@@ -66,15 +77,6 @@ body.expanded .expanded {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.96);
-}
-
-.due {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 9px;
-  font-weight: 600;
-  color: #f59e0b;
 }
 
 .grow { flex: 1 1 auto; }
@@ -298,7 +300,7 @@ body.expanded .expanded {
 
 
 /* Expand / collapse: the window is tweened in JS, and the card fades and
-   lifts a few pixels to hide the first and last frame. */
+   lifts a few pixels so the size change reads as one motion. */
 body.expanded .expanded {
   animation: island-open 0.18s ease-out both;
 }

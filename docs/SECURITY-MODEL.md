@@ -1,7 +1,7 @@
 # Security model
 
 This document describes what Melon Tools protects, what it does not protect,
-and where trust is anchored. It covers the 5.5.6 macOS and Windows builds.
+and where trust is anchored. It covers the 5.5.7 macOS and Windows builds.
 
 ## Design summary
 
@@ -15,7 +15,7 @@ and where trust is anchored. It covers the 5.5.6 macOS and Windows builds.
   Gateway) and to GitHub for updates.
 - **Verified updates.** The updater accepts HTTPS GitHub hosts only and checks
   the downloaded file's SHA-256 before installing it.
-- **Signing is not yet available.** The 5.5.6 builds are ad-hoc signed (macOS) and the Windows exe/installer are unsigned. This is a distribution-integrity gap, not a runtime
+- **Signing is not yet available.** The 5.5.7 builds are ad-hoc signed (macOS) and the Windows exe/installer are unsigned. This is a distribution-integrity gap, not a runtime
   vulnerability; see [Signing and notarization](#signing-and-notarization).
 
 ## Data at rest
