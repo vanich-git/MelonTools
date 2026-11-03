@@ -1677,6 +1677,7 @@ function settingsPage() {
   <div class="card">
     <h2>${t("statusIsland")}</h2>
     <label class="card-toggle"><input type="checkbox" ${settings.islandVisible !== false ? "checked" : ""} data-action="islandToggle" data-on="change"> ${t("showStatusIsland")}</label>
+    <div class="footnote" style="margin:2px 0 0">${t("islandVisibleHint")}</div>
     <label class="field" style="margin-top:10px">${t("islandAutoCollapse")}
       <select data-action="islandAutoCollapse" data-on="change">
         <option value="0" ${islandAutoCollapse === 0 ? "selected" : ""}>${t("islandAutoCollapseOff")}</option>

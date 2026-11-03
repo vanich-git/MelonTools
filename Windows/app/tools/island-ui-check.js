@@ -65,7 +65,7 @@ for (const mode of ["compact", "expanded", "reenter"]) {
     {encoding:'utf8',timeout:45000,maxBuffer:4*1024*1024});
   const result=run.stdout?.match(/<pre id="result">([\s\S]*?)<\/pre>/);
   const errors=result?JSON.parse(result[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')):['browser test did not finish: '+run.stderr];
-  console.log(mode+': '+(errors.length?errors.join('; '):'PASS (computed styles, rendered bounds, IPC, timer)'));
+  console.log(mode+': '+(errors.length?errors.join('; '):'PASS (computed styles, rendered bounds, IPC)'));
   failed ||= run.status!==0||errors.length>0;
 }
 console.log('Browser fixtures: '+dir);

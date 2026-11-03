@@ -8,9 +8,9 @@ Windows expansion reliability fix.
 - **CSS collision fixed.** `.expanded` also matched `<body>`, hiding the whole
   panel document. The body state is now `island-open`, and the hide rule is
   scoped to `.island > .expanded`.
-- **Configurable auto-fold.** The Windows Settings page offers Off / 5 / 10 /
-  15 / 20 seconds for the large card; the default is 15. Off keeps it open
-  until the × button.
+- **Configurable auto-fold.** The Windows Settings page offers Immediately / 5 /
+  10 / 15 / 20 seconds for the large card; the default is 15. Immediately
+  folds it as soon as the pointer leaves; × closes it at any time.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.
 
 ## 5.5.7

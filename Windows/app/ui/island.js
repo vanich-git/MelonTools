@@ -184,40 +184,11 @@
     }
   }
 
-  var autoCollapseTimer = null;
-  var autoCollapseMs = 15000;
-
-  function stopAutoCollapse() {
-    if (autoCollapseTimer) {
-      window.clearTimeout(autoCollapseTimer);
-      autoCollapseTimer = null;
-    }
-  }
-
   function collapsePanel() {
-    stopAutoCollapse();
     if (api && api.available) {
       api.invoke("island_collapse").catch(function () {
         // The panel is already closing.
       });
-    }
-  }
-
-  function scheduleAutoCollapse() {
-    stopAutoCollapse();
-    if (autoCollapseMs <= 0) return;
-    autoCollapseTimer = window.setTimeout(collapsePanel, autoCollapseMs);
-  }
-
-  function applyAutoCollapseSetting(seconds) {
-    var next = Number(seconds);
-    if ([0, 5, 10, 15, 20].indexOf(next) < 0) next = 15;
-    if (next === autoCollapseMs) return;
-    var pending = !!autoCollapseTimer;
-    autoCollapseMs = next * 1000;
-    if (pending) {
-      if (autoCollapseMs > 0) scheduleAutoCollapse();
-      else stopAutoCollapse();
     }
   }
 
@@ -228,7 +199,6 @@
       .invoke("island_snapshot")
       .then(function (data) {
         snap = data;
-        applyAutoCollapseSetting(data.islandAutoCollapseSeconds);
         render();
       })
       .catch(function () {
@@ -244,8 +214,6 @@
     var island = $("island");
     if (mode === "expanded") {
       document.body.classList.add("island-open");
-      island.addEventListener("mouseenter", stopAutoCollapse);
-      island.addEventListener("mouseleave", scheduleAutoCollapse);
       document.addEventListener("keydown", function (event) {
         if (event.key === "Escape") collapsePanel();
       });

@@ -33,6 +33,7 @@ mod vault;
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
@@ -51,6 +52,8 @@ pub struct AppState {
     /// without this each poll re-reads the vault and parses the full scheduler
     /// history.
     pub island: Mutex<Option<(Instant, Value)>>,
+    /// Generation counter for the pointer watcher that folds the panel.
+    pub island_watch: AtomicU64,
 }
 
 /// Keeps the local engine alive: after we started (or adopted) the gateway,
@@ -2097,6 +2100,77 @@ fn island_resize(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), S
     place_island(&app, width, height).map_err(|error| error.to_string())
 }
 
+fn island_watch_token(app: &tauri::AppHandle) -> u64 {
+    app.state::<AppState>()
+        .island_watch
+        .fetch_add(1, Ordering::SeqCst)
+        + 1
+}
+
+fn collapse_island(app: &tauri::AppHandle) -> Result<(), String> {
+    island_watch_token(app);
+    if !app.state::<AppState>().settings().island_visible {
+        return Ok(());
+    }
+    let compact = app
+        .get_webview_window("island")
+        .or_else(|| build_island_window(app))
+        .ok_or_else(|| "island window unavailable".to_string())?;
+    place_island(app, ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT).map_err(|error| error.to_string())?;
+    compact.show().map_err(|error| error.to_string())?;
+    if let Some(panel) = app.get_webview_window("island-panel") {
+        let _ = panel.hide();
+    }
+    Ok(())
+}
+
+/// Poll the real cursor rather than trusting WebView mouseleave. The panel is
+/// a separate no-activate window, so a missed DOM leave event would otherwise
+/// leave it open forever.
+fn watch_island_pointer(app: tauri::AppHandle, token: u64) {
+    tauri::async_runtime::spawn(async move {
+        let mut outside_since: Option<Instant> = None;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let state = app.state::<AppState>();
+            if state.island_watch.load(Ordering::SeqCst) != token {
+                break;
+            }
+            let settings = state.settings();
+            if !settings.island_visible {
+                break;
+            }
+            let Some(panel) = app.get_webview_window("island-panel") else {
+                break;
+            };
+            if !panel.is_visible().unwrap_or(false) {
+                break;
+            }
+            let (Ok(position), Ok(size), Ok(cursor)) = (
+                panel.outer_position(),
+                panel.inner_size(),
+                app.cursor_position(),
+            ) else {
+                break;
+            };
+            let inside = cursor.x >= position.x as f64
+                && cursor.x < (position.x + size.width as i32) as f64
+                && cursor.y >= position.y as f64
+                && cursor.y < (position.y + size.height as i32) as f64;
+            if inside {
+                outside_since = None;
+                continue;
+            }
+            let since = *outside_since.get_or_insert_with(Instant::now);
+            let limit = settings.island_auto_collapse_seconds;
+            if limit == 0 || since.elapsed() >= Duration::from_secs(limit as u64) {
+                let _ = collapse_island(&app);
+                break;
+            }
+        }
+    });
+}
+
 #[tauri::command]
 fn island_expand(app: tauri::AppHandle) -> Result<(), String> {
     if !app.state::<AppState>().settings().island_visible {
@@ -2120,24 +2194,14 @@ fn island_expand(app: tauri::AppHandle) -> Result<(), String> {
     let _ = panel.set_focusable(false);
     panel.show().map_err(|error| error.to_string())?;
     let _ = compact.hide();
+    let token = island_watch_token(&app);
+    watch_island_pointer(app.clone(), token);
     Ok(())
 }
 
 #[tauri::command]
 fn island_collapse(app: tauri::AppHandle) -> Result<(), String> {
-    if !app.state::<AppState>().settings().island_visible {
-        return Ok(());
-    }
-    let compact = app
-        .get_webview_window("island")
-        .or_else(|| build_island_window(&app))
-        .ok_or_else(|| "island window unavailable".to_string())?;
-    place_island(&app, ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT).map_err(|error| error.to_string())?;
-    compact.show().map_err(|error| error.to_string())?;
-    if let Some(panel) = app.get_webview_window("island-panel") {
-        let _ = panel.hide();
-    }
-    Ok(())
+    collapse_island(&app)
 }
 
 #[tauri::command]
@@ -2232,6 +2296,7 @@ fn main() {
             watchdog: Mutex::new(Watchdog::default()),
             update: Mutex::new(None),
             island: Mutex::new(None),
+            island_watch: AtomicU64::new(0),
         })
         .setup(move |app| {
             // System tray: window, scheduler navigation, run-next, API
