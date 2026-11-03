@@ -1893,12 +1893,17 @@ fn place_island(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Resul
     let Some(window) = app.get_webview_window("island") else {
         return Ok(());
     };
-    let Some(monitor) = app.primary_monitor()? else {
+    // Resize first. If no monitor is available, the window still expands at
+    // its current position instead of silently staying compact.
+    window.set_size(tauri::LogicalSize::new(width, height))?;
+    let monitor = app
+        .primary_monitor()?
+        .or_else(|| window.current_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
         return Ok(());
     };
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
-    window.set_size(tauri::LogicalSize::new(width, height))?;
     let pixel_width = (width * scale).round() as i32;
     let max_x = area.position.x + area.size.width as i32 - pixel_width;
     let x = (area.position.x + (area.size.width as i32 - pixel_width) / 2)

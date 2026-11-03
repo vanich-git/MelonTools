@@ -1,6 +1,6 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **5.5.7**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **5.5.8**.
 
 Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
@@ -11,12 +11,22 @@ SmartScreen может показать «Windows protected your PC» и не з
 файлом; в PowerShell проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-5.5.7-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-5.5.8-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
 
-## Что нового в 5.5.7
+## Что нового в 5.5.8
+
+- **Надёжное раскрытие.** Один запрос размера 420×242 плюс один страховочный
+  повтор вместо tween из 26 кадров. Большой островок больше не должен
+  оставаться за кадром WebView2.
+- **Автосворачивание** через 15 секунд после ухода указателя, возврат
+  отменяет таймер, Escape закрывает сразу.
+- **Сборка.** Windows 5.5.8.
+
+## Ранее: 5.5.7
+
 
 - **Метрики в компактной пилюле.** Слева 5-часовой итог, правее недельный,
   затем число аккаунтов Codex и зелёный индикатор API.
@@ -224,7 +234,7 @@ brew install lld llvm
 cd Windows/app/src-tauri
 cargo build --release --locked
 cd ../..
-makensis /DVERSION=5.5.7 /DSOURCE_EXE=..\dist\MelonTools-5.5.7-win-x64-portable.exe installer\MelonTools.nsi
+makensis /DVERSION=5.5.8 /DSOURCE_EXE=..\dist\MelonTools-5.5.8-win-x64-portable.exe installer\MelonTools.nsi
 ```
 
 `cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий

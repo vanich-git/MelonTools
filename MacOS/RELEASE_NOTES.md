@@ -1,4 +1,16 @@
-# Melon Tools 5.5.7
+# Melon Tools 5.5.8
+
+Windows expansion reliability fix.
+
+- **No 26-frame resize tween.** Expanding now requests 420×242 once and repeats
+  the same request after 120 ms as a safety retry. The tween was queuing dozens
+  of `set_size`/`set_position` messages while WebView2 was swapping surfaces,
+  which left the window compact and then folded it back after the 15 s timer.
+- **15-second auto-fold.** Leaving the open card starts the timer, returning
+  cancels it, Escape closes immediately.
+- **Build metadata.** macOS build 55 and Windows 5.5.8.
+
+## 5.5.7
 
 Windows island interaction and compact-metrics fix.
 

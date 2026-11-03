@@ -175,62 +175,23 @@
     if (apiButton) apiButton.disabled = false;
   }
 
-  var currentWidth = 185;
-  var currentHeight = 30;
-  var resizeFrame = null;
-  var animating = false;
-
-  function applySize(width, height) {
+  function resize(next) {
     if (!api || !api.available) return;
-    api
-      .invoke("island_resize", {
-        width: Math.round(width),
-        height: Math.round(height)
-      })
-      .catch(function () {
-        // The window may be going away; a missed resize is not an error.
-      });
-  }
-
-  function resize(next, animate) {
-    var toWidth = next ? 420 : 185;
-    var toHeight = next ? 242 : 30;
-    if (resizeFrame) {
-      window.clearTimeout(resizeFrame);
-      resizeFrame = null;
-    }
-    if (!animate) {
-      currentWidth = toWidth;
-      currentHeight = toHeight;
-      animating = false;
-      applySize(toWidth, toHeight);
-      return;
-    }
-    var fromWidth = currentWidth;
-    var fromHeight = currentHeight;
-    var started = performance.now();
-    var duration = next ? 220 : 180;
-    animating = true;
-    function frame(now) {
-      var t = Math.min(1, (now - started) / duration);
-      var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      currentWidth = fromWidth + (toWidth - fromWidth) * eased;
-      currentHeight = fromHeight + (toHeight - fromHeight) * eased;
-      applySize(currentWidth, currentHeight);
-      if (t < 1) {
-        resizeFrame = window.setTimeout(function () {
-          frame(performance.now());
-        }, 16);
-      } else {
-        resizeFrame = null;
-        currentWidth = toWidth;
-        currentHeight = toHeight;
-        animating = false;
-      }
-    }
-    resizeFrame = window.setTimeout(function () {
-      frame(performance.now());
-    }, 16);
+    var width = next ? 420 : 185;
+    var height = next ? 242 : 30;
+    var send = function () {
+      api
+        .invoke("island_resize", { width: width, height: height })
+        .catch(function () {
+          // The window may be going away; a missed resize is not an error.
+        });
+    };
+    send();
+    // A single resize can be missed while WebView2 is swapping surfaces.
+    // Re-apply the same size once, without animating the native window.
+    window.setTimeout(function () {
+      if (expanded === next) send();
+    }, 120);
   }
 
   var collapseTimer = null;
@@ -264,14 +225,14 @@
       document.body.classList.remove("closing");
       document.body.classList.add("expanded");
       resizeGuardUntil = Date.now() + 400;
-      resize(true, true);
+      resize(true);
     } else {
       stopAutoCollapse();
       document.body.classList.add("closing");
       collapseTimer = window.setTimeout(function () {
         collapseTimer = null;
         document.body.classList.remove("expanded", "closing");
-        resize(false, true);
+        resize(false);
       }, 150);
     }
     render();
@@ -307,7 +268,7 @@
       if (!expanded) return;
       var check = function () {
         if (!expanded) return;
-        if (animating || Date.now() < resizeGuardUntil) {
+        if (Date.now() < resizeGuardUntil) {
           window.setTimeout(check, 300);
           return;
         }

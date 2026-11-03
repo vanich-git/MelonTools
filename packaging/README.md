@@ -18,21 +18,22 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 5.5.7
+## Release artifacts for 5.5.8
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.5.7.dmg` | `99b2ec4ee42a34ede401ecf4b96f26b51d1d401b64ddb484f72a833a5f43c849` |
-| Windows installer | `MelonTools-5.5.7-setup.exe` | `dd9e88c3684f11c758842ea463ea17eb82d31c7d636843d16abfd0cdbaf73e7c` |
-| Windows portable | `MelonTools-5.5.7-win-x64-portable.exe` | `5f366f7c40affe43ca2df0b27b590d811db364eccc4bcdc3a7068e6dbe93c5a9` |
+| macOS DMG | `MelonTools-5.5.8.dmg` | `9567211bedb1b714bae44ad6d3df3fffb9271dbbc09d74275384575359b50bc4` |
+| Windows installer | `MelonTools-5.5.8-setup.exe` | `c2f432b5e0c99fe20dfb7852809284ac0a514a9ebe7648d151ef655dc1bdf030` |
+| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `be6ccb976d681ab03b696a0f2a38ac008828cd0b75c61f256dd9e7ae8ea800ea` |
 
-5.5.7 adds the Windows compact metrics (5-hour total, weekly total, Codex
-account count, API status dot) and a 15-second auto-fold after the pointer
-leaves the open card. A click expands the card without the tween that caused
-the resize loop. The macOS build keeps the 5.5.6 silhouette at build 54.
+5.5.8 makes Windows expansion reliable: one 420×242 resize plus a safety
+retry instead of a 26-frame tween, with the size applied before the monitor
+lookup. The compact line shows the 5-hour total, weekly total, Codex account
+count and API dot, and the card folds back 15 seconds after the pointer leaves.
+The macOS build keeps the 5.5.6 silhouette at build 55.
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v5.5.7`.
+tag `v5.5.8`.
 
 ## Release artifacts for 5.0.0 (previous release)
 

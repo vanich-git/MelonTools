@@ -299,8 +299,8 @@ body.expanded .expanded {
 .schedule .ico { width: 11px; height: 11px; display: inline-flex; color: rgba(255, 255, 255, 0.62); }
 
 
-/* Expand / collapse: the window is tweened in JS, and the card fades and
-   lifts a few pixels so the size change reads as one motion. */
+/* Expand / collapse: the native window resizes once (with one safety retry),
+   and the card fades and lifts a few pixels so the change reads as one motion. */
 body.expanded .expanded {
   animation: island-open 0.18s ease-out both;
 }

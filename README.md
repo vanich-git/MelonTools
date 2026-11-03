@@ -78,7 +78,14 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.5.7
+## What's new in 5.5.8
+
+- **Windows opens reliably.** Expanding no longer queues a 26-frame window tween; the card asks for one expanded size and repeats it once as a safety retry. This fixes the card staying compact (or vanishing) while the WebView2 surface catches up.
+- **15-second auto-fold** is unchanged: leaving the open card starts the timer, returning cancels it, Escape closes immediately.
+- **Build metadata.** macOS build 55 and Windows 5.5.8.
+
+## Earlier: 5.5.7
+
 
 - **Windows compact metrics.** The pill now reads 5-hour total, weekly total, the number of connected Codex accounts, then the green API-status dot.
 - **Windows click-to-open is stable.** A click expands the card in one native resize with a fade, instead of tweening the window; this removes the collapse/jump loop.
