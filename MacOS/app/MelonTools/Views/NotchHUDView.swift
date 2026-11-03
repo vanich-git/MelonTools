@@ -65,15 +65,15 @@ struct NotchHUDView: View {
     /// The island grows out of the top edge: its top corners are square when
     /// it hangs from a notch (or from the very top of a display without one).
     private var cardShape: AnyShape {
-        let topRadius: CGFloat = (model.isExpanded || model.topInset > 0) ? 0 : 18
-        // A single bottom radius keeps the shape animation smooth; changing it
-        // between compact and expanded made the corners snap.
-        return AnyShape(
+        // Same silhouette in both states: flush with the top edge, rounded at
+        // the bottom. This matches the Windows island and avoids a radius
+        // animation that used to snap when the card changed size.
+        AnyShape(
             UnevenRoundedRectangle(
-                topLeadingRadius: topRadius,
+                topLeadingRadius: 0,
                 bottomLeadingRadius: 18,
                 bottomTrailingRadius: 18,
-                topTrailingRadius: topRadius,
+                topTrailingRadius: 0,
                 style: .continuous
             )
         )

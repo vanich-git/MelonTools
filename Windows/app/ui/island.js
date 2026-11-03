@@ -170,19 +170,58 @@
     if (apiButton) apiButton.disabled = false;
   }
 
-  function resize(next) {
+  var currentWidth = 185;
+  var currentHeight = 30;
+  var resizeFrame = null;
+
+  function applySize(width, height) {
     if (!api || !api.available) return;
     api
       .invoke("island_resize", {
-        width: next ? 420 : 185,
-        height: next ? 242 : 30
+        width: Math.round(width),
+        height: Math.round(height)
       })
       .catch(function () {
         // The window may be going away; a missed resize is not an error.
       });
   }
 
+  function resize(next, animate) {
+    var toWidth = next ? 420 : 185;
+    var toHeight = next ? 242 : 30;
+    if (resizeFrame) {
+      window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = null;
+    }
+    if (!animate) {
+      currentWidth = toWidth;
+      currentHeight = toHeight;
+      applySize(toWidth, toHeight);
+      return;
+    }
+    var fromWidth = currentWidth;
+    var fromHeight = currentHeight;
+    var started = performance.now();
+    var duration = next ? 220 : 180;
+    function frame(now) {
+      var t = Math.min(1, (now - started) / duration);
+      var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      currentWidth = fromWidth + (toWidth - fromWidth) * eased;
+      currentHeight = fromHeight + (toHeight - fromHeight) * eased;
+      applySize(currentWidth, currentHeight);
+      if (t < 1) {
+        resizeFrame = window.requestAnimationFrame(frame);
+      } else {
+        resizeFrame = null;
+        currentWidth = toWidth;
+        currentHeight = toHeight;
+      }
+    }
+    resizeFrame = window.requestAnimationFrame(frame);
+  }
+
   var collapseTimer = null;
+  var resizeGuardUntil = 0;
 
   function setExpanded(next) {
     if (expanded === next) return;
@@ -194,13 +233,14 @@
       }
       document.body.classList.remove("closing");
       document.body.classList.add("expanded");
-      resize(true);
+      resizeGuardUntil = Date.now() + 350;
+      resize(true, true);
     } else {
       document.body.classList.add("closing");
       collapseTimer = window.setTimeout(function () {
         collapseTimer = null;
         document.body.classList.remove("expanded", "closing");
-        resize(false);
+        resize(false, true);
       }, 150);
     }
     render();
@@ -226,16 +266,21 @@
   function bind() {
     if (!api || !api.available) return;
     var island = $("island");
-    island.addEventListener("mouseenter", function () {
-      setExpanded(true);
-    });
+    // Hover must not resize the window: on Windows that makes the compact
+    // island flicker and disappear. A click opens the card; leaving it closes.
     island.addEventListener("mouseleave", function () {
+      if (!expanded) return;
       window.setTimeout(function () {
+        if (!expanded || Date.now() < resizeGuardUntil) return;
         if (!island.matches(":hover")) setExpanded(false);
       }, 380);
     });
     island.addEventListener("click", function (event) {
       if (!expanded && !event.target.closest("[data-act]")) setExpanded(true);
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && expanded) setExpanded(false);
     });
 
     Array.prototype.forEach.call(document.querySelectorAll("[data-act]"), function (button) {

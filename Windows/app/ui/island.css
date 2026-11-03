@@ -22,7 +22,7 @@ body {
   background:
     radial-gradient(120% 80% at 50% -20%, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0) 60%),
     linear-gradient(180deg, #000000 0%, #0b0b0e 42%, #121218 100%);
-  border-radius: 14px;
+  border-radius: 0 0 18px 18px;
   overflow: hidden;
   position: relative;
 }
@@ -37,7 +37,6 @@ body {
 
 .expanded { display: none; }
 
-body.expanded .island { border-radius: 18px; }
 body.expanded .compact { display: none; }
 body.expanded .expanded {
   display: flex;
@@ -298,8 +297,8 @@ body.expanded .expanded {
 .schedule .ico { width: 11px; height: 11px; display: inline-flex; color: rgba(255, 255, 255, 0.62); }
 
 
-/* Expand / collapse: the native window resizes immediately, so the card
-   itself fades and lifts a few pixels to hide the size change. */
+/* Expand / collapse: the window is tweened in JS, and the card fades and
+   lifts a few pixels to hide the first and last frame. */
 body.expanded .expanded {
   animation: island-open 0.18s ease-out both;
 }

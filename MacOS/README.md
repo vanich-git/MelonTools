@@ -16,7 +16,14 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 5.5.5
+## What's new in 5.5.6
+
+- **One silhouette.** The card is flush with the top edge and rounded only at
+  the bottom, matching the Windows island.
+- **Build metadata.** macOS build 53; version metadata is aligned at 5.5.6.
+
+## Earlier: 5.5.5
+
 
 - **Status island.** A borderless panel at the top of the screen follows the
   camera cut-out. It rests as a compact pill or as one continuous black bar

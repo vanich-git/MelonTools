@@ -18,20 +18,21 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 5.5.5
+## Release artifacts for 5.5.6
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.5.5.dmg` | `920280ccdf2da27ccfc61818f7985cfef15ab48f9371be4be658f3d80e869a88` |
-| Windows installer | `MelonTools-5.5.5-setup.exe` | `f13c05aa1e22d59acfce45eb997367d61702c7830529e2d95da3a36f9f8a68de` |
-| Windows portable | `MelonTools-5.5.5-win-x64-portable.exe` | `eeaf9d42ffca809ecc1a5395ac05ae11aa49f7aa8f577087e6ad1d7031e86da0` |
+| macOS DMG | `MelonTools-5.5.6.dmg` | `36352df6119aafa1dce2222c4e133daf4e740e62f401b28e6cee976787a4ada2` |
+| Windows installer | `MelonTools-5.5.6-setup.exe` | `2fae5686c80aa1c90a65b155fbe8c6d67f6992f705a7a3a4a1d19772b0cfb7b6` |
+| Windows portable | `MelonTools-5.5.6-win-x64-portable.exe` | `b006365160f2aff1ab251c62930e50044e5c069222fd44a76966345b5d1733e0` |
 
-5.5.5 adds the status island to macOS and Windows, fixes the side-by-side
-layout on displays without a notch, and removes the background polling and
-window-handling problems found in the audit.
+5.5.6 gives both apps the same island silhouette (flush top, rounded bottom),
+makes the Windows card open on click instead of hover, and keeps the
+side-by-side layout on displays without a notch. It also carries the background
+polling and window-handling fixes from 5.5.5.
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v5.5.5`.
+tag `v5.5.6`.
 
 ## Release artifacts for 5.0.0 (previous release)
 

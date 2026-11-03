@@ -1,6 +1,6 @@
 # Melon Tools for Windows
 
-Порт приложения на **Tauri 2** (Rust + WebView2). Версия **5.5.5**.
+Порт приложения на **Tauri 2** (Rust + WebView2). Версия **5.5.6**.
 
 Готовый **установщик** (с выбором папки) и портативный **Windows x64** доступны в [последнем релизе](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe) — или обновитесь прямо из приложения: сайдбар → **«Обновить»**.
 Скачайте и запустите `.exe`; это приложение, не установщик. Для запуска нужен
@@ -11,12 +11,22 @@ SmartScreen может показать «Windows protected your PC» и не з
 файлом; в PowerShell проверьте его командой:
 
 ```powershell
-Get-FileHash .\MelonTools-5.5.5-win-x64-portable.exe -Algorithm SHA256
+Get-FileHash .\MelonTools-5.5.6-win-x64-portable.exe -Algorithm SHA256
 ```
 
 Исходники и инструкции по сборке приведены ниже.
 
-## Что нового в 5.5.5
+## Что нового в 5.5.6
+
+- **Та же форма, что на macOS.** Верхний край прилегает к экрану, скруглены
+  только нижние углы.
+- **Клик вместо наведения.** Наведение больше не resize'ит окно и не роняет
+  островок; клик раскрывает карточку с плавной анимацией, уход указателя или
+  Escape сворачивают её.
+- **Сборка.** Windows 5.5.6.
+
+## Ранее: 5.5.5
+
 
 - **Статусный островок.** Прозрачное окно поверх всех окон у верхнего края:
   компактная пилюля с часовой квотой, при наведении — карточка с пулом Codex,
@@ -203,7 +213,7 @@ brew install lld llvm
 cd Windows/app/src-tauri
 cargo build --release --locked
 cd ../..
-makensis /DVERSION=5.5.5 /DSOURCE_EXE=..\dist\MelonTools-5.5.5-win-x64-portable.exe installer\MelonTools.nsi
+makensis /DVERSION=5.5.6 /DSOURCE_EXE=..\dist\MelonTools-5.5.6-win-x64-portable.exe installer\MelonTools.nsi
 ```
 
 `cargo tauri build` **не используется**: установщик — рукописный NSIS-сценарий

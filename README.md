@@ -78,7 +78,14 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.5.5
+## What's new in 5.5.6
+
+- **One silhouette.** The island is flush with the top edge and rounded only at the bottom in both apps; Windows no longer rounds the top corners.
+- **Windows opens on click.** Hover no longer resizes the compact island or makes it disappear. A click expands it with a 220 ms tween; moving the pointer away or pressing Escape collapses it.
+- **Build metadata.** macOS build 53 and Windows 5.5.6.
+
+## Earlier: 5.5.5
+
 
 - **Status island.** A borderless panel at the top of the screen follows the camera cut-out on macOS and the top centre on Windows. It rests as a compact pill (or as one continuous black bar with 5-hour and weekly totals beside the cut-out) and opens on hover into a status card with the Codex pool, Antigravity, providers, the scheduler and Open / Pause API / Run actions.
 - **Island correctness.** The side-by-side layout stays visible on displays without a notch, the island follows language changes, "Open" unminimises the main window, and Start/Run no longer share the same Russian label.

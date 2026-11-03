@@ -1,4 +1,17 @@
-# Melon Tools 5.5.5
+# Melon Tools 5.5.6
+
+Island shape and interaction fix.
+
+- **One silhouette.** Both apps now render the island flush with the top edge
+  with only the bottom corners rounded (18 pt). Windows no longer rounds the
+  top corners, which made the compact pill look detached from the screen edge.
+- **Windows opens on click.** Hovering the compact island no longer resizes the
+  native window, which caused a mouseleave/resize loop and made the island
+  flicker or disappear. A click expands it with a 220 ms size tween and the
+  existing content fade; leaving the card or pressing Escape collapses it.
+- **Build metadata.** macOS build 53 and Windows 5.5.6.
+
+## 5.5.5
 
 Status island release: the macOS and Windows apps now share a compact
 top-of-screen HUD, and the audit findings around pointer tracking, polling and
