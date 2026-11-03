@@ -174,18 +174,7 @@ async fn settings_set(
     if old.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
     }
-    if merged.island_visible {
-        if let Some(window) = app
-            .get_webview_window("island")
-            .or_else(|| build_island_window(&app))
-        {
-            let _ = window.emit("island-visibility", true);
-            let _ = window.show();
-        }
-    } else if let Some(window) = app.get_webview_window("island") {
-        let _ = window.emit("island-visibility", false);
-        let _ = window.hide();
-    }
+    set_island_visible(&app, merged.island_visible);
     if was_running && old.port != merged.port {
         let _ = stop_gateway(state.inner()).await;
         let _ = start_gateway(state.inner()).await;
@@ -1886,15 +1875,15 @@ fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 /// and only widens when it opens.
 const ISLAND_WIDTH: f64 = 185.0;
 const ISLAND_COMPACT_HEIGHT: f64 = 30.0;
+const ISLAND_PANEL_WIDTH: f64 = 420.0;
+const ISLAND_PANEL_HEIGHT: f64 = 242.0;
 
-/// Centres the island on the primary monitor, flush with the top of its work
-/// area, and applies the requested logical size.
-fn place_island(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window("island") else {
+/// Centres one island window on the primary monitor, flush with the top of its
+/// work area, and applies the requested logical size.
+fn place_window(app: &tauri::AppHandle, label: &str, width: f64, height: f64) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(label) else {
         return Ok(());
     };
-    // Resize first. If no monitor is available, the window still expands at
-    // its current position instead of silently staying compact.
     window.set_size(tauri::LogicalSize::new(width, height))?;
     let monitor = app
         .primary_monitor()?
@@ -1910,6 +1899,10 @@ fn place_island(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Resul
         .clamp(area.position.x, max_x.max(area.position.x));
     window.set_position(tauri::PhysicalPosition::new(x, area.position.y))?;
     Ok(())
+}
+
+fn place_island(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Result<()> {
+    place_window(app, "island", width, height)
 }
 
 fn build_island_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -1941,6 +1934,70 @@ fn build_island_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     let _ = window.set_focusable(false);
     let _ = place_island(app, ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT);
     Some(window)
+}
+
+/// The expanded card is a second, already-sized window. Showing it never
+/// depends on WebView2 resizing its surface.
+fn build_island_panel(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "island-panel",
+        tauri::WebviewUrl::App("island.html".into()),
+    )
+    .title("Melon HUD Panel")
+    .inner_size(ISLAND_PANEL_WIDTH, ISLAND_PANEL_HEIGHT)
+    .initialization_script("window.__melonMode = 'expanded';")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .resizable(false)
+    .visible(false)
+    .build();
+    let window = match window {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("island panel window: {error}");
+            return None;
+        }
+    };
+    let _ = window.set_focusable(false);
+    let _ = place_window(app, "island-panel", ISLAND_PANEL_WIDTH, ISLAND_PANEL_HEIGHT);
+    Some(window)
+}
+
+fn emit_island_visibility(app: &tauri::AppHandle, visible: bool) {
+    for label in ["island", "island-panel"] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.emit("island-visibility", visible);
+        }
+    }
+}
+
+fn set_island_visible(app: &tauri::AppHandle, visible: bool) {
+    if visible {
+        if let Some(compact) = app
+            .get_webview_window("island")
+            .or_else(|| build_island_window(app))
+        {
+            let _ = compact.show();
+        }
+        if app.get_webview_window("island-panel").is_none() {
+            let _ = build_island_panel(app);
+        }
+        if let Some(panel) = app.get_webview_window("island-panel") {
+            let _ = panel.hide();
+        }
+    } else {
+        for label in ["island", "island-panel"] {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.hide();
+            }
+        }
+    }
+    emit_island_visibility(app, visible);
 }
 
 /// Every upstream the gateway can use, matching the dashboard's count.
@@ -2031,14 +2088,59 @@ fn island_resize(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), S
 }
 
 #[tauri::command]
-fn island_reposition(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("island") else {
+fn island_expand(app: tauri::AppHandle) -> Result<(), String> {
+    if !app.state::<AppState>().settings().island_visible {
         return Ok(());
-    };
-    let size = window.inner_size().map_err(|error| error.to_string())?;
-    let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    let logical = size.to_logical::<f64>(scale);
-    place_island(&app, logical.width, logical.height).map_err(|error| error.to_string())
+    }
+    let compact = app
+        .get_webview_window("island")
+        .or_else(|| build_island_window(&app))
+        .ok_or_else(|| "island window unavailable".to_string())?;
+    let panel = app
+        .get_webview_window("island-panel")
+        .or_else(|| build_island_panel(&app))
+        .ok_or_else(|| "island panel unavailable".to_string())?;
+    place_window(
+        &app,
+        "island-panel",
+        ISLAND_PANEL_WIDTH,
+        ISLAND_PANEL_HEIGHT,
+    )
+    .map_err(|error| error.to_string())?;
+    let _ = panel.set_focusable(false);
+    panel.show().map_err(|error| error.to_string())?;
+    let _ = compact.hide();
+    Ok(())
+}
+
+#[tauri::command]
+fn island_collapse(app: tauri::AppHandle) -> Result<(), String> {
+    if !app.state::<AppState>().settings().island_visible {
+        return Ok(());
+    }
+    let compact = app
+        .get_webview_window("island")
+        .or_else(|| build_island_window(&app))
+        .ok_or_else(|| "island window unavailable".to_string())?;
+    place_island(&app, ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT).map_err(|error| error.to_string())?;
+    compact.show().map_err(|error| error.to_string())?;
+    if let Some(panel) = app.get_webview_window("island-panel") {
+        let _ = panel.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn island_reposition(app: tauri::AppHandle) -> Result<(), String> {
+    for (label, width, height) in [
+        ("island", ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT),
+        ("island-panel", ISLAND_PANEL_WIDTH, ISLAND_PANEL_HEIGHT),
+    ] {
+        if app.get_webview_window(label).is_some() {
+            place_window(&app, label, width, height).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2152,9 +2254,9 @@ fn main() {
                 .build(app)?;
 
             if island_visible {
-                if let Some(island) = build_island_window(app.handle()) {
-                    let _ = island.show();
-                }
+                build_island_window(app.handle());
+                build_island_panel(app.handle());
+                set_island_visible(app.handle(), true);
             }
 
             // Auto-start the gateway, point Codex at it, then keep the chips
@@ -2383,6 +2485,8 @@ fn main() {
             open_url,
             island_snapshot,
             island_resize,
+            island_expand,
+            island_collapse,
             island_reposition,
             island_open_main,
             island_toggle_api,

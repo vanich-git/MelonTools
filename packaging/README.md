@@ -23,12 +23,12 @@ does fail the release.
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
 | macOS DMG | `MelonTools-5.5.8.dmg` | `9567211bedb1b714bae44ad6d3df3fffb9271dbbc09d74275384575359b50bc4` |
-| Windows installer | `MelonTools-5.5.8-setup.exe` | `c2f432b5e0c99fe20dfb7852809284ac0a514a9ebe7648d151ef655dc1bdf030` |
-| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `be6ccb976d681ab03b696a0f2a38ac008828cd0b75c61f256dd9e7ae8ea800ea` |
+| Windows installer | `MelonTools-5.5.8-setup.exe` | `a50ceafe2607491c874481c469a13c0ff802184ab9f35cf45706fbd1df643d1c` |
+| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `8130aa40bf576a281a7b47492895bf8e361c93e4c5a217fc0cc89b7d2e68b3ed` |
 
-5.5.8 makes Windows expansion reliable: one 420×242 resize plus a safety
-retry instead of a 26-frame tween, with the size applied before the monitor
-lookup. The compact line shows the 5-hour total, weekly total, Codex account
+5.5.8 makes Windows expansion reliable: the compact pill and the 420×242 card
+are separate native windows, so showing the card never asks WebView2 to resize
+a surface. The compact line shows the 5-hour total, weekly total, Codex account
 count and API dot, and the card folds back 15 seconds after the pointer leaves.
 The macOS build keeps the 5.5.6 silhouette at build 55.
 

@@ -80,7 +80,7 @@ certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 
 ## What's new in 5.5.8
 
-- **Windows opens reliably.** Expanding no longer queues a 26-frame window tween; the card asks for one expanded size and repeats it once as a safety retry. This fixes the card staying compact (or vanishing) while the WebView2 surface catches up.
+- **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved, so the card cannot stay compact or vanish.
 - **15-second auto-fold** is unchanged: leaving the open card starts the timer, returning cancels it, Escape closes immediately.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.
 

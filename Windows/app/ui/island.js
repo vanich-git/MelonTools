@@ -6,7 +6,9 @@
   "use strict";
 
   var api = window.melon;
-  var expanded = false;
+  var mode = window.__melonMode === "expanded" ? "expanded" : "compact";
+  var expanded = mode === "expanded";
+  if (expanded) document.body.classList.add("expanded");
   var snap = null;
   var lang = "ru";
   var active = true;
@@ -175,28 +177,7 @@
     if (apiButton) apiButton.disabled = false;
   }
 
-  function resize(next) {
-    if (!api || !api.available) return;
-    var width = next ? 420 : 185;
-    var height = next ? 242 : 30;
-    var send = function () {
-      api
-        .invoke("island_resize", { width: width, height: height })
-        .catch(function () {
-          // The window may be going away; a missed resize is not an error.
-        });
-    };
-    send();
-    // A single resize can be missed while WebView2 is swapping surfaces.
-    // Re-apply the same size once, without animating the native window.
-    window.setTimeout(function () {
-      if (expanded === next) send();
-    }, 120);
-  }
-
-  var collapseTimer = null;
   var autoCollapseTimer = null;
-  var resizeGuardUntil = 0;
   var AUTO_COLLAPSE_MS = 15000;
 
   function stopAutoCollapse() {
@@ -206,36 +187,18 @@
     }
   }
 
-  function scheduleAutoCollapse() {
+  function collapsePanel() {
     stopAutoCollapse();
-    autoCollapseTimer = window.setTimeout(function () {
-      autoCollapseTimer = null;
-      if (expanded) setExpanded(false);
-    }, AUTO_COLLAPSE_MS);
+    if (api && api.available) {
+      api.invoke("island_collapse").catch(function () {
+        // The panel is already closing.
+      });
+    }
   }
 
-  function setExpanded(next) {
-    if (expanded === next) return;
-    expanded = next;
-    if (next) {
-      if (collapseTimer) {
-        window.clearTimeout(collapseTimer);
-        collapseTimer = null;
-      }
-      document.body.classList.remove("closing");
-      document.body.classList.add("expanded");
-      resizeGuardUntil = Date.now() + 400;
-      resize(true);
-    } else {
-      stopAutoCollapse();
-      document.body.classList.add("closing");
-      collapseTimer = window.setTimeout(function () {
-        collapseTimer = null;
-        document.body.classList.remove("expanded", "closing");
-        resize(false);
-      }, 150);
-    }
-    render();
+  function scheduleAutoCollapse() {
+    stopAutoCollapse();
+    autoCollapseTimer = window.setTimeout(collapsePanel, AUTO_COLLAPSE_MS);
   }
 
   function refresh() {
@@ -258,33 +221,24 @@
   function bind() {
     if (!api || !api.available) return;
     var island = $("island");
-    // Hover must not resize the window: on Windows that makes the compact
-    // island flicker and disappear. A click opens the card; after the pointer
-    // leaves, the card waits 15 seconds before folding back to the pill.
-    island.addEventListener("mouseenter", function () {
-      stopAutoCollapse();
-    });
-    island.addEventListener("mouseleave", function () {
-      if (!expanded) return;
-      var check = function () {
-        if (!expanded) return;
-        if (Date.now() < resizeGuardUntil) {
-          window.setTimeout(check, 300);
-          return;
+    if (mode === "expanded") {
+      document.body.classList.add("expanded");
+      island.addEventListener("mouseenter", stopAutoCollapse);
+      island.addEventListener("mouseleave", scheduleAutoCollapse);
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") collapsePanel();
+      });
+    } else {
+      // The compact window never resizes itself. Clicking asks Rust to show
+      // the already-built 420x242 panel window, so a WebView2 resize failure
+      // can no longer leave an empty compact strip behind.
+      island.addEventListener("click", function (event) {
+        if (event.target.closest("[data-act]")) return;
+        if (api && api.available) {
+          api.invoke("island_expand").catch(function () {});
         }
-        if (island.matches(":hover")) return;
-        scheduleAutoCollapse();
-      };
-      // Ignore the mouseleave that the native resize itself can emit.
-      check();
-    });
-    island.addEventListener("click", function (event) {
-      if (!expanded && !event.target.closest("[data-act]")) setExpanded(true);
-    });
-
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && expanded) setExpanded(false);
-    });
+      });
+    }
 
     Array.prototype.forEach.call(document.querySelectorAll("[data-act]"), function (button) {
       button.addEventListener("click", function (event) {

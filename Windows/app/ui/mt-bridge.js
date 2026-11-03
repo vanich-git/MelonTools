@@ -101,6 +101,8 @@
     "open_url",
     "island_snapshot",
     "island_resize",
+    "island_expand",
+    "island_collapse",
     "island_reposition",
     "island_open_main",
     "island_toggle_api",
