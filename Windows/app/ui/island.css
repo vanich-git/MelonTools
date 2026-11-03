@@ -118,6 +118,24 @@ body.island-open .island > .expanded {
   color: rgba(255, 255, 255, 0.38);
 }
 
+.close {
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.48);
+  font: 500 13px/18px "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.92);
+}
+
 .line {
   height: 1px;
   background: rgba(255, 255, 255, 0.07);

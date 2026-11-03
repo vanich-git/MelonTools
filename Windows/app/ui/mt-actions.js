@@ -1790,6 +1790,15 @@ const A = {
     });
   },
 
+  islandAutoCollapse(seconds) {
+    if ([0, 5, 10, 15, 20].indexOf(seconds) < 0) return;
+    S.settings = { ...(S.settings || {}), islandAutoCollapseSeconds: seconds };
+    render();
+    run("island-timer", async () => {
+      S.settings = await inv("settings_set", { settings: { ...S.settings } });
+    });
+  },
+
   // Persisted per-card visibility. The optimistic update keeps the checkbox
   // responsive; a failed save surfaces as a toast.
   dashboardCardToggle(setting, enabled) {

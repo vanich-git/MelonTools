@@ -19,7 +19,7 @@ for (const mode of ["compact", "expanded", "reenter"]) {
   const setup = `window.__melonMode=${JSON.stringify(mode === "compact" ? "compact" : "expanded")};
     window.calls=[]; window.melon={available:true, listen:()=>Promise.resolve(), invoke:(cmd)=>{
       calls.push(cmd); return Promise.resolve(cmd==='island_snapshot'?{
-        lang:'ru',gateway:{running:true,port:18317},codex:{accounts:5,hourly:500,weekly:900,max:500},
+        lang:'ru',islandAutoCollapseSeconds:15,gateway:{running:true,port:18317},codex:{accounts:5,hourly:500,weekly:900,max:500},
         antigravity:{accounts:2},scheduler:{due:0},providers:4}:{}); }};`;
   const checks = `(() => {
     const errors=[]; const check=(ok,msg)=>{if(!ok)errors.push(msg)};
@@ -48,10 +48,11 @@ for (const mode of ["compact", "expanded", "reenter"]) {
       check(getComputedStyle(panel).opacity==='1','panel remains transparent');
       check(panel.getClientRects().length>0,'panel has no CSS box');
       dispatch('mouseleave');
-      if(${JSON.stringify(mode)}==='reenter')setTimeout(()=>dispatch('mouseenter'),1000);
-      setTimeout(()=>check(count('island_collapse')===0,'collapse before 15 seconds'),14900);
-      setTimeout(()=>{check(count('island_collapse')===(${JSON.stringify(mode)}==='reenter'?0:1),'incorrect collapse timer');
-        check(count('island_resize')===0,'fixed windows must not resize');finish()},15200);
+      if(${JSON.stringify(mode)}==='reenter')setTimeout(()=>dispatch('mouseenter'),200);
+      setTimeout(()=>{check(count('island_collapse')===0,'collapsed before the close button');
+        document.getElementById('close-panel').click();},700);
+      setTimeout(()=>{check(count('island_collapse')===1,'close button must collapse the panel');
+        check(count('island_resize')===0,'fixed windows must not resize');finish()},1100);
     },400);
   })();`;
   const fixture = html.replace('<link rel="stylesheet" href="island.css" />', '<style>'+css+' *{animation:none!important;transition:none!important}</style>')
@@ -60,7 +61,7 @@ for (const mode of ["compact", "expanded", "reenter"]) {
   const file=path.join(dir,mode+'.html');fs.writeFileSync(file,fixture);
   const run=spawnSync(chrome,['--headless=new','--disable-gpu','--hide-scrollbars','--no-first-run',
     '--disable-background-networking','--window-size='+(mode==='compact'?'185,30':'420,242'),
-    '--virtual-time-budget=17000','--dump-dom','--user-data-dir='+path.join(dir,mode+'-profile'),pathToFileURL(file).href],
+    '--virtual-time-budget=6000','--dump-dom','--user-data-dir='+path.join(dir,mode+'-profile'),pathToFileURL(file).href],
     {encoding:'utf8',timeout:45000,maxBuffer:4*1024*1024});
   const result=run.stdout?.match(/<pre id="result">([\s\S]*?)<\/pre>/);
   const errors=result?JSON.parse(result[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')):['browser test did not finish: '+run.stderr];

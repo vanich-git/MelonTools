@@ -144,6 +144,9 @@ async fn settings_set(
     if merged.lang != "ru" && merged.lang != "en" {
         return Err("неизвестный язык".to_string());
     }
+    if !settings::ISLAND_AUTO_COLLAPSE_CHOICES.contains(&merged.island_auto_collapse_seconds) {
+        return Err("автосворачивание островка: 0, 5, 10, 15 или 20 секунд".to_string());
+    }
     if merged.api_key.trim().is_empty() {
         merged.api_key = state.settings().api_key;
     }
@@ -2069,6 +2072,7 @@ async fn build_island_snapshot(state: &AppState) -> Value {
     let summary = scheduler::summary();
     json!({
         "lang": settings.lang,
+        "islandAutoCollapseSeconds": settings.island_auto_collapse_seconds,
         "gateway": { "running": running, "port": settings.port },
         "codex": {
             "accounts": accounts.len(),

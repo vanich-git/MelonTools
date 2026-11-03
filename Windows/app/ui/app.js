@@ -664,6 +664,8 @@ function actionArgs(action, el) {
       return [el.dataset.id, !!el.checked];
     case "islandToggle":
       return [!!el.checked];
+    case "islandAutoCollapse":
+      return [Number(el.value)];
     case "notifyToggle":
     case "autostartToggle":
       return [!!el.checked];

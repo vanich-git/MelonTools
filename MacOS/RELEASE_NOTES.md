@@ -8,8 +8,9 @@ Windows expansion reliability fix.
 - **CSS collision fixed.** `.expanded` also matched `<body>`, hiding the whole
   panel document. The body state is now `island-open`, and the hide rule is
   scoped to `.island > .expanded`.
-- **15-second auto-fold.** Leaving the open card starts the timer, returning
-  cancels it, Escape closes immediately.
+- **Configurable auto-fold.** The Windows Settings page offers Off / 5 / 10 /
+  15 / 20 seconds for the large card; the default is 15. Off keeps it open
+  until the × button.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.
 
 ## 5.5.7

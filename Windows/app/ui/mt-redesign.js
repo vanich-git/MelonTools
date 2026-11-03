@@ -1623,6 +1623,7 @@ function settingsPage() {
   const settings = S.settings || {};
   const info = S.info || {};
   const interval = Number(settings.quotaInterval ?? 300);
+  const islandAutoCollapse = [0, 5, 10, 15, 20].indexOf(Number(settings.islandAutoCollapseSeconds)) >= 0 ? Number(settings.islandAutoCollapseSeconds) : 15;
   const proxyUrlDraft = S.proxyUrlDraft !== null && S.proxyUrlDraft !== undefined
     ? String(S.proxyUrlDraft)
     : String(settings.proxyUrl || "");
@@ -1676,6 +1677,13 @@ function settingsPage() {
   <div class="card">
     <h2>${t("statusIsland")}</h2>
     <label class="card-toggle"><input type="checkbox" ${settings.islandVisible !== false ? "checked" : ""} data-action="islandToggle" data-on="change"> ${t("showStatusIsland")}</label>
+    <label class="field" style="margin-top:10px">${t("islandAutoCollapse")}
+      <select data-action="islandAutoCollapse" data-on="change">
+        <option value="0" ${islandAutoCollapse === 0 ? "selected" : ""}>${t("islandAutoCollapseOff")}</option>
+        ${[5, 10, 15, 20].map((n) => `<option value="${n}" ${islandAutoCollapse === n ? "selected" : ""}>${n} ${t("secondsUnit")}</option>`).join("")}
+      </select>
+    </label>
+    <div class="footnote" style="margin:4px 0 0">${t("islandAutoCollapseHint")}</div>
   </div>
 
   <div class="card">

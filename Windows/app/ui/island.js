@@ -51,7 +51,8 @@
       weekShort: "7д",
       minute: "мин",
       hour: "ч",
-      now: "сейчас"
+      now: "сейчас",
+      collapse: "Свернуть"
     },
     en: {
       pool: "Codex pool",
@@ -74,7 +75,8 @@
       weekShort: "7d",
       minute: "min",
       hour: "h",
-      now: "now"
+      now: "now",
+      collapse: "Collapse"
     }
   };
 
@@ -175,10 +177,15 @@
     }
     var apiButton = document.querySelector('[data-act="api"]');
     if (apiButton) apiButton.disabled = false;
+    var closeButton = $("close-panel");
+    if (closeButton) {
+      closeButton.title = tr.collapse;
+      closeButton.setAttribute("aria-label", tr.collapse);
+    }
   }
 
   var autoCollapseTimer = null;
-  var AUTO_COLLAPSE_MS = 15000;
+  var autoCollapseMs = 15000;
 
   function stopAutoCollapse() {
     if (autoCollapseTimer) {
@@ -198,7 +205,20 @@
 
   function scheduleAutoCollapse() {
     stopAutoCollapse();
-    autoCollapseTimer = window.setTimeout(collapsePanel, AUTO_COLLAPSE_MS);
+    if (autoCollapseMs <= 0) return;
+    autoCollapseTimer = window.setTimeout(collapsePanel, autoCollapseMs);
+  }
+
+  function applyAutoCollapseSetting(seconds) {
+    var next = Number(seconds);
+    if ([0, 5, 10, 15, 20].indexOf(next) < 0) next = 15;
+    if (next === autoCollapseMs) return;
+    var pending = !!autoCollapseTimer;
+    autoCollapseMs = next * 1000;
+    if (pending) {
+      if (autoCollapseMs > 0) scheduleAutoCollapse();
+      else stopAutoCollapse();
+    }
   }
 
   function refresh() {
@@ -208,6 +228,7 @@
       .invoke("island_snapshot")
       .then(function (data) {
         snap = data;
+        applyAutoCollapseSetting(data.islandAutoCollapseSeconds);
         render();
       })
       .catch(function () {
@@ -255,6 +276,8 @@
           api.invoke("island_toggle_api").then(done, done);
         } else if (action === "run") {
           api.invoke("island_run_next").then(done, done);
+        } else if (action === "close") {
+          api.invoke("island_collapse").then(done, done);
         }
       });
     });

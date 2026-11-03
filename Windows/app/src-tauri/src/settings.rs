@@ -68,6 +68,10 @@ pub struct Settings {
     /// Status island above the screen. Default on.
     #[serde(default = "default_island_visible")]
     pub island_visible: bool,
+    /// Seconds the expanded island stays open after the pointer leaves.
+    /// One of 0 (never), 5, 10, 15 or 20. Default 15.
+    #[serde(default = "default_island_auto_collapse_seconds")]
+    pub island_auto_collapse_seconds: u32,
     /// Dashboard 2.0 card visibility. Default on.
     pub dashboard_show_pool_health: bool,
     pub dashboard_show_quota_trends: bool,
@@ -97,6 +101,12 @@ pub struct Settings {
 fn default_island_visible() -> bool {
     true
 }
+
+fn default_island_auto_collapse_seconds() -> u32 {
+    15
+}
+
+pub const ISLAND_AUTO_COLLAPSE_CHOICES: [u32; 5] = [0, 5, 10, 15, 20];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -128,6 +138,7 @@ impl Default for Settings {
             notify_scheduler: true,
             notify_quota_reset: true,
             island_visible: true,
+            island_auto_collapse_seconds: default_island_auto_collapse_seconds(),
             dashboard_show_pool_health: true,
             dashboard_show_quota_trends: true,
             dashboard_show_spend: true,
@@ -438,6 +449,7 @@ mod tests {
     fn notification_and_dashboard_toggles_default_on() {
         let s = Settings::default();
         assert!(s.notifications);
+        assert_eq!(s.island_auto_collapse_seconds, 15);
         assert!(s.notify_low_quota);
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
@@ -454,6 +466,7 @@ mod tests {
         assert_eq!(s.port, 19000);
         assert!(!s.notify_low_quota);
         assert!(s.notifications);
+        assert_eq!(s.island_auto_collapse_seconds, 15);
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
         assert!(s.dashboard_show_pool_health);

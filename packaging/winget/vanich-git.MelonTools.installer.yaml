@@ -9,7 +9,7 @@ Installers:
   - Architecture: x64
     InstallerType: nullsoft
     InstallerUrl: https://github.com/vanich-git/MelonTools/releases/download/v5.5.8/MelonTools-5.5.8-setup.exe
-    InstallerSha256: 2C4A77F2E96B0FAABABA51D484F5D88C9F9332DF1EC29B16BBD98A6793CD57B7
+    InstallerSha256: 19B2F16B80DD57C95679322EBE72E534148DF3911CE848843895B6B85D48861A
     InstallerSwitches:
       Silent: /S
 ManifestType: installer

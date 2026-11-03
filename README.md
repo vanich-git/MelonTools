@@ -82,11 +82,10 @@ certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 
 - **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved.
 - **CSS state collision fixed.** The old `.expanded` rule also matched `<body>`, so the whole panel document painted nothing. The body state is now `island-open` and the hide rule is scoped to `.island > .expanded`.
-- **15-second auto-fold** is unchanged: leaving the open card starts the timer, returning cancels it, Escape closes immediately.
+- **Configurable auto-fold.** Settings offers Off / 5 / 10 / 15 / 20 seconds for the large card; the default is 15. Off keeps it open until the × button.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.
 
 ## Earlier: 5.5.7
-
 
 - **Windows compact metrics.** The pill now reads 5-hour total, weekly total, the number of connected Codex accounts, then the green API-status dot.
 - **Windows click-to-open is stable.** A click expands the card in one native resize with a fade, instead of tweening the window; this removes the collapse/jump loop.
