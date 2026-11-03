@@ -49,7 +49,7 @@ fn reset_probes() -> &'static Mutex<HashMap<String, ResetProbeState>> {
 
 /// One guard cycle. The caller runs this on a 1.5-second tokio interval in a
 /// native task, so WebView timer throttling cannot stop quota enforcement.
-pub async fn tick(settings: &Settings) {
+pub async fn tick(settings: &Settings) -> bool {
     let started = Instant::now();
     // One snapshot per tick. `reconcile_and_apply` used to read the vault two
     // more times (plus once inside the reset-probe scan) on every tick.
@@ -88,7 +88,29 @@ pub async fn tick(settings: &Settings) {
             }
         });
     }
+    // The caller keeps the 1.5 s guard only while a blocked window is close
+    // to its reset; a weekly block days away used to poll the management API
+    // (and the gateway log) 40 times a minute.
+    let fast = accounts
+        .iter()
+        .any(|account| account.quota_block.as_ref().is_some_and(block_resets_soon));
     LAST_TICK_MS.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+    fast
+}
+
+/// True when a blocked window resets within five minutes (or has no reset
+/// timestamp, where the fast guard is the only way to notice the recovery).
+fn block_resets_soon(block: &crate::vault::QuotaBlock) -> bool {
+    match block.reset_at {
+        Some(reference) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_secs_f64())
+                .unwrap_or(0.0);
+            reference + crate::vault::APPLE_REF_UNIX_OFFSET - now < 300.0
+        }
+        None => true,
+    }
 }
 
 fn queue_quota_updates(updates: Vec<(String, Quota, f64)>) {
@@ -434,7 +456,7 @@ fn record_probe_result(id: &str, ok: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cause, reconcile_block, recovered};
+    use super::{block_resets_soon, cause, reconcile_block, recovered};
     use crate::vault::{Account, Quota, QuotaBlock};
 
     #[test]
@@ -476,6 +498,31 @@ mod tests {
         assert_eq!(
             reconcile_block(&account, crate::vault::now_ref(), crate::vault::unix_now()),
             Some(block)
+        );
+    }
+
+    #[test]
+    fn fast_guard_only_runs_when_a_block_resets_soon() {
+        let now = crate::vault::now_ref();
+        let mut block = QuotaBlock {
+            code: "weekly_reserve".to_string(),
+            remaining: 1.0,
+            ..QuotaBlock::default()
+        };
+        block.reset_at = Some(now + 60.0);
+        assert!(
+            block_resets_soon(&block),
+            "a reset in a minute needs the fast loop"
+        );
+        block.reset_at = Some(now + 86_400.0);
+        assert!(
+            !block_resets_soon(&block),
+            "a weekly reset a day away must not poll every 1.5 s"
+        );
+        block.reset_at = None;
+        assert!(
+            block_resets_soon(&block),
+            "no timestamp means the fast guard is the only recovery signal"
         );
     }
 }

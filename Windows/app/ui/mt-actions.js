@@ -1782,6 +1782,14 @@ const A = {
     });
   },
 
+  islandToggle(enabled) {
+    S.settings = { ...(S.settings || {}), islandVisible: enabled };
+    render();
+    run("island", async () => {
+      S.settings = await inv("settings_set", { settings: { ...S.settings } });
+    });
+  },
+
   // Persisted per-card visibility. The optimistic update keeps the checkbox
   // responsive; a failed save surfaces as a toast.
   dashboardCardToggle(setting, enabled) {

@@ -1,3 +1,73 @@
+# Melon Tools 5.5.5
+
+Status island release: the macOS and Windows apps now share a compact
+top-of-screen HUD, and the audit findings around pointer tracking, polling and
+window handling are fixed.
+
+- **Status island.** Borderless panel at the top edge. On macOS it follows the
+  camera cut-out; on Windows it is centred on the primary monitor. Resting
+  layout is a compact pill, or one continuous bar with hourly and weekly totals
+  beside the cut-out. Hover opens the pool, Antigravity, providers, scheduler
+  and Open / Pause API / Run.
+- **Geometry.** The side-by-side layout keeps its 30 pt height on displays
+  without a notch; the window frame is always the open size, so the top edge
+  never moves during the 0.28 s expansion.
+- **Pointer and redraws.** Global mouse tracking is throttled to 30 Hz and is
+  removed when the island is hidden. The SwiftUI view observes a small
+  `NotchHUDMetrics` snapshot instead of every store, so QoS samples and busy
+  account changes no longer redraw it.
+- **Windows.** The status payload is cached for four seconds, `island_run_next`
+  returns immediately and runs the task in the background, polling pauses while
+  the island is hidden, and the webview is created only when enabled.
+- **Small fixes.** "Open" unminimises the main window; Start and Run have
+  different Russian labels; language changes reach the island; the target
+  screen lookup no longer indexes an empty array.
+
+> **Signing note:** the macOS build is ad-hoc signed and not notarized; the
+> Windows executable is not Authenticode-signed, so Windows Defender SmartScreen
+> may show "Windows protected your PC". Choose **More info → Run anyway** only
+> after verifying the download against its `.sha256` file or `SHA256SUMS`.
+
+## 5.0.1
+
+Maintenance release: the Windows Antigravity controls work again, the idle
+quota guard stops polling the gateway every 1.5 seconds, and the Antigravity
+card no longer expands into a wall of unavailable models.
+
+- **Antigravity controls on Windows.** Pause, resume, priority, remove and
+  probe were rejected by the IPC bridge whitelist; the command is allowed
+  again, so the account buttons work.
+- **Quota guard back-off.** A blocked account keeps the 1.5 s guard only while
+  its window resets within five minutes; otherwise it polls every 15 s. On an
+  idle pool this cuts roughly 40 management requests a minute — and ~30 MB of
+  gateway log per day — to a handful, and removes the daily log-rotation
+  restart.
+- **Compact Antigravity card.** The catalog-only model list is collapsed
+  behind a disclosure row with a count; expanding it shows a bounded grid, so
+  the card keeps its size even with dozens of unavailable ids.
+- **Quieter diagnostics.** Lifecycle, gateway and updater events are written
+  to the unified log instead of being invisible.
+- **Docs and manifests.** `packaging/README.md` and `docs/SECURITY-MODEL.md`
+  match 5.0.1, the dead `claude_refresh`/`antigravity_refresh` commands are
+  gone, and `cargo fmt --check` is clean again.
+
+> **Signing note:** these builds are ad-hoc signed (macOS) and unsigned
+> (Windows). Verify every download against its `.sha256` file or `SHA256SUMS`.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v5.0.1/MelonTools-5.0.1.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v5.0.1/MelonTools-5.0.1-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v5.0.1/MelonTools-5.0.1-win-x64-portable.exe)
+
+### SHA-256
+
+```
+b7df0562c73db8091fe3b7b76799546c74d14263973fdb4ef684b38ab1dec7a7  MelonTools-5.0.1.dmg
+8ca179ea5940b6a5f394b3a75903bae52a832bc2ead4ee2fa24d633ae871a291  MelonTools-5.0.1-setup.exe
+930a6e3b355192467f89fb30d2874612b4a923affb62abf6ee99ba7a099856e2  MelonTools-5.0.1-win-x64-portable.exe
+```
+
 # Melon Tools 5.0.0
 
 A ground-up visual redesign on macOS and Windows: one flat dark canvas, bento

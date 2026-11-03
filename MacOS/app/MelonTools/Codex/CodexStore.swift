@@ -1124,21 +1124,35 @@ final class CodexStore: ObservableObject {
         }
     }
 
-    /// 1.5 s only while the gateway is serving traffic or an account is close
-    /// to a reserve. Idle menu-bar use must not wake the CPU 40 times a minute.
+    /// 1.5 s only while the gateway is serving traffic or a window is close to
+    /// its reset. Idle menu-bar use must not wake the CPU 40 times a minute,
+    /// and a weekly block days away must not either: that used to poll the
+    /// management API (and fill `gateway.log`) until the window rolled over.
     private func nextLiveQuotaDelay() -> UInt64 {
         let gateway = CodexGatewayService.shared
         guard gateway.isRunning else { return 15_000_000_000 }
         if gateway.requestsLastMinute > 0 { return 1_500_000_000 }
-        if accounts.contains(where: { $0.quotaBlock != nil }) { return 1_500_000_000 }
+        let now = Date()
+        func resetSoon(_ date: Date?) -> Bool {
+            guard let date else { return true }
+            return date.timeIntervalSince(now) < 300
+        }
+        if accounts.contains(where: { account in
+            guard let block = account.quotaBlock else { return false }
+            return resetSoon(block.resetAt)
+        }) { return 1_500_000_000 }
         for account in accounts {
             guard let quota = account.quota else { continue }
             let hourly = quota.hourlyRemainingPercent ?? 100
             let weekly = quota.weeklyRemainingPercent ?? 100
             let hourlyReserve = Double(account.hourlyReservePercent ?? 0)
             let weeklyReserve = Double(account.weeklyReservePercent ?? 10)
-            if hourlyReserve > 0 && hourly <= hourlyReserve + 5 { return 1_500_000_000 }
-            if weekly <= weeklyReserve + 5 { return 1_500_000_000 }
+            if hourlyReserve > 0, hourly <= hourlyReserve + 5, resetSoon(quota.hourlyResetAt) {
+                return 1_500_000_000
+            }
+            if weekly <= weeklyReserve + 5, resetSoon(quota.weeklyResetAt) {
+                return 1_500_000_000
+            }
         }
         return 15_000_000_000
     }

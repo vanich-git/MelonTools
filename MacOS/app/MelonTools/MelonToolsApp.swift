@@ -36,6 +36,7 @@ struct MelonToolsApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let logger = Logger(subsystem: "dev.melontools.app", category: "Lifecycle")
     /// Re-checks for updates while the app runs. The launch check stays in
     /// MainView; this timer only wakes the same throttled code path.
     private var updateTimer: Timer?
@@ -48,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // XCTest uses this executable as its host. Never read the real vault,
         // rewrite ~/.codex, start the gateway or relaunch Codex during tests.
         guard !AppRuntime.isTesting else { return }
+        Self.logger.info("launched \(ProcessInfo.processInfo.operatingSystemVersionString, privacy: .public)")
         MainActor.assumeIsolated {
             // Everything below used to run before the first frame: the vault
             // read, a catalog write, three timers and the gateway start all
@@ -63,6 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 CodexPoolModelsStore.shared.refresh()
                 CodexStore.shared.startQuotaScheduler()
                 SchedulerStore.shared.start()
+                // The island only reads cached state; show it with the first
+                // frame instead of waiting for catalog and composer startup.
+                NotchHUDController.shared.start()
                 Self.signposter.endInterval("Startup", startup)
 
                 let catalog = Self.signposter.beginInterval("CatalogSync")
@@ -103,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Self.logger.info("terminating")
         MainActor.assumeIsolated {
             updateTimer?.invalidate()
             updateTimer = nil

@@ -18,6 +18,8 @@ struct SettingsView: View {
     @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = 60
     @AppStorage("quotaRefreshInterval") private var quotaRefreshInterval = 300
     @AppStorage("quotaNotifications") private var quotaNotifications = false
+    @AppStorage(NotchHUDController.enabledDefaultsKey) private var notchHUDEnabled = true
+    @AppStorage(NotchHUDController.styleDefaultsKey) private var notchHUDCompactStyle = NotchHUDCompactStyle.inside.rawValue
     @AppStorage("taskNotifications") private var taskNotifications = true
     @AppStorage(DashboardWidgetKey.poolHealth) private var showPoolHealth = true
     @AppStorage(DashboardWidgetKey.quotaTrends) private var showQuotaTrends = true
@@ -97,6 +99,39 @@ struct SettingsView: View {
                             Text(L("golden melon"))
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textPrimary)
+                        }
+                        HStack(spacing: MTTheme.s3) {
+                            Text(L("Status island"))
+                                .font(MTTheme.mono(11))
+                                .foregroundStyle(MTTheme.textSecondary)
+                                .frame(width: 130, alignment: .leading)
+                            Toggle(L("Show a compact island at the top of the screen"), isOn: $notchHUDEnabled)
+                                .toggleStyle(.switch)
+                                .font(MTTheme.body(12))
+                                .onChange(of: notchHUDEnabled) { _, enabled in
+                                    NotchHUDController.shared.setEnabled(enabled)
+                                }
+                        }
+                        if notchHUDEnabled {
+                            HStack(spacing: MTTheme.s3) {
+                                Text(L("Compact island"))
+                                    .font(MTTheme.mono(11))
+                                    .foregroundStyle(MTTheme.textSecondary)
+                                    .frame(width: 130, alignment: .leading)
+                                Picker("", selection: $notchHUDCompactStyle) {
+                                    ForEach(NotchHUDCompactStyle.allCases, id: \.rawValue) { style in
+                                        Text(style.title).tag(style.rawValue)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                                .frame(width: 280)
+                                .onChange(of: notchHUDCompactStyle) { _, value in
+                                    NotchHUDController.shared.setCompactStyle(
+                                        NotchHUDCompactStyle(rawValue: value) ?? .inside
+                                    )
+                                }
+                            }
                         }
                     }
                 }

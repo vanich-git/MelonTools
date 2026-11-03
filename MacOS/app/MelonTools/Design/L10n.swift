@@ -62,7 +62,6 @@ final class L10n: ObservableObject {
         "Could not change the account priority.": "Не удалось изменить приоритет аккаунта.",
         "In the catalog, unavailable to the account": "Есть в каталоге, аккаунту недоступно",
         "The model is defined in the catalog, but none of the connected Google accounts is entitled to it.": "Модель есть в каталоге, но ни один из подключённых Google-аккаунтов не имеет к ней доступа.",
-        "The gateway does not expose a weekly Antigravity window; only the current 5-hour window is shown.": "Движок не отдаёт недельное окно Antigravity; показано только текущее 5-часовое окно.",
         "Waiting for the first token": "Ждём первый токен",
         "Quota exhausted": "Квота исчерпана",
         "Cloudflare challenge": "Проверка Cloudflare",
@@ -111,7 +110,7 @@ final class L10n: ObservableObject {
 
         // MARK: Common
         "Open": "Открыть",
-        "Start": "Запустить",
+        "Start": "Старт",
         "Stop": "Остановить",
         "Restart": "Перезапустить",
         "Refresh": "Обновить",
@@ -880,6 +879,18 @@ final class L10n: ObservableObject {
         "Saved": "Сохранено",
         "Bypass": "Исключения",
         "Leave the URL empty to use the macOS system proxy. The local gateway always stays direct.": "Оставьте URL пустым, чтобы использовать системный прокси macOS. Локальный шлюз всегда работает напрямую.",
+        // MARK: Status island
+        "Status island": "Статусный островок",
+        "Show a compact island at the top of the screen": "Показывать компактный островок сверху экрана",
+        "No tasks": "Нет задач",
+        "Running now": "Выполняется",
+        "Compact island": "Компактный островок",
+        "Under the notch": "Под вырезом",
+        "Beside the notch": "По бокам от выреза",
+        "5h": "5ч",
+        "7d": "7д",
+        "Pause": "Пауза",
+        "Run": "Запустить",
     ]
 }
 

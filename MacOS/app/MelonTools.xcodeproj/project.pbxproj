@@ -18,6 +18,7 @@
 		20168DA912EEE1A1968D496E /* LoopbackServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00D2E62FCC1AB51BFF6509B /* LoopbackServer.swift */; };
 		23EC11A934DD627D892AD22B /* BaseModelCatalog.json in Resources */ = {isa = PBXBuildFile; fileRef = 9FBBAD5E1C94E01916E33918 /* BaseModelCatalog.json */; };
 		24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */; };
+		25ADA33EB4BB343ACF63DA90 /* NotchHUDGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8A1CD4A27B11A1E5AB70684 /* NotchHUDGeometryTests.swift */; };
 		26D63B83406600AF7980DB04 /* SchedulerRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F65439F46A80ADE0BE55882F /* SchedulerRunner.swift */; };
 		28E8DBB8E6BBAA563AEAD636 /* ModelCatalogOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */; };
 		29BABCA1A13D2A4D8BDE29D8 /* ZaiProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A16EBE8666ED2AA2FD58D8 /* ZaiProviderTests.swift */; };
@@ -42,6 +43,7 @@
 		4DE9BB4AB391848035938DF9 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD5F2D4313079608CA034CD /* MainView.swift */; };
 		4EBA788CCE70CB343CFA09B1 /* SupportBundleService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */; };
 		4F103A33DCF7EFC587975B08 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9360724A6B2BF9E4758C7D38 /* OnboardingView.swift */; };
+		512B1346B782A487D2ED4C50 /* NotchHUDView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A1E7578393FFA2C9500DBD1 /* NotchHUDView.swift */; };
 		52D4C99653D19EE1DBB6B831 /* CodexRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C69B678951C7A01AABD656 /* CodexRouting.swift */; };
 		53F69D34EBFC29C6CA1E7760 /* QuotaHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */; };
 		56E0370CB09D52B752BE3873 /* AntigravityPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E921EE6FB97C9F09DC1BF2B /* AntigravityPoolTests.swift */; };
@@ -54,6 +56,8 @@
 		6B4D1C41EB09C3A285A8ED8A /* BackupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1BB95213E754D8D3EF63DA /* BackupTests.swift */; };
 		6D0D6F32C375BDA877E61CE8 /* MTComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACD01EC0F82F6F7D0B4D401 /* MTComponents.swift */; };
 		70092A4A70BBD78D1B57CAED /* TerminalLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8FB7C6A30E71A442B95A2E9 /* TerminalLauncher.swift */; };
+		728CF3AF0D46E5C0C62FF91F /* NotchHUDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B38480D14B0A138C679F579 /* NotchHUDController.swift */; };
+		7447106AC2F08F0D726D2965 /* NotchHUDMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAF1AB32CD4A82E73037EBAF /* NotchHUDMetrics.swift */; };
 		74ED531633757BFE48EB4A23 /* CodexControlCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */; };
 		76F270E6012195AB6C948AAF /* CodexRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE57D8A8328B28070AE73B3C /* CodexRoutingTests.swift */; };
 		78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */; };
@@ -107,6 +111,7 @@
 		16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LowQuotaNotificationTests.swift; sourceTree = "<group>"; };
 		185C46A347C8DBA9271F1A57 /* ProviderDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDiagnostics.swift; sourceTree = "<group>"; };
 		18DB835AB1985DF1F56805B6 /* CodexConfigRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexConfigRoute.swift; sourceTree = "<group>"; };
+		1A1E7578393FFA2C9500DBD1 /* NotchHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchHUDView.swift; sourceTree = "<group>"; };
 		1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogOverlayTests.swift; sourceTree = "<group>"; };
 		1E439C9E3BFE452A19209DFB /* DonateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DonateView.swift; sourceTree = "<group>"; };
 		2C7113F932E22E2C4B120FD1 /* CodexGatewayService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexGatewayService.swift; sourceTree = "<group>"; };
@@ -144,6 +149,7 @@
 		7B288A5B939ACE93D22A8E82 /* CodexPoolModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexPoolModelsTests.swift; sourceTree = "<group>"; };
 		7C702AC2DA16DE3D6A5D2471 /* QuotaHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistory.swift; sourceTree = "<group>"; };
 		89349401A85B581F93A02BD9 /* NetworkProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkProxy.swift; sourceTree = "<group>"; };
+		8B38480D14B0A138C679F579 /* NotchHUDController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchHUDController.swift; sourceTree = "<group>"; };
 		8B5334F8B2E79F926778CB9D /* CodexResetCreditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexResetCreditTests.swift; sourceTree = "<group>"; };
 		8C7DE7781BC232D89855C509 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		8D186C2A1693BC0D3B187FF3 /* CodexControlCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexControlCard.swift; sourceTree = "<group>"; };
@@ -157,6 +163,7 @@
 		A35AB5611799383F91510547 /* ModelSourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSourcesView.swift; sourceTree = "<group>"; };
 		A63C34F0C33E0120C3357320 /* ClaudeAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeAuthService.swift; sourceTree = "<group>"; };
 		A6E8950D346C6D44F3E4E2F2 /* CodexBulkImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexBulkImportTests.swift; sourceTree = "<group>"; };
+		A8A1CD4A27B11A1E5AB70684 /* NotchHUDGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchHUDGeometryTests.swift; sourceTree = "<group>"; };
 		A95A0F4F35FD6AB8669B2F08 /* UpdateSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateSheet.swift; sourceTree = "<group>"; };
 		AAAD0F5803A4F71DEA4B885E /* CodexAccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAccountsView.swift; sourceTree = "<group>"; };
 		AC0ED55431DF119F7A8C5174 /* CodexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexStore.swift; sourceTree = "<group>"; };
@@ -171,6 +178,7 @@
 		D5F2432BAABE944A58797826 /* MelonToolsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MelonToolsApp.swift; sourceTree = "<group>"; };
 		D9E8EF91D2DDDB89B093FB19 /* UpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterTests.swift; sourceTree = "<group>"; };
 		D9F5A5F4EAADF5CEAB6FB641 /* ComposerBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerBridge.swift; sourceTree = "<group>"; };
+		DAF1AB32CD4A82E73037EBAF /* NotchHUDMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchHUDMetrics.swift; sourceTree = "<group>"; };
 		DB1BB95213E754D8D3EF63DA /* BackupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupTests.swift; sourceTree = "<group>"; };
 		E80C892F082A1D4524173B74 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		E8FB7C6A30E71A442B95A2E9 /* TerminalLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLauncher.swift; sourceTree = "<group>"; };
@@ -189,6 +197,7 @@
 				C81F865BDC52620AD9ED0191 /* DashboardView.swift */,
 				1E439C9E3BFE452A19209DFB /* DonateView.swift */,
 				4DD5F2D4313079608CA034CD /* MainView.swift */,
+				1A1E7578393FFA2C9500DBD1 /* NotchHUDView.swift */,
 				9360724A6B2BF9E4758C7D38 /* OnboardingView.swift */,
 				4D15F8FA7DF957DF6B33B6EB /* SchedulerView.swift */,
 				8C7DE7781BC232D89855C509 /* SettingsView.swift */,
@@ -314,6 +323,7 @@
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
 				1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */,
 				90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */,
+				A8A1CD4A27B11A1E5AB70684 /* NotchHUDGeometryTests.swift */,
 				43DF36EBCAF7BAC399EA4644 /* ProviderBulkImportTests.swift */,
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
 				72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */,
@@ -341,6 +351,8 @@
 				55304F692A547242AA3220F1 /* AppState.swift */,
 				C1DAD6CCDB82CBCEB8A2405C /* BackupService.swift */,
 				89349401A85B581F93A02BD9 /* NetworkProxy.swift */,
+				8B38480D14B0A138C679F579 /* NotchHUDController.swift */,
+				DAF1AB32CD4A82E73037EBAF /* NotchHUDMetrics.swift */,
 				9E4F7622B54B974672276242 /* SecureFile.swift */,
 				6122C219EB9D610DECD893A7 /* ShellService.swift */,
 				6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */,
@@ -484,6 +496,7 @@
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
 				28E8DBB8E6BBAA563AEAD636 /* ModelCatalogOverlayTests.swift in Sources */,
 				78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */,
+				25ADA33EB4BB343ACF63DA90 /* NotchHUDGeometryTests.swift in Sources */,
 				DFECC444904DD8C2FAAC46EB /* ProviderBulkImportTests.swift in Sources */,
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
 				798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */,
@@ -534,6 +547,9 @@
 				E86D2022AF1C4B1C67F34E1F /* ModelSources.swift in Sources */,
 				DA68BEADDDDCD2CD1D133399 /* ModelSourcesView.swift in Sources */,
 				2DB95416F195D2146071C3BE /* NetworkProxy.swift in Sources */,
+				728CF3AF0D46E5C0C62FF91F /* NotchHUDController.swift in Sources */,
+				7447106AC2F08F0D726D2965 /* NotchHUDMetrics.swift in Sources */,
+				512B1346B782A487D2ED4C50 /* NotchHUDView.swift in Sources */,
 				4F103A33DCF7EFC587975B08 /* OnboardingView.swift in Sources */,
 				4B7AD00FC84D0B4FE0008B4A /* ProviderBulkImport.swift in Sources */,
 				60F62DEF12F331D2025F9A38 /* ProviderDiagnostics.swift in Sources */,
@@ -737,14 +753,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 52;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 5.0.0;
+				MARKETING_VERSION = 5.5.5;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -756,14 +772,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 52;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 5.0.0;
+				MARKETING_VERSION = 5.5.5;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

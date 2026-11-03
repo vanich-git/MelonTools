@@ -67,6 +67,7 @@ enum MTSection: String, CaseIterable, Identifiable {
 /// Bento layout: one solid card on the left (navigation), a card board on the right.
 struct MainView: View {
     @EnvironmentObject private var app: AppState
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject private var updater = UpdaterStore.shared
     @State private var selection: MTSection = MTSection(
         rawValue: UserDefaults.standard.string(forKey: "mainSelection") ?? ""
@@ -90,6 +91,14 @@ struct MainView: View {
         }
         .onAppear {
             app.applyAppearance()
+            if let window = NSApp.windows.first(where: { $0.title == "Melon Tools" }) {
+                window.identifier = NSUserInterfaceItemIdentifier("main")
+            }
+            // The island lives outside the SwiftUI scene graph, so it borrows
+            // this action to reopen the main window after the user closed it.
+            NotchHUDController.shared.registerOpenMainWindow {
+                openWindow(id: "main")
+            }
             if !AppRuntime.isTesting {
                 Task { await updater.check(manual: false) }
             }

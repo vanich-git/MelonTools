@@ -18,14 +18,31 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 5.0.0
+## Release artifacts for 5.5.5
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.0.0.dmg` | `9dd337d5c33632711bd23a21bbb4f07be895423f202b1f9247339fb75d37545c` |
+| macOS DMG | `MelonTools-5.5.5.dmg` | `47c47749254737f70f0571a553c645cc0365c9a006ac185bb92ad72fe3097774` |
+| Windows installer | `MelonTools-5.5.5-setup.exe` | `f3fd9d3814cff1df6176ac0e451552fe1e79b239abef3cab3b6e000e9181e051` |
+| Windows portable | `MelonTools-5.5.5-win-x64-portable.exe` | `d231856d4472a9c01324a833b332a942e5949eb3a837c831acc7cf697be7f983` |
 
-5.0.0 is a macOS-only redesign release; the Windows artifacts stay at 4.0.1
-until the Windows build catches up.
+5.5.5 adds the status island to macOS and Windows, fixes the side-by-side
+layout on displays without a notch, and removes the background polling and
+window-handling problems found in the audit.
+
+All files and their `.sha256` siblings are attached to the GitHub release for
+tag `v5.5.5`.
+
+## Release artifacts for 5.0.0 (previous release)
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-5.0.0.dmg` | `436732a5117b56f451d0a65f79a68556f7fda18786596326c282dc5832ac58c4` |
+| Windows installer | `MelonTools-5.0.0-setup.exe` | `6cf1a3ab6373962286591bc6f8681af90bf24385baad9c1c9a6fdeaad898cd01` |
+| Windows portable | `MelonTools-5.0.0-win-x64-portable.exe` | `97b66b6da08058523d7d0b1160d505a79c02abc0525fbd69c96795ee454b4ea1` |
+
+5.0.0 ships the redesign on both platforms: the macOS DMG and the Windows
+installer/portable are built from the same tag and carry the same interface.
 
 All files and their `.sha256` siblings are attached to the GitHub release for
 tag `v5.0.0`.

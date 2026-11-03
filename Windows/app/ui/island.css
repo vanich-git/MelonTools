@@ -1,0 +1,322 @@
+* { box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+.island {
+  width: 100%;
+  height: 100%;
+  background:
+    radial-gradient(120% 80% at 50% -20%, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0) 60%),
+    linear-gradient(180deg, #000000 0%, #0b0b0e 42%, #121218 100%);
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.compact {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.expanded { display: none; }
+
+body.expanded .island { border-radius: 18px; }
+body.expanded .compact { display: none; }
+body.expanded .expanded {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.38);
+  flex: none;
+}
+
+.dot.ok { background: #10b981; }
+.dot.warn { background: #f59e0b; }
+
+.small {
+  font-size: 9.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.quota-mini {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.due {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #f59e0b;
+}
+
+.grow { flex: 1 1 auto; }
+
+.count {
+  font-size: 9.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+/* ---- Expanded ---- */
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 14px;
+  flex: none;
+}
+
+.brand {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.state {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.state.ok { color: #10b981; }
+
+.port {
+  font-size: 9.5px;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.line {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+  flex: none;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pool-title {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.accounts {
+  margin-left: auto;
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.pool-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.quota {
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.unit {
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.week {
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.meter {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.75), #10b981);
+  transition: width 0.25s ease;
+}
+
+.meter-fill.warn { background: linear-gradient(90deg, rgba(245, 158, 11, 0.75), #f59e0b); }
+.meter-fill.danger { background: linear-gradient(90deg, rgba(239, 68, 68, 0.75), #ef4444); }
+
+.tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tile-title {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.tile-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.tile-detail {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.38);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 18px;
+}
+
+.schedule-title {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.schedule-state {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.schedule-state.running { color: #f59e0b; }
+
+.actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px;
+  height: 40px;
+  align-items: center;
+  flex: none;
+}
+
+.btn {
+  flex: 1 1 0;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.96);
+  font: 500 10px/1 -apple-system, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  padding: 0;
+  cursor: pointer;
+}
+
+.btn:hover { background: rgba(255, 255, 255, 0.1); }
+.btn:active { transform: scale(0.985); }
+
+.btn.primary {
+  background: #f59e0b;
+  color: #1a1a1c;
+  font-weight: 600;
+}
+
+.btn.primary:hover { background: #f8b23c; }
+
+.btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.btn .ico { width: 12px; height: 12px; display: inline-flex; }
+.btn .ico svg { width: 12px; height: 12px; }
+
+.schedule .ico { width: 11px; height: 11px; display: inline-flex; color: rgba(255, 255, 255, 0.62); }
+
+
+/* Expand / collapse: the native window resizes immediately, so the card
+   itself fades and lifts a few pixels to hide the size change. */
+body.expanded .expanded {
+  animation: island-open 0.18s ease-out both;
+}
+
+body.closing .expanded {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.99);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+@keyframes island-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

@@ -33,8 +33,8 @@ targets:
       properties:
         CFBundleDisplayName: Melon Tools
         CFBundleName: Melon Tools
-        CFBundleShortVersionString: "5.0.0"
-        CFBundleVersion: "50"
+        CFBundleShortVersionString: "5.5.5"
+        CFBundleVersion: "52"
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Melon Tools"
@@ -69,8 +69,8 @@ targets:
         - MelonToolsTests
     settings:
       base:
-        MARKETING_VERSION: "5.0.0"
-        CURRENT_PROJECT_VERSION: "50"
+        MARKETING_VERSION: "5.5.5"
+        CURRENT_PROJECT_VERSION: "52"
         GENERATE_INFOPLIST_FILE: "NO"
         CODE_SIGN_ENTITLEMENTS: MelonTools/MelonTools.entitlements
       configs:

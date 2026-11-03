@@ -84,6 +84,24 @@ jobs:
         working-directory: MacOS/app
         run: xcodegen generate
 
+      # A release must not publish a build that the CI gate would reject:
+      # 5.0.0 shipped with a UI command missing from the Tauri bridge whitelist
+      # because this job only ran the tests.
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Validate localization and UI scripts
+        run: |
+          set -euo pipefail
+          python3 MacOS/scripts/l10n_lint.py
+          for file in Windows/app/ui/*.js Windows/app/resources/composer-chips.js MacOS/app/Resources/composer-chips.js shared/composer-chips.js; do
+            node --check "$file"
+          done
+          ./scripts/sync-composer.sh --check
+          node Windows/app/tools/ui-static-check.js
+
       - name: Run macOS tests
         run: |
           set -euo pipefail
@@ -454,9 +472,11 @@ jobs:
               echo ""
             fi
             if [ "${{ needs.windows.outputs.signed }}" != "true" ]; then
-              echo "> **Windows build note:** not Authenticode-signed, so SmartScreen"
-              echo "> may warn. Signing is BLOCKED until a code-signing certificate is"
-              echo "> configured; see \`packaging/README.md\`."
+              echo "> **Windows build note:** the executable is not Authenticode-signed,"
+              echo "> so Windows Defender SmartScreen may show \"Windows protected your PC\""
+              echo "> and refuse the first launch. Choose **More info → Run anyway** only"
+              echo "> after the SHA-256 matches the value below. A code-signing certificate"
+              echo "> is required to remove this warning; see \`packaging/README.md\`."
               echo ""
             fi
             echo "Full changelog: [MacOS/RELEASE_NOTES.md](https://github.com/vanich-git/MelonTools/blob/main/MacOS/RELEASE_NOTES.md)."

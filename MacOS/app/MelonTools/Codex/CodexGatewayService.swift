@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CryptoKit
+import os
 
 /// Manages the local Codex API gateway (CLIProxyAPI sidecar) — a single shared service.
 ///
@@ -12,6 +13,8 @@ import CryptoKit
 @MainActor
 final class CodexGatewayService: ObservableObject {
     static let shared = CodexGatewayService()
+
+    private static let logger = Logger(subsystem: "dev.melontools.app", category: "Gateway")
 
     enum Status: Equatable {
         case stopped
@@ -630,6 +633,7 @@ final class CodexGatewayService: ObservableObject {
         adopted = false
         requests = []
         status = .stopped
+        Self.logger.info("gateway stopped")
     }
 
     /// Blocking stop used at app termination (SIGTERM → wait → SIGKILL).
@@ -952,6 +956,7 @@ final class CodexGatewayService: ObservableObject {
     }
 
     private func finishWithFailure(_ message: String) {
+        Self.logger.error("gateway failed: \(message, privacy: .public)")
         startupProbeTask?.cancel()
         startupProbeTask = nil
         status = .failed(message)
@@ -1322,7 +1327,7 @@ final class CodexGatewayService: ObservableObject {
             removePIDFile()
             return
         }
-        try? String(pid).write(toFile: pidPath, atomically: true, encoding: .utf8)
+        try? SecureFile.write(String(pid), to: URL(fileURLWithPath: pidPath))
     }
 
     private func readPIDFile() -> pid_t? {

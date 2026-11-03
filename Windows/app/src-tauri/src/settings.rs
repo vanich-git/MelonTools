@@ -65,6 +65,9 @@ pub struct Settings {
     pub notify_scheduler: bool,
     /// Toast when a blocked account becomes usable after a refresh.
     pub notify_quota_reset: bool,
+    /// Status island above the screen. Default on.
+    #[serde(default = "default_island_visible")]
+    pub island_visible: bool,
     /// Dashboard 2.0 card visibility. Default on.
     pub dashboard_show_pool_health: bool,
     pub dashboard_show_quota_trends: bool,
@@ -89,6 +92,10 @@ pub struct Settings {
     /// Set when a newer build owns the file; never serialized.
     #[serde(skip)]
     pub schema_error: Option<String>,
+}
+
+fn default_island_visible() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -120,6 +127,7 @@ impl Default for Settings {
             notify_low_quota: true,
             notify_scheduler: true,
             notify_quota_reset: true,
+            island_visible: true,
             dashboard_show_pool_health: true,
             dashboard_show_quota_trends: true,
             dashboard_show_spend: true,

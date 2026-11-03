@@ -67,7 +67,12 @@ def main() -> int:
         # The table file mentions L("...") only in the translator comment.
         if path == L10N:
             continue
-        text = path.read_text(encoding="utf-8")
+        # exFAT volumes (the Z Slim checkout) add AppleDouble `._name.swift`
+        # sidecars next to every source. They are binary, so a strict UTF-8
+        # read aborts the lint locally while the APFS CI runner stays green.
+        if path.name.startswith("._"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
         for match in CALL.finditer(text):
             literal = match.group(1)
             key = swift_string('"' + literal + '"')

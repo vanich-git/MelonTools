@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Melon HUD</title>
+  <link rel="stylesheet" href="island.css" />
+</head>
+<body>
+  <div id="island" class="island">
+    <div class="compact">
+      <span class="dot" id="compact-dot"></span>
+      <span class="small">5 ч</span>
+      <span class="quota-mini" id="compact-quota">—</span>
+      <span class="due" id="compact-due" hidden></span>
+      <span class="count" id="compact-count">0</span>
+    </div>
+
+    <div class="expanded">
+      <header class="head">
+        <span class="dot" id="head-dot"></span>
+        <span class="brand">Melon Tools</span>
+        <span class="grow"></span>
+        <span class="state" id="head-state">—</span>
+        <span class="port" id="head-port">· 18317</span>
+      </header>
+      <div class="line"></div>
+
+      <div class="body">
+        <div class="pool-head">
+          <span class="pool-title" id="pool-title">Пул Codex</span>
+          <span class="accounts" id="pool-accounts">Аккаунтов в пуле: 0</span>
+        </div>
+        <div class="pool-row">
+          <span class="quota" id="pool-quota">—</span>
+          <span class="unit" id="pool-unit">5 ч</span>
+          <span class="grow"></span>
+          <span class="week" id="pool-week">Неделя —</span>
+        </div>
+        <div class="meter"><div class="meter-fill" id="pool-meter"></div></div>
+
+        <div class="tiles">
+          <div class="tile">
+            <span class="tile-title">Antigravity</span>
+            <span class="tile-value" id="antigravity-count">0</span>
+            <span class="tile-detail" id="antigravity-detail">—</span>
+          </div>
+          <div class="tile">
+            <span class="tile-title" id="providers-title">Провайдеры</span>
+            <span class="tile-value" id="providers-count">0</span>
+            <span class="tile-detail" id="providers-detail">Подключено</span>
+          </div>
+        </div>
+
+        <div class="schedule">
+          <span class="ico" id="schedule-icon"></span>
+          <span class="schedule-title" id="schedule-title">Планировщик</span>
+          <span class="grow"></span>
+          <span class="schedule-state" id="schedule-state">Нет задач</span>
+        </div>
+      </div>
+
+      <div class="line"></div>
+      <div class="actions">
+        <button class="btn primary" data-act="open" type="button">
+          <span class="ico" id="open-icon"></span>
+          <span id="open-label">Открыть</span>
+        </button>
+        <button class="btn" data-act="api" type="button">
+          <span class="ico" id="api-icon"></span>
+          <span id="api-label">Пауза</span>
+        </button>
+        <button class="btn" data-act="run" type="button">
+          <span class="ico" id="run-icon"></span>
+          <span id="run-label">Запустить</span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <script src="mt-bridge.js"></script>
+  <script src="island.js"></script>
+</body>
+</html>

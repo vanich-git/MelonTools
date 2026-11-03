@@ -849,7 +849,12 @@ pub fn probe_targets(models: Option<Vec<String>>, model: Option<String>) -> Vec<
 
 /// Lightweight health probe for a quarantined account: a model-list request
 /// must succeed before every first-token cooldown of the account is released.
-pub async fn probe_account(settings: &Settings, name: &str, auth_index: &str, models: &[String]) -> bool {
+pub async fn probe_account(
+    settings: &Settings,
+    name: &str,
+    auth_index: &str,
+    models: &[String],
+) -> bool {
     if models.is_empty() || auth_index.is_empty() {
         return false;
     }

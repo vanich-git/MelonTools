@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import os
 
 /// GitHub-based self-update: checks the latest release, downloads the macOS
 /// DMG, verifies SHA256 and hands the swap to a detached script that runs
@@ -13,6 +14,8 @@ import Foundation
 @MainActor
 final class UpdaterStore: ObservableObject {
     static let shared = UpdaterStore()
+
+    private static let logger = Logger(subsystem: "dev.melontools.app", category: "Updater")
 
     static let releaseAPI = URL(string: "https://api.github.com/repos/vanich-git/MelonTools/releases/latest")!
     nonisolated static let allowedHosts: Set<String> = [
@@ -80,7 +83,7 @@ final class UpdaterStore: ObservableObject {
     }
 
     /// Whether a non-manual check may hit the network. Pure so the periodic
-    /// timer cadence (6 h) and the daily throttle stay independently testable.
+    /// timer cadence (1 h) and the hourly throttle stay independently testable.
     nonisolated static func shouldCheckAutomatically(lastCheck: Date, now: Date) -> Bool {
         now.timeIntervalSince(lastCheck) > automaticCheckThrottle
     }
@@ -148,6 +151,7 @@ final class UpdaterStore: ObservableObject {
                 assetURL = nil
                 assetDigest = nil
                 phase = .upToDate(currentVersion)
+                Self.logger.info("up to date: \(self.currentVersion, privacy: .public)")
                 return
             }
             let assets = (json["assets"] as? [[String: Any]]) ?? []
@@ -163,8 +167,10 @@ final class UpdaterStore: ObservableObject {
             assetURL = url
             let digest = (asset["digest"] as? String)?.replacingOccurrences(of: "sha256:", with: "")
             assetDigest = (digest?.isEmpty == false) ? digest : nil
+            Self.logger.info("update available: \(version, privacy: .public)")
             phase = .available(version, notes.isEmpty ? L("No release notes.") : notes)
         } catch {
+            Self.logger.error("update check failed: \(error.localizedDescription, privacy: .public)")
             phase = .failed(error.localizedDescription)
         }
     }
@@ -199,6 +205,7 @@ final class UpdaterStore: ObservableObject {
                 throw UpdaterError.message(L("SHA256 check failed — the download was refused."))
             }
 
+            Self.logger.info("installing update")
             phase = .working(L("Installing the update…"))
             try Self.launchInstaller(dmg: dmgURL)
             // A presented SwiftUI sheet can veto termination, which leaves the

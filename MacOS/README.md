@@ -16,28 +16,53 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## What's new in 5.5.5
+
+- **Status island.** A borderless panel at the top of the screen follows the
+  camera cut-out. It rests as a compact pill or as one continuous black bar
+  with hourly and weekly totals beside the cut-out, and opens on hover into a
+  status card with the pool, Antigravity, providers, the scheduler and
+  Open / Pause API / Run.
+- **Correctness.** The side-by-side layout keeps its height on displays without
+  a notch, the island follows language changes, "Open" unminimises the main
+  window, and Start/Run have distinct Russian labels.
+- **Less work in the background.** Pointer tracking is throttled to 30 Hz and
+  stops when the island is hidden; the view redraws only when a visible value
+  changes.
+- **Build metadata.** macOS build 52; version metadata is aligned at 5.5.5.
+
+## Earlier: 5.0.1
+
+
+- **Antigravity controls on Windows work again.** The bridge whitelist rejected
+  pause, resume, priority, remove and probe; the command is allowed again.
+- **The quota guard backs off.** A blocked account is polled every 1.5 s only
+  while its window resets within five minutes; otherwise every 15 s. That
+  removes ~40 management requests a minute and ~30 MB of gateway log per day.
+- **A compact Antigravity card.** The "in the catalog, unavailable" list is
+  collapsed behind a row with a count; expanding it shows a bounded grid.
+- **Diagnostics.** Lifecycle, gateway and updater events go to the unified log.
+- **Build metadata.** macOS build 51; version metadata is aligned at 5.0.1.
+
 ## What's new in 5.0.0
 
-- **Liquid Glass interface.** The whole app is rebuilt on Apple's translucent
-  material language: a floating sidebar that hovers over the window instead of
-  sitting inside a fixed column, specular gradient borders, soft depth shadows
-  and a blurred backdrop behind every panel.
-- **Bento card grid.** Dashboard, Accounts, Providers, Scheduler, Settings and
-  the modal sheets are laid out as bento tiles with independent accents, so the
-  screen reads as a set of grouped blocks instead of one long list.
-- **Semantic multi-accent palette.** Green is no longer the only accent. Cyan
-  marks latency, network and Codex routing; amber marks the scheduler, primary
-  actions and updates; emerald marks healthy accounts and running services;
-  ruby marks quota exhaustion and errors; violet marks models and analytics.
-- **Glass buttons.** Primary, secondary and destructive actions share one
-  translucent pill with a specular edge, a prominence glow and an inline
-  spinner, replacing the old flat gold buttons everywhere.
-- **New identity.** The app icon and the in-app logo are the new amber melon
-  slice with a transparent background, used at every size from the Dock to the
-  sidebar header.
-- **Faster interface.** Cards and buttons use a translucent fill with a
-  specular border instead of a backdrop blur each, so scrolling and section
-  switches no longer allocate dozens of visual-effect views per screen.
+- **Flat dark canvas.** One `#111113` surface behind the sidebar and the board;
+  cards are `#1F1F22` plates with an 18 pt radius and a neutral hairline. The
+  coloured frames, radial glows, drop shadows and per-card backdrop blurs are
+  gone, which also removed the per-frame rasterisation that made long boards
+  stutter while scrolling.
+- **Floating sidebar.** Navigation sits on its own plate with a per-section
+  accent: the selected row takes a soft tint of that accent, a matching glyph
+  and a trailing dot; hover stays a neutral `white 6%` wash.
+- **Bento dashboard.** Two equal columns whose cards stretch to the row height,
+  plus new **Providers** and **Account pools** cards.
+- **Pool totals, not averages.** "Codex pool health" sums the remaining quota
+  across the pool: five accounts at 100% read **500% of 500%**.
+- **Status bar panel.** The menu extra drops the account list, uses SF Pro and
+  shows pool totals and a single gateway status line.
+- **Windows parity.** The Tauri shell ships the same palette, radii, plates and
+  summary maths; only the system font differs.
+- **New identity.** The amber melon-slice icon and the transparent logo.
 - **Build metadata.** macOS build 50; version metadata is aligned at 5.0.0.
 
 ## What's new in 4.0.1

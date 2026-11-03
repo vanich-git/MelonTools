@@ -751,9 +751,7 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.danger)
                 }
-                if !antigravityPool.catalogOnly.isEmpty {
-                    antigravityCatalogOnlyBlock
-                }
+                AntigravityCatalogOnlyBlock(models: antigravityPool.catalogOnly)
                 Text(L("The first-token timeout applies only to Antigravity accounts."))
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textTertiary)
@@ -942,33 +940,6 @@ struct CodexProvidersView: View {
                     .foregroundStyle(MTTheme.textTertiary)
             }
             Spacer(minLength: 0)
-        }
-    }
-
-    private var antigravityCatalogOnlyBlock: some View {
-        VStack(alignment: .leading, spacing: MTTheme.s1) {
-            Divider()
-            Text(L("In the catalog, unavailable to the account"))
-                .font(MTTheme.mono(9, weight: .semibold))
-                .foregroundStyle(MTTheme.textTertiary)
-            ForEach(antigravityPool.catalogOnly) { model in
-                HStack(spacing: MTTheme.s2) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 8, weight: .semibold))
-                    Text(model.displayName)
-                        .font(MTTheme.mono(9))
-                    Text(model.id)
-                        .font(MTTheme.mono(8))
-                        .foregroundStyle(MTTheme.textTertiary)
-                }
-                .foregroundStyle(MTTheme.textTertiary)
-            }
-            Text(L("The model is defined in the catalog, but none of the connected Google accounts is entitled to it."))
-                .font(MTTheme.mono(8))
-                .foregroundStyle(MTTheme.textTertiary)
-            Text(L("The gateway does not expose a weekly Antigravity window; only the current 5-hour window is shown."))
-                .font(MTTheme.mono(8))
-                .foregroundStyle(MTTheme.textTertiary)
         }
     }
 
@@ -1444,9 +1415,7 @@ struct CodexProvidersView: View {
                 Text(L("Antigravity models are served by the engine from the connected Google account."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textTertiary)
-                if !antigravityPool.catalogOnly.isEmpty {
-                    antigravityCatalogOnlyBlock
-                }
+                AntigravityCatalogOnlyBlock(models: antigravityPool.catalogOnly)
                 if let source = sources.antigravitySource {
                     modelBlock(source: source)
                 } else {
@@ -1831,6 +1800,68 @@ private extension CodexGatewayService.Status {
         case .starting: return .warn
         case .failed: return .error
         case .stopped: return .idle
+        }
+    }
+}
+
+/// Catalog models that no connected Antigravity account can use. Collapsed by
+/// default: a pool can list dozens of ids and would otherwise turn the
+/// provider card into a wall of unavailable names.
+private struct AntigravityCatalogOnlyBlock: View {
+    let models: [AntigravityCatalogOnlyModel]
+    @State private var expanded = false
+
+    var body: some View {
+        if models.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: MTTheme.s1) {
+                Divider()
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: MTTheme.s1) {
+                        Text(L("The model is defined in the catalog, but none of the connected Google accounts is entitled to it."))
+                            .font(MTTheme.mono(8))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ScrollView {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 210), spacing: MTTheme.s2, alignment: .leading)],
+                                alignment: .leading,
+                                spacing: 4
+                            ) {
+                                ForEach(models) { model in
+                                    HStack(spacing: MTTheme.s1) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 8, weight: .semibold))
+                                        Text(model.displayName)
+                                            .font(MTTheme.mono(9))
+                                        Text(model.id)
+                                            .font(MTTheme.mono(8))
+                                            .foregroundStyle(MTTheme.textTertiary)
+                                            .lineLimit(1)
+                                    }
+                                    .foregroundStyle(MTTheme.textTertiary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .frame(maxHeight: 170)
+                    }
+                    .padding(.top, MTTheme.s1)
+                } label: {
+                    HStack(spacing: MTTheme.s1) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(MTTheme.textTertiary)
+                        Text(L("In the catalog, unavailable to the account"))
+                            .font(MTTheme.mono(9, weight: .semibold))
+                            .foregroundStyle(MTTheme.textSecondary)
+                        Text("\(models.count)")
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                }
+            }
         }
     }
 }

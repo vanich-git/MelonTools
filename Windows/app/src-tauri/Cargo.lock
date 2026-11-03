@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "melontools"
-version = "5.0.0"
+version = "5.5.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

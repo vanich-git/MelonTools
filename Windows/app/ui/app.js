@@ -662,6 +662,8 @@ function actionArgs(action, el) {
     case "dashboardCardToggle":
     case "schedulerToggle":
       return [el.dataset.id, !!el.checked];
+    case "islandToggle":
+      return [!!el.checked];
     case "notifyToggle":
     case "autostartToggle":
       return [!!el.checked];

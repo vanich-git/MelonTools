@@ -1674,6 +1674,11 @@ function settingsPage() {
   </div>
 
   <div class="card">
+    <h2>${t("statusIsland")}</h2>
+    <label class="card-toggle"><input type="checkbox" ${settings.islandVisible !== false ? "checked" : ""} data-action="islandToggle" data-on="change"> ${t("showStatusIsland")}</label>
+  </div>
+
+  <div class="card">
     <h2>${t("dashboardWidgets")}</h2>
     <div class="stack" style="gap:6px">
       <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowPoolHealth !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowPoolHealth" data-on="change"> ${t("showPoolHealth")}</label>

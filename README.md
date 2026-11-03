@@ -65,7 +65,7 @@ The universal build runs on Apple Silicon and Intel Macs with macOS 14 (Sonoma) 
 
 1. Download the **[installer](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-setup.exe)** and choose any writable folder, or use the **[portable build](https://github.com/vanich-git/MelonTools/releases/latest/download/MelonTools-win-x64-portable.exe)** without installing.
 2. Requires Windows 10 (1809) or later, x64, and the WebView2 Runtime (already present on current Windows).
-3. The app is not Authenticode-signed yet, so SmartScreen may show *Windows protected your PC*. Choose **More info → Run anyway** after verifying the checksum.
+3. The app is not Authenticode-signed yet, so Windows Defender SmartScreen may show *Windows protected your PC*. Choose **More info → Run anyway** after verifying the checksum.
 
 Your data lives in `%APPDATA%\MelonTools` and survives an uninstall.
 
@@ -78,7 +78,26 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.0.0
+## What's new in 5.5.5
+
+- **Status island.** A borderless panel at the top of the screen follows the camera cut-out on macOS and the top centre on Windows. It rests as a compact pill (or as one continuous black bar with 5-hour and weekly totals beside the cut-out) and opens on hover into a status card with the Codex pool, Antigravity, providers, the scheduler and Open / Pause API / Run actions.
+- **Island correctness.** The side-by-side layout stays visible on displays without a notch, the island follows language changes, "Open" unminimises the main window, and Start/Run no longer share the same Russian label.
+- **Quieter island.** Pointer tracking is throttled to 30 Hz and stops when the island is hidden; the macOS view now redraws only when a visible value changes instead of on every QoS sample.
+- **Windows island.** The status payload is cached for four seconds, the scheduler no longer blocks the Run button until a task finishes, polling pauses while the island is hidden, and the window is only created when the setting is on.
+- **Build metadata.** macOS build 52 and Windows 5.5.5.
+
+## Earlier: 5.0.1
+
+
+- **Antigravity controls on Windows work again.** Pause, resume, priority, remove and probe were rejected by the IPC bridge; the command is allowed again.
+- **The quota guard backs off.** A blocked account is polled every 1.5 s only while its window resets within five minutes; otherwise every 15 s. That removes ~40 management requests a minute, ~30 MB of gateway log per day, and the daily log-rotation restart.
+- **A compact Antigravity card.** The "in the catalog, unavailable" model list is collapsed behind a row with a count; expanding it shows a bounded grid, so the card keeps its size.
+- **Diagnostics.** Startup, gateway and updater events go to the unified log.
+- **Docs and manifests.** `packaging/README.md` and `docs/SECURITY-MODEL.md` match 5.0.1, the dead commands are gone, and `cargo fmt --check` is clean.
+
+Full changelog: [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+## Earlier: 5.0.0
 
 - **Flat dark canvas.** One `#111113` surface behind the sidebar and the board; cards are `#1F1F22` plates with an 18 pt radius and a neutral hairline. Coloured frames, glows, shadows and per-card blurs are gone, so long boards no longer stutter while scrolling.
 - **Floating sidebar.** A selected row takes a soft tint of its section accent, a matching glyph and a trailing dot; hover stays a neutral wash.

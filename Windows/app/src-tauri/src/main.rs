@@ -34,6 +34,7 @@ mod vault;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
@@ -46,6 +47,10 @@ pub struct AppState {
     /// Last validated `update_check` result. `update_apply` uses only this
     /// copy and never trusts renderer-supplied URL/digest.
     pub update: Mutex<Option<updater::UpdateInfo>>,
+    /// Cached status-island payload. The renderer polls it every few seconds;
+    /// without this each poll re-reads the vault and parses the full scheduler
+    /// history.
+    pub island: Mutex<Option<(Instant, Value)>>,
 }
 
 /// Keeps the local engine alive: after we started (or adopted) the gateway,
@@ -155,6 +160,9 @@ async fn settings_set(
     }
     settings::carry_provider_models(&mut merged, &old);
     settings::save(&merged)?;
+    if let Ok(mut guard) = state.island.lock() {
+        *guard = None;
+    }
     proxy::configure(&merged);
     if let Ok(mut guard) = state.settings.lock() {
         *guard = merged.clone();
@@ -165,6 +173,18 @@ async fn settings_set(
     }
     if old.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
+    }
+    if merged.island_visible {
+        if let Some(window) = app
+            .get_webview_window("island")
+            .or_else(|| build_island_window(&app))
+        {
+            let _ = window.emit("island-visibility", true);
+            let _ = window.show();
+        }
+    } else if let Some(window) = app.get_webview_window("island") {
+        let _ = window.emit("island-visibility", false);
+        let _ = window.hide();
     }
     if was_running && old.port != merged.port {
         let _ = stop_gateway(state.inner()).await;
@@ -1489,12 +1509,6 @@ async fn claude_usage(state: State<'_, AppState>) -> Result<Value, String> {
     providers::claude(&settings).await
 }
 
-/// Refreshes one credential (`name`) or all of them.
-#[tauri::command]
-async fn claude_refresh(state: State<'_, AppState>, name: Option<String>) -> Result<Value, String> {
-    management(&state)?.refresh(name.as_deref()).await
-}
-
 /// Disconnects every Claude account: removes ALL engine-written
 /// `claude-*.json` auth files (the engine hot-reloads the auth dir) and
 /// reports what is left. There is no per-account selection here.
@@ -1562,18 +1576,6 @@ async fn antigravity_models(state: State<'_, AppState>) -> Result<Value, String>
 async fn antigravity_metrics(state: State<'_, AppState>) -> Result<Value, String> {
     let settings = state.settings();
     providers::antigravity(&settings).await
-}
-
-/// Refreshes one credential (`name`) or all of them. Failures come back as
-/// `{ "ok": false }` instead of an error.
-#[tauri::command]
-async fn antigravity_refresh(
-    state: State<'_, AppState>,
-    name: Option<String>,
-) -> Result<Value, String> {
-    Ok(antigravity_management(&state)?
-        .refresh(name.as_deref())
-        .await)
 }
 
 /// Disconnects every Antigravity account: removes only the engine-written
@@ -1878,6 +1880,215 @@ fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
     tray.set_menu(Some(build_tray_menu(app, lang)?))
 }
 
+// MARK: - Status island
+
+/// Resting size of the island. The card keeps the same height in both states
+/// and only widens when it opens.
+const ISLAND_WIDTH: f64 = 185.0;
+const ISLAND_COMPACT_HEIGHT: f64 = 30.0;
+
+/// Centres the island on the primary monitor, flush with the top of its work
+/// area, and applies the requested logical size.
+fn place_island(app: &tauri::AppHandle, width: f64, height: f64) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("island") else {
+        return Ok(());
+    };
+    let Some(monitor) = app.primary_monitor()? else {
+        return Ok(());
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    window.set_size(tauri::LogicalSize::new(width, height))?;
+    let pixel_width = (width * scale).round() as i32;
+    let max_x = area.position.x + area.size.width as i32 - pixel_width;
+    let x = (area.position.x + (area.size.width as i32 - pixel_width) / 2)
+        .clamp(area.position.x, max_x.max(area.position.x));
+    window.set_position(tauri::PhysicalPosition::new(x, area.position.y))?;
+    Ok(())
+}
+
+fn build_island_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "island",
+        tauri::WebviewUrl::App("island.html".into()),
+    )
+    .title("Melon HUD")
+    .inner_size(ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .resizable(false)
+    .visible(false)
+    .build();
+    let window = match window {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("island window: {error}");
+            return None;
+        }
+    };
+    // A click on the island must not pull focus out of the app the user is
+    // working in; WS_EX_NOACTIVATE still lets the webview receive the click.
+    let _ = window.set_focusable(false);
+    let _ = place_island(app, ISLAND_WIDTH, ISLAND_COMPACT_HEIGHT);
+    Some(window)
+}
+
+/// Every upstream the gateway can use, matching the dashboard's count.
+fn island_provider_count(settings: &settings::Settings, codex_accounts: usize) -> usize {
+    let mut count = 0;
+    if settings.openrouter_enabled && !settings.openrouter_key.is_empty() {
+        count += 1;
+    }
+    if settings.opencode_enabled && !settings.opencode_key.is_empty() {
+        count += 1;
+    }
+    if settings.deepinfra_enabled && !settings.deepinfra_key.is_empty() {
+        count += 1;
+    }
+    if settings.vercel_enabled && !settings.vercel_key.is_empty() {
+        count += 1;
+    }
+    if settings.zai_enabled && !settings.zai_key.is_empty() {
+        count += 1;
+    }
+    if settings.claude_enabled {
+        count += 1;
+    }
+    if codex_accounts > 0 {
+        count += 1;
+    }
+    count
+}
+
+/// Everything the island renders, in one round trip.
+///
+/// The renderer polls this every few seconds. A short cache keeps the disk and
+/// the health probe out of that loop; the payload contains only counts, never
+/// tokens.
+#[tauri::command]
+async fn island_snapshot(state: State<'_, AppState>) -> Result<Value, String> {
+    if let Ok(guard) = state.island.lock() {
+        if let Some((at, value)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(4) {
+                return Ok(value.clone());
+            }
+        }
+    }
+    let value = build_island_snapshot(state.inner()).await;
+    if let Ok(mut guard) = state.island.lock() {
+        *guard = Some((Instant::now(), value.clone()));
+    }
+    Ok(value)
+}
+
+async fn build_island_snapshot(state: &AppState) -> Value {
+    let settings = state.settings();
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    let accounts = vault::list_views();
+    let hourly: Vec<f64> = accounts
+        .iter()
+        .filter_map(|account| account.get("hourlyRemaining").and_then(Value::as_f64))
+        .collect();
+    let weekly: Vec<f64> = accounts
+        .iter()
+        .filter_map(|account| account.get("weeklyRemaining").and_then(Value::as_f64))
+        .collect();
+    let summary = scheduler::summary();
+    json!({
+        "lang": settings.lang,
+        "gateway": { "running": running, "port": settings.port },
+        "codex": {
+            "accounts": accounts.len(),
+            "hourly": if hourly.is_empty() { Value::Null } else { Value::from(hourly.iter().sum::<f64>()) },
+            "weekly": if weekly.is_empty() { Value::Null } else { Value::from(weekly.iter().sum::<f64>()) },
+            "max": (accounts.len() as f64) * 100.0,
+        },
+        "antigravity": { "accounts": antigravity::auth_files().len() },
+        "scheduler": {
+            "due": summary.get("dueCount").cloned().unwrap_or(json!(0)),
+            "nextRunAt": summary.get("nextRunAt").cloned().unwrap_or(Value::Null),
+            "running": summary.get("running").cloned().unwrap_or(Value::Null),
+        },
+        "providers": island_provider_count(&settings, accounts.len()),
+    })
+}
+
+#[tauri::command]
+fn island_resize(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let width = width.clamp(120.0, 720.0);
+    let height = height.clamp(24.0, 480.0);
+    place_island(&app, width, height).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn island_reposition(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("island") else {
+        return Ok(());
+    };
+    let size = window.inner_size().map_err(|error| error.to_string())?;
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let logical = size.to_logical::<f64>(scale);
+    place_island(&app, logical.width, logical.height).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn island_open_main(app: tauri::AppHandle) {
+    show_main_window(&app);
+}
+
+#[tauri::command]
+async fn island_toggle_api(state: State<'_, AppState>) -> Result<Value, String> {
+    if let Ok(mut guard) = state.island.lock() {
+        *guard = None;
+    }
+    let settings = state.settings();
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    let user_stopped = state
+        .watchdog
+        .lock()
+        .map(|guard| guard.user_stopped)
+        .unwrap_or(false);
+    match api_toggle_action(running, user_stopped) {
+        ApiToggle::Start => {
+            let _ = start_gateway(state.inner()).await;
+        }
+        ApiToggle::Stop => {
+            let _ = stop_gateway(state.inner()).await;
+        }
+    }
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    if let Ok(mut guard) = state.island.lock() {
+        *guard = None;
+    }
+    Ok(json!({ "running": running }))
+}
+
+#[tauri::command]
+async fn island_run_next(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let settings = state.settings();
+    let store = scheduler::load();
+    let Some(task) = scheduler::due_task(&store, scheduler::now_secs()) else {
+        return Ok(json!({ "ran": false }));
+    };
+    let id = task.id.clone();
+    let task_id = id.clone();
+    if let Ok(mut guard) = state.island.lock() {
+        *guard = None;
+    }
+    tauri::async_runtime::spawn(async move {
+        let _ = scheduler::run_now(&settings, &task_id, &app).await;
+    });
+    Ok(json!({ "ran": true, "id": id }))
+}
+
 fn main() {
     // Installer uninstall hook: restore Codex's config while the exe still
     // exists, so a removed app does not leave Codex pointed at a dead port.
@@ -1887,6 +2098,7 @@ fn main() {
     }
     let initial_settings = settings::load();
     let initial_lang = initial_settings.lang.clone();
+    let island_visible = initial_settings.island_visible;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1902,6 +2114,7 @@ fn main() {
             settings: Mutex::new(initial_settings),
             watchdog: Mutex::new(Watchdog::default()),
             update: Mutex::new(None),
+            island: Mutex::new(None),
         })
         .setup(move |app| {
             // System tray: window, scheduler navigation, run-next, API
@@ -1932,6 +2145,12 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            if island_visible {
+                if let Some(island) = build_island_window(app.handle()) {
+                    let _ = island.show();
+                }
+            }
 
             // Auto-start the gateway, point Codex at it, then keep the chips
             // bridge ticking every 5 seconds.
@@ -2033,7 +2252,6 @@ fn main() {
             let live_quota_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     let state = live_quota_handle.state::<AppState>();
                     // Do not poll the management API while the engine is
                     // stopped. `child_running` covers engines we spawned;
@@ -2049,10 +2267,16 @@ fn main() {
                         .map(|watchdog| watchdog.health_ok)
                         .unwrap_or(false);
                     if !state.gw.child_running() && !(supervised && healthy) {
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                         continue;
                     }
                     let settings = state.settings();
-                    live_quota::tick(&settings).await;
+                    let fast = live_quota::tick(&settings).await;
+                    // 1.5 s only while a blocked window is about to reset;
+                    // otherwise this guard would hit the management API and
+                    // the gateway log 40 times a minute for days.
+                    let delay = if fast { 1_500 } else { 15_000 };
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }
             });
             Ok(())
@@ -2142,7 +2366,6 @@ fn main() {
             claude_credentials,
             claude_models,
             claude_usage,
-            claude_refresh,
             claude_disconnect,
             antigravity_login_start,
             antigravity_login_status,
@@ -2150,10 +2373,15 @@ fn main() {
             antigravity_credentials,
             antigravity_models,
             antigravity_metrics,
-            antigravity_refresh,
             antigravity_disconnect,
             antigravity_account_action,
             open_url,
+            island_snapshot,
+            island_resize,
+            island_reposition,
+            island_open_main,
+            island_toggle_api,
+            island_run_next,
         ])
         .run(tauri::generate_context!())
         .expect("Melon Tools failed to start");
