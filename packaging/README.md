@@ -23,8 +23,8 @@ does fail the release.
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
 | macOS DMG | `MelonTools-5.5.8.dmg` | `9567211bedb1b714bae44ad6d3df3fffb9271dbbc09d74275384575359b50bc4` |
-| Windows installer | `MelonTools-5.5.8-setup.exe` | `a50ceafe2607491c874481c469a13c0ff802184ab9f35cf45706fbd1df643d1c` |
-| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `8130aa40bf576a281a7b47492895bf8e361c93e4c5a217fc0cc89b7d2e68b3ed` |
+| Windows installer | `MelonTools-5.5.8-setup.exe` | `2c4a77f2e96b0faababa51d484f5d88c9f9332df1ec29b16bbd98a6793cd57b7` |
+| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `08f45d72e461aab69f47c8429f3bc6ce4757c4d7875bdb8e6e6ff60588efcadb` |
 
 5.5.8 makes Windows expansion reliable: the compact pill and the 420×242 card
 are separate native windows, so showing the card never asks WebView2 to resize

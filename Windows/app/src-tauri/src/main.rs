@@ -1978,17 +1978,23 @@ fn emit_island_visibility(app: &tauri::AppHandle, visible: bool) {
 
 fn set_island_visible(app: &tauri::AppHandle, visible: bool) {
     if visible {
-        if let Some(compact) = app
-            .get_webview_window("island")
-            .or_else(|| build_island_window(app))
-        {
-            let _ = compact.show();
-        }
         if app.get_webview_window("island-panel").is_none() {
             let _ = build_island_panel(app);
         }
-        if let Some(panel) = app.get_webview_window("island-panel") {
-            let _ = panel.hide();
+        let panel_open = app
+            .get_webview_window("island-panel")
+            .and_then(|panel| panel.is_visible().ok())
+            .unwrap_or(false);
+        if !panel_open {
+            if let Some(compact) = app
+                .get_webview_window("island")
+                .or_else(|| build_island_window(app))
+            {
+                let _ = compact.show();
+            }
+            if let Some(panel) = app.get_webview_window("island-panel") {
+                let _ = panel.hide();
+            }
         }
     } else {
         for label in ["island", "island-panel"] {

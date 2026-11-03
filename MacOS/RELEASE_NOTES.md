@@ -5,6 +5,9 @@ Windows expansion reliability fix.
 - **Second window instead of resize.** The compact pill and the 420×242 card
   are separate native windows. Clicking the pill shows the card and hides the
   pill, so no WebView2 surface resize can leave an empty compact strip.
+- **CSS collision fixed.** `.expanded` also matched `<body>`, hiding the whole
+  panel document. The body state is now `island-open`, and the hide rule is
+  scoped to `.island > .expanded`.
 - **15-second auto-fold.** Leaving the open card starts the timer, returning
   cancels it, Escape closes immediately.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.

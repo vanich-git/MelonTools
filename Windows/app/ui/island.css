@@ -46,10 +46,10 @@ body {
   margin-left: auto;
 }
 
-.expanded { display: none; }
+.island > .expanded { display: none; }
 
-body.expanded .compact { display: none; }
-body.expanded .expanded {
+body.island-open .compact { display: none; }
+body.island-open .island > .expanded {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -301,7 +301,7 @@ body.expanded .expanded {
 
 /* Expand / collapse: the native window resizes once (with one safety retry),
    and the card fades and lifts a few pixels so the change reads as one motion. */
-body.expanded .expanded {
+body.island-open .island > .expanded {
   animation: island-open 0.18s ease-out both;
 }
 

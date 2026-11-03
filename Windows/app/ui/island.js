@@ -8,7 +8,7 @@
   var api = window.melon;
   var mode = window.__melonMode === "expanded" ? "expanded" : "compact";
   var expanded = mode === "expanded";
-  if (expanded) document.body.classList.add("expanded");
+  if (expanded) document.body.classList.add("island-open");
   var snap = null;
   var lang = "ru";
   var active = true;
@@ -222,7 +222,7 @@
     if (!api || !api.available) return;
     var island = $("island");
     if (mode === "expanded") {
-      document.body.classList.add("expanded");
+      document.body.classList.add("island-open");
       island.addEventListener("mouseenter", stopAutoCollapse);
       island.addEventListener("mouseleave", scheduleAutoCollapse);
       document.addEventListener("keydown", function (event) {

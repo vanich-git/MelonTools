@@ -80,7 +80,8 @@ certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 
 ## What's new in 5.5.8
 
-- **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved, so the card cannot stay compact or vanish.
+- **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved.
+- **CSS state collision fixed.** The old `.expanded` rule also matched `<body>`, so the whole panel document painted nothing. The body state is now `island-open` and the hide rule is scoped to `.island > .expanded`.
 - **15-second auto-fold** is unchanged: leaving the open card starts the timer, returning cancels it, Escape closes immediately.
 - **Build metadata.** macOS build 55 and Windows 5.5.8.
 
