@@ -139,7 +139,7 @@ LSREG=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/La
       case "$stale" in
         /Volumes/dmg.*|*/Library/Developer/*|*/dmg-stage/*) "$LSREG" -u "$stale" >/dev/null 2>&1 || true ;;
       esac
-    done
+    done || true
 
 cp "$DMG" "$ROOT/"
 echo "copied to $ROOT/"
