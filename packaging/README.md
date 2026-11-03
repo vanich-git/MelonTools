@@ -22,9 +22,9 @@ does fail the release.
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.5.5.dmg` | `47c47749254737f70f0571a553c645cc0365c9a006ac185bb92ad72fe3097774` |
-| Windows installer | `MelonTools-5.5.5-setup.exe` | `f3fd9d3814cff1df6176ac0e451552fe1e79b239abef3cab3b6e000e9181e051` |
-| Windows portable | `MelonTools-5.5.5-win-x64-portable.exe` | `d231856d4472a9c01324a833b332a942e5949eb3a837c831acc7cf697be7f983` |
+| macOS DMG | `MelonTools-5.5.5.dmg` | `920280ccdf2da27ccfc61818f7985cfef15ab48f9371be4be658f3d80e869a88` |
+| Windows installer | `MelonTools-5.5.5-setup.exe` | `f13c05aa1e22d59acfce45eb997367d61702c7830529e2d95da3a36f9f8a68de` |
+| Windows portable | `MelonTools-5.5.5-win-x64-portable.exe` | `eeaf9d42ffca809ecc1a5395ac05ae11aa49f7aa8f577087e6ad1d7031e86da0` |
 
 5.5.5 adds the status island to macOS and Windows, fixes the side-by-side
 layout on displays without a notch, and removes the background polling and
