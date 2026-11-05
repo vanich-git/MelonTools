@@ -151,28 +151,71 @@ pub fn cached_from_check(result: &Value) -> Option<UpdateInfo> {
     Some(info)
 }
 
-/// Numeric per-segment comparison: 1.4.10 > 1.4.9; "1.4" <= "1.4.0".
-pub fn version_is_newer(candidate: &str, current: &str) -> bool {
-    let left: Vec<&str> = candidate.split('.').collect();
-    let right: Vec<&str> = current.split('.').collect();
-    let count = left.len().max(right.len());
-    for index in 0..count {
-        let l = left.get(index).copied().unwrap_or("0");
-        let r = right.get(index).copied().unwrap_or("0");
-        match (l.parse::<u64>(), r.parse::<u64>()) {
-            (Ok(ln), Ok(rn)) => {
-                if ln != rn {
-                    return ln > rn;
-                }
-            }
-            _ => {
-                if l != r {
-                    return l > r;
-                }
-            }
+/// Splits `1.2.3-rc.4+build` into numeric core segments and pre-release
+/// identifiers. Build metadata is dropped: SemVer ignores it for precedence.
+fn version_parts(text: &str) -> (Vec<u64>, Vec<String>) {
+    let trimmed = text.trim();
+    let without_build = trimmed.split('+').next().unwrap_or(trimmed);
+    let (core, pre) = match without_build.split_once('-') {
+        Some((core, pre)) => (core, pre),
+        None => (without_build, ""),
+    };
+    let core = core
+        .split('.')
+        .map(|segment| segment.trim().parse::<u64>().unwrap_or(0))
+        .collect();
+    let pre = if pre.is_empty() {
+        Vec::new()
+    } else {
+        pre.split('.').map(str::to_string).collect()
+    };
+    (core, pre)
+}
+
+/// SemVer pre-release precedence: no pre-release outranks any pre-release,
+/// numeric identifiers compare numerically (`rc.10` > `rc.9`), a numeric
+/// identifier ranks below an alphanumeric one, and the shorter list wins when
+/// every shared identifier is equal.
+fn compare_prerelease(left: &[String], right: &[String]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        (false, false) => {}
+    }
+    for index in 0..left.len().max(right.len()) {
+        let (Some(l), Some(r)) = (left.get(index), right.get(index)) else {
+            return left.len().cmp(&right.len());
+        };
+        let ordering = match (l.parse::<u64>(), r.parse::<u64>()) {
+            (Ok(ln), Ok(rn)) => ln.cmp(&rn),
+            (Ok(_), Err(_)) => Ordering::Less,
+            (Err(_), Ok(_)) => Ordering::Greater,
+            (Err(_), Err(_)) => l.cmp(r),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
         }
     }
-    false
+    Ordering::Equal
+}
+
+/// SemVer comparison: `1.4.10 > 1.4.9`, `1.4 == 1.4.0`, and a final release
+/// outranks its own pre-release (`6.0.0 > 6.0.0-rc.1`) — without that, a build
+/// published as `-rc.N` never sees the stable release it belongs to.
+pub fn version_is_newer(candidate: &str, current: &str) -> bool {
+    let (candidate_core, candidate_pre) = version_parts(candidate);
+    let (current_core, current_pre) = version_parts(current);
+    let count = candidate_core.len().max(current_core.len());
+    for index in 0..count {
+        let l = candidate_core.get(index).copied().unwrap_or(0);
+        let r = current_core.get(index).copied().unwrap_or(0);
+        if l != r {
+            return l > r;
+        }
+    }
+    compare_prerelease(&candidate_pre, &current_pre) == std::cmp::Ordering::Greater
 }
 
 /// First token of a `.sha256` file, when it is a 64-char hex string.
@@ -288,11 +331,18 @@ pub async fn check(force: bool, current: &str, last_check: Option<i64>) -> Resul
         if asset_url.is_empty() || !allowed(&asset_url) {
             return Err("в этом релизе нет сборки для Windows".to_string());
         }
+        // Older releases have no `digest` in the API payload. Their `.sha256`
+        // sidecar is the same checksum: resolve it now so the cached update is
+        // applicable, instead of offering a button that `update_apply` refuses.
+        if digest.is_none() {
+            digest = expected_digest(&asset_url, None).await;
+        }
     }
 
     Ok(json!({
         "skipped": false,
         "version": version,
+        "current": current,
         "tag": tag,
         "newer": newer,
         "notes": notes,
@@ -368,7 +418,7 @@ pub fn spawn_swapper(new_exe: &Path, current_exe: &Path, pid: u32) -> Result<Pat
     let script = dir.join("swap.ps1");
     let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
     let content = format!(
-        "$ErrorActionPreference = 'Stop'\r\n         $pidToWait = {pid}\r\n         $new = {new}\r\n         $cur = {cur}\r\n         $backup = \"$cur.melon-old\"\r\n         $deadline = (Get-Date).AddSeconds(90)\r\n         while ((Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\r\n         try {{\r\n           if (Test-Path -LiteralPath $cur) {{ Copy-Item -LiteralPath $cur -Destination $backup -Force }}\r\n           Copy-Item -LiteralPath $new -Destination $cur -Force\r\n           Start-Process -FilePath $cur\r\n           Start-Sleep -Seconds 3\r\n           if (-not (Get-Process -Name (Split-Path $cur -Leaf).Replace('.exe','') -ErrorAction SilentlyContinue)) {{ throw 'new executable did not start' }}\r\n           Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue\r\n         }} catch {{\r\n           if (Test-Path -LiteralPath $backup) {{ Copy-Item -LiteralPath $backup -Destination $cur -Force }}\r\n           exit 1\r\n         }} finally {{\r\n           Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue\r\n           Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n         }}\r\n",
+        "$ErrorActionPreference = 'Stop'\r\n         $pidToWait = {pid}\r\n         $new = {new}\r\n         $cur = {cur}\r\n         $backup = \"$cur.melon-old\"\r\n         $deadline = (Get-Date).AddSeconds(90)\r\n         while ((Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\r\n         try {{\r\n           if (Test-Path -LiteralPath $cur) {{ Copy-Item -LiteralPath $cur -Destination $backup -Force }}\r\n           Copy-Item -LiteralPath $new -Destination $cur -Force\r\n           Start-Process -FilePath $cur\r\n           Start-Sleep -Seconds 3\r\n           if (-not (Get-Process -Name (Split-Path $cur -Leaf).Replace('.exe','') -ErrorAction SilentlyContinue)) {{ throw 'new executable did not start' }}\r\n           Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue\r\n         }} catch {{\r\n           if (Test-Path -LiteralPath $backup) {{ Copy-Item -LiteralPath $backup -Destination $cur -Force }}\r\n           if (Test-Path -LiteralPath $cur) {{ Start-Process -FilePath $cur }}\r\n           exit 1\r\n         }} finally {{\r\n           Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue\r\n           Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\r\n         }}\r\n",
         pid = pid,
         new = quote(new_exe),
         cur = quote(current_exe)
@@ -417,6 +467,22 @@ mod tests {
         assert!(!version_is_newer("1.4", "1.4.0"));
         assert!(version_is_newer("1.4.1", "1.4"));
         assert!(!version_is_newer("1.4.8", "1.4.8"));
+    }
+
+    /// Released builds carry a `-rc.N` suffix, so the comparison has to follow
+    /// SemVer precedence: a final release outranks its own pre-releases, and
+    /// `rc.10` outranks `rc.9`.
+    #[test]
+    fn version_comparison_handles_prereleases() {
+        assert!(version_is_newer("6.0.0", "6.0.0-rc.1"));
+        assert!(!version_is_newer("6.0.0-rc.1", "6.0.0"));
+        assert!(version_is_newer("6.0.0-rc.2", "6.0.0-rc.1"));
+        assert!(version_is_newer("6.0.0-rc.10", "6.0.0-rc.9"));
+        assert!(!version_is_newer("6.0.0-rc.1", "6.0.0-rc.1"));
+        assert!(version_is_newer("6.0.1", "6.0.0-rc.1"));
+        assert!(!version_is_newer("5.5.7", "6.0.0-rc.1"));
+        assert!(version_is_newer("6.0.0", "6.0.0-beta.2"));
+        assert!(version_is_newer("6.0.0-beta.2", "6.0.0-alpha.10"));
     }
 
     #[test]

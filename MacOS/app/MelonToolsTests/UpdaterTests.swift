@@ -19,6 +19,21 @@ final class UpdaterTests: XCTestCase {
         XCTAssertTrue(UpdaterStore.Version.isNewer("1.4.1", than: "1.4"))
     }
 
+    /// Released builds carry a `-rc.N` suffix, so precedence has to follow
+    /// SemVer: a final release outranks its own pre-releases.
+    func testPrereleasesRankBelowTheirFinalRelease() {
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0", than: "6.0.0-rc.1"))
+        XCTAssertFalse(UpdaterStore.Version.isNewer("6.0.0-rc.1", than: "6.0.0"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-rc.2", than: "6.0.0-rc.1"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-rc.10", than: "6.0.0-rc.9"))
+        XCTAssertFalse(UpdaterStore.Version.isNewer("6.0.0-rc.1", than: "6.0.0-rc.1"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.1", than: "6.0.0-rc.1"))
+        XCTAssertFalse(UpdaterStore.Version.isNewer("5.5.7", than: "6.0.0-rc.1"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0", than: "6.0.0-beta.2"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-beta.2", than: "6.0.0-alpha.10"))
+        XCTAssertFalse(UpdaterStore.Version.isNewer("6.0.0+build.9", than: "6.0.0"))
+    }
+
     func testOnlyGitHubHostsOverHTTPSAreAllowed() {
         XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://api.github.com/repos/x/y/releases/latest")!))
         XCTAssertTrue(UpdaterStore.isAllowed(URL(string: "https://github.com/vanich-git/MelonTools/releases/download/v1/x.dmg")!))

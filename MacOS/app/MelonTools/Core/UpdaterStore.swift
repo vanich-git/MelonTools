@@ -64,21 +64,63 @@ final class UpdaterStore: ObservableObject {
     // MARK: - Pure helpers (unit-tested)
 
     enum Version {
-        /// Numeric per-segment comparison: 1.4.10 > 1.4.9; "1.4" <= "1.4.0".
+        /// SemVer precedence: `1.4.10 > 1.4.9`, `1.4 == 1.4.0`, and a final
+        /// release outranks its own pre-release (`6.0.0 > 6.0.0-rc.1`). Without
+        /// the last rule a build shipped as `-rc.N` would never be offered the
+        /// stable release it belongs to.
         nonisolated static func isNewer(_ candidate: String, than current: String) -> Bool {
-            let left = candidate.split(separator: ".").map(String.init)
-            let right = current.split(separator: ".").map(String.init)
-            let count = max(left.count, right.count)
-            for index in 0..<count {
-                let l = index < left.count ? left[index] : "0"
-                let r = index < right.count ? right[index] : "0"
-                if let ln = Int(l), let rn = Int(r) {
-                    if ln != rn { return ln > rn }
-                } else if l != r {
-                    return l > r
-                }
+            let (candidateCore, candidatePre) = parts(candidate)
+            let (currentCore, currentPre) = parts(current)
+            for index in 0..<max(candidateCore.count, currentCore.count) {
+                let l = index < candidateCore.count ? candidateCore[index] : 0
+                let r = index < currentCore.count ? currentCore[index] : 0
+                if l != r { return l > r }
             }
-            return false
+            return comparePrerelease(candidatePre, currentPre) == .orderedDescending
+        }
+
+        /// Splits `1.2.3-rc.4+build` into numeric core segments and pre-release
+        /// identifiers. Build metadata is dropped: SemVer ignores it.
+        nonisolated static func parts(_ text: String) -> ([UInt64], [String]) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let withoutBuild = trimmed.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+                .first.map(String.init) ?? trimmed
+            let pieces = withoutBuild.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            let core = (pieces.first.map(String.init) ?? withoutBuild)
+                .split(separator: ".")
+                .map { UInt64($0.trimmingCharacters(in: .whitespaces)) ?? 0 }
+            let pre = pieces.count > 1 && !pieces[1].isEmpty
+                ? pieces[1].split(separator: ".").map(String.init)
+                : []
+            return (core, pre)
+        }
+
+        /// No pre-release outranks any pre-release; numeric identifiers compare
+        /// numerically (`rc.10 > rc.9`) and rank below alphanumeric ones; the
+        /// shorter list wins when every shared identifier is equal.
+        nonisolated static func comparePrerelease(_ left: [String], _ right: [String]) -> ComparisonResult {
+            if left.isEmpty && right.isEmpty { return .orderedSame }
+            if left.isEmpty { return .orderedDescending }
+            if right.isEmpty { return .orderedAscending }
+            for index in 0..<max(left.count, right.count) {
+                guard index < left.count else { return .orderedAscending }
+                guard index < right.count else { return .orderedDescending }
+                let l = left[index]
+                let r = right[index]
+                let result: ComparisonResult
+                switch (UInt64(l), UInt64(r)) {
+                case let (ln?, rn?):
+                    result = ln == rn ? .orderedSame : (ln < rn ? .orderedAscending : .orderedDescending)
+                case (.some, .none):
+                    result = .orderedAscending
+                case (.none, .some):
+                    result = .orderedDescending
+                case (.none, .none):
+                    result = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
+                }
+                if result != .orderedSame { return result }
+            }
+            return .orderedSame
         }
     }
 
