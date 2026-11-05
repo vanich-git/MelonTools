@@ -67,6 +67,7 @@
   const PROVIDERS = Object.assign({
     openai: 'OpenAI', opencode: 'OpenCode', openrouter: 'OpenRouter',
     deepinfra: 'DeepInfra', vercel: 'Vercel', zai: 'Z.ai',
+    commandcode: 'CommandCode',
   }, CFG.providers || {});
 
   // ---------------------------------------------------------------- helpers
@@ -515,6 +516,7 @@
     if (kind === 'deepinfra') return 'melon-dot-blue';
     if (kind === 'vercel') return 'melon-dot-purple';
     if (kind === 'zai') return 'melon-dot-blue';
+    if (kind === 'commandcode') return 'melon-dot-purple';
     return 'melon-dot-orange';
   }
 
@@ -742,6 +744,10 @@
       if (stats.error) body.appendChild(popRow('—', String(stats.error)));
     } else if (kind === 'zai' && stats) {
       body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
+      if (stats.error) body.appendChild(popRow('—', String(stats.error)));
+    } else if (kind === 'commandcode' && stats) {
+      body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
+      body.appendChild(popNote(LABELS.noPricing));
       if (stats.error) body.appendChild(popRow('—', String(stats.error)));
     } else if (kind === 'antigravity' && stats) {
       body.appendChild(popRow(LABELS.account, stats.email || LABELS.noData));
