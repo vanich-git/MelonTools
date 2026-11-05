@@ -337,6 +337,7 @@ mod tests {
             api_key: "sk-legacy-api".to_string(),
             openrouter_key: "sk-or-legacy".to_string(),
             opencode_key: "sk-oc-legacy".to_string(),
+            commandcode_key: "cc-legacy-key".to_string(),
             deepinfra_key: "sk-di-legacy".to_string(),
             vercel_key: "sk-vc-legacy".to_string(),
             zai_key: "id.secret-legacy".to_string(),
@@ -353,6 +354,7 @@ mod tests {
         assert_eq!(s.api_key, "sk-legacy-api");
         assert_eq!(s.openrouter_key, "sk-or-legacy");
         assert_eq!(s.opencode_key, "sk-oc-legacy");
+        assert_eq!(s.commandcode_key, "cc-legacy-key");
         assert_eq!(s.deepinfra_key, "sk-di-legacy");
         assert_eq!(s.vercel_key, "sk-vc-legacy");
         assert_eq!(s.zai_key, "id.secret-legacy");
