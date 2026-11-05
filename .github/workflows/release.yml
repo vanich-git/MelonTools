@@ -383,7 +383,7 @@ jobs:
           $checkArgs = @{
             Dist = "Windows/dist"
             Version = "${{ steps.version.outputs.version }}"
-            Report = "windows-acceptance.txt"
+            Report = "Windows/dist/windows-acceptance.txt"
           }
           if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
             $checkArgs.RequireSignature = $true
@@ -401,7 +401,7 @@ jobs:
             Windows/dist/MelonTools-*-win-x64.exe.sha256
             Windows/dist/MelonTools-*-setup.exe
             Windows/dist/MelonTools-*-setup.exe.sha256
-            windows-acceptance.txt
+            Windows/dist/windows-acceptance.txt
           if-no-files-found: error
 
   sbom:
@@ -600,17 +600,17 @@ jobs:
             echo "Full changelog: [MacOS/RELEASE_NOTES.md](https://github.com/vanich-git/MelonTools/blob/${{ env.RELEASE_TAG }}/MacOS/RELEASE_NOTES.md)."
             echo ""
             if [[ "$V" == *-* ]]; then
-              echo "### Draft: prerelease"
+              echo "### Prerelease"
               echo ""
-              echo "This is a **draft prerelease**. The hashes above were generated from"
-              echo "these exact artifacts and are attached as \`MelonTools-$V-release-metadata.zip\`."
-              echo "Publishing keeps it a GitHub prerelease: it does not become \"latest\""
+              echo "The SHA-256 values below were generated from these exact artifacts and"
+              echo "are attached as \`MelonTools-$V-release-metadata.zip\`."
+              echo "This release stays a GitHub prerelease: it does not become \"latest\""
               echo "and it is not promoted into Homebrew/winget."
             else
               echo "### Draft: promotion pending"
               echo ""
-              echo "This is a **draft**. The hashes above were generated from these exact"
-              echo "artifacts and are attached as \`MelonTools-$V-release-metadata.zip\`."
+              echo "This is a **draft**. The SHA-256 values below were generated from these"
+              echo "exact artifacts and are attached as \`MelonTools-$V-release-metadata.zip\`."
               echo "Publishing requires the \`Release promotion\` workflow, which blocks"
               echo "until the promoted Homebrew/winget manifests match these assets."
             fi
