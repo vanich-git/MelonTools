@@ -144,21 +144,15 @@ struct SchedulerView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textSecondary)
                     Spacer()
-                    Menu {
-                        ForEach(SchedulerTemplates.all) { template in
-                            Button {
+                    MTMenuButton(
+                        systemImage: "square.on.square",
+                        title: L("From template"),
+                        entries: SchedulerTemplates.all.map { template in
+                            .item(L(template.name), systemImage: "doc.text") {
                                 editorTarget = EditorTarget(task: nil, template: template)
-                            } label: {
-                                Text(L(template.name))
                             }
-                            .help(L(template.description))
                         }
-                    } label: {
-                        Label(L("From template"), systemImage: "square.on.square")
-                            .font(MTTheme.mono(10, weight: .semibold))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    )
                     MTGlassButton(title: L("New task"), systemImage: "plus", tint: MTTheme.amber) {
                         editorTarget = EditorTarget(task: nil)
                     }
@@ -539,24 +533,17 @@ private struct SchedulerEditorSheet: View {
                     }
 
                     field(L("Reasoning effort")) {
-                        Picker("", selection: $effort) {
-                            Text(L("None")).tag("")
-                            ForEach(SchedulerTask.reasoningEfforts, id: \.self) { value in
-                                Text(value).tag(value)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        MTSelect(
+                            selection: $effort,
+                            options: [(L("None"), "")] + SchedulerTask.reasoningEfforts.map { ($0, $0) },
+                            width: 200
+                        )
                     }
 
                     field(L("Schedule type")) {
-                        Picker("", selection: $scheduleKind) {
-                            ForEach(SchedulerScheduleKind.allCases) { kind in
-                                Text(kind.title).tag(kind)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
+                        MTSelect(selection: $scheduleKind, options: SchedulerScheduleKind.allCases.map {
+                            ($0, $0.title)
+                        }, width: 200)
                     }
 
                     if scheduleKind == .interval {
@@ -601,15 +588,12 @@ private struct SchedulerEditorSheet: View {
                     }
 
                     field(L("Time zone")) {
-                        Picker("", selection: $timeZoneIdentifier) {
-                            Text(String(format: L("System (%@)"), TimeZone.current.identifier))
-                                .tag("")
-                            ForEach(TimeZone.knownTimeZoneIdentifiers.sorted(), id: \.self) { identifier in
-                                Text(identifier).tag(identifier)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        MTSearchableSelect(
+                            selection: $timeZoneIdentifier,
+                            options: [("", String(format: L("System (%@)"), TimeZone.current.identifier))] +
+                                TimeZone.knownTimeZoneIdentifiers.sorted().map { ($0, $0) },
+                            width: 320
+                        )
                     }
 
                     if let templateError {
@@ -824,23 +808,11 @@ private struct SchedulerEditorSheet: View {
             }
         } else {
             VStack(alignment: .leading, spacing: MTTheme.s1) {
-                Picker("", selection: $model) {
-                    if !model.isEmpty, !store.models.contains(model) {
-                        Text(model).tag(model)
-                    }
-                    ForEach(SchedulerModelGroup.allCases) { group in
-                        let ids = store.models.filter { SchedulerModelGroup.group(for: $0) == group }
-                        if !ids.isEmpty {
-                            Section(group.title) {
-                                ForEach(ids, id: \.self) { id in
-                                    Text(id).tag(id)
-                                }
-                            }
-                        }
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                MTSelect(
+                    selection: $model,
+                    options: store.models.map { ($0, $0) },
+                    width: 320
+                )
 
                 HStack(spacing: MTTheme.s2) {
                     Text(String(format: L("%d models"), store.models.count))

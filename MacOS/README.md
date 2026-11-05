@@ -16,7 +16,13 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 5.5.8
+## What's new in 5.5.8 (latest published)
+
+> 6.0.0 is in development. Its draft notes are at the top of
+> [`RELEASE_NOTES.md`](RELEASE_NOTES.md); no 6.0.0 DMG has been published and
+> no 6.0.0 hash should be added to the distribution manifests yet. The release
+> procedure is in [`../packaging/README.md`](../packaging/README.md) and
+> [`../docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
 
 - **Build metadata.** macOS build 55; version metadata is aligned at 5.5.8.
 - The island silhouette is unchanged from 5.5.6.

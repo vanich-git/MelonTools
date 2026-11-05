@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum MTSection: String, CaseIterable, Identifiable {
-    case dashboard, scheduler, codexAccounts, codexAPI, providers, codexComposer, codexInstances, settings, donate
+    case dashboard, scheduler, codexAccounts, codexAPI, providers, localAI, codexComposer, codexInstances, settings, donate
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexAccounts: return L("Accounts")
         case .codexAPI: return L("Codex API")
         case .providers: return L("Connections")
+        case .localAI: return L("Local AI")
         case .codexComposer: return L("Composer Chips")
         case .codexInstances: return L("Instances")
         case .settings: return L("Settings")
@@ -27,6 +28,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexAccounts: return "person.2"
         case .codexAPI: return "network"
         case .providers: return "square.stack.3d.up"
+        case .localAI: return "cpu.fill"
         case .codexComposer: return "capsule"
         case .codexInstances: return "square.on.square"
         case .settings: return "gear"
@@ -42,6 +44,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexAccounts: return MTTheme.violet
         case .codexAPI: return MTTheme.cyan
         case .providers: return MTTheme.emerald
+        case .localAI: return MTTheme.emerald
         case .codexComposer: return MTTheme.cyan
         case .codexInstances: return MTTheme.amber
         case .settings: return MTTheme.textSecondary
@@ -58,6 +61,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         [
             Group(title: L("Overview"), sections: [.dashboard]),
             Group(title: L("Scheduler"), sections: [.scheduler]),
+            Group(title: L("Local AI"), sections: [.localAI]),
             Group(title: L("Codex"), sections: [.codexAccounts, .codexAPI, .providers, .codexComposer, .codexInstances]),
             Group(title: L("App"), sections: [.settings, .donate]),
         ]
@@ -187,7 +191,7 @@ struct MainView: View {
         .padding(.bottom, MTTheme.s1)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.primary.opacity(0.08))
                 .frame(height: 0.75)
         }
     }
@@ -253,7 +257,7 @@ struct MainView: View {
         .padding(.bottom, MTTheme.s3)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.primary.opacity(0.08))
                 .frame(height: 0.75)
         }
     }
@@ -292,7 +296,7 @@ struct MainView: View {
                 .padding(.vertical, 7)
                 .background(
                     RoundedRectangle(cornerRadius: MTTheme.rSmall + 2, style: .continuous)
-                        .fill(isSelected ? section.accentColor.opacity(0.22) : (hovered ? Color.white.opacity(0.06) : Color.clear))
+                        .fill(isSelected ? section.accentColor.opacity(0.22) : (hovered ? Color.primary.opacity(0.06) : Color.clear))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: MTTheme.rSmall + 2, style: .continuous)
@@ -319,7 +323,7 @@ private struct GatewayFooter: View {
             Circle()
                 .fill(gateway.status.color)
                 .frame(width: 7, height: 7)
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.3), lineWidth: 0.5))
+                .overlay(Circle().strokeBorder(Color.primary.opacity(0.3), lineWidth: 0.5))
 
             Text(gateway.status.label)
                 .font(MTTheme.mono(9))
@@ -333,17 +337,17 @@ private struct GatewayFooter: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(
-                    Capsule().fill(Color.white.opacity(0.05))
+                    Capsule().fill(Color.primary.opacity(0.05))
                 )
                 .overlay(
-                    Capsule().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                    Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
                 )
         }
         .padding(.horizontal, MTTheme.s3)
         .padding(.vertical, MTTheme.s2 + 2)
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.primary.opacity(0.08))
                 .frame(height: 0.75)
         }
     }
@@ -363,6 +367,7 @@ private struct GatewayFooter: View {
         case .codexAccounts: CodexAccountsView(selection: $selection)
         case .codexAPI: CodexAPIView()
         case .providers: CodexProvidersView(selection: $selection)
+        case .localAI: LocalAIView()
         case .codexComposer: CodexComposerView()
         case .codexInstances: CodexInstancesView()
         case .settings: SettingsView()

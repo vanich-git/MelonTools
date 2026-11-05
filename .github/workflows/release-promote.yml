@@ -1,0 +1,196 @@
+name: Release promotion
+
+# Phase two of the release. `release.yml` builds the artifacts, generates the
+# distribution metadata from those exact bytes and keeps the GitHub release as
+# a draft. Nothing is public until this workflow has proved that the promoted
+# Homebrew/winget manifests describe the draft's assets byte for byte.
+#
+# Split into two phases because code signing/notarization timestamps change the
+# bytes during the build: the real hashes cannot be committed before the build,
+# and the build must not publish unverified artifacts after it.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to promote (for example v6.0.0)"
+        required: true
+        type: string
+      make_latest:
+        description: "Mark the promoted release as latest (backfills: false)"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-promote-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Verify and undraft the release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve the version and validate the tag
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$RELEASE_TAG' is not vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
+          APP="$(awk -F'"' '/CFBundleShortVersionString:/{print $2; exit}' MacOS/app/project.yml)"
+          if [ "$APP" != "$VERSION" ]; then
+            echo "Tag $RELEASE_TAG does not match the application version '$APP' on this branch." >&2
+            echo "Promotion must run from the branch that carries the release metadata." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python for the promotion gates
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the metadata lint dependency
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
+
+      # Strict gate: the committed Homebrew/winget manifests must be promoted
+      # to VERSION and must match the generated staging provenance. This is the
+      # check that cannot pass before the build, by design.
+      - name: Promoted manifests match the staged metadata
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/docs_lint.py --release "${{ steps.version.outputs.version }}"
+          python3 scripts/verify_release_checksums.py \
+            --require-provenance \
+            --version "${{ steps.version.outputs.version }}"
+
+      - name: Fetch the draft release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          mkdir -p draft-assets
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release.json
+          python3 - <<'PY' > asset-ids.tsv
+          import json
+          with open("release.json", encoding="utf-8") as handle:
+              release = json.load(handle)
+          if not release.get("draft"):
+              raise SystemExit("release is already published; refusing to re-promote")
+          for asset in release.get("assets", []):
+              print(f"{asset['id']}\t{asset['name']}")
+          PY
+          # The draft's exact asset set: versioned artifacts, the metadata zip,
+          # the stable "latest" aliases and every .sha256 sibling. An unexpected
+          # or missing asset aborts instead of publishing something unreviewed.
+          expected="MelonTools-$V.dmg
+          MelonTools-$V.dmg.sha256
+          MelonTools-$V-setup.exe
+          MelonTools-$V-setup.exe.sha256
+          MelonTools-$V-win-x64-portable.exe
+          MelonTools-$V-win-x64-portable.exe.sha256
+          MelonTools-$V-win-x64.exe
+          MelonTools-$V-win-x64.exe.sha256
+          MelonTools-$V-release-metadata.zip
+          MelonTools-$V-release-metadata.zip.sha256
+          MelonTools.dmg
+          MelonTools.dmg.sha256
+          MelonTools-setup.exe
+          MelonTools-setup.exe.sha256
+          MelonTools-win-x64-portable.exe
+          MelonTools-win-x64-portable.exe.sha256
+          MelonTools-win-x64.exe
+          MelonTools-win-x64.exe.sha256
+          melontools.cdx.json
+          SHA256SUMS"
+          actual="$(cut -f2 asset-ids.tsv | sort)"
+          if [ "$actual" != "$(printf '%s\n' "$expected" | sort)" ]; then
+            echo "Draft assets differ from the expected published set:" >&2
+            diff <(printf '%s\n' "$expected" | sort) <(printf '%s\n' "$actual") >&2 || true
+            exit 1
+          fi
+          while IFS=$'\t' read -r id name; do
+            # The set above is exact, so this also rejects path traversal.
+            gh api -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "draft-assets/$name"
+          done < asset-ids.tsv
+          ls -l draft-assets
+
+      # The published bytes must be the promoted bytes: live manifests,
+      # SHA256SUMS, .sha256 siblings and the staged provenance all have to
+      # agree with the downloaded draft.
+      - name: Verify the draft against the promoted manifests
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          python3 scripts/verify_release_checksums.py \
+            --artifacts draft-assets \
+            --sha256sums draft-assets/SHA256SUMS \
+            --version "$V" \
+            --require-provenance
+
+      - name: Verify the attached metadata is the committed staging
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          rm -rf attached
+          mkdir -p attached
+          python3 -m zipfile -e "draft-assets/MelonTools-$V-release-metadata.zip" attached
+          diff -r "packaging/staging/$V" attached/release-metadata
+          (cd draft-assets && sha256sum -c "MelonTools-$V-release-metadata.zip.sha256")
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Remove the build-phase "promotion pending" note from the body.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .body \
+            | awk '
+                /^### Draft: promotion pending$/ { skipping = 1; next }
+                skipping && /^### / { skipping = 0 }
+                !skipping { print }
+              ' > release-body.md
+          if [ ! -s release-body.md ] || [ "$(tr -d "[:space:]" < release-body.md)" = "null" ]; then
+            echo "The draft has no release body; refusing to publish untitled notes." >&2
+            exit 1
+          fi
+          if [ "${{ inputs.make_latest }}" = "true" ]; then
+            LATEST="--latest"
+          else
+            LATEST="--latest=false"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false "$LATEST" --notes-file release-body.md
+
+      - name: Confirm the published state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '{draft: .draft, prerelease: .prerelease, assets: [.assets[].name]}' > published.json
+          cat published.json
+          python3 - <<'PY'
+          import json
+          with open("published.json", encoding="utf-8") as handle:
+              release = json.load(handle)
+          if release["draft"]:
+              raise SystemExit("release is still a draft after promotion")
+          if release["prerelease"]:
+              raise SystemExit("release is unexpectedly marked as a prerelease")
+          PY

@@ -259,7 +259,7 @@ struct MTQuotaRing: View {
         let width = strokeWidth ?? max(3.5, size * 0.09)
         ZStack {
             Circle()
-                .stroke(Color.white.opacity(0.1), lineWidth: width)
+                .stroke(Color.primary.opacity(0.1), lineWidth: width)
             if let f = fraction {
                 Circle()
                     .trim(from: 0, to: max(0.01, min(1, f)))
@@ -293,8 +293,8 @@ struct MTMeter: View {
     var body: some View {
         ZStack(alignment: .leading) {
             Capsule()
-                .fill(Color.white.opacity(0.08))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+                .fill(Color.primary.opacity(0.08))
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
             if let fraction {
                 Capsule()
                     .fill(

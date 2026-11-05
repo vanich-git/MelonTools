@@ -38,6 +38,9 @@ enum CodexService {
         case refreshUnavailable
         case notLoggedIn
         case loopbackUnavailable
+        /// OpenAI rotates refresh tokens: once a token was exchanged, the old
+        /// one is dead. Retrying cannot succeed; the user has to sign in again.
+        case reloginRequired
 
         var errorDescription: String? {
             switch self {
@@ -47,6 +50,7 @@ enum CodexService {
             case .refreshUnavailable: return "No refresh token available"
             case .notLoggedIn: return "~/.codex/auth.json not found — log in with the Codex CLI first, or use device login."
             case .loopbackUnavailable: return L("Local ports 1455 and 1457 are busy — close the other login attempt and try again.")
+            case .reloginRequired: return L("The refresh token was revoked — sign in to this account again.")
             }
         }
     }
@@ -192,6 +196,11 @@ enum CodexService {
         ], options: [])
 
         let (data, response) = try await NetworkProxy.session().data(for: request)
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 401,
+           Self.isRefreshTokenReused(data) {
+            throw CodexError.reloginRequired
+        }
         try ensureOK(response, data)
 
         var tokens = try parseTokenResponse(data)
@@ -199,6 +208,14 @@ enum CodexService {
         if tokens.id_token == nil { tokens.id_token = account.tokens.id_token }
         if tokens.refresh_token == nil { tokens.refresh_token = refreshToken }
         return tokens
+    }
+
+    /// The token endpoint answers `401 refresh_token_reused` after another
+    /// client exchanged the same rotating token. Only a new login helps, so
+    /// the caller must not retry the request.
+    static func isRefreshTokenReused(_ data: Data) -> Bool {
+        guard let body = String(data: data, encoding: .utf8) else { return false }
+        return body.contains("refresh_token_reused")
     }
 
     /// Returns a token guaranteed fresh (refreshes when within 5 min of expiry).

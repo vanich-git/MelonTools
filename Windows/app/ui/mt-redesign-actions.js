@@ -35,6 +35,7 @@ function statusSignature() {
 NAV.splice(0, NAV.length,
   { group: "overview", items: ["dashboard"] },
   { group: "schedulerGroup", items: ["scheduler"] },
+  { group: "local_ai", items: ["local_ai"] },
   { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
   { group: "general", items: ["settings", "donate"] },
 );
@@ -48,8 +49,18 @@ const baseOnboardingGo = A.onboardingGo;
 render = function renderWithScroll() {
   const detail = document.querySelector(".detail");
   const scrollTop = detail ? detail.scrollTop : 0;
+  // The Console is its own scroller: a full render must not throw the reader
+  // back to the first line, and a reader parked at the bottom keeps following
+  // the newest output.
+  const logBox = document.getElementById("local-ai-logs");
+  const logTop = logBox ? logBox.scrollTop : 0;
+  const logAtBottom = logBox
+    ? logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <= 24
+    : true;
   baseRender();
   if (detail) detail.scrollTop = scrollTop;
+  const nextLog = document.getElementById("local-ai-logs");
+  if (nextLog) nextLog.scrollTop = logAtBottom ? nextLog.scrollHeight : logTop;
   S.lastStatusSignature = statusSignature();
   const brand = document.getElementById("brand-sub");
   if (brand) brand.textContent = t("brandSub");

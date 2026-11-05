@@ -48,6 +48,25 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Python for the release metadata gate
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the metadata lint dependency
+        run: python -m pip install --disable-pip-version-check pyyaml==6.0.2
+
+      # Build phase. The committed Homebrew/winget manifests still describe
+      # the last published release on purpose: code signing and notarization
+      # timestamp the DMG during this job, so the real hashes cannot exist
+      # before it. This gate checks that the tag's sources and release notes
+      # agree; the strict promotion gate runs in release-promote.yml after the
+      # draft with its generated metadata has been reviewed.
+      # Backfills via workflow_dispatch skip it like the rest of the tag gates.
+      - name: Release source version gate
+        if: github.event_name == 'push'
+        run: python3 .github/scripts/docs_lint.py --release "${{ steps.version.outputs.version }}" --preflight
+
       - name: Check macOS signing secrets
         id: signing
         env:
@@ -79,6 +98,14 @@ jobs:
 
       - name: Fetch the pinned gateway source
         run: ./MacOS/scripts/fetch-sources.sh
+
+      # REL-01: fetch the gitignored runtime before the first XcodeGen run.
+      # build.sh also fetches it, but that happens after project generation.
+      - name: Fetch and verify the pinned llama.cpp runtime
+        run: ./MacOS/scripts/fetch-runtime.sh
+
+      - name: Smoke-test a clean checkout
+        run: RUNTIME_CACHE="$PWD/MacOS/build/runtime-cache" ./MacOS/scripts/test-clean-checkout.sh
 
       - name: Generate the Xcode project
         working-directory: MacOS/app
@@ -166,6 +193,17 @@ jobs:
             > "MelonTools-${{ steps.version.outputs.version }}.dmg.sha256")
           cat "$DMG.sha256"
 
+      - name: Native acceptance (unsigned or signed)
+        working-directory: MacOS
+        run: |
+          set -euo pipefail
+          DMG="build/MelonTools-${{ steps.version.outputs.version }}.dmg"
+          ARGS=(--dmg "$DMG" --sha256 "$DMG.sha256" --report build/native-acceptance.txt)
+          if [ "${{ steps.signing.outputs.enabled }}" = "true" ]; then
+            ARGS+=(--require-signed)
+          fi
+          ./scripts/native-acceptance.sh "${ARGS[@]}"
+
       - name: Upload the DMG artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -173,6 +211,7 @@ jobs:
           path: |
             MacOS/build/MelonTools-*.dmg
             MacOS/build/MelonTools-*.dmg.sha256
+            MacOS/build/native-acceptance.txt
           if-no-files-found: error
 
   windows:
@@ -209,7 +248,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=$(grep -m1 '^version = ' Windows/app/src-tauri/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')
+          VERSION=$(sed -nE 's/^version = "([^"]+)"$/\1/p' Windows/app/src-tauri/Cargo.toml | head -1)
           TAG="${RELEASE_TAG#v}"
           if [ -z "$VERSION" ] || [ "$VERSION" != "$TAG" ]; then
             echo "Tag $GITHUB_REF_NAME does not match the crate version '$VERSION'." >&2
@@ -279,6 +318,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $version = "${{ steps.version.outputs.version }}"
+          # NSIS version resources are four numeric fields, so a prerelease tag
+          # such as 6.0.0-rc.1 uses its numeric core (6.0.0) there. The display
+          # name, output file and uninstall entry keep the full version.
+          $numericVersion = $version.Split('-')[0]
           $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
             choco install nsis --version=3.11 -y --no-progress
@@ -289,7 +332,7 @@ jobs:
           if (-not (Test-Path $source)) { Get-ChildItem Windows -Recurse -Filter "*portable*" | Format-Table FullName; throw "portable exe missing before makensis" }
           $source = (Resolve-Path $source).Path
           Push-Location Windows
-          & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=$source" "installer\MelonTools.nsi"
+          & $makensis /V2 "/DVERSION=$version" "/DVERSION_NUMERIC=$numericVersion" "/DSOURCE_EXE=$source" "installer\MelonTools.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           Pop-Location
           $setup = "Windows/dist/MelonTools-$version-setup.exe"
@@ -330,6 +373,21 @@ jobs:
             Get-Content "$($file.FullName).sha256"
           }
 
+      - name: Verify Windows artifacts (native)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $checkArgs = @(
+            "-Dist", "Windows/dist",
+            "-Version", "${{ steps.version.outputs.version }}",
+            "-Report", "windows-acceptance.txt"
+          )
+          if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
+            $checkArgs += "-RequireSignature"
+          }
+          & ./packaging/verify-windows-artifacts.ps1 @checkArgs
+          if ($LASTEXITCODE -ne 0) { throw "Windows artifact acceptance failed" }
+
       - name: Upload the executable artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -341,6 +399,7 @@ jobs:
             Windows/dist/MelonTools-*-win-x64.exe.sha256
             Windows/dist/MelonTools-*-setup.exe
             Windows/dist/MelonTools-*-setup.exe.sha256
+            windows-acceptance.txt
           if-no-files-found: error
 
   sbom:
@@ -412,6 +471,38 @@ jobs:
       - name: List the release assets
         run: ls -l release-assets
 
+      # The draft must carry metadata generated from the actual CI artifacts.
+      # It is attached as a zip; the committed manifests are promoted by a
+      # human only after these hashes match the draft downloads.
+      - name: Generate staged distribution metadata
+        env:
+          V: ${{ needs.macos.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/release-metadata"
+          rm -rf "$STAGE"
+          python3 scripts/verify_release_checksums.py \
+            --stage "$V" \
+            --artifacts release-assets \
+            --out "$STAGE"
+          ZIP="$GITHUB_WORKSPACE/release-assets/MelonTools-$V-release-metadata.zip"
+          # Fixed arcname ("release-metadata/...") so the promotion workflow can
+          # extract and diff it against packaging/staging/<version> exactly.
+          python3 - "$STAGE" "$ZIP" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(source.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, Path("release-metadata") / path.relative_to(source))
+          PY
+          (cd release-assets && sha256sum "MelonTools-$V-release-metadata.zip" \
+            > "MelonTools-$V-release-metadata.zip.sha256")
+
       - name: Build one SHA256SUMS file
         working-directory: release-assets
         env:
@@ -430,13 +521,29 @@ jobs:
           sha256sum -- *.dmg *.exe | sort -k2 > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Verify artifacts against the distribution manifests
+      # Strict build-phase gate: the assets must match the metadata generated
+      # from those exact bytes. It intentionally does NOT compare against the
+      # committed manifests, which still describe the previously published
+      # release; verifying that the promoted manifests match this draft is the
+      # separate, blocking job in release-promote.yml.
+      - name: Verify artifacts against the staged metadata
         run: |
           set -euo pipefail
+          V="${{ needs.macos.outputs.version }}"
+          STAGE="$RUNNER_TEMP/release-metadata"
           python3 scripts/verify_release_checksums.py \
+            --verify-staged "$STAGE" \
             --artifacts release-assets \
             --sha256sums release-assets/SHA256SUMS \
-            --version "${{ needs.macos.outputs.version }}"
+            --version "$V"
+          # The attached zip is the reviewable handoff to promotion: fail if it
+          # is not a byte-for-byte copy of the staged directory.
+          rm -rf "$RUNNER_TEMP/attached-metadata"
+          mkdir -p "$RUNNER_TEMP/attached-metadata"
+          python3 -m zipfile -e "release-assets/MelonTools-$V-release-metadata.zip" \
+            "$RUNNER_TEMP/attached-metadata"
+          diff -r "$STAGE" "$RUNNER_TEMP/attached-metadata/release-metadata"
+          (cd release-assets && sha256sum -c "MelonTools-$V-release-metadata.zip.sha256")
 
       - name: Verify every expected asset
         run: |
@@ -451,6 +558,8 @@ jobs:
             "MelonTools-$V-win-x64-portable.exe.sha256" \
             "MelonTools-$V-win-x64.exe" \
             "MelonTools-$V-win-x64.exe.sha256" \
+            "MelonTools-$V-release-metadata.zip" \
+            "MelonTools-$V-release-metadata.zip.sha256" \
             "SHA256SUMS"; do
             test -f "release-assets/$name" || { echo "missing $name" >&2; exit 1; }
           done
@@ -458,12 +567,19 @@ jobs:
       - name: Compose the release notes
         run: |
           set -euo pipefail
+          V="${{ needs.macos.outputs.version }}"
           {
-            echo "## Melon Tools ${{ needs.macos.outputs.version }}"
+            echo "## Melon Tools $V"
             echo ""
             echo "Artifacts for macOS (universal DMG) and Windows (installer + portable executable)."
             echo "Verify each download against its \`.sha256\` file before running it."
             echo ""
+            if [[ "$V" == *-* ]]; then
+              echo "> **Pre-release.** This is a test build. It is published as a GitHub"
+              echo "> prerelease, it is not the latest release, and it is **not** offered"
+              echo "> through Homebrew or winget, which stay on the last stable version."
+              echo ""
+            fi
             if [ "${{ needs.macos.outputs.signed }}" != "true" ]; then
               echo "> **macOS build note:** ad-hoc signed and not notarized."
               echo "> Signing and notarization are BLOCKED until the Apple secrets are"
@@ -479,7 +595,23 @@ jobs:
               echo "> is required to remove this warning; see \`packaging/README.md\`."
               echo ""
             fi
-            echo "Full changelog: [MacOS/RELEASE_NOTES.md](https://github.com/vanich-git/MelonTools/blob/main/MacOS/RELEASE_NOTES.md)."
+            echo "Full changelog: [MacOS/RELEASE_NOTES.md](https://github.com/vanich-git/MelonTools/blob/${{ env.RELEASE_TAG }}/MacOS/RELEASE_NOTES.md)."
+            echo ""
+            if [[ "$V" == *-* ]]; then
+              echo "### Draft: prerelease"
+              echo ""
+              echo "This is a **draft prerelease**. The hashes above were generated from"
+              echo "these exact artifacts and are attached as \`MelonTools-$V-release-metadata.zip\`."
+              echo "Publishing keeps it a GitHub prerelease: it does not become \"latest\""
+              echo "and it is not promoted into Homebrew/winget."
+            else
+              echo "### Draft: promotion pending"
+              echo ""
+              echo "This is a **draft**. The hashes above were generated from these exact"
+              echo "artifacts and are attached as \`MelonTools-$V-release-metadata.zip\`."
+              echo "Publishing requires the \`Release promotion\` workflow, which blocks"
+              echo "until the promoted Homebrew/winget manifests match these assets."
+            fi
             echo ""
             echo "### SHA-256"
             echo ""
@@ -503,6 +635,8 @@ jobs:
           files: release-assets/*
           fail_on_unmatched_files: true
           # A human promotes the draft after checking the assets and hashes.
-          # Backfills must never become "latest".
+          # Backfills must never become "latest". A prerelease version stays a
+          # GitHub prerelease and is never promoted into Homebrew/winget.
           draft: true
+          prerelease: ${{ contains(needs.macos.outputs.version, '-') }}
           make_latest: false

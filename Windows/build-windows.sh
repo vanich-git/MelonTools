@@ -27,11 +27,14 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.10}"
 # Build cache off a slow volume by default.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Developer/melontools-win/target}"
 CLI_SRC="${CLI_SRC:-$ROOT/../MacOS/_sources/CLIProxyAPI}"
-VERSION="$(grep -m1 '^version' app/src-tauri/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+VERSION="$(sed -nE 's/^version = "([^"]+)"$/\1/p' app/src-tauri/Cargo.toml | head -1)"
 if [ -z "$VERSION" ]; then
   echo "Cannot read version from app/src-tauri/Cargo.toml" >&2
   exit 1
 fi
+# NSIS version resources are four numeric fields; a prerelease tag keeps its
+# numeric core there while the display name and file names keep the full version.
+VERSION_NUMERIC="${VERSION%%-*}"
 PORTABLE_EXE="dist/MelonTools-${VERSION}-win-x64-portable.exe"
 LEGACY_EXE="dist/MelonTools-${VERSION}-win-x64.exe"
 INSTALLER="dist/MelonTools-${VERSION}-setup.exe"
@@ -101,7 +104,7 @@ echo "==> 3/6 cargo xwin build (x86_64-pc-windows-msvc)"
   # generate_context! macro), so a UI-only edit would ship a stale frontend.
   # Touching the crate entry point forces the recompile that re-embeds it.
   touch src/main.rs
-  cargo xwin build --release --target x86_64-pc-windows-msvc
+  cargo xwin build --release --locked --target x86_64-pc-windows-msvc
 )
 
 echo "==> 4/6 collecting artifacts (single executable)"
@@ -122,6 +125,7 @@ if command -v makensis >/dev/null 2>&1; then
   rm -f "$INSTALLER"
   makensis -V2 \
     -DVERSION="$VERSION" \
+    -DVERSION_NUMERIC="$VERSION_NUMERIC" \
     -DSOURCE_EXE="../$PORTABLE_EXE" \
     installer/MelonTools.nsi
   if [ ! -f "$INSTALLER" ]; then

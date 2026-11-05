@@ -178,10 +178,18 @@ struct SchedulerRunner {
         if task.includeGitContext,
            let directory = task.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
            !directory.isEmpty {
-            let context = await Task.detached(priority: .utility) {
-                SchedulerGitContext.build(directory: directory)
-            }.value
-            if !context.isEmpty {
+            // `Task.detached` does not inherit cancellation, so the child
+            // process needs its own handle: `cancelCurrent()` must stop git,
+            // not leave it running behind the serial queue (audit CORE-02).
+            let gitCancellation = SchedulerGitCancellation()
+            let context = await withTaskCancellationHandler {
+                await Task.detached(priority: .utility) {
+                    SchedulerGitContext.build(directory: directory, cancellation: gitCancellation)
+                }.value
+            } onCancel: {
+                gitCancellation.cancel()
+            }
+            if !Task.isCancelled, !context.isEmpty {
                 prompt += "\n\nRepository context (read-only):\n" + context
             }
         }
@@ -354,16 +362,109 @@ struct SchedulerModelCatalog {
     }
 }
 
+/// Cancellation handle for the synchronous git capture. `SchedulerRunner`
+/// flips it when its task is cancelled; the capture loop terminates the child
+/// so cancellation cannot leave git — and the serial scheduler queue — behind.
+final class SchedulerGitCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var process: Process?
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let process = process
+        lock.unlock()
+        if let process, process.isRunning { process.terminate() }
+    }
+
+    /// `false` when a cancel arrived before the child could start.
+    fileprivate func attach(_ process: Process) -> Bool {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            return false
+        }
+        self.process = process
+        lock.unlock()
+        return true
+    }
+
+    fileprivate func detach() {
+        lock.lock()
+        process = nil
+        lock.unlock()
+    }
+}
+
+/// Bounded output sink shared with the reader queue. Only the first `limit`
+/// bytes are kept; everything past it is drained and dropped so the child
+/// never blocks on a full pipe.
+private final class SchedulerOutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let limit: Int
+    private var data = Data()
+
+    init(limit: Int) {
+        self.limit = max(0, limit)
+    }
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.lock()
+        if data.count < limit {
+            data.append(chunk.prefix(limit - data.count))
+        }
+        lock.unlock()
+    }
+
+    var text: String {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+}
+
 /// Read-only repository context for scheduled tasks. Bounded so a huge diff
 /// cannot exceed the model context or blow up `scheduler.json`.
 enum SchedulerGitContext {
-    static func build(directory: String, maxBytes: Int = 12_000) -> String {
+    /// Per-command wall-clock budget. Four commands share one `timeout`.
+    static let commandTimeout: TimeInterval = 10
+
+    static func build(
+        directory: String,
+        maxBytes: Int = 12_000,
+        timeout: TimeInterval = 10,
+        cancellation: SchedulerGitCancellation? = nil
+    ) -> String {
         let url = URL(fileURLWithPath: directory, isDirectory: true)
         guard FileManager.default.fileExists(atPath: url.path) else { return "" }
-        guard !run(["rev-parse", "--is-inside-work-tree"], in: url).isEmpty else { return "" }
-        let status = run(["status", "--short"], in: url)
-        let log = run(["log", "-5", "--oneline", "--decorate"], in: url)
-        let diff = run(["diff", "--stat"], in: url)
+        let deadline = Date().addingTimeInterval(max(0.1, timeout))
+        func remaining() -> TimeInterval { max(0.1, deadline.timeIntervalSinceNow) }
+
+        guard !run(
+            ["rev-parse", "--is-inside-work-tree"],
+            in: url,
+            limit: maxBytes,
+            timeout: remaining(),
+            cancellation: cancellation
+        ).isEmpty else { return "" }
+
+        let status = run(["status", "--short"], in: url, limit: maxBytes,
+                         timeout: remaining(), cancellation: cancellation)
+        let log = run(["log", "-5", "--oneline", "--decorate"], in: url, limit: maxBytes,
+                      timeout: remaining(), cancellation: cancellation)
+        let diff = run(["diff", "--stat"], in: url, limit: maxBytes,
+                       timeout: remaining(), cancellation: cancellation)
+        if cancellation?.isCancelled == true { return "" }
+
         var text = ""
         if !status.isEmpty { text += "$ git status --short\n\(status)\n" }
         if !log.isEmpty { text += "$ git log -5 --oneline\n\(log)\n" }
@@ -371,22 +472,103 @@ enum SchedulerGitContext {
         return String(text.prefix(maxBytes))
     }
 
-    private static func run(_ arguments: [String], in directory: URL) -> String {
+    private static func run(
+        _ arguments: [String],
+        in directory: URL,
+        limit: Int,
+        timeout: TimeInterval,
+        cancellation: SchedulerGitCancellation?
+    ) -> String {
+        capture(
+            executable: "/usr/bin/git",
+            arguments: arguments,
+            directory: directory,
+            limit: limit,
+            timeout: timeout,
+            cancellation: cancellation
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Run one child to completion, draining stdout concurrently and keeping at
+    /// most `limit` bytes.
+    ///
+    /// `waitUntilExit()` before reading the pipe is a deadlock: as soon as the
+    /// output exceeds the pipe buffer (~64 KiB, a repository with a few
+    /// thousand changed files) the child blocks writing while the app blocks
+    /// waiting — the serial scheduler queue then never drains (audit CORE-02).
+    /// The deadline and the cancellation handle guarantee that a slow or huge
+    /// repository cannot pin the queue either.
+    static func capture(
+        executable: String,
+        arguments: [String],
+        directory: URL?,
+        limit: Int,
+        timeout: TimeInterval,
+        cancellation: SchedulerGitCancellation? = nil
+    ) -> String {
+        guard limit > 0, timeout > 0 else { return "" }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.currentDirectoryURL = directory
+        if let directory { process.currentDirectoryURL = directory }
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        guard cancellation?.attach(process) ?? true else { return "" }
+        defer { cancellation?.detach() }
+
+        let collector = SchedulerOutputCollector(limit: limit)
+        let reading = DispatchGroup()
+        reading.enter()
+        DispatchQueue.global(qos: .utility).async {
+            let handle = pipe.fileHandleForReading
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                collector.append(chunk)
+            }
+            reading.leave()
+        }
+
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
+            // No child: close our copy of the write end so the reader sees EOF
+            // instead of waiting for output that will never come.
+            try? pipe.fileHandleForWriting.close()
+            _ = reading.wait(timeout: .now() + 1)
             return ""
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // The child owns the only remaining write end; without this the reader
+        // never sees EOF after the process exits.
+        try? pipe.fileHandleForWriting.close()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var aborted = false
+        while process.isRunning {
+            if cancellation?.isCancelled == true {
+                aborted = true
+                break
+            }
+            if Date() >= deadline {
+                aborted = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if aborted {
+            process.terminate()
+            let killDeadline = Date().addingTimeInterval(1)
+            while process.isRunning, Date() < killDeadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+        // SIGTERM/SIGKILL closes the child's write end; bound the join anyway
+        // so a wedged pipe cannot hold the scheduler queue.
+        _ = reading.wait(timeout: .now() + 2)
+        // Partial output from an aborted command is not a valid answer (git
+        // status truncated mid-line would read as a clean tree).
+        return aborted ? "" : collector.text
     }
 }

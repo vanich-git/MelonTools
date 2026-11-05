@@ -64,6 +64,12 @@ final class SchedulerTests: XCTestCase {
         var value = 0
     }
 
+    /// Mutable failure switch for the injected ledger writer.
+    private final class WriteState: @unchecked Sendable {
+        var fail = false
+        var writes = 0
+    }
+
     private final class NoticeBox {
         var notices: [SchedulerNotificationPolicy.Notice] = []
     }
@@ -450,6 +456,9 @@ final class SchedulerTests: XCTestCase {
             intervalMinutes: 90,
             enabled: true
         )
+        // Writes are queued to a serial background writer; the file only has
+        // to exist after a flush (quit path and tests).
+        store.flushSave()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
@@ -474,6 +483,7 @@ final class SchedulerTests: XCTestCase {
             intervalMinutes: 120,
             enabled: false
         )
+        restored.flushSave()
         let updated = makeStore(runner: okRunner(), gatewayRunning: true)
         updated.load()
         XCTAssertEqual(updated.tasks[0].name, "renamed")
@@ -483,6 +493,7 @@ final class SchedulerTests: XCTestCase {
         XCTAssertNil(updated.tasks[0].nextRunAt)
 
         updated.deleteTask(id: task.id)
+        updated.flushSave()
         let empty = makeStore(runner: okRunner(), gatewayRunning: true)
         empty.load()
         XCTAssertTrue(empty.tasks.isEmpty)
@@ -500,12 +511,14 @@ final class SchedulerTests: XCTestCase {
         )
         await store.runNow(id: task.id)
         await store.runNow(id: task.id)
+        store.flushSave()
 
         let restored = makeStore(runner: okRunner(), gatewayRunning: true)
         restored.load()
         XCTAssertEqual(restored.history.count, 2)
 
         restored.deleteTask(id: task.id)
+        restored.flushSave()
         let empty = makeStore(runner: okRunner(), gatewayRunning: true)
         empty.load()
         XCTAssertTrue(empty.history.isEmpty)
@@ -867,6 +880,7 @@ final class SchedulerTests: XCTestCase {
         XCTAssertEqual(task.scheduleKind, .cron)
         XCTAssertEqual(task.cronExpression, "0 9 * * *")
         XCTAssertEqual(task.nextRunAt, 1_792_486_800)
+        store.flushSave()
 
         let restored = makeStore(runner: okRunner(), gatewayRunning: true)
         restored.load()
@@ -1021,5 +1035,567 @@ final class SchedulerTests: XCTestCase {
         store.stop()
         let after = try Data(contentsOf: fileURL)
         XCTAssertEqual(after, data, "a newer scheduler file must stay byte-identical")
+    }
+
+    /// Suppressing an active run's save and then reloading the restored file
+    /// would silently discard a billed result, so a restore must be refused
+    /// while the scheduler is busy instead.
+    func testBackupRestoreIsRefusedWhileARunIsActive() async throws {
+        let gate = SchedulerTestGate()
+        let runner = SchedulerRunner { request in
+            await gate.wait()
+            let object: [String: Any] = [
+                "choices": [["message": ["content": "done"]]],
+                "usage": ["total_tokens": 7],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: object)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: nil
+            )!
+            return (data, response)
+        }
+        let store = makeStore(runner: runner, gatewayRunning: true)
+        let task = store.addTask(
+            name: "busy",
+            prompt: "p",
+            model: "m",
+            reasoningEffort: nil,
+            intervalMinutes: 60,
+            enabled: true
+        )
+
+        let run = Task { await store.runNow(id: task.id) }
+        await waitUntil { store.isRunning }
+
+        do {
+            try await store.beginBackupRestore()
+            XCTFail("a restore must not start while a run is in flight")
+        } catch {
+            XCTAssertEqual(error as? SchedulerRestoreError, .runInProgress)
+        }
+        XCTAssertFalse(store.isSuspendedForBackupRestore)
+
+        gate.open()
+        await run.value
+        XCTAssertEqual(store.history.first?.tokens, 7, "the in-flight run still records its spend")
+    }
+
+    // MARK: - Durable token ledger (CORE-01)
+
+    private var usageFileURL: URL {
+        directory.appendingPathComponent("scheduler-usage.json")
+    }
+
+    private func ledgerTotal(_ store: SchedulerStore, taskID: String) -> Int {
+        (store.usageLedger.days[taskID] ?? [:]).values.reduce(0, +)
+    }
+
+    /// The regression the audit reproduced: 20 runs of 10 tokens fill a
+    /// 200-token budget, the 21st entry pushes the oldest paid entry out of the
+    /// bounded history, and a history-derived counter then allows another paid
+    /// request. The durable ledger must keep blocking.
+    func testDailyBudgetSurvivesHistoryTrimAfterTheCap() async throws {
+        let limit = 200
+        let stub = SchedulerTask(
+            name: "budget",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: limit,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        try seed([stub])
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(tokens: 10, counter: counter), gatewayRunning: true)
+        store.load()
+
+        for _ in 0..<20 { await store.runNow(id: stub.id) }
+        XCTAssertEqual(counter.value, 20)
+        XCTAssertEqual(ledgerTotal(store, taskID: stub.id), limit)
+
+        // Blocked runs still write history entries, which trims the oldest
+        // paid entry away.
+        await store.runNow(id: stub.id)
+        await store.runNow(id: stub.id)
+
+        XCTAssertEqual(counter.value, 20, "a reached limit must send nothing")
+        XCTAssertEqual(store.history.count, SchedulerLimits.historyPerTask)
+        let historyTokens = store.history.compactMap(\.tokens).reduce(0, +)
+        XCTAssertLessThan(
+            historyTokens,
+            limit,
+            "history has already lost spend; it must not be the counter"
+        )
+        XCTAssertEqual(ledgerTotal(store, taskID: stub.id), limit, "blocked runs add no usage")
+    }
+
+    /// Migration: a scheduler.json written before the ledger existed seeds
+    /// today's counter from the surviving history exactly once.
+    func testUsageLedgerMigratesFromHistoryExactlyOnce() throws {
+        let now = Date()
+        let task = SchedulerTask(
+            name: "legacy",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 1000,
+            intervalMinutes: 60,
+            nextRunAt: now.addingTimeInterval(3600).timeIntervalSince1970
+        )
+        let entry = SchedulerHistoryEntry(
+            taskId: task.id,
+            at: now.addingTimeInterval(-60).timeIntervalSince1970,
+            status: .ok,
+            model: "m",
+            durationMs: 10,
+            tokens: 300,
+            result: "r",
+            error: nil
+        )
+        try SecureFile.write(
+            JSONEncoder().encode(SchedulerFile(tasks: [task], history: [entry])),
+            to: fileURL
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: usageFileURL.path))
+
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        store.load()
+        XCTAssertEqual(ledgerTotal(store, taskID: task.id), 300)
+        store.flushSave()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: usageFileURL.path))
+
+        // A second launch reads the ledger; the seed must not run again and
+        // double the spend.
+        let second = makeStore(runner: okRunner(), gatewayRunning: true)
+        second.load()
+        XCTAssertEqual(ledgerTotal(second, taskID: task.id), 300)
+    }
+
+    func testUsageCounterSaturatesInsteadOfOverflowing() {
+        var ledger = SchedulerUsageLedger()
+        let now = Date()
+        SchedulerUsagePolicy.record(Int.max, taskID: "t", now: now, in: &ledger)
+        SchedulerUsagePolicy.record(1, taskID: "t", now: now, in: &ledger)
+        XCTAssertEqual(SchedulerUsagePolicy.used(ledger, taskID: "t", now: now), Int.max)
+        ledger.days = ["t": ["2026-99-99": 1]]
+        XCTAssertFalse(SchedulerUsagePolicy.isValid(ledger))
+        ledger.days = ["t": ["2026-02-30": 1]]
+        XCTAssertFalse(SchedulerUsagePolicy.isValid(ledger))
+    }
+
+    func testUsageMigrationCountsUntrimmedInputBeforeApplyingUICaps() throws {
+        let now = Date()
+        let task = SchedulerTask(name: "legacy-large", prompt: "p", model: "m", dailyTokenLimit: 100_000)
+        let entries = (0..<60).map { offset in
+            SchedulerHistoryEntry(
+                taskId: task.id, at: now.addingTimeInterval(-Double(offset)).timeIntervalSince1970,
+                status: .ok, model: "m", durationMs: 1, tokens: 2_000, result: "", error: nil
+            )
+        }
+        try SecureFile.write(JSONEncoder().encode(SchedulerFile(tasks: [task], history: entries)), to: fileURL)
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        store.load()
+        XCTAssertEqual(store.history.count, 20)
+        XCTAssertEqual(ledgerTotal(store, taskID: task.id), 120_000)
+    }
+
+    /// Fail closed: a corrupt counter must not be replaced by a history-derived
+    /// lower bound. History had already lost spend, so seeding it would refund
+    /// budget — the same CORE-01 hole from the other side.
+    func testCorruptUsageLedgerFailsClosedInsteadOfRefundingBudget() async throws {
+        let task = SchedulerTask(
+            name: "fail-closed",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 100,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        let entry = SchedulerHistoryEntry(
+            taskId: task.id,
+            at: Date().addingTimeInterval(-60).timeIntervalSince1970,
+            status: .ok,
+            model: "m",
+            durationMs: 1,
+            tokens: 90,
+            result: "",
+            error: nil
+        )
+        try SecureFile.write(
+            JSONEncoder().encode(SchedulerFile(tasks: [task], history: [entry])),
+            to: fileURL
+        )
+        let corrupt = Data("{\"days\": \"not a ledger\"}".utf8)
+        try SecureFile.write(corrupt, to: usageFileURL)
+
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(tokens: 10, counter: counter), gatewayRunning: true)
+        store.load()
+        XCTAssertTrue(store.usageBudgetFailClosed)
+        XCTAssertEqual(ledgerTotal(store, taskID: task.id), 0)
+
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 0, "an unreadable counter must not allow spend")
+        XCTAssertEqual(store.tasks.first?.lastStatus, .error)
+        XCTAssertEqual(store.tasks.first?.lastError, SchedulerStore.unreadableLedgerMessage)
+
+        // The broken file is preserved, not zeroed or moved away, and a copy
+        // exists for recovery.
+        store.flushSave()
+        XCTAssertEqual(try Data(contentsOf: usageFileURL), corrupt)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("scheduler-usage.corrupt-") })
+    }
+
+    /// A counter that cannot be persisted must stop the next paid run, not
+    /// silently continue on an in-memory budget. Once the disk is writable
+    /// again the next tick persists the accumulated spend and unblocks.
+    func testLedgerWriteFailureFailsClosedAndRetriesAfterDiskRecovers() async throws {
+        let task = SchedulerTask(
+            name: "budget",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 100,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        try seed([task])
+        let writeState = WriteState()
+        let counter = Counter()
+        let store = SchedulerStore(
+            fileURL: fileURL,
+            runner: okRunner(tokens: 10, counter: counter),
+            gateway: gateway,
+            isGatewayRunning: true,
+            notifications: .disabled,
+            usageWrite: { data, url in
+                writeState.writes += 1
+                if writeState.fail { throw NSError(domain: "test.write", code: 1) }
+                try SecureFile.write(data, to: url)
+            }
+        )
+        store.load()
+        XCTAssertFalse(store.usageBudgetFailClosed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: usageFileURL.path))
+
+        writeState.fail = true
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 1)
+        XCTAssertTrue(store.usageBudgetFailClosed, "a failed durable write must fail closed")
+
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 1, "no request may run while the counter is not durable")
+        XCTAssertTrue(
+            store.tasks.first?.lastError?.contains("could not be saved") == true,
+            "the blocked run must name the write failure, not claim the file is corrupt"
+        )
+
+        writeState.fail = false
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 2, "a successful retry persists the spend and unblocks")
+        XCTAssertFalse(store.usageBudgetFailClosed)
+        let ledger = try JSONDecoder().decode(SchedulerUsageLedger.self, from: Data(contentsOf: usageFileURL))
+        XCTAssertEqual(ledger.days[task.id]?.values.reduce(0, +), 20)
+    }
+
+    /// `SecureFile.read` returns nil both for "missing" and for "exists but
+    /// unreadable". The latter must never be seeded as a fresh counter.
+    func testUnreadableLedgerIsNotTreatedAsMissing() async throws {
+        let task = SchedulerTask(
+            name: "budget",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 50,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        try seed([task])
+        // A directory at the counter path is unreadable as a file and must stay
+        // untouched.
+        try FileManager.default.createDirectory(at: usageFileURL, withIntermediateDirectories: true)
+
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(tokens: 10, counter: counter))
+        store.load()
+        XCTAssertTrue(store.usageBudgetFailClosed)
+
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 0)
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: usageFileURL.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue, "an unreadable counter must not be replaced")
+    }
+
+    func testNewerUsageLedgerFailsClosedAndIsNotRewritten() async throws {
+        let future = Data("{\"schemaVersion\": \(PersistenceSchema.current + 1), \"days\": {}}".utf8)
+        try SecureFile.write(future, to: usageFileURL)
+        let task = SchedulerTask(
+            name: "future",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 100,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        try seed([task])
+
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(tokens: 10, counter: counter), gatewayRunning: true)
+        store.load()
+        XCTAssertTrue(store.usageBudgetFailClosed)
+
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 0)
+        store.flushSave()
+        XCTAssertEqual(try Data(contentsOf: usageFileURL), future, "a newer counter file must stay byte-identical")
+    }
+
+    func testImpossibleUsageValuesFailClosed() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let day = SchedulerUsagePolicy.dayKey(Date(), calendar: calendar)
+        let payload = """
+        {"schemaVersion": \(PersistenceSchema.current), "days": {"t": {"\(day)": -5}}}
+        """
+        try SecureFile.write(Data(payload.utf8), to: usageFileURL)
+
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        store.load()
+        XCTAssertTrue(store.usageBudgetFailClosed, "negative spend is not a valid counter")
+    }
+
+    func testFutureUsageLedgerFailsClosedWithoutPruningAwaySpend() async throws {
+        let now = Date()
+        let tomorrow = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 1, to: now))
+        let task = SchedulerTask(name: "future-counter", prompt: "p", model: "m", dailyTokenLimit: 100)
+        try seed([task])
+        let ledger = SchedulerUsageLedger(days: [
+            task.id: [SchedulerUsagePolicy.dayKey(tomorrow): 100]
+        ])
+        let bytes = try JSONEncoder().encode(ledger)
+        try bytes.write(to: usageFileURL)
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(counter: counter), gatewayRunning: true)
+        store.load(now: now)
+        XCTAssertTrue(store.usageBudgetFailClosed)
+        await store.runNow(id: task.id)
+        XCTAssertEqual(counter.value, 0)
+        XCTAssertEqual(try Data(contentsOf: usageFileURL), bytes)
+    }
+
+    func testYesterdaySpendDoesNotBlockTodayBudget() async throws {
+        let calendar = Calendar.current
+        let task = SchedulerTask(
+            name: "rollover",
+            prompt: "p",
+            model: "m",
+            dailyTokenLimit: 100,
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+        try seed([task])
+        var ledger = SchedulerUsageLedger()
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: Date())!
+        SchedulerUsagePolicy.record(1000, taskID: task.id, now: yesterday, calendar: calendar, in: &ledger)
+        try SecureFile.write(JSONEncoder().encode(ledger), to: usageFileURL)
+
+        let counter = Counter()
+        let store = makeStore(runner: okRunner(tokens: 5, counter: counter), gatewayRunning: true)
+        store.load()
+        await store.runNow(id: task.id)
+
+        XCTAssertEqual(counter.value, 1, "yesterday's spend must not block today")
+        XCTAssertEqual(
+            SchedulerUsagePolicy.used(store.usageLedger, taskID: task.id, now: Date(), calendar: calendar),
+            5
+        )
+    }
+
+    func testUsageLedgerKeepsThreeDaysAndDropsOlderSpend() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_792_483_620)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now)!
+        let stale = calendar.date(byAdding: .day, value: -5, to: now)!
+
+        var ledger = SchedulerUsageLedger()
+        SchedulerUsagePolicy.record(500, taskID: "t", now: yesterday, calendar: calendar, in: &ledger)
+        SchedulerUsagePolicy.record(700, taskID: "t", now: stale, calendar: calendar, in: &ledger)
+
+        XCTAssertEqual(SchedulerUsagePolicy.used(ledger, taskID: "t", now: now, calendar: calendar), 0)
+        XCTAssertEqual(SchedulerUsagePolicy.used(ledger, taskID: "t", now: yesterday, calendar: calendar), 500)
+
+        let pruned = SchedulerUsagePolicy.pruned(ledger, now: now, calendar: calendar)
+        XCTAssertEqual(
+            SchedulerUsagePolicy.used(pruned, taskID: "t", now: yesterday, calendar: calendar),
+            500,
+            "yesterday is inside the retention window"
+        )
+        XCTAssertNil(pruned.days["t"]?[SchedulerUsagePolicy.dayKey(stale, calendar: calendar)])
+    }
+
+    // MARK: - Serialized background writes
+
+    func testPersistenceCoalescesBurstsAndKeepsTheNewestSnapshot() throws {
+        let url = directory.appendingPathComponent("coalesce.json")
+        let persistence = SchedulerPersistence()
+        for index in 0..<40 {
+            persistence.submit(url: url) { Data("snapshot-\(index)".utf8) }
+        }
+        persistence.flush()
+        let data = try Data(contentsOf: url)
+        XCTAssertEqual(String(data: data, encoding: .utf8), "snapshot-39")
+    }
+
+    func testFlushPendingWritesWaitsForTheBackgroundWriter() async {
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        let task = store.addTask(
+            name: "flush",
+            prompt: "p",
+            model: "m",
+            reasoningEffort: nil,
+            intervalMinutes: 60,
+            enabled: true
+        )
+        await store.flushPendingWrites()
+
+        let restored = makeStore(runner: okRunner(), gatewayRunning: true)
+        restored.load()
+        XCTAssertEqual(restored.tasks.first?.id, task.id)
+    }
+
+    // MARK: - Bounded git capture (CORE-02)
+
+    /// The reproduced deadlock: waiting for exit before draining stdout hangs
+    /// as soon as the child writes more than the pipe buffer. The capture must
+    /// return quickly and keep only `limit` bytes.
+    func testGitCaptureDrainsOutputLargerThanThePipeBuffer() {
+        let started = Date()
+        let text = SchedulerGitContext.capture(
+            executable: "/bin/sh",
+            arguments: ["-c", "yes line | head -c 400000"],
+            directory: nil,
+            limit: 4096,
+            timeout: 15
+        )
+        XCTAssertEqual(text.utf8.count, 4096)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    }
+
+    func testGitCaptureTimeoutTerminatesAStuckChild() {
+        let started = Date()
+        let text = SchedulerGitContext.capture(
+            executable: "/bin/sleep",
+            arguments: ["30"],
+            directory: nil,
+            limit: 100,
+            timeout: 0.3
+        )
+        XCTAssertEqual(text, "")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+    }
+
+    func testGitCancellationTerminatesTheChild() {
+        let cancellation = SchedulerGitCancellation()
+        let finished = expectation(description: "capture returns")
+        DispatchQueue.global(qos: .utility).async {
+            _ = SchedulerGitContext.capture(
+                executable: "/bin/sleep",
+                arguments: ["30"],
+                directory: nil,
+                limit: 100,
+                timeout: 30,
+                cancellation: cancellation
+            )
+            finished.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        cancellation.cancel()
+        wait(for: [finished], timeout: 5)
+    }
+
+    // MARK: - Backup restore suspension
+
+    private func makeTask(name: String) -> SchedulerTask {
+        SchedulerTask(
+            name: name,
+            prompt: "p",
+            model: "m",
+            intervalMinutes: 60,
+            nextRunAt: Date().addingTimeInterval(3600).timeIntervalSince1970
+        )
+    }
+
+    func testBackupRestoreSuspensionBlocksWritesAndRuns() async throws {
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        _ = store.addTask(
+            name: "before",
+            prompt: "p",
+            model: "m",
+            reasoningEffort: nil,
+            intervalMinutes: 60,
+            enabled: true
+        )
+        await store.flushPendingWrites()
+
+        try await store.beginBackupRestore()
+        XCTAssertTrue(store.isSuspendedForBackupRestore)
+
+        // The restore lands on disk while the app is still suspended.
+        let restored = makeTask(name: "restored")
+        try SecureFile.write(
+            JSONEncoder().encode(SchedulerFile(tasks: [restored], history: [])),
+            to: fileURL
+        )
+
+        // A mutation during the restore must not rewrite the restored file.
+        let during = store.addTask(
+            name: "during",
+            prompt: "p",
+            model: "m",
+            reasoningEffort: nil,
+            intervalMinutes: 60,
+            enabled: true
+        )
+        store.flushSave()
+        let onDisk = try JSONDecoder().decode(SchedulerFile.self, from: Data(contentsOf: fileURL))
+        XCTAssertEqual(onDisk.tasks.map(\.name), ["restored"])
+
+        // No run may start against the pre-restore state either.
+        let counter = Counter()
+        let suspended = makeStore(runner: okRunner(counter: counter), gatewayRunning: true)
+        suspended.load(now: Date())
+        try await suspended.beginBackupRestore()
+        await suspended.runNow(id: suspended.tasks.first?.id ?? during.id)
+        XCTAssertEqual(counter.value, 0)
+        suspended.endBackupRestore(restored: false)
+
+        store.endBackupRestore(restored: true)
+        XCTAssertFalse(store.isSuspendedForBackupRestore)
+        XCTAssertEqual(store.tasks.map(\.name), ["restored"])
+    }
+
+    func testFailedBackupRestoreResumesWithoutReloading() async {
+        let store = makeStore(runner: okRunner(), gatewayRunning: true)
+        let task = store.addTask(
+            name: "keep",
+            prompt: "p",
+            model: "m",
+            reasoningEffort: nil,
+            intervalMinutes: 60,
+            enabled: true
+        )
+
+        try? await store.beginBackupRestore()
+        store.endBackupRestore(restored: false)
+
+        XCTAssertFalse(store.isSuspendedForBackupRestore)
+        XCTAssertEqual(store.tasks.map(\.id), [task.id], "a failed restore keeps the live state")
+        store.flushSave()
+        let restored = makeStore(runner: okRunner(), gatewayRunning: true)
+        restored.load()
+        XCTAssertEqual(restored.tasks.map(\.id), [task.id], "writes resume after a failed restore")
     }
 }

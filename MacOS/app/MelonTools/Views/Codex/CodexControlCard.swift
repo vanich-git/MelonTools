@@ -158,14 +158,9 @@ struct CodexControlCard: View {
                     .font(MTTheme.body(12, weight: .semibold))
                     .foregroundStyle(MTTheme.textPrimary)
                 Spacer()
-                Picker("", selection: $store.routingStrategy) {
-                    ForEach(CodexRoutingStrategy.allCases) { strategy in
-                        Text(strategy.title).tag(strategy)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 260, alignment: .trailing)
+                MTSelect(selection: $store.routingStrategy, options: CodexRoutingStrategy.allCases.map {
+                    ($0, $0.title)
+                }, width: 260)
             }
             Text(store.routingStrategy.hint)
                 .font(MTTheme.mono(10))

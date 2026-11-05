@@ -266,6 +266,79 @@ function mock(cmd, args) {
     backup_import: (a) => ({ schedulerTasks: 1, schedulerHistory: 3, accounts: 2, authFiles: 2, modelSourcesIncluded: true, settingsKeys: 14 }),
     update_check: { skipped: false, version: "1.4.8", tag: "v1.4.8", newer: false, notes: "", assetName: "", assetURL: "", digest: null },
     update_apply: { ok: true },
+    // Local AI GGUF / llama-server mocks for browser preview
+    local_ai_hardware_info: () => demoLocalAiHardware(),
+    local_ai_models_list: () => demoLocalAiModels(),
+    local_ai_registry_health: () => ({ readOnly: false, error: null, backupPath: null }),
+    local_ai_registry_recover: () => ({ readOnly: false, error: null, backupPath: null }),
+    local_ai_model_get: (a) => {
+      const m = demoLocalAiModels().find((x) => x.id === (a && (a.id || a.model_id)));
+      return m ? m : Promise.reject("Model not found");
+    },
+    local_ai_model_save_settings: (a) => {
+      const list = demoLocalAiModels();
+      const m = list.find((x) => x.id === (a && a.id));
+      if (!m) return Promise.reject("Model not found");
+      if (a && a.settings) m.userSettings = { ...m.userSettings, ...a.settings };
+      return m;
+    },
+    local_ai_model_delete: (a) => {
+      const id = a && a.id;
+      DEMO_LOCAL_AI_MODELS = demoLocalAiModels().filter((x) => x.id !== id);
+      if (DEMO_LOCAL_AI_RUNTIME.modelId === id) {
+        demoRuntimeStopped();
+      }
+      return null;
+    },
+    local_ai_runtime_status: () => ({ ...DEMO_LOCAL_AI_RUNTIME }),
+    local_ai_runtime_logs: () => [],
+    local_ai_runtime_logs_clear: () => null,
+    local_ai_runtime_catalog: () => demoRuntimeCatalog(),
+    local_ai_start_model: (a) => {
+      const id = a && a.id;
+      const m = demoLocalAiModels().find((x) => x.id === id);
+      if (!m) return Promise.reject("Model not found");
+      demoLocalAiModels().forEach((model) => {
+        model.runtimeStatus = model.id === id ? "ready" : "installed";
+      });
+      demoRuntimeTransition({
+        isRunning: true,
+        isStarting: false,
+        startingModelId: null,
+        failedModelId: null,
+        error: null,
+        port: 18318,
+        modelId: id,
+        currentModel: demoRuntimeModel(id),
+        // Mirrors the Rust snapshot: the engine launched with these values.
+        appliedSettings: { ...m.userSettings },
+        state: { type: "Running", data: { port: 18318, model_id: id } },
+      });
+      return null;
+    },
+    local_ai_stop_runtime: () => {
+      demoLocalAiModels().forEach((m) => { m.runtimeStatus = "installed"; });
+      demoRuntimeStopped();
+      return null;
+    },
+    local_ai_set_binary_path: (a) => {
+      DEMO_LOCAL_AI_RUNTIME.binaryPath = (a && a.path) || null;
+      return null;
+    },
+    local_ai_hf_search: (a) => demoHfSearch((a && a.query) || ""),
+    local_ai_hf_model_details: (a) => demoHfDetails((a && (a.repoId || a.repo_id)) || ""),
+    local_ai_download_start: (a) => demoStartDownload((a && a.request) || {}),
+    local_ai_download_cancel: (a) => demoCancelDownload((a && (a.modelId || a.model_id)) || ""),
+    local_ai_downloads_list: () => DEMO_LOCAL_AI_DOWNLOADS.slice(),
+    local_ai_downloads_clear: () => {
+      const before = DEMO_LOCAL_AI_DOWNLOADS.length;
+      DEMO_LOCAL_AI_DOWNLOADS = DEMO_LOCAL_AI_DOWNLOADS.filter(
+        (d) => d.status === "queued" || d.status === "downloading" || d.status === "paused"
+      );
+      return before - DEMO_LOCAL_AI_DOWNLOADS.length;
+    },
+    local_ai_import_file: (a) => demoImportFile((a && a.path) || ""),
+    local_ai_estimate_memory: (a) => demoMemoryEstimate((a && a.params) || {}),
     open_url: null,
   };
   const entry = mocks[cmd];
@@ -362,4 +435,381 @@ function demoFinishRun(id) {
     setTimeout(() => demoFinishRun(next), DEMO_RUN_MS);
   }
   return demo;
+}
+
+
+// Browser preview only: Local AI demo state and helpers
+let DEMO_LOCAL_AI_MODELS = null;
+let DEMO_LOCAL_AI_RUNTIME = {
+  state: "Stopped",
+  port: 18318,
+  currentModel: null,
+  modelId: null,
+  internalToken: "demo-melon-local-token-uuid",
+  isRunning: false,
+  isStarting: false,
+  startingModelId: null,
+  failedModelId: null,
+  error: null,
+  binaryPath: "C:\\Users\\you\\AppData\\Local\\MelonTools\\runtime\\llama-server.exe",
+  revision: 0,
+  appliedSettings: null,
+};
+let DEMO_LOCAL_AI_DOWNLOADS = [];
+
+// Mirrors `RuntimeStatusPayload`: `currentModel` is what the cards key off,
+// `modelId` stays as the compatibility alias, and `revision` bumps on every
+// lifecycle transition.
+function demoRuntimeModel(id) {
+  const model = demoLocalAiModels().find((x) => x.id === id);
+  if (!model) return null;
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    quantization: model.quantization,
+    fileSize: model.fileSize,
+    contextLength: model.contextLength,
+  };
+}
+
+function demoRuntimeTransition(patch) {
+  DEMO_LOCAL_AI_RUNTIME = {
+    ...DEMO_LOCAL_AI_RUNTIME,
+    ...patch,
+    revision: (DEMO_LOCAL_AI_RUNTIME.revision || 0) + 1,
+  };
+}
+
+function demoRuntimeStopped() {
+  demoRuntimeTransition({
+    isRunning: false,
+    isStarting: false,
+    startingModelId: null,
+    failedModelId: null,
+    error: null,
+    modelId: null,
+    currentModel: null,
+    appliedSettings: null,
+    state: "Stopped",
+  });
+}
+
+// Browser preview only: a small slice of the GitHub release catalog.
+function demoRuntimeCatalog() {
+  return [
+    {
+      tag: "b12102",
+      title: "b12102",
+      publishedAt: "2026-11-04T09:12:53Z",
+      variants: [
+        {
+          id: "cpu", label: "CPU (x64)", sizeBytes: 48930123,
+          sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12102/llama-b12102-bin-win-cpu-x64.zip",
+        },
+        {
+          id: "vulkan", label: "Vulkan (x64)", sizeBytes: 51234567,
+          sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12102/llama-b12102-bin-win-vulkan-x64.zip",
+        },
+      ],
+    },
+    {
+      tag: "b12101",
+      title: "b12101",
+      publishedAt: "2026-11-04T08:30:00Z",
+      variants: [
+        {
+          id: "cpu", label: "CPU (x64)", sizeBytes: 48900111,
+          sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12101/llama-b12101-bin-win-cpu-x64.zip",
+        },
+      ],
+    },
+  ];
+}
+
+function demoLocalAiHardware() {
+  return {
+    osVersion: "Windows 11 Pro 23H2 (Build 22631)",
+    architecture: "x86_64",
+    cpuModel: "13th Gen Intel(R) Core(TM) i9-13900K",
+    cpuCores: 24,
+    totalRam: 34359738368,
+    freeRam: 21474836480,
+    gpuName: "NVIDIA GeForce RTX 4090",
+    gpuHasUnifiedMemory: false,
+    gpuRecommendedMaxWorkingSetSize: 25769803776,
+    supportedBackends: ["cuda", "cpu"],
+    recommendedBackend: "cuda",
+    modelsDiskFreeSpace: 1099511627776,
+    modelsDiskTotalSpace: 2199023255552,
+  };
+}
+
+function demoLocalAiModels() {
+  if (!DEMO_LOCAL_AI_MODELS) {
+    DEMO_LOCAL_AI_MODELS = [
+      {
+        id: "qwen2.5-coder-7b-instruct-q4_k_m",
+        displayName: "Qwen 2.5 Coder 7B Instruct (Q4_K_M)",
+        provider: "Local AI",
+        source: "huggingface",
+        repoId: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        revision: "main",
+        files: ["qwen2.5-coder-7b-instruct-q4_k_m.gguf"],
+        fileSize: 4680000000,
+        quantization: "Q4_K_M",
+        format: "gguf",
+        contextLength: 32768,
+        configuredContext: 8192,
+        backend: "cuda",
+        gpuOffload: 33,
+        threads: 8,
+        runtimeStatus: "stopped",
+        capabilities: ["chat", "code", "tool_use"],
+        installedAt: "2025-01-15T12:00:00Z",
+        updatedAt: "2025-01-15T12:00:00Z",
+        lastUsedAt: null,
+        license: "Apache-2.0",
+        checksum: null,
+        userSettings: {
+          contextLength: 8192,
+          maxOutputTokens: 4096,
+          temperature: 0.7,
+          topP: 0.9,
+          topK: 40,
+          repeatPenalty: 1.1,
+          seed: null,
+          cpuThreads: 8,
+          gpuOffloadLayers: 33,
+          flashAttention: true,
+          kvCacheType: "f16",
+          batchSize: 512,
+          chatTemplate: null,
+          profile: "auto",
+          reasoningEnabled: false,
+        },
+      },
+    ];
+  }
+  return DEMO_LOCAL_AI_MODELS;
+}
+
+function demoHfSearch(query) {
+  const q = String(query).toLowerCase();
+  const presets = [
+    {
+      id: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+      author: "Qwen",
+      description: "Qwen2.5-Coder is the code-specific version of Qwen2.5, pretrained on 5.5 trillion tokens.",
+      downloads: 485200,
+      likes: 2130,
+      tags: ["code", "gguf", "qwen", "conversational"],
+      lastModified: "2024-11-20T10:00:00Z",
+    },
+    {
+      id: "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      author: "bartowski",
+      description: "Llama-3.2-3B-Instruct quantized to GGUF format with multiple quant levels.",
+      downloads: 320100,
+      likes: 850,
+      tags: ["llama", "llama-3.2", "gguf"],
+      lastModified: "2024-10-15T08:30:00Z",
+    },
+    {
+      id: "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+      author: "unsloth",
+      description: "DeepSeek R1 reasoning distilled into Qwen 2.5 7B model quantized to GGUF.",
+      downloads: 890400,
+      likes: 5400,
+      tags: ["deepseek", "reasoning", "distill", "gguf"],
+      lastModified: "2025-01-22T14:10:00Z",
+    },
+  ];
+  return presets.filter((p) => !q || p.id.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
+}
+
+// Exactly the fields `HFGGUFFile` serializes: `name`, `size`, `downloadUrl`,
+// `quantization`, `sha256`, `formattedSize`, `estimation`.
+function demoHfFile(repoId, name, size, quantization) {
+  const url = "https://huggingface.co/" + repoId + "/resolve/main/" + name;
+  return {
+    name: name,
+    size: size,
+    formattedSize: size,
+    downloadUrl: url,
+    quantization: quantization,
+    sha256: null,
+    estimation: demoMemoryEstimate({ weightsSize: size, contextLength: 8192 }),
+  };
+}
+
+function demoHfDetails(repoId) {
+  return {
+    id: repoId || "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+    author: (repoId || "").split("/")[0] || "Qwen",
+    description: "High performance open code assistant model GGUF quantization repository.",
+    downloads: 485200,
+    likes: 2130,
+    tags: ["gguf", "code"],
+    license: "Apache-2.0",
+    ggufFiles: [
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4680000000, "Q4_K_M"),
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q5_k_m.gguf", 5430000000, "Q5_K_M"),
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q8_0.gguf", 8100000000, "Q8_0"),
+    ],
+  };
+}
+
+function demoStartDownload(request) {
+  const filename = request.filename || "model.gguf";
+  const repoId = request.repoId || "";
+  const modelId = "local/" + (repoId.split("/").pop() || "model").toLowerCase() + "-" +
+    filename.replace(/\.gguf$/i, "").toLowerCase();
+  const total = 4680000000;
+  const downloaded = 1250000000;
+  const speed = 25000000;
+  const item = {
+    modelId: modelId,
+    repoId: repoId,
+    filename: filename,
+    bytesDownloaded: downloaded,
+    totalBytes: total,
+    progress: downloaded / total,
+    speedBytesPerSec: speed,
+    speedFormatted: "23.8 MB/s",
+    etaSeconds: Math.round((total - downloaded) / speed),
+    status: "downloading",
+    error: null,
+  };
+  DEMO_LOCAL_AI_DOWNLOADS = DEMO_LOCAL_AI_DOWNLOADS.filter((d) => d.modelId !== modelId);
+  DEMO_LOCAL_AI_DOWNLOADS.push(item);
+  return modelId;
+}
+
+function demoCancelDownload(modelId) {
+  const item = DEMO_LOCAL_AI_DOWNLOADS.find((d) => d.modelId === modelId);
+  if (item) {
+    item.status = "canceled";
+    item.speedBytesPerSec = 0;
+    item.speedFormatted = "";
+    item.etaSeconds = null;
+  }
+  return null;
+}
+
+function demoImportFile(path) {
+  const filename = path.split(/[\\/]/).pop() || "imported-model.gguf";
+  const id = filename.replace(/\.gguf$/i, "").toLowerCase();
+  const model = {
+    id: id,
+    displayName: filename,
+    provider: "Local AI",
+    source: "imported",
+    repoId: null,
+    revision: null,
+    files: [filename],
+    fileSize: 4200000000,
+    quantization: "Q4_K_M",
+    format: "gguf",
+    contextLength: 8192,
+    configuredContext: 8192,
+    backend: "cuda",
+    gpuOffload: null,
+    threads: null,
+    runtimeStatus: "stopped",
+    capabilities: ["chat", "code"],
+    installedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastUsedAt: null,
+    license: null,
+    checksum: null,
+    userSettings: {
+      contextLength: 8192,
+      maxOutputTokens: 4096,
+      temperature: 0.7,
+      topP: 0.9,
+      topK: 40,
+      repeatPenalty: 1.1,
+      seed: null,
+      cpuThreads: null,
+      gpuOffloadLayers: null,
+      flashAttention: true,
+      kvCacheType: "f16",
+      batchSize: 512,
+      chatTemplate: null,
+      profile: "auto",
+      reasoningEnabled: false,
+    },
+  };
+  demoLocalAiModels().push(model);
+  return model;
+}
+
+// Mirrors `MemoryEstimation`: `totalBytes` is the total required, and the
+// KV cache follows 2 * layers * kv_heads * head_dim * context * bytes.
+function demoMemoryEstimate(params) {
+  const weights = (params && params.weightsSize) || 4500000000;
+  const ctx = (params && params.contextLength) || 8192;
+  const kvType = (params && params.kvCacheType) || "f16";
+  const bytesPerElement = kvType === "q8_0" ? 1.0625 : kvType === "q4_0" ? 0.5625 : 2;
+  const kv = Math.round(2 * 28 * 8 * 128 * ctx * bytesPerElement);
+  const compute = 512 * 1024 * 1024;
+  const os = 2 * 1024 * 1024 * 1024;
+  const total = weights + kv + compute + os;
+  const available = 34359738368;
+  const fits = total <= available;
+  return {
+    weightsBytes: weights,
+    kvCacheBytes: kv,
+    computeBuffersBytes: compute,
+    osReserveBytes: os,
+    totalBytes: total,
+    availableBytes: available,
+    fitsInMemory: fits,
+    confidence: params && params.modelId ? "metadata" : "heuristic",
+    recommendation: fits ? "Recommended" : "High memory usage",
+    warning: null,
+  };
+}
+
+const api = {
+  localAi: {
+    hardwareInfo: () => inv("local_ai_hardware_info"),
+    modelsList: () => inv("local_ai_models_list"),
+    registryHealth: () => inv("local_ai_registry_health"),
+    registryRecover: () => inv("local_ai_registry_recover"),
+    modelGet: (id) => inv("local_ai_model_get", { id }),
+    saveSettings: (id, settings) => inv("local_ai_model_save_settings", { id, settings }),
+    deleteModel: (id) => inv("local_ai_model_delete", { id }),
+    runtimeStatus: () => inv("local_ai_runtime_status"),
+    runtimeMetrics: () => inv("local_ai_runtime_metrics"),
+    runtimeLogs: (maxLines) => inv("local_ai_runtime_logs", { maxLines }),
+    clearRuntimeLogs: () => inv("local_ai_runtime_logs_clear"),
+    runtimeInstall: (url, sha256) => inv("local_ai_runtime_install", { url, sha256 }),
+    runtimeCatalog: () => inv("local_ai_runtime_catalog"),
+    runtimeInstallStatus: () => inv("local_ai_runtime_install_status"),
+    runtimeInstallCancel: () => inv("local_ai_runtime_install_cancel"),
+    migrationReport: () => inv("local_ai_migration_report"),
+    startModel: (id) => inv("local_ai_start_model", { id }),
+    stopRuntime: () => inv("local_ai_stop_runtime"),
+    setBinaryPath: (path) => inv("local_ai_set_binary_path", { path }),
+    hfSearch: (query, limit, token) => inv("local_ai_hf_search", { query, limit, token }),
+    hfModelDetails: (repoId, token) => inv("local_ai_hf_model_details", { repoId, token }),
+    // One typed request object: the previous positional signature dropped the
+    // SHA-256 that `DownloadRequest` expects, so LFS digests were never checked.
+    downloadStart: (request) => inv("local_ai_download_start", { request }),
+    downloadCancel: (modelId) => inv("local_ai_download_cancel", { modelId }),
+    downloadsList: () => inv("local_ai_downloads_list"),
+    downloadsClear: () => inv("local_ai_downloads_clear"),
+    importFile: (path) => inv("local_ai_import_file", { path }),
+    estimateMemory: (params) => inv("local_ai_estimate_memory", { params }),
+    hfTokenSet: (token) => inv("local_ai_hf_token_set", { token }),
+    hfTokenStatus: () => inv("local_ai_hf_token_status"),
+    hfTokenClear: () => inv("local_ai_hf_token_clear"),
+  },
+};
+if (typeof window !== "undefined") {
+  window.api = api;
 }

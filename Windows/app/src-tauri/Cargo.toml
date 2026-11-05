@@ -1,6 +1,6 @@
 [package]
 name = "melontools"
-version = "5.5.8"
+version = "6.0.0-rc.1"
 description = "Melon Tools for Windows — Codex account pool and local API gateway"
 edition = "2021"
 rust-version = "1.90"
@@ -15,9 +15,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "socks", "stream"] }
 url = "2"
-tokio = { version = "1", features = ["time", "process"] }
+tokio = { version = "1", features = ["time", "process", "fs", "io-util", "sync", "macros", "rt"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 futures-util = "0.3"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -28,6 +28,9 @@ chrono = "0.4"
 base64 = "0.22"
 rand = "0.8"
 zeroize = "1"
+uuid = { version = "1", features = ["v4"] }
+# Runtime package extraction: pure Rust, no PowerShell/BSdtar dependency.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -36,6 +39,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Cryptography",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_System_SystemInformation",
 ] }
 
 [profile.release]

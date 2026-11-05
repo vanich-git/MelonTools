@@ -67,6 +67,7 @@ struct BackupPayload {
     var auths: [String: [String: Any]]
     var modelSources: [String: Any]?
     var settings: [String: Any]
+    var schedulerUsage: [String: Any]? = nil
 
     var schedulerTasks: Int { Self.arrayCount(scheduler?["tasks"]) }
     var schedulerHistory: Int { Self.arrayCount(scheduler?["history"]) }
@@ -78,6 +79,7 @@ struct BackupPayload {
     func jsonObject() -> [String: Any] {
         var object: [String: Any] = [:]
         if let scheduler { object["scheduler"] = scheduler }
+        if let schedulerUsage { object["schedulerUsage"] = schedulerUsage }
         if let vault { object["vault"] = vault }
         object["auths"] = auths
         if let modelSources { object["modelSources"] = modelSources }
@@ -223,6 +225,7 @@ enum BackupService {
         let payload = try makePayload(supportDir: supportDir, defaults: defaults)
         let payloadData = try payload.encoded()
         let envelopeData = try seal(payload: payloadData, password: password, createdAt: Date())
+        try Task.checkCancellation()
         try SecureFile.write(envelopeData, to: url)
         setLastBackupAt(Date(), in: defaults)
 
@@ -247,6 +250,14 @@ enum BackupService {
         supportDir: URL = CodexStore.supportDir,
         defaults: UserDefaults = .standard
     ) throws -> BackupSummary {
+        let payloadData = try prepareImport(from: url, password: password)
+        return try restorePayload(payloadData, supportDir: supportDir, defaults: defaults)
+    }
+
+    /// Expensive password derivation/decryption is separated from the short
+    /// commit. The UI runs this off-main, then commits and reloads stores in
+    /// one main-actor turn so quota timers cannot overwrite restored files.
+    static func prepareImport(from url: URL, password: String) throws -> Data {
         guard !password.isEmpty else { throw BackupError.emptyPassword }
         let envelope = try readEnvelope(from: url)
         let key = try deriveKey(
@@ -258,7 +269,8 @@ enum BackupService {
             )
         )
         let payloadData = try decrypt(envelope: envelope, key: key)
-        return try restorePayload(payloadData, supportDir: supportDir, defaults: defaults)
+        try Task.checkCancellation()
+        return payloadData
     }
 
     /// Alias with the name the product specification uses.
@@ -292,7 +304,8 @@ enum BackupService {
             vault: vault,
             auths: auths,
             modelSources: modelSources,
-            settings: captureSettings(defaults)
+            settings: captureSettings(defaults),
+            schedulerUsage: readJSONObject(at: supportDir.appendingPathComponent("scheduler-usage.json"))
         )
     }
 
@@ -354,6 +367,32 @@ enum BackupService {
     ) throws -> BackupSummary {
         let root = try parseObject(data, context: "payload")
         let scheduler = try optionalObject(root["scheduler"], name: "scheduler")
+        var schedulerUsage = try optionalObject(root["schedulerUsage"], name: "schedulerUsage")
+        if let incoming = schedulerUsage {
+            do {
+                var merged = try JSONDecoder().decode(SchedulerUsageLedger.self, from: encodeObject(incoming, context: "schedulerUsage"))
+                guard SchedulerUsagePolicy.isValid(merged) else {
+                    throw BackupError.malformedPayload("unsupported schedulerUsage schema or negative usage")
+                }
+                // Restore may add information but must never refund already
+                // spent tokens. Legacy backups lacking the key leave it alone.
+                let liveURL = supportDir.appendingPathComponent("scheduler-usage.json")
+                if FileManager.default.fileExists(atPath: liveURL.path) {
+                    let live = try JSONDecoder().decode(SchedulerUsageLedger.self, from: Data(contentsOf: liveURL))
+                    guard SchedulerUsagePolicy.isValid(live) else {
+                        throw BackupError.malformedPayload("newer live schedulerUsage schema")
+                    }
+                    for (task, days) in live.days {
+                        for (day, tokens) in days {
+                            merged.days[task, default: [:]][day] = max(tokens, merged.days[task]?[day] ?? 0)
+                        }
+                    }
+                }
+                schedulerUsage = try parseObject(JSONEncoder().encode(merged), context: "schedulerUsage")
+            } catch {
+                throw BackupError.malformedPayload("schedulerUsage: \(error.localizedDescription)")
+            }
+        }
         let vault = try optionalObject(root["vault"], name: "vault")
         let modelSources = try optionalObject(root["modelSources"], name: "modelSources")
         let settings = try optionalObject(root["settingsMac"], name: "settingsMac") ?? [:]
@@ -391,6 +430,12 @@ enum BackupService {
             files.append((
                 supportDir.appendingPathComponent("scheduler.json"),
                 try encodeObject(scheduler, context: "scheduler")
+            ))
+        }
+        if let schedulerUsage {
+            files.append((
+                supportDir.appendingPathComponent("scheduler-usage.json"),
+                try encodeObject(schedulerUsage, context: "schedulerUsage")
             ))
         }
         if let vault {

@@ -649,6 +649,7 @@ struct DashboardView: View {
         case .zai: return MTTheme.amber
         case .claude: return MTTheme.amber
         case .antigravity: return MTTheme.cyan
+        case .localAI: return MTTheme.emerald
         }
     }
 

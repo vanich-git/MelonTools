@@ -461,13 +461,17 @@ mod tests {
 
     #[test]
     fn exact_reserve_threshold_blocks_without_margin() {
-        let mut account = Account::default();
-        account.hourly_reserve_percent = Some(2);
-        account.quota_updated_at = Some(crate::vault::now_ref());
-        account.quota_source = Some("gateway".to_string());
-        let mut quota = Quota::default();
-        quota.hourly_remaining_percent = Some(2.0);
-        account.quota = Some(quota);
+        let quota = Quota {
+            hourly_remaining_percent: Some(2.0),
+            ..Default::default()
+        };
+        let account = Account {
+            hourly_reserve_percent: Some(2),
+            quota_updated_at: Some(crate::vault::now_ref()),
+            quota_source: Some("gateway".to_string()),
+            quota: Some(quota),
+            ..Default::default()
+        };
         assert_eq!(cause(&account).unwrap().0, "hourly_reserve");
         assert_eq!(
             reconcile_block(&account, crate::vault::now_ref(), crate::vault::unix_now())
@@ -479,13 +483,17 @@ mod tests {
 
     #[test]
     fn reading_above_exact_threshold_recovers_but_stale_reading_does_not() {
-        let mut account = Account::default();
-        account.quota_source = Some("gateway".to_string());
-        account.quota_updated_at = Some(crate::vault::now_ref());
-        account.hourly_reserve_percent = Some(2);
-        let mut quota = Quota::default();
-        quota.hourly_remaining_percent = Some(2.01);
-        account.quota = Some(quota);
+        let quota = Quota {
+            hourly_remaining_percent: Some(2.01),
+            ..Default::default()
+        };
+        let mut account = Account {
+            quota_source: Some("gateway".to_string()),
+            quota_updated_at: Some(crate::vault::now_ref()),
+            hourly_reserve_percent: Some(2),
+            quota: Some(quota),
+            ..Default::default()
+        };
         let block = QuotaBlock {
             code: "hourly_reserve".to_string(),
             remaining: 2.0,

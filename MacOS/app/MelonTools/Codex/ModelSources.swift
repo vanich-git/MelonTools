@@ -22,6 +22,8 @@ struct ModelSource: Identifiable, Codable, Equatable {
         /// Google Antigravity: OAuth-only (no key, no gateway config block);
         /// the engine serves the models from its own auth file.
         case antigravity
+        /// Local AI: local inference engine (llama-server) providing GGUF models.
+        case localAI
     }
 
     var id: String
@@ -200,6 +202,37 @@ final class ModelSourcesStore: ObservableObject {
         }
     }
 
+    /// Debounced auto-apply. Selecting a model must reach `/v1/models`
+    /// without a manual "Apply": the engine hot-reloads `config.yaml`, so the
+    /// only missing piece was writing it after every change.
+    private var autoApplyWork: DispatchWorkItem?
+    private var isApplying = false
+
+    /// Users can turn it off in Settings; on by default.
+    static var autoApplyEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: "azureModelAutoApply") as? Bool ?? true
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "azureModelAutoApply") }
+    }
+
+    private func scheduleAutoApply() {
+        guard Self.autoApplyEnabled, !isApplying else { return }
+        autoApplyWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                guard !self.isApplying else { return }
+                self.isApplying = true
+                await self.apply()
+                self.isApplying = false
+            }
+        }
+        autoApplyWork = work
+        // Coalesce a burst of clicks into one gateway rewrite.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
     func save() {
         // The fallback key lives in two places by design: the editable field
         // and the claude source (`api-keys.claude` needs it on the source).
@@ -231,6 +264,7 @@ final class ModelSourcesStore: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(persisted) else { return }
         try? SecureFile.write(data, to: storeURL)
+        scheduleAutoApply()
     }
 
     /// Stores written before 1.4.1 kept the raw OpenRouter id as the alias; the
@@ -273,6 +307,8 @@ final class ModelSourcesStore: ObservableObject {
                     images = Self.zaiSupportsImages(id)
                 case .openRouter, .openCode, .deepInfra, .vercel:
                     images = nil
+                case .localAI:
+                    images = false
                 }
                 guard let images else { continue }
                 sources[sourceIndex].models[modelIndex].supportsImages = images
@@ -297,6 +333,47 @@ final class ModelSourcesStore: ObservableObject {
     var claudeSource: ModelSource? { sources.first { $0.id == "claude" } }
 
     var antigravitySource: ModelSource? { sources.first { $0.id == "antigravity" } }
+
+    @MainActor
+    var effectiveSources: [ModelSource] {
+        var result = sources
+        // Only a model that is actually served right now may be advertised:
+        // `/v1/models` listed installed-but-stopped models, and every request to
+        // one of them failed with a raw connection error (§14.2).
+        let localModels = LocalModelStore.shared.models.filter { $0.runtimeStatus == .ready }
+        if !localModels.isEmpty {
+            // The relay, not the router: it forwards every call and merges the
+            // model's system prompt into the request body on the way through.
+            let port = LocalInferenceService.shared.publishedPort
+            let token = LocalInferenceService.shared.internalToken
+            let slots = LocalInferenceService.parallelRequests
+            let sourceModels = localModels.map { m in
+                let alias = m.id.hasPrefix("local/") ? m.id : "local/\(m.id)"
+                // Per-slot context: `--parallel` splits the window, and clients
+                // that size their prompts from this number must see the truth.
+                return SourceModel(
+                    id: m.id,
+                    display: m.displayName,
+                    contextLength: m.effectiveContext(parallelSlots: slots),
+                    enabled: true,
+                    alias: alias,
+                    supportsImages: m.capabilities.contains(.vision)
+                )
+            }
+            let localSource = ModelSource(
+                id: "melon-local-ai",
+                kind: .localAI,
+                title: "Local AI",
+                baseURL: "http://127.0.0.1:\(port)/v1",
+                apiKey: token,
+                enabled: true,
+                models: sourceModels
+            )
+            result.append(localSource)
+        }
+        return result
+    }
+
 
     func source(id: String) -> ModelSource? { sources.first { $0.id == id } }
 
@@ -1238,6 +1315,20 @@ final class ModelSourcesStore: ObservableObject {
                 // account, so there is nothing to put into `api-keys`.
                 continue
             }
+            if source.kind == .localAI {
+                // Local AI is routed to the local llama-server instance
+                let key = source.apiKey.isEmpty ? "melon-local" : source.apiKey
+                // The local engine must bypass the egress proxy: a SOCKS5
+                // proxy refuses 127.0.0.1, so every local call would fail with
+                // a transport error before reaching llama-server.
+                compatBlocks.append(block(name: "melon-local-ai",
+                                          baseURL: source.baseURL,
+                                          key: key,
+                                          models: selected,
+                                          headers: nil,
+                                          proxyURL: "direct"))
+                continue
+            }
             if source.kind == .claude {
                 // Only the explicit API-key fallback needs a config block.
                 let key = source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1292,7 +1383,7 @@ final class ModelSourcesStore: ObservableObject {
     }
 
     func gatewayYAML() -> String {
-        Self.gatewayYAML(sources: sources)
+        Self.gatewayYAML(sources: effectiveSources)
     }
 
     /// One `api-keys.claude` entry (Anthropic API-key fallback): same model
@@ -1318,7 +1409,14 @@ final class ModelSourcesStore: ObservableObject {
     }
 
     /// One `openai-compatibility` entry.
-    private nonisolated static func block(name: String, baseURL: String, key: String, models: [SourceModel], headers: [String: String]?) -> String {
+    private nonisolated static func block(
+        name: String,
+        baseURL: String,
+        key: String,
+        models: [SourceModel],
+        headers: [String: String]?,
+        proxyURL: String? = nil
+    ) -> String {
         var lines: [String] = []
         lines.append("    - name: \"\(Self.yamlEscape(name))\"")
         lines.append("      base-url: \"\(Self.yamlEscape(baseURL))\"")
@@ -1330,6 +1428,9 @@ final class ModelSourcesStore: ObservableObject {
         }
         lines.append("      keys:")
         lines.append("        - api-key: \"\(Self.yamlEscape(key))\"")
+        if let proxyURL, !proxyURL.isEmpty {
+            lines.append("          proxy-url: \"\(Self.yamlEscape(proxyURL))\"")
+        }
         lines.append("      models:")
         for model in models {
             lines.append("        - name: \"\(Self.yamlEscape(model.id))\"")
@@ -1376,7 +1477,7 @@ final class ModelSourcesStore: ObservableObject {
         do {
             let ownsRoute = CodexGatewayService.shared.codexRoute == .melon
             let count = try CodexModelCatalog.sync(
-                sources: sources,
+                sources: effectiveSources,
                 updateConfig: ownsRoute,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
@@ -1405,7 +1506,7 @@ final class ModelSourcesStore: ObservableObject {
             try gateway.writeConfig()
             gateway.auditLog("model sources applied (\(selectedCount) model(s) selected)")
             let count = try CodexModelCatalog.sync(
-                sources: sources,
+                sources: effectiveSources,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
             lastApply = String(format: L("Applied: %d models for Codex."), count)

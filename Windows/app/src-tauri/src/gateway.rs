@@ -96,72 +96,6 @@ fn create_no_window(_cmd: &mut Command) {
     }
 }
 
-/// Windows Job Object that kills the engine when Melon Tools exits, including
-/// a crash or a forced kill. `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is the
-/// kernel guarantee: when the last handle to the job closes with the main
-/// process, every process assigned to the job is terminated. That prevents a
-/// zombie `cliproxyapi.exe` from keeping port 18317 after a bad shutdown.
-#[cfg(windows)]
-mod engine_job {
-    use std::sync::OnceLock;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    };
-
-    static JOB: OnceLock<usize> = OnceLock::new();
-
-    fn handle() -> Option<HANDLE> {
-        if let Some(handle) = JOB.get() {
-            return Some(*handle as HANDLE);
-        }
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return None;
-            }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let configured = SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const core::ffi::c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            if configured == 0 {
-                let _ = CloseHandle(job);
-                return None;
-            }
-            let _ = JOB.set(job as usize);
-            Some(job)
-        }
-    }
-
-    /// Assign a freshly spawned engine to the job. Failure is non-fatal (for
-    /// example when the app itself runs inside a restrictive job), but the
-    /// normal desktop path gets the kill-on-close guarantee.
-    pub fn assign(pid: u32) {
-        let Some(job) = handle() else {
-            return;
-        };
-        unsafe {
-            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process.is_null() {
-                return;
-            }
-            if AssignProcessToJobObject(job, process) == 0 {
-                eprintln!("could not assign the gateway to the kill-on-close job");
-            }
-            let _ = CloseHandle(process);
-        }
-    }
-}
-
 // MARK: - Config
 
 const OPENCODE_MODELS: &[(&str, &str)] = &[
@@ -266,6 +200,40 @@ pub(crate) const USER_AGENT: &str = concat!("MelonTools/", env!("CARGO_PKG_VERSI
 /// Every section is emitted from this one builder — a second root would break
 /// the engine config. Returns an empty string when nothing is configured.
 pub fn api_keys_yaml(settings: &Settings) -> String {
+    let local_models = servable_local_models();
+    // The relay, not the router: it forwards every call and merges the model's
+    // system prompt into the request body on the way through. Only started when
+    // a local model is actually served — a config write with no local models
+    // has no business binding a listener.
+    let local_port = if local_models.is_empty() {
+        0
+    } else {
+        crate::local_ai::published_local_port()
+    };
+    let local_token = crate::local_ai::get_or_create_internal_token();
+    api_keys_yaml_with_local(settings, &local_models, local_port, &local_token)
+}
+
+/// Models the local engine is serving right now.
+///
+/// `Ready` is written by the runtime only after `/health` answered and is
+/// rewritten to `Installed`/`Error` on stop, crash and unload, so this list
+/// follows the live engine. A second `Installed || Ready` filter used to sit
+/// behind the `Ready` filter and could never match anything, which is how
+/// installed-but-stopped models leaked into `/v1/models` (§14.2, W6).
+pub fn servable_local_models() -> Vec<crate::local_ai::LocalModel> {
+    crate::local_ai::LocalModelStore::load_registry()
+        .into_iter()
+        .filter(|m| m.runtime_status == crate::local_ai::ModelRuntimeStatus::Ready)
+        .collect()
+}
+
+pub fn api_keys_yaml_with_local(
+    settings: &Settings,
+    local_models: &[crate::local_ai::LocalModel],
+    local_port: u16,
+    local_token: &str,
+) -> String {
     let opencode = settings.opencode_enabled && !settings.opencode_key.trim().is_empty();
     let openrouter = settings.openrouter_enabled && !settings.openrouter_key.trim().is_empty();
     let deepinfra = settings.deepinfra_enabled
@@ -278,14 +246,54 @@ pub fn api_keys_yaml(settings: &Settings) -> String {
         && !settings.zai_key.trim().is_empty()
         && !settings.zai_models.is_empty();
     let claude = settings.claude_enabled && !settings.claude_api_key.trim().is_empty();
-    if !opencode && !openrouter && !deepinfra && !vercel && !zai && !claude {
+    let local_ai = !local_models.is_empty();
+    if !opencode && !openrouter && !deepinfra && !vercel && !zai && !claude && !local_ai {
         return String::new();
     }
 
     let mut yaml = String::from("api-keys:\n");
 
-    if opencode || openrouter || deepinfra || vercel || zai {
+    if opencode || openrouter || deepinfra || vercel || zai || local_ai {
         yaml.push_str("  openai-compatibility:\n");
+        if local_ai {
+            yaml.push_str("    - name: \"melon-local-ai\"\n");
+            yaml.push_str(&format!(
+                "      base-url: \"http://127.0.0.1:{}/v1\"\n",
+                local_port
+            ));
+            // `proxy-url: direct` keeps the local engine off the user's egress
+            // proxy: a SOCKS5 proxy refuses 127.0.0.1, so without this every
+            // local call fails with a transport error.
+            yaml.push_str(&format!(
+                "      keys:\n        - api-key: \"{}\"\n          proxy-url: \"direct\"\n",
+                yaml_escape(local_token)
+            ));
+            yaml.push_str("      models:\n");
+            for m in local_models {
+                let alias = if m.id.starts_with("local/") {
+                    m.id.clone()
+                } else {
+                    format!("local/{}", m.id)
+                };
+                yaml.push_str(&format!(
+                    "        - name: \"{}\"\n          alias: \"{}\"\n",
+                    yaml_escape(&m.id),
+                    yaml_escape(&alias)
+                ));
+                if !m.display_name.trim().is_empty() && m.display_name != m.id {
+                    yaml.push_str(&format!(
+                        "          display-name: \"{}\"\n",
+                        yaml_escape(&m.display_name)
+                    ));
+                }
+                if m.user_settings.context_length > 0 {
+                    yaml.push_str(&format!(
+                        "          max-context-length: {}\n",
+                        m.user_settings.context_length
+                    ));
+                }
+            }
+        }
         if opencode {
             yaml.push_str("    - name: \"opencode-go\"\n");
             yaml.push_str("      base-url: \"https://opencode.ai/inference/go/openai/v1\"\n");
@@ -765,7 +773,7 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
         write_config(settings)?;
         sync_accounts(settings)?;
         #[cfg(windows)]
-        adopt_recorded_engine();
+        adopt_recorded_engine()?;
         return Ok("adopted".to_string());
     }
 
@@ -780,6 +788,15 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    #[cfg(windows)]
+    if let Some(pid) = fs::read_to_string(paths::pid_path())
+        .ok()
+        .as_deref()
+        .and_then(parse_pid)
+    {
+        stop_recorded_pid(pid);
     }
 
     let binary = resolve_sidecar_checked()?;
@@ -800,10 +817,17 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
         .stderr(Stdio::from(log_err));
     create_no_window(&mut command);
 
-    let child = command.spawn().map_err(|e| e.to_string())?;
+    #[allow(unused_mut)]
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
     let pid = child.id();
     #[cfg(windows)]
-    engine_job::assign(pid);
+    if let Err(error) = crate::engine_job::assign(pid) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!(
+            "Cannot contain the gateway process safely: {error}"
+        ));
+    }
     if let Ok(mut guard) = gateway.child.lock() {
         *guard = Some(child);
     }
@@ -951,20 +975,30 @@ pub(crate) fn taskkill_pid(pid: u32, force: bool) -> bool {
 /// job. Without this an adopted engine would survive the next crash even
 /// though newly spawned engines are covered.
 #[cfg(windows)]
-fn adopt_recorded_engine() {
+fn adopt_recorded_engine() -> Result<(), String> {
     let Some(pid) = fs::read_to_string(paths::pid_path())
         .ok()
         .as_deref()
         .and_then(parse_pid)
     else {
-        return;
+        return Err(
+            "A healthy gateway has no recorded owner PID; stop it before starting Melon Tools."
+                .to_string(),
+        );
     };
-    if tasklist_image_name(pid)
+    if !tasklist_image_name(pid)
         .as_deref()
         .is_some_and(image_matches_engine)
     {
-        engine_job::assign(pid);
+        return Err("The recorded gateway PID no longer belongs to the engine.".to_string());
     }
+    if let Err(error) = crate::engine_job::assign(pid) {
+        stop_recorded_pid(pid);
+        return Err(format!(
+            "Cannot contain the adopted gateway safely: {error}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1241,7 +1275,7 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_keys_yaml, auth_file_name, auth_payload, base_config, image_matches_engine,
+        api_keys_yaml_with_local, auth_file_name, auth_payload, base_config, image_matches_engine,
         image_starts_with, parse_pid, parse_recent_call, parse_tasklist_image, parse_tasklist_pids,
         priority_for, tail_bytes, yaml_escape, USER_AGENT,
     };
@@ -1249,6 +1283,13 @@ mod tests {
     use crate::vault::Account;
     use serde_json::json;
     use std::collections::HashSet;
+
+    /// Tests must not depend on what the developer has downloaded: the real
+    /// `api_keys_yaml` reads the on-disk model registry, so a single installed
+    /// GGUF would make every "no sources" assertion fail.
+    fn api_keys_yaml_test(settings: &Settings) -> String {
+        api_keys_yaml_with_local(settings, &[], 18318, "melon-local-test")
+    }
 
     fn settings() -> Settings {
         Settings::default()
@@ -1271,7 +1312,55 @@ mod tests {
 
     #[test]
     fn api_keys_yaml_is_empty_without_any_source() {
-        assert_eq!(api_keys_yaml(&settings()), "");
+        assert_eq!(api_keys_yaml_test(&settings()), "");
+    }
+
+    #[test]
+    fn api_keys_yaml_with_local_emits_melon_local_ai() {
+        let s = settings();
+        let model = crate::local_ai::LocalModel {
+            id: "local/qwen2.5-coder-7b".to_string(),
+            schema_version: None,
+            display_name: "Qwen 2.5 Coder 7B".to_string(),
+            provider: "Local AI".to_string(),
+            source: "huggingface".to_string(),
+            repo_id: Some("Qwen/Qwen2.5-Coder-7B-Instruct-GGUF".to_string()),
+            revision: Some("main".to_string()),
+            files: vec!["qwen2.5-coder-7b-instruct-q4_k_m.gguf".to_string()],
+            file_size: 4680000000,
+            quantization: "Q4_K_M".to_string(),
+            format: "GGUF".to_string(),
+            context_length: 32768,
+            configured_context: 32768,
+            backend: crate::local_ai::InferenceBackend::Cpu,
+            gpu_offload: None,
+            threads: None,
+            runtime_status: crate::local_ai::ModelRuntimeStatus::Ready,
+            capabilities: vec![crate::local_ai::ModelCapability::Text],
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+            license: None,
+            checksum: None,
+            user_settings: {
+                crate::local_ai::LocalModelSettings {
+                    context_length: 16384,
+                    ..Default::default()
+                }
+            },
+        };
+        let yaml = super::api_keys_yaml_with_local(&s, &[model], 18318, "test-local-token-1234");
+        assert_eq!(yaml.matches("api-keys:").count(), 1);
+        assert_eq!(yaml.matches("openai-compatibility:").count(), 1);
+        assert!(yaml.contains("    - name: \"melon-local-ai\"\n"));
+        assert!(yaml.contains("      base-url: \"http://127.0.0.1:18318/v1\"\n"));
+        assert!(yaml.contains("api-key: \"test-local-token-1234\""));
+        // The local engine must bypass the egress proxy.
+        assert!(yaml.contains("proxy-url: \"direct\""));
+        assert!(yaml.contains("name: \"local/qwen2.5-coder-7b\""));
+        assert!(yaml.contains("alias: \"local/qwen2.5-coder-7b\""));
+        assert!(yaml.contains("display-name: \"Qwen 2.5 Coder 7B\""));
+        assert!(yaml.contains("max-context-length: 16384"));
     }
 
     #[test]
@@ -1281,7 +1370,7 @@ mod tests {
         s.openrouter_key = "or-key".to_string();
         s.claude_enabled = true;
         s.claude_api_key = "sk-ant-key".to_string();
-        let yaml = api_keys_yaml(&s);
+        let yaml = api_keys_yaml_test(&s);
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         assert!(yaml.contains("  openai-compatibility:\n"));
         assert!(yaml.contains("    - name: \"opencode-go\"\n"));
@@ -1300,7 +1389,7 @@ mod tests {
     fn api_keys_yaml_openrouter_only_still_emits_the_root() {
         let mut s = settings();
         s.openrouter_key = "or-key".to_string();
-        let yaml = api_keys_yaml(&s);
+        let yaml = api_keys_yaml_test(&s);
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         assert!(yaml.contains("  openai-compatibility:\n"));
         assert!(yaml.contains("    - name: \"openrouter\"\n"));
@@ -1323,7 +1412,7 @@ mod tests {
             display: "Claude Sonnet 4.6".to_string(),
             ..Default::default()
         }];
-        let yaml = api_keys_yaml(&s);
+        let yaml = api_keys_yaml_test(&s);
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         assert!(yaml.contains("    - name: \"deepinfra\"\n"));
         assert!(yaml.contains("      base-url: \"https://api.deepinfra.com/v1/openai\"\n"));
@@ -1355,7 +1444,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let yaml = api_keys_yaml(&s);
+        let yaml = api_keys_yaml_test(&s);
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         assert!(yaml.contains("  openai-compatibility:\n"));
         assert!(yaml.contains("    - name: \"zai\"\n"));
@@ -1371,14 +1460,14 @@ mod tests {
         let mut s = settings();
         s.deepinfra_key = "di-key".to_string();
         s.vercel_key = "vc-key".to_string();
-        assert_eq!(api_keys_yaml(&s), "");
+        assert_eq!(api_keys_yaml_test(&s), "");
         s.deepinfra_enabled = false;
         s.deepinfra_models = vec![crate::settings::ProviderModel {
             id: "chat".to_string(),
             display: "Chat".to_string(),
             ..Default::default()
         }];
-        assert_eq!(api_keys_yaml(&s), "");
+        assert_eq!(api_keys_yaml_test(&s), "");
     }
 
     #[test]
@@ -1386,12 +1475,12 @@ mod tests {
         let mut s = settings();
         s.claude_api_key = "sk-ant-key".to_string();
         // Enabled is still false: nothing is emitted.
-        assert_eq!(api_keys_yaml(&s), "");
+        assert_eq!(api_keys_yaml_test(&s), "");
         s.claude_enabled = true;
-        assert!(api_keys_yaml(&s).contains("  claude:\n"));
+        assert!(api_keys_yaml_test(&s).contains("  claude:\n"));
         // A whitespace-only key never reaches the config.
         s.claude_api_key = "   ".to_string();
-        assert_eq!(api_keys_yaml(&s), "");
+        assert_eq!(api_keys_yaml_test(&s), "");
     }
 
     #[test]
@@ -1407,11 +1496,15 @@ mod tests {
     }
 
     fn pool_account(selection: Option<Vec<String>>) -> Account {
-        let mut account = Account::default();
-        account.id = "pool-account".to_string();
-        account.tokens.access_token = Some("access-token".to_string());
-        account.selected_models = selection;
-        account
+        Account {
+            id: "pool-account".to_string(),
+            tokens: crate::vault::Tokens {
+                access_token: Some("access-token".to_string()),
+                ..Default::default()
+            },
+            selected_models: selection,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1456,8 +1549,10 @@ mod tests {
 
     #[test]
     fn auth_file_name_without_email_is_stable_across_order_indexes() {
-        let mut account = Account::default();
-        account.id = "abc-123-def".to_string();
+        let account = Account {
+            id: "abc-123-def".to_string(),
+            ..Default::default()
+        };
         let first = auth_file_name(&account, 0);
         let second = auth_file_name(&account, 7);
         assert_eq!(first, second);
@@ -1472,7 +1567,7 @@ mod tests {
         );
         let mut s = settings();
         s.opencode_key = "oc-key".to_string();
-        assert!(api_keys_yaml(&s).contains(&format!("user-agent: \"{}\"", USER_AGENT)));
+        assert!(api_keys_yaml_test(&s).contains(&format!("user-agent: \"{}\"", USER_AGENT)));
     }
 
     #[test]

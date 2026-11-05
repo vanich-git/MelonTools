@@ -103,6 +103,101 @@ final class CodexRoutingTests: XCTestCase {
         XCTAssertEqual(CodexRoutingPlanner.planRank(""), 0)
         XCTAssertEqual(CodexRoutingPlanner.planRank("unknown"), 2)
     }
+    // MARK: - Live quota cadence (CORE-12)
+
+    /// An account blocked with no known reset used to count as “resets soon”,
+    /// so the guard polled the management API every 1.5 s for the whole life of
+    /// the block, with no traffic at all.
+    func testBlockedAccountWithUnknownResetUsesTheIdleCadence() {
+        var account = CodexAccount(tokens: CodexTokens())
+        account.quotaBlock = CodexQuotaBlock(
+            cause: .weeklyExhausted,
+            remainingPercent: 0,
+            thresholdPercent: nil,
+            resetAt: nil,
+            blockedAt: Date().addingTimeInterval(-3_600),
+            source: "gateway"
+        )
+        let now = Date()
+
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testKnownResetsKeepTheFastCadenceOnlyWhenImminent() {
+        var account = CodexAccount(tokens: CodexTokens())
+        account.quotaBlock = CodexQuotaBlock(
+            cause: .hourlyExhausted,
+            remainingPercent: 0,
+            thresholdPercent: nil,
+            resetAt: nil,
+            blockedAt: Date(),
+            source: "gateway"
+        )
+        let now = Date()
+
+        account.quotaBlock?.resetAt = now.addingTimeInterval(60)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        // A passed reset is overdue: probe it on the fast cadence.
+        account.quotaBlock?.resetAt = now.addingTimeInterval(-30)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        account.quotaBlock?.resetAt = now.addingTimeInterval(3_600)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testTrafficAndStoppedGatewayDominateTheCadence() {
+        let now = Date()
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 3, accounts: []
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: false, requestsLastMinute: 3, accounts: []
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testReserveWindowWithUnknownResetDoesNotPollFast() {
+        var nearReserve = account(hourly: 2, weekly: 50, hourlyReserve: 5)
+        nearReserve.quota?.hourlyResetAt = nil
+        let now = Date()
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [nearReserve]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+        nearReserve.quota?.hourlyResetAt = now.addingTimeInterval(120)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [nearReserve]
+            ),
+            CodexLiveQuotaCadence.active
+        )
+    }
 }
 
 /// The pool-pause banner is the last line of defense before the gateway has no

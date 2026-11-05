@@ -15,6 +15,8 @@ struct CodexProvidersView: View {
     @ObservedObject private var claudeAuth = ClaudeAuthService.shared
     @ObservedObject private var antigravityAuth = AntigravityAuthService.shared
     @ObservedObject private var diagnostics = ProviderDiagnosticsStore.shared
+    @ObservedObject private var localStore = LocalModelStore.shared
+    @ObservedObject private var localRuntime = LocalInferenceService.shared
     @Binding var selection: MTSection
 
     @State private var route: ProviderRoute?
@@ -83,6 +85,7 @@ struct CodexProvidersView: View {
                     zaiCard
                     claudeCard
                     antigravityCard
+                    localAICard
                     applyCard
                 }
             }
@@ -685,6 +688,68 @@ struct CodexProvidersView: View {
 
     // MARK: - Board: Antigravity
 
+    private var localAICard: some View {
+        let readyModels = localStore.models.filter { $0.runtimeStatus == .installed || $0.runtimeStatus == .ready }
+        let isRunning = localRuntime.status.isRunning
+        return MTCard(title: "Local AI", systemImage: "cpu.fill", accent: MTTheme.emerald, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(spacing: MTTheme.s2) {
+                    MTStatusPill(
+                        text: isRunning
+                            ? (localRuntime.currentModel?.displayName ?? L("Running"))
+                            : (readyModels.isEmpty ? L("No models") : String(format: L("%d models ready"), readyModels.count)),
+                        status: isRunning ? .ok : (readyModels.isEmpty ? .idle : .warn)
+                    )
+                    Spacer(minLength: MTTheme.s2)
+                    if isRunning {
+                        Text("http://127.0.0.1:\(localRuntime.port)/v1")
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.emerald)
+                    } else {
+                        Text(LocalHardwareService.formatBytes(localStore.totalDiskBytes))
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                }
+
+                if readyModels.isEmpty {
+                    Text(L("Download GGUF models from Hugging Face or import local files."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                } else {
+                    HStack(alignment: .top, spacing: MTTheme.s3) {
+                        MTMetricTile(
+                            title: L("Installed"),
+                            value: "\(readyModels.count)",
+                            caption: L("Models"),
+                            reservesMeterSpace: true
+                        )
+                        MTMetricTile(
+                            title: L("Disk used"),
+                            value: LocalHardwareService.formatBytes(localStore.totalDiskBytes),
+                            caption: L("Storage"),
+                            reservesMeterSpace: true
+                        )
+                        MTMetricTile(
+                            title: L("Engine"),
+                            value: isRunning ? L("Active") : L("Standby"),
+                            caption: localRuntime.isBinaryAvailable ? "llama-server" : L("No binary"),
+                            valueColor: isRunning ? MTTheme.emerald : MTTheme.textSecondary,
+                            reservesMeterSpace: true
+                        )
+                    }
+                }
+
+                HStack(spacing: MTTheme.s3) {
+                    MTGlassButton(title: L("Local Models"), systemImage: "cpu.fill", tint: MTTheme.emerald) {
+                        selection = .localAI
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
     private var antigravityCard: some View {
         let accounts = antigravityPool.accounts
         let connected = !accounts.isEmpty || usage.antigravity?.connected == true
@@ -838,57 +903,39 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(9, weight: .semibold))
                         .foregroundStyle(MTTheme.gold)
                 }
-                Menu {
-                    Button {
+                MTMenuButton(systemImage: "ellipsis.circle", tint: MTTheme.textSecondary, entries: [
+                    .item(L("Refresh sign-in"), systemImage: "arrow.clockwise") {
                         Task {
                             _ = await antigravityAuth.refreshCredential(name: account.name)
                             await antigravityPool.refresh(forceQuota: true)
                         }
-                    } label: {
-                        Label(L("Refresh sign-in"), systemImage: "arrow.clockwise")
-                    }
-                    Button {
+                    },
+                    .item(account.isPaused ? L("Resume account") : L("Pause account"),
+                          systemImage: account.isPaused ? "play.circle" : "pause.circle") {
                         Task { _ = await antigravityPool.setPaused(account, paused: !account.isPaused) }
-                    } label: {
-                        Label(account.isPaused ? L("Resume account") : L("Pause account"),
-                              systemImage: account.isPaused ? "play.circle" : "pause.circle")
                     }
+                ] + (AntigravityPoolStore.watchdogModels(in: account.cooldowns).isEmpty ? [] : [
                     // Only a first-token cooldown can be released by the probe;
                     // a quota or sign-in cooldown stays with the engine.
-                    if !AntigravityPoolStore.watchdogModels(in: account.cooldowns).isEmpty {
-                        Button {
-                            Task {
-                                _ = await antigravityPool.probe(account)
-                                await antigravityPool.refresh(forceQuota: true)
-                            }
-                        } label: {
-                            Label(L("Probe"), systemImage: "waveform.path.ecg")
+                    .item(L("Probe"), systemImage: "waveform.path.ecg") {
+                        Task {
+                            _ = await antigravityPool.probe(account)
+                            await antigravityPool.refresh(forceQuota: true)
                         }
                     }
-                    Divider()
-                    Button {
+                ]) + [
+                    .divider,
+                    .item(L("Raise priority"), systemImage: "arrow.up") {
                         Task { _ = await antigravityPool.setPriority(account, priority: account.priority + 1) }
-                    } label: {
-                        Label(L("Raise priority"), systemImage: "arrow.up")
-                    }
-                    Button {
+                    },
+                    .item(L("Lower priority"), systemImage: "arrow.down") {
                         Task { _ = await antigravityPool.setPriority(account, priority: account.priority - 1) }
-                    } label: {
-                        Label(L("Lower priority"), systemImage: "arrow.down")
-                    }
-                    Divider()
-                    Button(role: .destructive) {
+                    },
+                    .divider,
+                    .item(L("Remove account"), systemImage: "trash", destructive: true) {
                         pendingAntigravityRemoval = account
-                    } label: {
-                        Label(L("Remove account"), systemImage: "trash")
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(MTTheme.textSecondary)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                ])
             }
             if let cooldown {
                 HStack(spacing: MTTheme.s1) {
@@ -1755,6 +1802,13 @@ struct CodexProvidersView: View {
 
     // MARK: - Apply
 
+    private var autoApply: Binding<Bool> {
+        Binding(
+            get: { ModelSourcesStore.autoApplyEnabled },
+            set: { ModelSourcesStore.autoApplyEnabled = $0 }
+        )
+    }
+
     private var applyCard: some View {
         MTCard(title: L("Apply"), systemImage: "checkmark.seal", accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
@@ -1770,9 +1824,19 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
                 }
-                Text(L("Selected models will appear in the Codex picker after a relaunch."))
+                // Auto-apply is the default: a click on a model reaches the API
+                // within a second, without this button.
+                HStack(spacing: MTTheme.s2) {
+                    Toggle(L("Apply model changes automatically"), isOn: autoApply)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    Spacer()
+                }
+                Text(autoApply.wrappedValue
+                     ? L("Every model you select is written to the gateway config and reloaded automatically.")
+                     : L("Apply manually after changing the model selection."))
                     .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.textSecondary)
+                    .foregroundStyle(MTTheme.textTertiary)
                 Text(String(format: L("Models in pool: %d of %d"), poolUnionCount, pool.models.count))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textTertiary)

@@ -156,8 +156,10 @@ mod tests {
     use crate::vault::Account;
 
     fn rank(plan: &str) -> i32 {
-        let mut account = Account::default();
-        account.plan_type = Some(plan.to_string());
+        let account = Account {
+            plan_type: Some(plan.to_string()),
+            ..Default::default()
+        };
         plan_rank(&account)
     }
 

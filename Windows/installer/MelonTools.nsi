@@ -15,7 +15,14 @@ Unicode true
 !insertmacro VersionCompare
 
 !ifndef VERSION
-  !error "VERSION is required: pass /DVERSION=<x.y.z>"
+  !error "VERSION is required: pass /DVERSION=<x.y.z or x.y.z-prerelease>"
+!endif
+
+; Windows version resources accept four numeric fields only, so a prerelease
+; such as 6.0.0-rc.1 passes the numeric core separately (/DVERSION_NUMERIC=6.0.0).
+; The display name, output file and uninstall entry keep the full VERSION.
+!ifndef VERSION_NUMERIC
+  !define VERSION_NUMERIC "${VERSION}"
 !endif
 
 !ifndef SOURCE_EXE
@@ -40,7 +47,7 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
 ; Explorer properties / Add or remove programs metadata.
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VERSION_NUMERIC}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=1033 "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey /LANG=1033 "FileDescription" "${PRODUCT_NAME} Setup"
@@ -82,9 +89,15 @@ Function .onInit
   SetShellVarContext current
   ; Refuse to downgrade silently: an older installer would overwrite a newer
   ; exe and leave the data schema in a half-supported state.
-  ReadRegStr $0 HKCU "${UNINSTALL_REG_KEY}" "DisplayVersion"
+  ; Compare numeric versions only: VersionCompare cannot parse "-rc.1".
+  ; NumericVersion is written by this installer; DisplayVersion is the fallback
+  ; for installs created before that value existed.
+  ReadRegStr $0 HKCU "${UNINSTALL_REG_KEY}" "NumericVersion"
+  ${If} $0 == ""
+    ReadRegStr $0 HKCU "${UNINSTALL_REG_KEY}" "DisplayVersion"
+  ${EndIf}
   ${If} $0 != ""
-    ${VersionCompare} "$0" "${VERSION}" $1
+    ${VersionCompare} "$0" "${VERSION_NUMERIC}" $1
     ${If} $1 == 1
       MessageBox MB_ICONSTOP|MB_OK \
         "A newer Melon Tools ($0) is already installed. Uninstall it first if you really want to downgrade."
@@ -147,6 +160,7 @@ Section "Melon Tools" SEC_APP
   ; Add or remove programs entry (current user, no elevation).
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "NumericVersion" "${VERSION_NUMERIC}"
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "DisplayIcon" "$INSTDIR\MelonTools.exe,0"
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'

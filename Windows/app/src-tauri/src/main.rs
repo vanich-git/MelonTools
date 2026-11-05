@@ -15,10 +15,12 @@ mod codex_route;
 mod device_login;
 mod dpapi;
 mod engine;
+mod engine_job;
 mod gateway;
 mod history;
 mod instances;
 mod live_quota;
+pub mod local_ai;
 mod paths;
 mod provider_import;
 mod providers;
@@ -54,6 +56,8 @@ pub struct AppState {
     pub island: Mutex<Option<(Instant, Value)>>,
     /// Generation counter for the pointer watcher that folds the panel.
     pub island_watch: AtomicU64,
+    pub local_runtime: std::sync::Arc<local_ai::LocalRuntimeManager>,
+    pub download_manager: std::sync::Arc<local_ai::ModelDownloadManager>,
 }
 
 /// Keeps the local engine alive: after we started (or adopted) the gateway,
@@ -1411,6 +1415,10 @@ async fn update_apply(
     updater::validate_cached(&info)?;
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
     let new_exe = updater::fetch_update(&info.url, Some(&info.digest)).await?;
+    // Stop both engines before the exe is replaced: a running gateway or
+    // llama-server would keep the old binary locked and outlive the app.
+    let _ = gateway::stop(&state.gw);
+    state.local_runtime.stop().await;
     updater::spawn_swapper(&new_exe, &current, std::process::id())?;
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1816,6 +1824,10 @@ fn handle_tray_menu(app: &tauri::AppHandle, menu_id: &str) {
             // the app in the background.
             let state = app.state::<AppState>();
             let _ = gateway::stop(&state.gw);
+            let runtime = state.local_runtime.clone();
+            tauri::async_runtime::block_on(async move {
+                runtime.stop().await;
+            });
             app.exit(0);
         }
         _ => {}
@@ -2277,6 +2289,9 @@ fn main() {
         let _ = codex_route::remove();
         return;
     }
+    // Snapshot 5.5.5 user data before `settings::load()` creates an api key
+    // and rewrites settings.json. Must stay above every store initializer.
+    local_ai::migration::run_if_needed();
     let initial_settings = settings::load();
     let initial_lang = initial_settings.lang.clone();
     let island_visible = initial_settings.island_visible;
@@ -2297,6 +2312,8 @@ fn main() {
             update: Mutex::new(None),
             island: Mutex::new(None),
             island_watch: AtomicU64::new(0),
+            local_runtime: std::sync::Arc::new(local_ai::LocalRuntimeManager::new()),
+            download_manager: std::sync::Arc::new(local_ai::ModelDownloadManager::new()),
         })
         .setup(move |app| {
             // System tray: window, scheduler navigation, run-next, API
@@ -2373,6 +2390,25 @@ fn main() {
                         if tick.is_multiple_of(6) {
                             watchdog_check(&state, &handle).await;
                         }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+
+            // Local AI supervisor: a crashed engine must stop being advertised
+            // even when the renderer is on another page (or the window is
+            // hidden and WebView timers are throttled). `get_status` reaps the
+            // child and repairs the registry; `reconcile_router_state` drops a
+            // stale Ready after the router idle-unloads or fails a model. The
+            // rewrite then updates `config.yaml` without any UI poll.
+            let local_ai_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    {
+                        let state = local_ai_handle.state::<AppState>();
+                        let _status = state.local_runtime.get_status();
+                        state.local_runtime.reconcile_router_state().await;
+                        local_ai::commands::sync_gateway_after_transition(&state);
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
@@ -2566,9 +2602,52 @@ fn main() {
             island_open_main,
             island_toggle_api,
             island_run_next,
+            local_ai::local_ai_hardware_info,
+            local_ai::local_ai_models_list,
+            local_ai::local_ai_registry_health,
+            local_ai::local_ai_registry_recover,
+            local_ai::local_ai_model_get,
+            local_ai::local_ai_model_save_settings,
+            local_ai::local_ai_model_delete,
+            local_ai::local_ai_runtime_status,
+            local_ai::local_ai_runtime_metrics,
+            local_ai::local_ai_runtime_logs,
+            local_ai::local_ai_runtime_logs_clear,
+            local_ai::local_ai_migration_report,
+            local_ai::local_ai_start_model,
+            local_ai::local_ai_stop_runtime,
+            local_ai::local_ai_runtime_install,
+            local_ai::local_ai_runtime_catalog,
+            local_ai::local_ai_runtime_install_status,
+            local_ai::local_ai_runtime_install_cancel,
+            local_ai::local_ai_set_binary_path,
+            local_ai::local_ai_hf_search,
+            local_ai::local_ai_hf_model_details,
+            local_ai::local_ai_download_start,
+            local_ai::local_ai_download_cancel,
+            local_ai::local_ai_downloads_list,
+            local_ai::local_ai_downloads_clear,
+            local_ai::local_ai_import_file,
+            local_ai::local_ai_estimate_memory,
+            local_ai::local_ai_hf_token_set,
+            local_ai::local_ai_hf_token_status,
+            local_ai::local_ai_hf_token_clear,
         ])
-        .run(tauri::generate_context!())
-        .expect("Melon Tools failed to start");
+        .build(tauri::generate_context!())
+        .expect("Melon Tools failed to start")
+        .run(|app, event| {
+            // One cleanup path for tray quit, updater exit and the last window
+            // closing. The job object still covers a crash; this covers the
+            // orderly case where the engine would otherwise linger.
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                let _ = gateway::stop(&state.gw);
+                let runtime = state.local_runtime.clone();
+                tauri::async_runtime::block_on(async move {
+                    runtime.stop().await;
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2622,9 +2701,11 @@ mod tests {
 
     #[test]
     fn settings_view_redacts_the_management_secret() {
-        let mut settings = crate::settings::Settings::default();
-        settings.port = 19000;
-        settings.management_secret = "melon-mgmt-0123456789abcdef".to_string();
+        let settings = crate::settings::Settings {
+            port: 19000,
+            management_secret: "melon-mgmt-0123456789abcdef".to_string(),
+            ..Default::default()
+        };
         let value = settings_view(&settings).unwrap();
         assert_eq!(value["managementSecret"], "");
         assert_eq!(value["port"], 19000);
@@ -2712,5 +2793,114 @@ mod tests {
         assert_eq!(entry["priority"], 10);
         assert_eq!(entry["selectedCount"], 1);
         assert_eq!(entry["accountCount"], 2);
+    }
+}
+
+/// Guards the Tauri command surface: a `#[tauri::command]` that is declared but
+/// missing from `generate_handler!` compiles fine and fails only at runtime with
+/// "command not found" — exactly how `local_ai_downloads_clear` slipped through.
+#[cfg(test)]
+mod command_registration_tests {
+    use std::path::{Path, PathBuf};
+
+    fn rust_files(root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Skip AppleDouble sidecars (`._name.rs`) that non-HFS volumes create.
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Names declared with `#[tauri::command]` anywhere under `src/`.
+    fn declared_commands(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut lines = source.lines().peekable();
+        while let Some(line) = lines.next() {
+            if !line.trim().starts_with("#[tauri::command]") {
+                continue;
+            }
+            // The attribute may be followed by blank lines or other attributes.
+            for candidate in lines.by_ref() {
+                let trimmed = candidate.trim();
+                if trimmed.is_empty() || trimmed.starts_with("#[") {
+                    continue;
+                }
+                if let Some(rest) = trimmed.split("fn ").nth(1) {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+                break;
+            }
+        }
+        names
+    }
+
+    fn handler_block(main_source: &str) -> &str {
+        let start = main_source
+            .find("generate_handler![")
+            .expect("main.rs must register handlers");
+        let tail = &main_source[start..];
+        let end = tail.find(']').expect("unterminated generate_handler!");
+        &tail[..end]
+    }
+
+    #[test]
+    fn every_tauri_command_is_registered() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        rust_files(&manifest.join("src"), &mut files);
+        assert!(!files.is_empty(), "no Rust sources found");
+
+        let mut declared = Vec::new();
+        for file in &files {
+            // A file that is not UTF-8 is not Rust source; skip instead of failing.
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            for name in declared_commands(&source) {
+                declared.push((name, file.clone()));
+            }
+        }
+        let main_source = std::fs::read_to_string(manifest.join("src/main.rs")).unwrap();
+        let handlers = handler_block(&main_source);
+
+        let mut unregistered = Vec::new();
+        for (name, file) in &declared {
+            let registered = handlers.contains(&format!("{name},"))
+                || handlers.contains(&format!("::{name}\n"))
+                || handlers.contains(&format!("::{name},"));
+            if !registered {
+                unregistered.push(format!("{name} ({})", file.display()));
+            }
+        }
+
+        assert!(
+            declared.len() > 50,
+            "command scan found only {} commands — the parser is broken",
+            declared.len()
+        );
+        assert!(
+            unregistered.is_empty(),
+            "declared but not registered in generate_handler!: {unregistered:#?}"
+        );
     }
 }

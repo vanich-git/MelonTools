@@ -139,13 +139,12 @@ struct CodexInstancesView: View {
                 Text(L("account"))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
-                Picker("", selection: $newAccountId) {
-                    Text(L("Follow current account")).tag(String?.none)
-                    ForEach(store.accounts) { account in
-                        Text(account.displayName).tag(String?.some(account.id))
-                    }
-                }
-                .labelsHidden()
+                MTSelect(
+                    selection: $newAccountId,
+                    options: [(String?.none, L("Follow current account"))] +
+                        store.accounts.map { (String?.some($0.id), $0.displayName) },
+                    width: 240
+                )
             }
             HStack {
                 Spacer()
@@ -176,14 +175,122 @@ enum CodexInstancePaths {
     }
 }
 
+/// Filesystem layout of isolated CODEX_HOME directories.
+///
+/// The folder is keyed by the instance UUID, never by the display name: on a
+/// case-insensitive APFS volume `Work` and `work` are the same directory, so a
+/// name-keyed home makes two instances share one login/auth file and deleting
+/// either one wipes the other (audit CORE-04). The name is display-only now.
+enum CodexInstanceHomes {
+    /// `instances/<id>/codex-home`.
+    static func home(root: URL, id: String) -> URL {
+        root.appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent("codex-home", isDirectory: true)
+    }
+
+    /// Pre-6.0.0 layout: `instances/<display name>/codex-home`.
+    static func legacyHome(root: URL, name: String, id: String) -> URL {
+        root.appendingPathComponent(CodexInstance.safeDirectoryName(name, fallbackID: id), isDirectory: true)
+            .appendingPathComponent("codex-home", isDirectory: true)
+    }
+
+    /// The only directory `delete` may remove for this instance. `nil` when the
+    /// computed path would escape `instances/` (a hand-edited id must never
+    /// turn into an arbitrary `removeItem`).
+    static func ownedContainer(root: URL, id: String) -> URL? {
+        // The id comes from instances.json and may have been edited by hand.
+        guard !id.isEmpty, id != ".", id != "..", !id.contains("/") else { return nil }
+        let base = root.standardizedFileURL
+        let candidate = root.appendingPathComponent(id, isDirectory: true).standardizedFileURL
+        guard candidate.path != base.path, candidate.path.hasPrefix(base.path + "/") else {
+            return nil
+        }
+        return candidate
+    }
+
+    /// Move (or, for a legacy collision, copy the login out of) every existing
+    /// name-keyed home into its UUID home. Idempotent: a UUID home that already
+    /// exists is never touched, and a shared legacy directory is never moved or
+    /// deleted — the instances that used it get their own copy of `auth.json`
+    /// and the old folder stays on disk for manual recovery.
+    ///
+    /// Returns human-readable notes for the instances it relocated.
+    @discardableResult
+    static func migrate(
+        root: URL,
+        instances: [CodexInstance],
+        fileManager: FileManager = .default
+    ) -> [String] {
+        var notes: [String] = []
+        // Two instances may map to the same legacy path. Lowercasing models
+        // APFS case-insensitivity: `Work` and `work` collide there too.
+        var claims: [String: [CodexInstance]] = [:]
+        for instance in instances {
+            let legacy = legacyHome(root: root, name: instance.name, id: instance.id)
+            claims[legacy.path.lowercased(), default: []].append(instance)
+        }
+
+        for instance in instances {
+            let legacy = legacyHome(root: root, name: instance.name, id: instance.id)
+            guard fileManager.fileExists(atPath: legacy.path) else { continue }
+            let destination = home(root: root, id: instance.id)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            let shared = (claims[legacy.path.lowercased()] ?? []).count > 1
+            var createdDestination = false
+
+            do {
+                try fileManager.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if shared {
+                    // Never rename or delete a directory another instance still
+                    // points at. Copy the login so the session keeps working;
+                    // history stays in the shared folder.
+                    try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+                    createdDestination = true
+                    let source = legacy.appendingPathComponent("auth.json")
+                    if fileManager.fileExists(atPath: source.path) {
+                        let target = destination.appendingPathComponent("auth.json")
+                        try? fileManager.removeItem(at: target)
+                        try fileManager.copyItem(at: source, to: target)
+                        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+                    }
+                    notes.append(String(
+                        format: L("Instance '%@' now has its own Codex home."),
+                        instance.name
+                    ))
+                } else {
+                    try fileManager.moveItem(at: legacy, to: destination)
+                    // The legacy parent (`instances/<name>`) is empty now.
+                    try? fileManager.removeItem(at: legacy.deletingLastPathComponent())
+                    notes.append(String(
+                        format: L("Instance '%@' now has its own Codex home."),
+                        instance.name
+                    ))
+                }
+            } catch {
+                // A half-created destination would make the directory look
+                // migrated on the next launch and permanently keep the login
+                // out of this instance. Leave no marker behind on failure.
+                if createdDestination {
+                    try? fileManager.removeItem(at: destination)
+                }
+                continue
+            }
+        }
+        return notes
+    }
+}
+
 struct CodexInstance: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var name: String
     var accountId: String?
     var createdAt: Date = Date()
 
-    /// A display name is also a directory component. Reject separators,
-    /// control characters and the two traversal components outright.
+    /// A display name is not a path component any more, but it still must be
+    /// printable and must not smuggle traversal into dialogs or exports.
     static func isSafeName(_ name: String) -> Bool {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, clean != ".", clean != ".." else { return false }
@@ -191,8 +298,8 @@ struct CodexInstance: Codable, Identifiable, Equatable {
         return !clean.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 
-    /// Old files may contain names written before validation existed. Keep a
-    /// readable name, but never let its folder escape `instances/`.
+    /// Legacy helper kept for migrating name-keyed homes written by older
+    /// builds; new homes never use it.
     static func safeDirectoryName(_ name: String, fallbackID: String) -> String {
         let cleaned = name
             .replacingOccurrences(of: "/", with: "_")
@@ -205,11 +312,9 @@ struct CodexInstance: Codable, Identifiable, Equatable {
         return cleaned
     }
 
+    /// Unique, case-insensitive-stable CODEX_HOME for this instance.
     var homePath: String {
-        CodexInstancePaths.instancesDir
-            .appendingPathComponent(Self.safeDirectoryName(name, fallbackID: id), isDirectory: true)
-            .appendingPathComponent("codex-home", isDirectory: true)
-            .path
+        CodexInstanceHomes.home(root: CodexInstancePaths.instancesDir, id: id).path
     }
 }
 
@@ -229,6 +334,11 @@ final class CodexInstanceStore: ObservableObject {
            let list = try? JSONDecoder().decode([CodexInstance].self, from: data) {
             instances = list
         }
+        // Older builds keyed the CODEX_HOME by display name. Relocate every
+        // surviving home to the UUID path once; a shared (case-colliding)
+        // legacy directory is copied out, never moved or deleted.
+        let notes = CodexInstanceHomes.migrate(root: Self.instancesDir, instances: instances)
+        if let note = notes.last { lastMessage = note }
     }
 
     private func save() {
@@ -248,7 +358,12 @@ final class CodexInstanceStore: ObservableObject {
             lastMessage = L("Name contains invalid characters")
             return false
         }
-        guard !instances.contains(where: { $0.name == clean }) else {
+        // Names are display-only now, but a case-insensitive duplicate is still
+        // confusing and was the original way two instances ended up sharing one
+        // home. Reject it outright.
+        guard !instances.contains(where: {
+            $0.name.compare(clean, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }) else {
             lastMessage = String(format: L("Instance '%@' already exists"), clean)
             return false
         }
@@ -266,10 +381,27 @@ final class CodexInstanceStore: ObservableObject {
         return true
     }
 
+    /// Remove the instance and only its own UUID-scoped home. A legacy
+    /// name-keyed directory (possibly shared with another instance) is never
+    /// touched: deleting it could wipe a different instance's login (CORE-04).
     func delete(_ instance: CodexInstance) {
         instances.removeAll { $0.id == instance.id }
         save()
-        try? FileManager.default.removeItem(atPath: instance.homePath)
+        let root = Self.instancesDir
+        // Only `<root>/<uuid>` is this instance's; the legacy name-keyed
+        // folder may belong to another instance and is never removed.
+        if let owned = CodexInstanceHomes.ownedContainer(root: root, id: instance.id),
+           FileManager.default.fileExists(atPath: owned.path) {
+            try? FileManager.default.removeItem(at: owned)
+        }
+        let legacy = CodexInstanceHomes.legacyHome(root: root, name: instance.name, id: instance.id)
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            lastMessage = String(
+                format: L("Removed '%@'; the shared legacy Codex folder was kept on disk."),
+                instance.name
+            )
+            return
+        }
         lastMessage = String(format: L("Removed '%@'"), instance.name)
     }
 

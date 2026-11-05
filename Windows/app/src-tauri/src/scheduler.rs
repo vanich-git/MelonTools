@@ -6,7 +6,7 @@
 //! the main window to the tray leaves the process and this runner alive.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -46,14 +46,15 @@ pub const STATUS_ERROR: &str = "error";
 pub const STATUS_CANCELLED: &str = "cancelled";
 pub const STATUS_SKIPPED: &str = "skipped";
 /// Recorded for a user-cancelled run instead of a transport error.
-#[allow(dead_code)]
 pub const CANCELLED_MESSAGE: &str = "Cancelled by user";
 /// Bounds of the optional per-task daily token budget.
 pub const MIN_DAILY_TOKEN_LIMIT: i64 = 1;
 pub const MAX_DAILY_TOKEN_LIMIT: i64 = 1_000_000;
 /// How often an in-flight request checks the cancellation flag.
-#[allow(dead_code)]
 pub const CANCEL_POLL_MS: u64 = 200;
+/// Days of daily usage kept in the ledger. Older days cannot affect a daily
+/// budget, so they are pruned instead of growing the file forever.
+pub const USAGE_KEEP_DAYS: i64 = 35;
 
 pub fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
@@ -61,6 +62,11 @@ pub fn now_secs() -> i64 {
 
 pub fn path() -> PathBuf {
     paths::appdata_dir().join("scheduler.json")
+}
+
+/// Durable daily token spend, separate from the trimmed UI history.
+pub fn usage_path() -> PathBuf {
+    paths::appdata_dir().join("scheduler-usage.json")
 }
 
 // MARK: - Models
@@ -147,6 +153,32 @@ pub struct HistoryEntry {
 pub struct Store {
     pub tasks: Vec<Task>,
     pub history: Vec<HistoryEntry>,
+}
+
+/// Portable ledger schema, shared with the macOS backup payload
+/// (`schedulerUsage`: `schemaVersion` plus `days[taskId][yyyy-MM-dd] = tokens`).
+pub const USAGE_SCHEMA: u32 = 2;
+
+/// Independent daily usage counter. History is a bounded UI view and must
+/// never decide whether a budget is spent: after 60 runs its 20-entry cap
+/// would count 40k of 120k tokens and let the task overspend forever.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLedger {
+    #[serde(default)]
+    pub schema_version: u32,
+    /// Required even for an empty ledger: a truncated object must not refund spend.
+    /// Task id -> local day (`YYYY-MM-DD`) -> tokens.
+    pub days: std::collections::BTreeMap<String, std::collections::BTreeMap<String, i64>>,
+}
+
+impl Default for UsageLedger {
+    fn default() -> Self {
+        Self {
+            schema_version: USAGE_SCHEMA,
+            days: Default::default(),
+        }
+    }
 }
 
 /// Renderer payload for create/update. An empty `id` creates a task.
@@ -372,10 +404,14 @@ pub fn trim_history(history: &mut Vec<HistoryEntry>) {
 
 /// Cut to [`RESULT_CAP`] bytes without splitting a UTF-8 sequence.
 pub fn truncate_result(text: &str) -> String {
-    if text.len() <= RESULT_CAP {
+    truncate_utf8(text, RESULT_CAP)
+}
+
+fn truncate_utf8(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
         return text.to_string();
     }
-    let mut end = RESULT_CAP;
+    let mut end = limit;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -705,27 +741,320 @@ fn local_day(at: i64) -> Option<NaiveDate> {
         .map(|value| value.date_naive())
 }
 
-/// Sum of today's history tokens for one task. Other tasks, other local
-/// calendar days and entries without tokens are ignored; negative values
-/// (never written by this runner) cannot lower the sum.
-pub fn tokens_used_today(task_id: &str, history: &[HistoryEntry], at: i64) -> i64 {
+fn usage_day(at: i64) -> Option<String> {
+    local_day(at).map(|day| day.format("%Y-%m-%d").to_string())
+}
+
+/// Loads the durable ledger for the runner.
+///
+/// Only a **missing** file is migrated from history, once, when an older build
+/// upgrades. An existing file that is corrupt, negative, future-dated or from a
+/// newer build is preserved and reported through `error`: the runner then
+/// fails closed instead of reseeding from the trimmed history (a refund).
+/// Spend that could not reach disk is retained in memory. A subsequent run
+/// must flush this exact snapshot before reading an older on-disk counter.
+static PENDING_USAGE: Mutex<Option<UsageLedger>> = Mutex::new(None);
+
+pub fn load_usage() -> UsageSnapshot {
+    load_usage_pending(&usage_path(), &path(), &PENDING_USAGE)
+}
+
+fn load_usage_pending(
+    target: &Path,
+    history: &Path,
+    latch: &Mutex<Option<UsageLedger>>,
+) -> UsageSnapshot {
+    let mut pending = latch.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ledger) = pending.as_ref() {
+        let mut ledger = ledger.clone();
+        match read_usage_checked(target) {
+            Ok(Some(disk)) => merge_usage_max(&mut ledger, &disk),
+            Ok(None) => {}
+            Err(error) => {
+                return UsageSnapshot {
+                    ledger,
+                    error: Some(error),
+                }
+            }
+        }
+        match save_usage_to(target, &ledger) {
+            Ok(()) => {
+                *pending = None;
+            }
+            Err(error) => {
+                return UsageSnapshot {
+                    ledger,
+                    error: Some(error),
+                }
+            }
+        }
+    }
+    load_usage_snapshot(target, history)
+}
+
+fn merge_usage_max(target: &mut UsageLedger, other: &UsageLedger) {
+    for (task, days) in &other.days {
+        for (day, tokens) in days {
+            let entry = target
+                .days
+                .entry(task.clone())
+                .or_default()
+                .entry(day.clone())
+                .or_default();
+            *entry = (*entry).max(*tokens);
+        }
+    }
+}
+
+fn persist_billed_usage(target: &Path, ledger: UsageLedger) -> Result<(), String> {
+    persist_usage_pending(target, ledger, &PENDING_USAGE)
+}
+
+fn persist_usage_pending(
+    target: &Path,
+    mut ledger: UsageLedger,
+    latch: &Mutex<Option<UsageLedger>>,
+) -> Result<(), String> {
+    let mut pending = latch.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(previous) = pending.as_ref() {
+        merge_usage_max(&mut ledger, previous);
+    }
+    match read_usage_checked(target) {
+        Ok(Some(disk)) => merge_usage_max(&mut ledger, &disk),
+        Ok(None) => {}
+        Err(error) => {
+            *pending = Some(ledger);
+            return Err(error);
+        }
+    }
+    match save_usage_to(target, &ledger) {
+        Ok(()) => {
+            *pending = None;
+            Ok(())
+        }
+        Err(error) => {
+            *pending = Some(ledger);
+            Err(error)
+        }
+    }
+}
+
+fn load_usage_snapshot(usage: &Path, history: &Path) -> UsageSnapshot {
+    match read_usage_checked(usage) {
+        Ok(Some(ledger)) => UsageSnapshot {
+            ledger,
+            error: None,
+        },
+        Ok(None) => {
+            let ledger = migrate_history(history);
+            let error = save_usage_to(usage, &ledger).err();
+            UsageSnapshot { ledger, error }
+        }
+        Err(error) => UsageSnapshot {
+            ledger: UsageLedger::default(),
+            error: Some(error),
+        },
+    }
+}
+
+fn migrate_history(history: &Path) -> UsageLedger {
+    let mut ledger = UsageLedger::default();
+    if let Ok(text) = std::fs::read_to_string(history) {
+        if let Ok(store) = serde_json::from_str::<Store>(&text) {
+            for entry in &store.history {
+                record_usage(
+                    &mut ledger,
+                    &entry.task_id,
+                    entry.at,
+                    entry.tokens.unwrap_or(0),
+                );
+            }
+        }
+    }
+    prune_usage(&mut ledger, now_secs());
+    ledger
+}
+
+/// Result of loading the durable ledger for a run.
+pub struct UsageSnapshot {
+    pub ledger: UsageLedger,
+    /// Set when an existing ledger exists but is corrupt, negative, from the
+    /// future or written by a newer build. The runner then fails closed: it
+    /// never reseeds from the trimmed history (that would refund spend).
+    pub error: Option<String>,
+}
+
+/// Validates one ledger before it can govern spending.
+pub(crate) fn validate_usage(ledger: &UsageLedger) -> Result<(), String> {
+    if ledger.schema_version > USAGE_SCHEMA {
+        return Err(format!(
+            "scheduler usage has schema {} (this build supports {USAGE_SCHEMA})",
+            ledger.schema_version
+        ));
+    }
+    let Some(today) = local_day(now_secs()) else {
+        return Ok(());
+    };
+    for (task_id, days) in &ledger.days {
+        if task_id.is_empty() {
+            return Err("scheduler usage has an empty task id".to_string());
+        }
+        for (day, tokens) in days {
+            let date = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .map_err(|_| format!("scheduler usage has an invalid day '{day}'"))?;
+            if date.format("%Y-%m-%d").to_string() != *day {
+                return Err(format!("scheduler usage has a noncanonical day '{day}'"));
+            }
+            if date > today {
+                return Err(format!("scheduler usage contains a future day '{day}'"));
+            }
+            if *tokens < 0 {
+                return Err(format!("scheduler usage has a negative value on '{day}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Strict read used by the runner: a file that exists but cannot be trusted is
+/// an error, never an empty ledger.
+fn read_usage_checked(path: &Path) -> Result<Option<UsageLedger>, String> {
+    let data = match std::fs::read_to_string(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "the scheduler usage file could not be read: {error}"
+            ))
+        }
+    };
+    let mut ledger: UsageLedger = serde_json::from_str(&data)
+        .map_err(|error| format!("the scheduler usage file is damaged: {error}"))?;
+    if ledger.schema_version == 0 {
+        ledger.schema_version = USAGE_SCHEMA;
+    }
+    validate_usage(&ledger)?;
+    prune_usage(&mut ledger, now_secs());
+    Ok(Some(ledger))
+}
+
+/// Reads one ledger file without touching history. `None` means missing,
+/// unreadable or invalid; the runner uses [`read_usage_checked`] instead.
+pub fn read_usage_at(path: &Path) -> Option<UsageLedger> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut ledger: UsageLedger = serde_json::from_str(&text).ok()?;
+    if ledger.schema_version == 0 {
+        ledger.schema_version = USAGE_SCHEMA;
+    }
+    prune_usage(&mut ledger, now_secs());
+    Some(ledger)
+}
+
+fn save_usage_to(target: &Path, ledger: &UsageLedger) -> Result<(), String> {
+    if let Some(found) = crate::schema::file_version(target) {
+        if found > USAGE_SCHEMA {
+            crate::schema::note_newer("scheduler usage", found);
+            return Err(format!(
+                "scheduler usage was written by a newer Melon Tools (schema {found}). Update the app before saving."
+            ));
+        }
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut stored = ledger.clone();
+    stored.schema_version = USAGE_SCHEMA;
+    let data = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
+    let tmp = paths::tmp_path(target);
+    std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, target).map_err(|e| e.to_string())
+}
+
+/// Backup restore: union the imported days into the live ledger with `max` per
+/// task/day. A restore can therefore add spend but never lower or zero it,
+/// even if the backup predates the current usage file.
+pub fn merge_usage_at(target: &Path, imported: &UsageLedger) -> Result<(), String> {
+    // Refuse to overwrite a corrupt or newer live ledger during a restore.
+    let mut current = read_usage_checked(target)?.unwrap_or_default();
+    for (task_id, days) in &imported.days {
+        let current_days = current.days.entry(task_id.clone()).or_default();
+        for (day, tokens) in days {
+            let slot = current_days.entry(day.clone()).or_insert(0);
+            *slot = (*slot).max((*tokens).max(0));
+        }
+    }
+    prune_usage(&mut current, now_secs());
+    save_usage_to(target, &current)
+}
+
+/// Adds one run's tokens to the task/day counter. Zero (skipped or cancelled
+/// runs) never creates an entry; negative values cannot lower a sum.
+pub fn record_usage(ledger: &mut UsageLedger, task_id: &str, at: i64, tokens: i64) {
+    let tokens = tokens.max(0);
+    if tokens == 0 || task_id.is_empty() {
+        return;
+    }
+    let Some(day) = usage_day(at) else {
+        return;
+    };
+    let slot = ledger
+        .days
+        .entry(task_id.to_string())
+        .or_default()
+        .entry(day)
+        .or_insert(0);
+    *slot = slot.saturating_add(tokens);
+    prune_usage(ledger, at);
+}
+
+fn prune_usage(ledger: &mut UsageLedger, at: i64) {
     let Some(today) = local_day(at) else {
+        return;
+    };
+    let Some(cutoff) = today.checked_sub_signed(ChronoDuration::days(USAGE_KEEP_DAYS)) else {
+        return;
+    };
+    for days in ledger.days.values_mut() {
+        days.retain(|day, _| {
+            NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok_and(|date| date >= cutoff)
+        });
+    }
+    ledger.days.retain(|_, days| !days.is_empty());
+}
+
+/// Sum of the durable ledger for one task and the local day of `at`. Other
+/// tasks, other days and entries without tokens are ignored.
+pub fn tokens_used_today(ledger: &UsageLedger, task_id: &str, at: i64) -> i64 {
+    let Some(day) = usage_day(at) else {
         return 0;
     };
-    history
-        .iter()
-        .filter(|entry| entry.task_id == task_id)
-        .filter(|entry| local_day(entry.at) == Some(today))
-        .map(|entry| entry.tokens.unwrap_or(0).max(0))
-        .sum()
+    ledger
+        .days
+        .get(task_id)
+        .and_then(|days| days.get(&day))
+        .copied()
+        .unwrap_or(0)
+        .max(0)
 }
 
 /// `Some(reason)` when the daily budget is already spent, so the caller must
 /// not send a request. `None` without a limit or while budget remains.
-pub fn daily_limit_message(task: &Task, history: &[HistoryEntry], at: i64) -> Option<String> {
+pub fn daily_limit_message(task: &Task, ledger: &UsageLedger, at: i64) -> Option<String> {
     let limit = task.daily_token_limit?;
-    let used = tokens_used_today(&task.id, history, at);
+    let used = tokens_used_today(ledger, &task.id, at);
     (used >= limit).then(|| format!("Daily token limit reached ({}/{})", used, limit))
+}
+
+/// Pre-request gate for a task with a daily budget. An unreadable ledger
+/// blocks the request instead of guessing a smaller spend.
+pub fn usage_block_message(task: &Task, usage: &UsageSnapshot, at: i64) -> Option<String> {
+    task.daily_token_limit?;
+    if let Some(error) = &usage.error {
+        return Some(format!(
+            "Daily token budget is unavailable, so the request was not sent: {error}"
+        ));
+    }
+    daily_limit_message(task, &usage.ledger, at)
 }
 
 // MARK: - CRUD
@@ -1128,6 +1457,8 @@ static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static CURRENT: Mutex<Option<String>> = Mutex::new(None);
 /// Set by `cancel`, polled by `execute`, reset at the start of every run.
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// Set while a backup restore rewrites the store and the usage ledger.
+static PAUSED: AtomicBool = AtomicBool::new(false);
 
 struct RunGuard;
 
@@ -1150,10 +1481,12 @@ impl Drop for RunGuard {
     }
 }
 
-/// How a manual run is admitted: it starts now, or it waits in the queue.
+/// How a manual run is admitted: it starts now, waits in the queue, or is
+/// refused because a backup restore owns the store.
 enum Claim {
     Started(RunGuard),
     Queued,
+    Paused,
 }
 
 /// The queue lock. A poisoned lock is recovered: the vector holds only ids and
@@ -1188,6 +1521,9 @@ fn pop_known_task(queue: &mut Vec<String>, tasks: &[Task]) -> Option<Task> {
 /// the release below, so no request can be stranded.
 fn claim_or_enqueue(id: &str) -> Claim {
     let mut queue = queue_lock();
+    if PAUSED.load(Ordering::SeqCst) {
+        return Claim::Paused;
+    }
     if !RUNNING.load(Ordering::SeqCst) {
         if let Some(guard) = RunGuard::try_acquire() {
             return Claim::Started(guard);
@@ -1261,6 +1597,31 @@ pub fn cancel() -> Value {
     })
 }
 
+/// Stops new scheduled and manual runs while a backup restore writes the
+/// scheduler store and the durable usage ledger. An active run is refused
+/// rather than quiesced: its completion must never race the restore and lose
+/// recorded usage.
+pub struct RestoreGuard;
+
+impl Drop for RestoreGuard {
+    fn drop(&mut self) {
+        PAUSED.store(false, Ordering::SeqCst);
+    }
+}
+
+pub fn pause_for_restore() -> Result<RestoreGuard, String> {
+    let queue = queue_lock();
+    if RUNNING.load(Ordering::SeqCst) || !queue.is_empty() {
+        return Err(
+            "нельзя восстановить резервную копию, пока планировщик выполняет задачи".to_string(),
+        );
+    }
+    if PAUSED.swap(true, Ordering::SeqCst) {
+        return Err("восстановление резервной копии уже выполняется".to_string());
+    }
+    Ok(RestoreGuard)
+}
+
 /// Run one task, then every queued manual request, one at a time. The claim is
 /// held for the whole batch and released by `next_queued_or_finish` or
 /// `finish_batch`, so the schedule and the queue never overlap.
@@ -1286,13 +1647,17 @@ async fn run_batch(
 
 /// One scheduler tick: at most one due task, serial with every other run.
 pub async fn tick(settings: &settings::Settings, app: &tauri::AppHandle) {
-    // A queued manual run has priority: the schedule must not start while the
-    // queue is waiting.
-    if !queue_lock().is_empty() {
-        return;
-    }
-    let Some(guard) = RunGuard::try_acquire() else {
-        return;
+    // The pause check and the claim share the queue lock with
+    // `pause_for_restore`, so a restore cannot start between them.
+    let guard = {
+        let queue = queue_lock();
+        if PAUSED.load(Ordering::SeqCst) || !queue.is_empty() {
+            return;
+        }
+        match RunGuard::try_acquire() {
+            Some(guard) => guard,
+            None => return,
+        }
     };
     let store = load();
     let Some(task) = due_task(&store, now_secs()).cloned() else {
@@ -1338,6 +1703,9 @@ pub async fn run_now(
             "queued": queued_ids(),
             "running": current_task_id(),
         })),
+        Claim::Paused => {
+            Err("восстановление резервной копии выполняется — дождитесь его окончания".to_string())
+        }
     }
 }
 
@@ -1347,20 +1715,38 @@ async fn run_and_record(settings: &settings::Settings, task: &Task) -> Outcome {
     CANCEL.store(false, Ordering::SeqCst);
     set_current(Some(&task.id));
     mark_running(&task.id);
-    // Daily budget: checked before every request, scheduled or manual. A
-    // reached limit sends nothing, spends nothing and is never retried.
+    // Daily budget: checked before every request, scheduled or manual, against
+    // the durable ledger rather than the trimmed history. A reached limit
+    // sends nothing, spends nothing and is never retried.
     let started = now_secs();
-    let store = load();
-    let outcome = match daily_limit_message(task, &store.history, started) {
+    let usage = load_usage();
+    let mut outcome = match usage_block_message(task, &usage, started) {
         Some(message) => skipped_outcome(message),
         None => execute(settings.port, &settings.api_key, task).await,
     };
     let at = now_secs();
+    // Commit spend BEFORE the bounded UI history. A failed write retains the
+    // exact spend in memory and blocks the next limited run until it is saved.
+    if let Some(tokens) = outcome.tokens.filter(|tokens| *tokens > 0) {
+        let mut latest = load_usage();
+        if latest.error.is_some() {
+            merge_usage_max(&mut latest.ledger, &usage.ledger);
+        }
+        record_usage(&mut latest.ledger, &task.id, at, tokens);
+        if let Err(error) = persist_billed_usage(&usage_path(), latest.ledger) {
+            outcome.status = STATUS_SKIPPED.to_string(); // Never retry a billed completion.
+            outcome.error = Some(format!(
+                "Token usage could not be saved; limited runs are paused: {error}"
+            ));
+        }
+    }
     // Re-read after the request: a concurrent edit must not be overwritten by
     // the store snapshot taken before the (up to 300 s) run.
     let mut store = load();
     if apply_outcome(&mut store, &task.id, at, &outcome).is_ok() {
-        let _ = save(&store);
+        if let Err(error) = save(&store) {
+            outcome.error = Some(format!("Scheduler result could not be saved: {error}"));
+        }
     }
     set_current(None);
     outcome
@@ -1508,24 +1894,9 @@ pub fn endpoint(port: u16) -> String {
 }
 
 pub fn request_body(task: &Task) -> Value {
-    let mut prompt = task.prompt.clone();
-    if task.include_git_context {
-        if let Some(directory) = task
-            .working_directory
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            let context = git_context(directory);
-            if !context.is_empty() {
-                prompt.push_str("\n\nRepository context (read-only):\n");
-                prompt.push_str(&context);
-            }
-        }
-    }
     let mut body = json!({
         "model": task.model,
-        "messages": [{ "role": "user", "content": prompt }],
+        "messages": [{ "role": "user", "content": task.prompt }],
         "stream": false,
     });
     if let Some(effort) = task
@@ -1541,25 +1912,68 @@ pub fn request_body(task: &Task) -> Value {
     body
 }
 
-/// Bounded read-only git context for a scheduled task. `git` must be on PATH;
-/// a missing repository/tool simply yields no context.
-fn git_context(directory: &str) -> String {
-    if !std::path::Path::new(directory).is_dir() {
+/// Drain both pipes concurrently, retaining only the allowed stdout prefix.
+/// Dropping the future (timeout/cancel) kills and reaps the child through Tokio.
+async fn capture_context_command(command: &mut tokio::process::Command, limit: usize) -> String {
+    use tokio::io::AsyncReadExt;
+
+    command
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let Ok(mut child) = command.spawn() else {
         return String::new();
-    }
-    let run = |args: &[&str]| -> String {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(directory)
-            .output();
-        match output {
-            Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).trim().to_string()
-            }
-            _ => String::new(),
-        }
     };
-    if run(&["rev-parse", "--is-inside-work-tree"]).is_empty() {
+    let Some(mut stdout) = child.stdout.take() else {
+        return String::new();
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        return String::new();
+    };
+    let output = async move {
+        let mut kept = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let count = stdout.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            let retain = count.min(limit.saturating_sub(kept.len()));
+            kept.extend_from_slice(&buffer[..retain]);
+        }
+        Ok::<_, std::io::Error>(kept)
+    };
+    let errors = async move { tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await };
+    let (status, output, _) = tokio::join!(child.wait(), output, errors);
+    match (status, output) {
+        (Ok(status), Ok(output)) if status.success() => {
+            truncate_utf8(&String::from_utf8_lossy(&output), limit)
+                .trim()
+                .to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+/// The wall-clock bound also covers pipe EOF: an inherited writer cannot keep
+/// a scheduler run alive forever after git itself exits.
+async fn git_output(directory: &str, args: &[&str], limit: usize) -> String {
+    let mut command = tokio::process::Command::new("git");
+    command.args(args).current_dir(directory);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        capture_context_command(&mut command, limit),
+    )
+    .await
+    .unwrap_or_default()
+}
+
+async fn git_context(directory: &str) -> String {
+    if git_output(directory, &["rev-parse", "--is-inside-work-tree"], 100)
+        .await
+        .is_empty()
+    {
         return String::new();
     }
     let mut text = String::new();
@@ -1572,7 +1986,7 @@ fn git_context(directory: &str) -> String {
         ("diff --stat", &["diff", "--stat"]),
     ];
     for (label, args) in commands {
-        let out = run(args);
+        let out = git_output(directory, args, 4_000).await;
         if !out.is_empty() {
             text.push_str("$ git ");
             text.push_str(label);
@@ -1581,12 +1995,76 @@ fn git_context(directory: &str) -> String {
             text.push('\n');
         }
     }
-    text.chars().take(12_000).collect()
+    truncate_utf8(&text, 12_000)
 }
 
 /// One completion through the local gateway.
 pub async fn execute(port: u16, api_key: &str, task: &Task) -> Outcome {
+    execute_with_cancel(port, api_key, task, &CANCEL).await
+}
+
+/// Resolves when the user cancels the active run. Polled instead of an OS
+/// event because the flag is shared by the IPC command and the runner.
+async fn cancel_signal(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(CANCEL_POLL_MS)).await;
+    }
+}
+
+fn cancelled_outcome(started: Instant) -> Outcome {
+    Outcome {
+        status: STATUS_CANCELLED.to_string(),
+        result: String::new(),
+        error: Some(CANCELLED_MESSAGE.to_string()),
+        duration_ms: started.elapsed().as_millis() as i64,
+        tokens: None,
+    }
+}
+
+/// Cancel-aware send and body read. Dropping the request future closes the
+/// connection, so a cancelled run stops spending tokens instead of waiting up
+/// to [`RUN_TIMEOUT_SECS`] and reporting `ok` afterwards.
+pub async fn execute_with_cancel(
+    port: u16,
+    api_key: &str,
+    task: &Task,
+    cancel: &AtomicBool,
+) -> Outcome {
     let started = Instant::now();
+    tokio::select! {
+        biased;
+        _ = cancel_signal(cancel) => cancelled_outcome(started),
+        result = tokio::time::timeout(
+            Duration::from_secs(RUN_TIMEOUT_SECS),
+            execute_request(port, api_key, task, cancel, started),
+        ) => result.unwrap_or_else(|_| failure(
+            format!("Scheduler request timed out after {RUN_TIMEOUT_SECS} seconds"),
+            started,
+        )),
+    }
+}
+
+async fn execute_request(
+    port: u16,
+    api_key: &str,
+    task: &Task,
+    cancel: &AtomicBool,
+    started: Instant,
+) -> Outcome {
+    let mut body = request_body(task);
+    if let Some(directory) = task
+        .working_directory
+        .as_deref()
+        .filter(|_| task.include_git_context)
+    {
+        let context = git_context(directory.trim()).await;
+        if !context.is_empty() {
+            body["messages"][0]["content"] = json!(format!(
+                "{}\n\nRepository context (read-only):\n{context}",
+                task.prompt
+            ));
+        }
+    }
     let client = match reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(RUN_TIMEOUT_SECS))
@@ -1595,21 +2073,47 @@ pub async fn execute(port: u16, api_key: &str, task: &Task) -> Outcome {
         Ok(client) => client,
         Err(error) => return failure(error.to_string(), started),
     };
-    let response = client
+    let request = client
         .post(endpoint(port))
         .header("Authorization", format!("Bearer {}", api_key))
-        .json(&request_body(task))
-        .send()
-        .await;
-    let response = match response {
-        Ok(response) => response,
-        Err(error) => return failure(error.to_string(), started),
+        .json(&body)
+        .send();
+    let mut response = tokio::select! {
+        biased;
+        _ = cancel_signal(cancel) => return cancelled_outcome(started),
+        response = request => match response {
+            Ok(response) => response,
+            Err(error) => {
+                if cancel.load(Ordering::SeqCst) {
+                    return cancelled_outcome(started);
+                }
+                return failure(error.to_string(), started);
+            }
+        },
     };
     let code = response.status().as_u16();
-    let text = match response.text().await {
-        Ok(text) => text,
-        Err(error) => return failure(error.to_string(), started),
-    };
+
+    // Read the body in chunks instead of `response.text()`: only the chunk
+    // loop can notice a cancel while the upstream is still generating.
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = cancel_signal(cancel) => return cancelled_outcome(started),
+            next = response.chunk() => next,
+        };
+        match next {
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(None) => break,
+            Err(error) => {
+                if cancel.load(Ordering::SeqCst) {
+                    return cancelled_outcome(started);
+                }
+                return failure(error.to_string(), started);
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&body);
     let mut outcome = outcome_from_response(code, &text);
     outcome.duration_ms = started.elapsed().as_millis() as i64;
     outcome
@@ -1783,6 +2287,25 @@ mod tests {
             enabled,
             ..TaskInput::default()
         }
+    }
+
+    /// Local wall-clock time, so the day-rollover tests do not depend on the
+    /// machine's time zone.
+    fn local_at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .single()
+            .expect("a valid local timestamp")
+            .timestamp()
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "melon-scheduler-{}-{}-{}",
+            tag,
+            std::process::id(),
+            new_uuid()
+        ))
     }
 
     #[test]
@@ -2394,17 +2917,367 @@ mod tests {
 
     #[test]
     fn daily_limit_counts_only_today_and_blocks_the_request() {
-        let now = 1_760_000_000;
+        let day = local_at(2026, 11, 4, 12, 0);
+        let yesterday = local_at(2026, 11, 3, 12, 0);
         let mut stored = task("a");
         stored.daily_token_limit = Some(20);
-        let history = vec![entry("a", now), entry("a", now), entry("b", now)];
-        assert_eq!(tokens_used_today("a", &history, now), 20);
+        let mut ledger = UsageLedger::default();
+        record_usage(&mut ledger, "a", day, 10);
+        record_usage(&mut ledger, "a", day, 10);
+        record_usage(&mut ledger, "a", yesterday, 5_000);
+        record_usage(&mut ledger, "b", day, 500);
+        assert_eq!(tokens_used_today(&ledger, "a", day), 20);
         assert_eq!(
-            daily_limit_message(&stored, &history, now).as_deref(),
+            daily_limit_message(&stored, &ledger, day).as_deref(),
             Some("Daily token limit reached (20/20)")
         );
         stored.daily_token_limit = Some(21);
-        assert!(daily_limit_message(&stored, &history, now).is_none());
+        assert!(daily_limit_message(&stored, &ledger, day).is_none());
+        // Yesterday's spend exists in the ledger but is a different day.
+        assert_eq!(tokens_used_today(&ledger, "a", yesterday), 5_000);
+    }
+
+    #[test]
+    fn daily_budget_survives_history_trimming() {
+        let day = local_at(2026, 11, 4, 12, 0);
+        let mut stored = task("a");
+        stored.daily_token_limit = Some(100_000);
+        let mut store = Store {
+            tasks: vec![stored.clone()],
+            history: Vec::new(),
+        };
+        let mut ledger = UsageLedger::default();
+        let outcome = Outcome {
+            status: STATUS_OK.to_string(),
+            tokens: Some(2_000),
+            ..Outcome::default()
+        };
+        // 60 runs x 2000 tokens: the real spend is 120000, the 20-entry
+        // history only remembers 40000.
+        for run in 0..60 {
+            let at = day + run;
+            apply_outcome(&mut store, "a", at, &outcome).unwrap();
+            record_usage(&mut ledger, "a", at, 2_000);
+        }
+        assert_eq!(store.history.len(), HISTORY_PER_TASK);
+        assert_eq!(tokens_used_today(&ledger, "a", day + 59), 120_000);
+        assert!(daily_limit_message(&stored, &ledger, day + 59).is_some());
+    }
+
+    #[test]
+    fn daily_budget_survives_more_than_two_hundred_global_entries() {
+        let day = local_at(2026, 11, 4, 12, 0);
+        let mut store = Store::default();
+        let mut ledger = UsageLedger::default();
+        let outcome = Outcome {
+            status: STATUS_OK.to_string(),
+            tokens: Some(1_000),
+            ..Outcome::default()
+        };
+        for index in 0..12 {
+            let id = format!("t{index}");
+            store.tasks.push(task(&id));
+            for run in 0..20 {
+                let at = day + index * 20 + run;
+                apply_outcome(&mut store, &id, at, &outcome).unwrap();
+                record_usage(&mut ledger, &id, at, 1_000);
+            }
+        }
+        assert_eq!(store.history.len(), HISTORY_GLOBAL);
+        for index in 0..12 {
+            assert_eq!(
+                tokens_used_today(&ledger, &format!("t{index}"), day + 239),
+                20_000
+            );
+        }
+    }
+
+    #[test]
+    fn skipped_runs_never_spend_the_daily_budget() {
+        let day = local_at(2026, 11, 4, 12, 0);
+        let mut ledger = UsageLedger::default();
+        record_usage(&mut ledger, "a", day, 0);
+        assert!(ledger.days.is_empty());
+        record_usage(&mut ledger, "a", day, -50);
+        assert!(ledger.days.is_empty());
+        let skipped = Outcome {
+            status: STATUS_SKIPPED.to_string(),
+            tokens: None,
+            ..Outcome::default()
+        };
+        let mut store = Store {
+            tasks: vec![task("a")],
+            history: Vec::new(),
+        };
+        apply_outcome(&mut store, "a", day, &skipped).unwrap();
+        assert!(ledger.days.is_empty());
+        assert_eq!(store.tasks[0].retry_attempt, 0);
+    }
+
+    #[test]
+    fn daily_budget_rolls_over_at_local_midnight_and_prunes_old_days() {
+        let day_one = local_at(2026, 11, 4, 23, 59);
+        let day_two = local_at(2026, 11, 5, 0, 1);
+        let mut stored = task("a");
+        stored.daily_token_limit = Some(1_000);
+        let mut ledger = UsageLedger::default();
+        record_usage(&mut ledger, "a", day_one, 900);
+        record_usage(&mut ledger, "a", day_two, 300);
+        assert_eq!(tokens_used_today(&ledger, "a", day_one), 900);
+        assert_eq!(tokens_used_today(&ledger, "a", day_two), 300);
+        assert!(daily_limit_message(&stored, &ledger, day_one).is_none());
+        assert!(daily_limit_message(&stored, &ledger, day_two).is_none());
+
+        // The ledger only keeps the last 35 local days.
+        let later = local_at(2026, 12, 20, 12, 0);
+        record_usage(&mut ledger, "a", later, 1);
+        assert_eq!(tokens_used_today(&ledger, "a", day_one), 0);
+        assert_eq!(tokens_used_today(&ledger, "a", later), 1);
+    }
+
+    fn load_usage_from(usage: &Path, history: &Path) -> UsageLedger {
+        load_usage_snapshot(usage, history).ledger
+    }
+
+    #[test]
+    fn usage_ledger_migrates_history_once_and_then_outlives_it() {
+        let dir = temp_dir("usage-migrate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let history_path = dir.join("scheduler.json");
+        let usage = dir.join("scheduler-usage.json");
+        let day = local_at(2026, 11, 4, 12, 0);
+        // An old build's untrimmed file: 60 runs x 2000 tokens.
+        let history: Vec<HistoryEntry> = (0..60)
+            .map(|run| HistoryEntry {
+                task_id: "a".to_string(),
+                at: day + run,
+                status: STATUS_OK.to_string(),
+                model: "gpt-6.1-sol".to_string(),
+                duration_ms: Some(10),
+                tokens: Some(2_000),
+                result: "ok".to_string(),
+                error: None,
+            })
+            .collect();
+        let raw = serde_json::json!({ "tasks": [task("a")], "history": history });
+        std::fs::write(&history_path, raw.to_string()).unwrap();
+
+        let ledger = load_usage_from(&usage, &history_path);
+        assert_eq!(tokens_used_today(&ledger, "a", day), 120_000);
+        assert!(usage.exists(), "the migration must be durable");
+
+        // Losing the UI history afterwards cannot restore the budget.
+        std::fs::remove_file(&history_path).unwrap();
+        let reloaded = load_usage_from(&usage, &history_path);
+        assert_eq!(tokens_used_today(&reloaded, "a", day), 120_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usage_write_failure_retains_spend_and_retries_without_refunding() {
+        let dir = temp_dir("usage-write-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("usage.json");
+        std::fs::create_dir(&target).unwrap(); // Existing but unreadable as a ledger.
+        let latch = Mutex::new(None);
+        let mut ledger = UsageLedger::default();
+        let now = now_secs();
+        record_usage(&mut ledger, "paid", now, 2_000);
+        assert!(persist_usage_pending(&target, ledger, &latch).is_err());
+        let blocked = load_usage_pending(&target, &dir.join("history.json"), &latch);
+        assert!(blocked.error.is_some());
+        assert_eq!(tokens_used_today(&blocked.ledger, "paid", now), 2_000);
+        std::fs::remove_dir(&target).unwrap();
+        let recovered = load_usage_pending(&target, &dir.join("history.json"), &latch);
+        assert!(recovered.error.is_none());
+        assert_eq!(tokens_used_today(&recovered.ledger, "paid", now), 2_000);
+        assert!(latch.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pending_usage_does_not_overwrite_newer_restored_spend_or_corruption() {
+        let dir = temp_dir("usage-merge-pending");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("usage.json");
+        std::fs::write(&target, "broken").unwrap();
+        let now = now_secs();
+        let mut pending = UsageLedger::default();
+        record_usage(&mut pending, "paid", now, 2_000);
+        let latch = Mutex::new(None);
+        assert!(persist_usage_pending(&target, pending, &latch).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "broken");
+        let mut restored = UsageLedger::default();
+        record_usage(&mut restored, "paid", now, 90_000);
+        record_usage(&mut restored, "other", now, 500);
+        std::fs::remove_file(&target).unwrap();
+        save_usage_to(&target, &restored).unwrap();
+        let recovered = load_usage_pending(&target, &dir.join("history.json"), &latch);
+        assert!(recovered.error.is_none());
+        assert_eq!(tokens_used_today(&recovered.ledger, "paid", now), 90_000);
+        assert_eq!(tokens_used_today(&recovered.ledger, "other", now), 500);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_initial_ledger_migration_blocks_limited_runs() {
+        let dir = temp_dir("usage-migration-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let parent_file = dir.join("not-a-folder");
+        std::fs::write(&parent_file, "x").unwrap();
+        let snapshot =
+            load_usage_snapshot(&parent_file.join("usage.json"), &dir.join("history.json"));
+        assert!(snapshot.error.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn usage_ledger_roundtrips_through_its_own_file() {
+        let dir = temp_dir("usage-roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scheduler-usage.json");
+        let day = local_at(2026, 11, 4, 12, 0);
+        let mut ledger = UsageLedger::default();
+        record_usage(&mut ledger, "a", day, 42);
+        save_usage_to(&path, &ledger).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"days\""));
+        assert!(text.contains("\"schemaVersion\""));
+        let mut back: UsageLedger = serde_json::from_str(&text).unwrap();
+        prune_usage(&mut back, day);
+        assert_eq!(back, ledger);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_usage_ledger_fails_closed_instead_of_reseeding_history() {
+        let dir = temp_dir("usage-corrupt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let usage = dir.join("scheduler-usage.json");
+        let history_path = dir.join("scheduler.json");
+        let day = local_at(2026, 11, 4, 12, 0);
+        // A trimmed-looking history with 60 runs: seeding from it would refund.
+        let history: Vec<HistoryEntry> = (0..60)
+            .map(|run| HistoryEntry {
+                task_id: "a".to_string(),
+                at: day + run,
+                status: STATUS_OK.to_string(),
+                tokens: Some(2_000),
+                ..HistoryEntry::default()
+            })
+            .collect();
+        std::fs::write(
+            &history_path,
+            serde_json::json!({ "tasks": [task("a")], "history": history }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(&usage, b"{ broken ledger").unwrap();
+
+        let snapshot = load_usage_snapshot(&usage, &history_path);
+        let error = snapshot
+            .error
+            .as_ref()
+            .expect("a damaged ledger must be reported");
+        assert!(error.contains("damaged"), "{error}");
+        assert!(
+            snapshot.ledger.days.is_empty(),
+            "a damaged ledger must not be reseeded from history"
+        );
+        let mut limited = task("a");
+        limited.daily_token_limit = Some(100_000);
+        assert!(usage_block_message(&limited, &snapshot, day).is_some());
+        // Without a budget there is nothing to protect.
+        assert!(usage_block_message(&task("a"), &snapshot, day).is_none());
+        // The damaged file is preserved for inspection.
+        assert_eq!(std::fs::read(&usage).unwrap(), b"{ broken ledger");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incomplete_usage_objects_fail_closed_without_reseeding_history() {
+        let dir = temp_dir("usage-incomplete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let usage = dir.join("scheduler-usage.json");
+        let history = dir.join("scheduler.json");
+        for text in ["{}", "{\"schemaVersion\":2}", "{\"days\":null}"] {
+            std::fs::write(&usage, text).unwrap();
+            let snapshot = load_usage_snapshot(&usage, &history);
+            assert!(snapshot.error.is_some(), "accepted {text}");
+            assert_eq!(std::fs::read_to_string(&usage).unwrap(), text);
+        }
+        // Older ledgers may omit the schema, but never their actual counter.
+        std::fs::write(&usage, "{\"days\":{}}").unwrap();
+        assert!(load_usage_snapshot(&usage, &history).error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_usage_entries_fail_closed() {
+        let dir = temp_dir("usage-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let usage = dir.join("scheduler-usage.json");
+        let history_path = dir.join("scheduler.json");
+        let today = local_day(now_secs()).unwrap();
+        let day = today.format("%Y-%m-%d").to_string();
+        let tomorrow = (today + ChronoDuration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        for days in [
+            serde_json::json!({ "a": { day.clone(): -5 } }),
+            serde_json::json!({ "a": { tomorrow.clone(): 5 } }),
+            serde_json::json!({ "a": { "2026-1-1": 5 } }),
+            serde_json::json!({ "": { day.clone(): 5 } }),
+        ] {
+            std::fs::write(
+                &usage,
+                serde_json::json!({ "schemaVersion": USAGE_SCHEMA, "days": days }).to_string(),
+            )
+            .unwrap();
+            let snapshot = load_usage_snapshot(&usage, &history_path);
+            assert!(
+                snapshot.error.is_some(),
+                "an invalid ledger must fail closed"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_guard_blocks_new_runs_until_dropped() {
+        let guard = pause_for_restore().unwrap();
+        assert!(pause_for_restore().is_err());
+        drop(guard);
+        let second = pause_for_restore().unwrap();
+        drop(second);
+    }
+
+    #[test]
+    fn a_newer_usage_ledger_is_read_but_never_overwritten() {
+        let dir = temp_dir("usage-newer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scheduler-usage.json");
+        let now = now_secs();
+        let day = usage_day(now).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "schemaVersion": USAGE_SCHEMA + 9,
+                "days": { "a": { day.clone(): 500 } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let ledger = read_usage_at(&path).expect("the known fields are still readable");
+        assert_eq!(ledger.schema_version, USAGE_SCHEMA + 9);
+        assert_eq!(tokens_used_today(&ledger, "a", now), 500);
+        // Saving would downgrade the file, so it is refused and the newer
+        // object stays byte-identical.
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(save_usage_to(&path, &UsageLedger::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2427,6 +3300,162 @@ mod tests {
             assert_eq!(store.tasks[0].retry_attempt, 0);
             assert_ne!(store.tasks[0].next_run_at, Some(1_060));
         }
+    }
+
+    /// One-shot loopback server: `headers` stalls before sending a response,
+    /// `body` sends headers plus a partial JSON body and then stalls, `ok`
+    /// answers with a complete completion.
+    fn loopback_server(mode: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request);
+            match mode {
+                "headers" => {}
+                "body" => {
+                    let _ = socket.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"choices\":[",
+                    );
+                    let _ = socket.flush();
+                }
+                _ => {
+                    let body = br#"{"choices":[{"message":{"content":"pong"}}],"usage":{"total_tokens":7}}"#;
+                    let _ = socket.write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                    let _ = socket.write_all(body);
+                    let _ = socket.flush();
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        port
+    }
+
+    fn cancel_after(millis: u64) -> std::sync::Arc<AtomicBool> {
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let setter = flag.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(millis));
+            setter.store(true, Ordering::SeqCst);
+        });
+        flag
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_capture_drains_both_pipes_without_retaining_unbounded_output() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "i=0; while [ $i -lt 20000 ]; do printf 'output line\\n'; printf 'error line\\n' >&2; i=$((i+1)); done"]);
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            capture_context_command(&mut command, 1024),
+        )
+        .await
+        .expect("both full pipes must drain");
+        assert!(output.starts_with("output line"));
+        assert!(output.len() <= 1024);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_git_capture_kills_the_stuck_child() {
+        let dir = temp_dir("git-cancel");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("pid");
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "echo $$ > \"$1\"; exec /bin/sleep 30", "sh"])
+            .arg(&pid_file);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(300),
+            capture_context_command(&mut command, 1024),
+        )
+        .await
+        .is_err());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let pid = pid.trim();
+        let reaped = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let status = std::process::Command::new("/bin/kill")
+                    .args(["-0", pid])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
+                if !status.success() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(reaped.is_ok(), "cancel left child {pid} alive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_run_never_starts_git_or_http() {
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        let mut scheduled = task("a");
+        scheduled.include_git_context = true;
+        scheduled.working_directory = Some("/path/that/does/not/exist".into());
+        let outcome = execute_with_cancel(1, "test-key", &scheduled, &cancel).await;
+        assert_eq!(outcome.status, STATUS_CANCELLED);
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn cancel_aborts_before_headers_without_waiting_for_the_timeout() {
+        let port = loopback_server("headers");
+        let cancel = cancel_after(150);
+        let started = Instant::now();
+        let outcome = execute_with_cancel(port, "test-key", &task("a"), &cancel).await;
+        assert_eq!(outcome.status, STATUS_CANCELLED);
+        assert_eq!(outcome.error.as_deref(), Some(CANCELLED_MESSAGE));
+        assert!(outcome.tokens.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "cancel waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_aborts_while_the_body_is_streaming() {
+        let port = loopback_server("body");
+        let cancel = cancel_after(250);
+        let started = Instant::now();
+        let outcome = execute_with_cancel(port, "test-key", &task("a"), &cancel).await;
+        assert_eq!(outcome.status, STATUS_CANCELLED);
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "body read waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunked_completion_still_parses_without_a_cancel() {
+        let port = loopback_server("ok");
+        let cancel = AtomicBool::new(false);
+        let outcome = execute_with_cancel(port, "test-key", &task("a"), &cancel).await;
+        assert_eq!(outcome.status, STATUS_OK);
+        assert_eq!(outcome.result, "pong");
+        assert_eq!(outcome.tokens, Some(7));
     }
 
     #[test]

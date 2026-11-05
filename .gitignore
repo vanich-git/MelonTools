@@ -17,6 +17,10 @@ xcuserdata/
 # Third-party sources (fetch with scripts/fetch-sources.sh)
 _sources/
 
+# Pinned llama.cpp engine: fetched by MacOS/scripts/fetch-runtime.sh at build
+# time (universal binary, ~140 MB). Never commit platform binaries.
+MacOS/app/Resources/runtime/
+
 # Local agent notes may contain machine-specific paths
 MacOS/AGENTS.md
 MacOS/specs/

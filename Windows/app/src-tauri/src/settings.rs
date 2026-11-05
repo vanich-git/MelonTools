@@ -307,16 +307,17 @@ mod tests {
     };
 
     fn legacy_settings() -> Settings {
-        let mut s = Settings::default();
-        s.api_key = "sk-legacy-api".to_string();
-        s.openrouter_key = "sk-or-legacy".to_string();
-        s.opencode_key = "sk-oc-legacy".to_string();
-        s.deepinfra_key = "sk-di-legacy".to_string();
-        s.vercel_key = "sk-vc-legacy".to_string();
-        s.zai_key = "id.secret-legacy".to_string();
-        s.claude_api_key = "sk-ant-legacy".to_string();
-        s.management_secret = "melon-mgmt-legacy".to_string();
-        s
+        Settings {
+            api_key: "sk-legacy-api".to_string(),
+            openrouter_key: "sk-or-legacy".to_string(),
+            opencode_key: "sk-oc-legacy".to_string(),
+            deepinfra_key: "sk-di-legacy".to_string(),
+            vercel_key: "sk-vc-legacy".to_string(),
+            zai_key: "id.secret-legacy".to_string(),
+            claude_api_key: "sk-ant-legacy".to_string(),
+            management_secret: "melon-mgmt-legacy".to_string(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -378,15 +379,17 @@ mod tests {
 
     #[test]
     fn undecryptable_secrets_become_empty() {
-        let mut s = Settings::default();
-        s.api_key = "dpapi2:AAAA".to_string();
-        s.openrouter_key = "dpapi:AAAA".to_string();
-        s.opencode_key = "dpapi:not-base64!!!".to_string();
-        s.deepinfra_key = "dpapi2:".to_string();
-        s.vercel_key = "dpapi:not-base64!!!".to_string();
-        s.zai_key = "dpapi2:".to_string();
-        s.claude_api_key = "dpapi2:".to_string();
-        s.management_secret = "dpapi:not-base64!!!".to_string();
+        let mut s = Settings {
+            api_key: "dpapi2:AAAA".to_string(),
+            openrouter_key: "dpapi:AAAA".to_string(),
+            opencode_key: "dpapi:not-base64!!!".to_string(),
+            deepinfra_key: "dpapi2:".to_string(),
+            vercel_key: "dpapi:not-base64!!!".to_string(),
+            zai_key: "dpapi2:".to_string(),
+            claude_api_key: "dpapi2:".to_string(),
+            management_secret: "dpapi:not-base64!!!".to_string(),
+            ..Default::default()
+        };
         unprotect_secrets(&mut s);
         for field in secret_fields(&mut s) {
             assert!(field.is_empty(), "ciphertext leaked: {}", field.as_str());
@@ -396,8 +399,10 @@ mod tests {
     #[test]
     fn reserved_prefix_secrets_roundtrip() {
         for value in ["dpapi:literal", "dpapi2:literal", "plain:literal"] {
-            let mut s = Settings::default();
-            s.api_key = value.to_string();
+            let mut s = Settings {
+                api_key: value.to_string(),
+                ..Default::default()
+            };
             protect_secrets(&mut s).unwrap();
             #[cfg(not(windows))]
             assert!(s.api_key.starts_with(crate::dpapi::PREFIX_PLAIN));
@@ -416,13 +421,15 @@ mod tests {
 
     #[test]
     fn cached_provider_models_follow_their_key() {
-        let mut old = Settings::default();
-        old.deepinfra_key = "di-old".to_string();
-        old.deepinfra_models = vec![cached_model("deepseek-ai/DeepSeek-V4")];
-        old.vercel_key = "vc-old".to_string();
-        old.vercel_models = vec![cached_model("anthropic/claude-sonnet-4.6")];
-        old.zai_key = "zai-old".to_string();
-        old.zai_models = vec![cached_model("glm-5.3")];
+        let old = Settings {
+            deepinfra_key: "di-old".to_string(),
+            deepinfra_models: vec![cached_model("deepseek-ai/DeepSeek-V4")],
+            vercel_key: "vc-old".to_string(),
+            vercel_models: vec![cached_model("anthropic/claude-sonnet-4.6")],
+            zai_key: "zai-old".to_string(),
+            zai_models: vec![cached_model("glm-5.3")],
+            ..Default::default()
+        };
 
         // An unchanged key with an empty payload keeps the cached list.
         let mut same = old.clone();

@@ -63,4 +63,40 @@ const S = {
   dirtyField: null,
   renderDeferred: false,
   _renderResumeTimer: null,
+  // Local AI state (GGUF / llama-server inference)
+  localAi: {
+    tab: "models", // models | catalog | downloads | runtime | settings
+    hardware: null,
+    models: [],
+    /// { readOnly, error, backupPath } from the backend registry guard.
+    registry: null,
+    runtime: null,
+    metrics: null,
+    metricsError: null,
+    install: null,
+    runtimeCatalogOpen: false,
+    runtimeCatalog: null,
+    runtimeCatalogLoading: false,
+    runtimeCatalogError: null,
+    migration: null,
+    downloads: [],
+    catalogQuery: "",
+    catalogPreset: "all",
+    catalogResults: [],
+    catalogLoading: false,
+    selectedRepoId: null,
+    repoDetails: null,
+    repoDetailsLoading: false,
+    hfToken: "",
+    activeDownloadCount: 0,
+    searchQuery: "",
+    editingModel: null, // model being edited in settings modal
+    testModal: null, // { modelId, modelName, prompt, response, generating, tokensPerSec }
+    estimate: null,
+    logs: [],
+    /// JSON of the last rendered Console tail; lets the poll skip identical
+    /// updates without re-rendering the pane.
+    logsSignature: "",
+    error: null,
+  },
 };

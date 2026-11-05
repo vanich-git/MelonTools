@@ -1,4 +1,69 @@
-# Melon Tools 5.5.8
+# Melon Tools 6.0.0-rc.1
+
+Release candidate for macOS and Windows. **This is a test build, not a stable
+release.** 6.0.0-rc.1 is published as a GitHub **prerelease**: it is not
+"latest", it does not replace 5.5.8 in Homebrew or winget, and the in-app
+updaters ignore it because they read `/releases/latest`. Homebrew, winget and
+the download README keep describing the last published 5.5.8 artifacts until
+6.0.0 passes acceptance and is promoted. See `packaging/README.md` and
+`docs/RELEASE_ACCEPTANCE.md`.
+
+> **Read before installing**
+>
+> - **macOS: ad-hoc signed, not notarized.** Gatekeeper blocks the first
+>   launch. Use right-click → Open (or System Settings → Privacy & Security →
+>   Open Anyway) only after the downloaded file matches its `.sha256` sibling.
+>   Developer ID signing and notarization stay blocked until the Apple secrets
+>   are configured.
+> - **Windows: not Authenticode-signed.** SmartScreen may show "Windows
+>   protected your PC" and refuse the first launch. Choose **More info → Run
+>   anyway** only after the SHA-256 matches. The installer is per-user and does
+>   not request elevation.
+> - **Release-candidate quality.** Settings, the model storage layout and the
+>   local-AI API can still change before 6.0.0. Back up anything you cannot
+>   download again, and do not hand this build to other people.
+> - **Local AI is hardware-hungry.** No GGUF model is bundled: models are
+>   downloaded on demand and can be many gigabytes. Expect high RAM/VRAM use
+>   and a slow first load; throughput depends on the machine.
+> - **Verify every download.** Each asset has a `.sha256` sibling, and the
+>   release body lists all digests.
+
+## What is in 6.0.0
+
+- **Local AI on both platforms.** Melon Tools runs GGUF models with a bundled
+  `llama-server` and exposes them through the existing loopback gateway
+  (`127.0.0.1:18318`), so Codex and other clients reach local models through
+  the same OpenAI-compatible endpoint.
+- **Bundled, verified runtime.** The macOS bundle ships a pinned universal
+  llama.cpp runtime (`b12099`, arm64 + x86_64) with its dylib closure and a
+  SHA-256 manifest. Runtime downloads, lipo merging, signing and manifest
+  refresh are handled by `MacOS/scripts/fetch-runtime.sh`; an arm64-only
+  runtime is rejected before the DMG is built.
+- **Model management.** Model registry with per-model directories, split-model
+  validation, resumable Hugging Face downloads, storage settings and hardware
+  recommendations. The storage layout is documented in
+  `docs/LOCAL_AI_ARCHITECTURE.md`.
+- **Release hardening.** Clean checkouts fetch and verify the runtime before
+  the first XcodeGen run; signed releases re-sign the nested runtime binaries
+  and refresh the runtime digest before the app bundle is sealed. Native
+  acceptance checks are described in `docs/RELEASE_ACCEPTANCE.md`.
+
+## What this RC does not prove
+
+- **No Developer ID, no notarization.** The macOS DMG is ad-hoc signed; the
+  `spctl` and stapled-ticket checks in `MacOS/scripts/native-acceptance.sh` are
+  skipped without certificates.
+- **No Authenticode.** Windows signing steps are skipped when the certificate
+  secrets are absent, so SmartScreen reputation is untested.
+- **No interactive Windows install/upgrade/soak run.** CI builds the installer
+  and portable exe on a native Windows runner and validates PE headers, hashes
+  and the legacy alias. Clean install, upgrade from 5.5.8,
+  uninstall, WebView2 IPC and DPAPI behaviour remain manual checks in
+  `docs/RELEASE_ACCEPTANCE.md`.
+- **No Homebrew/winget promotion.** Both manifests intentionally still point at
+  5.5.8 with its published hashes; promotion applies to stable releases only.
+
+## 5.5.8
 
 Windows expansion reliability fix.
 

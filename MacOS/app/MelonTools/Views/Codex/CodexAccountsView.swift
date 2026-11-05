@@ -219,7 +219,7 @@ struct CodexAccountsView: View {
             }
             Spacer()
             MTGlassButton(title: L("Refresh quotas"), systemImage: "arrow.clockwise", tint: MTTheme.amber) {
-                Task { await store.refreshAllQuotas(forceTokens: true) }
+                Task { await store.refreshAllQuotas() }
             }
         }
     }
@@ -328,7 +328,7 @@ struct CodexAccountsView: View {
                         }
                     }
                     MTGlassButton(title: L("Quota"), systemImage: "gauge.with.dots.needle.33percent", size: .small, tint: MTTheme.emerald, isLoading: store.busyAccountIds.contains(account.id)) {
-                        Task { await store.refreshQuota(for: account.id, forceTokens: true) }
+                        Task { await store.refreshQuota(for: account.id) }
                     }
                     MTGlassButton(title: L("Launch in Codex"), systemImage: "arrow.up.forward.app", size: .small, tint: MTTheme.amber) {
                         store.launchInCodex(account)
@@ -845,14 +845,9 @@ private struct MiniAPICard: View {
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
                     Spacer()
-                    Picker("", selection: $store.routingStrategy) {
-                        ForEach(CodexRoutingStrategy.allCases) { strategy in
-                            Text(strategy.title).tag(strategy)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(width: 200, alignment: .trailing)
+                    MTSelect(selection: $store.routingStrategy, options: CodexRoutingStrategy.allCases.map {
+                        ($0, $0.title)
+                    }, width: 200)
                 }
 
                 orderPreview

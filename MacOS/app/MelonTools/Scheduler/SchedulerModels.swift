@@ -562,6 +562,146 @@ struct SchedulerDailyTokenUsage: Equatable {
     }
 }
 
+/// Durable per-task, per-day token spend, stored next to `scheduler.json`.
+///
+/// This file — not the history — is the source of truth for `dailyTokenLimit`.
+/// History is capped at 20 entries per task and 200 globally for the UI, and a
+/// blocked run adds a token-less entry; deriving the budget from it silently
+/// refunds tokens after every trim (audit CORE-01). One entry per task and
+/// calendar day is enough and stays tiny.
+struct SchedulerUsageLedger: Codable, Equatable {
+    var schemaVersion: Int? = PersistenceSchema.current
+    /// taskID → day key (`yyyy-MM-dd` in the evaluation calendar) → tokens.
+    var days: [String: [String: Int]] = [:]
+
+    /// Days kept on disk. Two days of slack cover a run that crosses midnight
+    /// and a clock that steps backwards; older days cannot affect a daily
+    /// limit because the budget is evaluated per calendar day.
+    static let retainedDays = 3
+}
+
+/// Pure ledger operations. `calendar` is injected so the day boundary, the
+/// rollover and the history migration are testable without a live clock.
+enum SchedulerUsagePolicy {
+    static func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    static func used(
+        _ ledger: SchedulerUsageLedger,
+        taskID: String,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        let key = dayKey(now, calendar: calendar)
+        return max(0, ledger.days[taskID]?[key] ?? 0)
+    }
+
+    /// Adds one finished run. Only completed requests carry tokens; a skipped,
+    /// cancelled or failed request has none and must not move the counter.
+    static func record(
+        _ tokens: Int,
+        taskID: String,
+        now: Date,
+        calendar: Calendar = .current,
+        in ledger: inout SchedulerUsageLedger
+    ) {
+        guard tokens > 0 else { return }
+        let key = dayKey(now, calendar: calendar)
+        var days = ledger.days[taskID] ?? [:]
+        let (total, overflow) = (days[key] ?? 0).addingReportingOverflow(tokens)
+        days[key] = overflow ? Int.max : total
+        ledger.days[taskID] = days
+    }
+
+    /// Drops days older than `retainedDays` so the file cannot grow with the
+    /// number of tasks times the age of the installation.
+    static func pruned(
+        _ ledger: SchedulerUsageLedger,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> SchedulerUsageLedger {
+        var calendar = calendar
+        let keptKeys = Set(
+            (0..<SchedulerUsageLedger.retainedDays).compactMap { offset in
+                calendar.date(byAdding: .day, value: -offset, to: now).map { dayKey($0, calendar: calendar) }
+            }
+        )
+        var result = ledger
+        result.days = result.days.compactMapValues { days in
+            let filtered = days.filter { keptKeys.contains($0.key) }
+            return filtered.isEmpty ? nil : filtered
+        }
+        return result
+    }
+
+    /// Rejects a counter this build must not trust: negative spend, or a day
+    /// key that is not the `yyyy-MM-dd` shape it writes itself.
+    static func isValid(
+        _ ledger: SchedulerUsageLedger,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        if let version = ledger.schemaVersion, version > PersistenceSchema.current {
+            return false
+        }
+        let today = dayKey(now, calendar: calendar)
+        for (taskID, days) in ledger.days {
+            guard !taskID.isEmpty else { return false }
+            for (day, tokens) in days {
+                guard tokens >= 0, isDayKey(day), day <= today else { return false }
+            }
+        }
+        return true
+    }
+
+    /// `yyyy-MM-dd`, the only shape this build writes.
+    private static func isDayKey(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2 else {
+            return false
+        }
+        guard parts.allSatisfy({ $0.utf8.allSatisfy { (48...57).contains($0) } }),
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
+              (1...9999).contains(year), (1...12).contains(month), (1...31).contains(day) else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = DateComponents(year: year, month: month, day: day)
+        guard let date = calendar.date(from: components) else { return false }
+        return calendar.component(.year, from: date) == year
+            && calendar.component(.month, from: date) == month
+            && calendar.component(.day, from: date) == day
+    }
+
+    /// One-shot migration for files written before the ledger existed: seed
+    /// today's totals from the surviving history entries. History may already
+    /// have been trimmed, so this is a lower bound — it can never over-count.
+    static func seeded(
+        from history: [SchedulerHistoryEntry],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> SchedulerUsageLedger {
+        var ledger = SchedulerUsageLedger()
+        for entry in history {
+            let date = Date(timeIntervalSince1970: entry.at)
+            guard calendar.isDate(date, inSameDayAs: now) else { continue }
+            record(
+                max(0, entry.tokens ?? 0),
+                taskID: entry.taskId,
+                now: date,
+                calendar: calendar,
+                in: &ledger
+            )
+        }
+        return ledger
+    }
+}
+
 /// Pure scheduling decisions. Every function takes `now`, so the due policy
 /// is testable without a live clock.
 enum SchedulerPolicy {
@@ -636,40 +776,19 @@ enum SchedulerPolicy {
         return kept
     }
 
-    /// Sum of `tokens` in today's history entries for one task. Entries from
-    /// other tasks and other calendar days are ignored; missing tokens count
-    /// as zero. The calendar is injected so the day boundary is testable.
-    static func tokensUsedToday(
-        taskID: String,
-        history: [SchedulerHistoryEntry],
-        now: Date,
-        calendar: Calendar = .current
-    ) -> Int {
-        history.reduce(0) { total, entry in
-            guard entry.taskId == taskID else { return total }
-            let date = Date(timeIntervalSince1970: entry.at)
-            guard calendar.isDate(date, inSameDayAs: now) else { return total }
-            return total + max(0, entry.tokens ?? 0)
-        }
-    }
-
     /// `nil` when the task has no daily limit. Otherwise reports today's
-    /// usage and the limit; the caller must skip the request when
-    /// `isReached` is true.
+    /// durable spend and the limit; the caller must skip the request when
+    /// `isReached` is true. The ledger — never `history` — is the counter, so
+    /// a trimmed or blocked history cannot refund budget.
     static func dailyTokenUsage(
         task: SchedulerTask,
-        history: [SchedulerHistoryEntry],
+        ledger: SchedulerUsageLedger,
         now: Date,
         calendar: Calendar = .current
     ) -> SchedulerDailyTokenUsage? {
         guard let limit = task.dailyTokenLimit else { return nil }
         return SchedulerDailyTokenUsage(
-            used: tokensUsedToday(
-                taskID: task.id,
-                history: history,
-                now: now,
-                calendar: calendar
-            ),
+            used: SchedulerUsagePolicy.used(ledger, taskID: task.id, now: now, calendar: calendar),
             limit: limit
         )
     }
@@ -829,6 +948,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
     case zai
     case claude
     case antigravity
+    case localAI
 
     var id: String { rawValue }
 
@@ -842,6 +962,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         case .zai: return "Z.ai"
         case .claude: return "Claude"
         case .antigravity: return "Antigravity"
+        case .localAI: return "Local AI"
         }
     }
 
@@ -853,6 +974,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         if id.hasPrefix("deepinfra/") { return .deepInfra }
         if id.hasPrefix("vercel/") { return .vercel }
         if id.hasPrefix("zai/") { return .zai }
+        if id.hasPrefix("local/") { return .localAI }
         if AntigravityModelRegistry.ids.contains(id) { return .antigravity }
         if id.hasPrefix("claude-") { return .claude }
         return .pool

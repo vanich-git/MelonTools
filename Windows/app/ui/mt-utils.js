@@ -105,3 +105,144 @@ function finiteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return Math.round(n) + " B";
+}
+
+/// Download states come from Rust's `DownloadStatus` enum, which serializes as
+/// lower snake case. Anything else (`downloading` vs `Downloading`) silently
+/// disabled Cancel, the active count and the progress bar.
+const DOWNLOAD_ACTIVE_STATES = ["queued", "downloading", "paused"];
+
+function isDownloadActive(download) {
+  return !!download && DOWNLOAD_ACTIVE_STATES.includes(download.status);
+}
+
+/// Parses a numeric input so that 0 survives. `Number(value) || fallback`
+/// turned a deliberate 0 (temperature, top-p, seed) into the default.
+function numberOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/// Minimal Markdown renderer for model answers.
+///
+/// The test modal printed the raw text, so `### **Заголовок**` reached the user
+/// as literal hashes and asterisks. Everything is escaped first, then a small
+/// block parser adds structure — no HTML from the model ever reaches the DOM.
+function renderMarkdown(source) {
+  const text = String(source == null ? "" : source);
+  const escapeHtml = (value) =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+  // Inline: code, bold, italic. Escaping happens before markup is added.
+  const inline = (value) => {
+    let out = escapeHtml(value);
+    out = out.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    out = out.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+    return out;
+  };
+
+  const lines = text.split("\n");
+  const html = [];
+  let listType = null;
+  let inCode = false;
+  let codeBuffer = [];
+
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        html.push(`<pre class="md-pre"><code>${escapeHtml(codeBuffer.join("\n"))}</code></pre>`);
+        codeBuffer = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuffer.push(line);
+      continue;
+    }
+
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    if (trimmed === "---" || trimmed === "***" || trimmed === "___") {
+      closeList();
+      html.push('<hr class="md-rule">');
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+    if (heading) {
+      closeList();
+      const level = Math.min(heading[1].length + 2, 6);
+      html.push(`<h${level} class="md-h">${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      closeList();
+      html.push(`<blockquote class="md-quote">${inline(trimmed.slice(1).trim())}</blockquote>`);
+      continue;
+    }
+
+    const bullet = /^[-*•+]\s+(.*)$/.exec(trimmed);
+    if (bullet) {
+      if (listType !== "ul") {
+        closeList();
+        html.push('<ul class="md-list">');
+        listType = "ul";
+      }
+      html.push(`<li>${inline(bullet[1])}</li>`);
+      continue;
+    }
+
+    const numbered = /^(\d+[.)])\s+(.*)$/.exec(trimmed);
+    if (numbered) {
+      if (listType !== "ol") {
+        closeList();
+        html.push('<ol class="md-list">');
+        listType = "ol";
+      }
+      html.push(`<li>${inline(numbered[2])}</li>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p class="md-p">${inline(trimmed)}</p>`);
+  }
+
+  if (inCode && codeBuffer.length) {
+    html.push(`<pre class="md-pre"><code>${escapeHtml(codeBuffer.join("\n"))}</code></pre>`);
+  }
+  closeList();
+  return html.join("");
+}

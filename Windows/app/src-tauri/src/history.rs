@@ -301,8 +301,10 @@ mod tests {
 
     #[test]
     fn serialization_roundtrip_keeps_samples_and_notified_state() {
-        let mut history = History::default();
-        history.version = 1;
+        let mut history = History {
+            version: 1,
+            ..Default::default()
+        };
         append_sample(
             &mut history,
             "account-a",

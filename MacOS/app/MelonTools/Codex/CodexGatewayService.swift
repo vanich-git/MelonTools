@@ -438,16 +438,20 @@ final class CodexGatewayService: ObservableObject {
     /// `priorities` maps account ids to a routing priority (higher = used sooner).
     /// `poolSlugs` is the visible pool; the payload lists the models the
     /// account must not receive. `nil` reads the pool from disk.
+    /// `pruneOrphans` deletes owned auth files that are absent from `accounts`;
+    /// it must stay `false` unless the list is a trustworthy vault snapshot.
     func syncAccounts(
         accounts: [CodexAccount],
         priorities: [String: Int] = [:],
-        poolSlugs: Set<String>? = nil
+        poolSlugs: Set<String>? = nil,
+        pruneOrphans: Bool = true
     ) throws {
         try Self.syncAccounts(
             accounts,
             priorities: priorities,
             authDir: Self.authDir,
-            poolSlugs: poolSlugs
+            poolSlugs: poolSlugs,
+            pruneOrphans: pruneOrphans
         )
     }
 
@@ -457,12 +461,13 @@ final class CodexGatewayService: ObservableObject {
         _ accounts: [CodexAccount],
         priorities: [String: Int],
         authDir directory: URL,
-        poolSlugs: Set<String>? = nil
+        poolSlugs: Set<String>? = nil,
+        pruneOrphans: Bool = true
     ) throws {
         let fm = FileManager.default
         // The union is for the picker; routing exclusions are per account.
         let pool = poolSlugs ?? CodexModelCatalog.visiblePoolSnapshot()
-        var desired: [(name: String, payload: [String: Any], preserveLegacyPause: Bool)] = []
+        var desired: [(name: String, payload: [String: Any], preserveLegacyPause: Bool, knownLastRefresh: String?)] = []
         for account in accounts {
             guard let access = account.tokens.access_token, !access.isEmpty else { continue }
             let expired = account.accessTokenExpiry.map { ISO8601DateFormatter().string(from: $0) } ?? ""
@@ -495,7 +500,8 @@ final class CodexGatewayService: ObservableObject {
             desired.append((
                 name: authFileName(for: account),
                 payload: payload,
-                preserveLegacyPause: account.quotaBlock == nil && !CodexRoutingPlanner.quotaIsFresh(account)
+                preserveLegacyPause: account.quotaBlock == nil && !CodexRoutingPlanner.quotaIsFresh(account),
+                knownLastRefresh: account.lastRefresh
             ))
         }
 
@@ -505,7 +511,7 @@ final class CodexGatewayService: ObservableObject {
         // files this sync owns are considered, and only changed ones are
         // written.
         let desiredNames = Set(desired.map(\.name))
-        if let names = try? fm.contentsOfDirectory(atPath: directory.path) {
+        if pruneOrphans, let names = try? fm.contentsOfDirectory(atPath: directory.path) {
             for name in ownedAuthFileNames(in: names) where !desiredNames.contains(name) {
                 try? fm.removeItem(atPath: directory.appendingPathComponent(name).path)
             }
@@ -519,12 +525,62 @@ final class CodexGatewayService: ObservableObject {
             if entry.preserveLegacyPause && existingDisabled {
                 payload["disabled"] = true
             }
+            // The engine rotates OAuth tokens on its own 15-minute schedule.
+            // Never overwrite a newer credential with the vault's older copy:
+            // that loses the rotated refresh token and makes the engine retry
+            // a token the provider has already burned (`refresh_token_reused`).
+            if let existingObject,
+               let existingStamp = authDate(existingObject["last_refresh"] as? String),
+               existingStamp > (authDate(entry.knownLastRefresh) ?? .distantPast) {
+                for key in credentialKeys {
+                    if let value = existingObject[key] {
+                        payload[key] = value
+                    }
+                }
+            }
             if let existingObject, jsonPayloadsMatch(existingObject, payload) {
                 continue
             }
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             try SecureFile.write(data, to: fileURL)
         }
+    }
+
+    /// Credential fields the gateway may rotate independently of the vault.
+    private nonisolated static let credentialKeys = [
+        "id_token", "access_token", "refresh_token", "account_id", "last_refresh", "expired",
+    ]
+
+    /// Parse both forms used for `last_refresh`: the app writes plain ISO-8601
+    /// and the engine writes RFC3339 with an offset, sometimes with fractions.
+    nonisolated static func authDate(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: raw)
+    }
+
+    /// Read the credentials the engine most recently wrote for this account.
+    /// The vault is not the only writer: the gateway refreshes the same token
+    /// pair, so a refresh in the app must start from the newest copy on disk.
+    nonisolated static func tokensFromAuthFile(
+        for account: CodexAccount,
+        authDir directory: URL
+    ) -> (tokens: CodexTokens, lastRefresh: String?)? {
+        let url = directory.appendingPathComponent(authFileName(for: account))
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let tokens = CodexTokens(
+            id_token: object["id_token"] as? String,
+            access_token: object["access_token"] as? String,
+            refresh_token: object["refresh_token"] as? String,
+            account_id: object["account_id"] as? String
+        )
+        guard tokens.access_token != nil || tokens.refresh_token != nil else { return nil }
+        return (tokens, object["last_refresh"] as? String)
     }
 
     /// Compares an auth file with the desired payload. An explicit
@@ -544,6 +600,14 @@ final class CodexGatewayService: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Orphan pruning deletes every owned auth file that is not in `accounts`.
+    /// That is only safe when the list really is the vault: a failed or
+    /// newer-schema load leaves an empty array behind, and the gateway may
+    /// hold the freshest rotated refresh tokens (CORE-05).
+    private var mayPruneGatewayAuthFiles: Bool {
+        CodexStore.shared.vaultLoadState.allowsDestructiveGatewaySync
+    }
+
     /// Start the gateway. If a healthy gateway already owns the port, adopt it instead of spawning a duplicate.
     func start(accounts: [CodexAccount], priorities: [String: Int] = [:], force: Bool = false) async {
         guard !isStarting else { return }
@@ -552,6 +616,10 @@ final class CodexGatewayService: ObservableObject {
         defer { isStarting = false }
         lastError = nil
         checkResult = nil
+        let pruneOrphans = mayPruneGatewayAuthFiles
+        if !pruneOrphans {
+            auditLog("vault not loaded — gateway mirror keeps existing auth files")
+        }
 
         // A (forced) start must not leave the previous process running:
         // spawning again on the same port fails with “address in use”.
@@ -567,7 +635,7 @@ final class CodexGatewayService: ObservableObject {
             case .ok:
                 // Keep the adopted gateway aligned with the current vault and order.
                 try? writeConfig()
-                try? syncAccounts(accounts: accounts, priorities: priorities)
+                try? syncAccounts(accounts: accounts, priorities: priorities, pruneOrphans: pruneOrphans)
                 adopted = true
                 if let adoptedPID = adoptedListenerPID() {
                     writePIDFile(adoptedPID)
@@ -605,7 +673,7 @@ final class CodexGatewayService: ObservableObject {
         }
         do {
             try writeConfig()
-            try syncAccounts(accounts: accounts, priorities: priorities)
+            try syncAccounts(accounts: accounts, priorities: priorities, pruneOrphans: pruneOrphans)
         } catch {
             finishWithFailure(L("Config write failed") + ": " + error.localizedDescription)
             return
@@ -712,7 +780,12 @@ final class CodexGatewayService: ObservableObject {
         poolSlugs: Set<String>? = nil
     ) {
         do {
-            try syncAccounts(accounts: accounts, priorities: priorities, poolSlugs: poolSlugs)
+            try syncAccounts(
+                accounts: accounts,
+                priorities: priorities,
+                poolSlugs: poolSlugs,
+                pruneOrphans: mayPruneGatewayAuthFiles
+            )
             auditLog("accounts synced (\(accounts.count))")
         } catch {
             auditLog("account sync failed: \(error.localizedDescription)")
@@ -736,7 +809,11 @@ final class CodexGatewayService: ObservableObject {
             syncAccountsLive(accounts, priorities: priorities)
         } else {
             do {
-                try syncAccounts(accounts: accounts, priorities: priorities)
+                try syncAccounts(
+                    accounts: accounts,
+                    priorities: priorities,
+                    pruneOrphans: mayPruneGatewayAuthFiles
+                )
             } catch {
                 lastError = L("Config write failed") + ": " + error.localizedDescription
                 return

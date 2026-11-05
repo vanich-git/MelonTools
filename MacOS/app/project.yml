@@ -28,13 +28,23 @@ targets:
           - "Info.plist"
           - "MelonTools.entitlements"
       - path: Resources
+        excludes:
+          - "runtime"
+      # Folder reference: the engine and its dylibs must keep their relative
+      # layout, otherwise @rpath lookups break at launch.
+      - path: Resources/runtime
+        type: folder
+      # Merge helper used by the in-app runtime catalog. It only downloads
+      # when called from the command line; the app passes verified archives.
+      - path: ../scripts/fetch-runtime.sh
+        buildPhase: resources
     info:
       path: MelonTools/Info.plist
       properties:
         CFBundleDisplayName: Melon Tools
         CFBundleName: Melon Tools
-        CFBundleShortVersionString: "5.5.8"
-        CFBundleVersion: "55"
+        CFBundleShortVersionString: "6.0.0-rc.1"
+        CFBundleVersion: "60"
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Melon Tools"
@@ -69,8 +79,8 @@ targets:
         - MelonToolsTests
     settings:
       base:
-        MARKETING_VERSION: "5.5.8"
-        CURRENT_PROJECT_VERSION: "55"
+        MARKETING_VERSION: "6.0.0-rc.1"
+        CURRENT_PROJECT_VERSION: "60"
         GENERATE_INFOPLIST_FILE: "NO"
         CODE_SIGN_ENTITLEMENTS: MelonTools/MelonTools.entitlements
       configs:

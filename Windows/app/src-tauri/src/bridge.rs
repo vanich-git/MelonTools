@@ -1107,6 +1107,10 @@ pub fn codex_app_status(settings: &Settings) -> Value {
 
 /// First usable install path from `Get-AppxPackage` output: a non-empty line
 /// that looks like a Windows path (warnings carry no separator).
+///
+/// The Store lookup and the tests are the only callers, so a non-Windows build
+/// does not compile it at all.
+#[cfg(any(windows, test))]
 fn store_location_from_output(output: &str) -> Option<String> {
     output
         .lines()
@@ -1118,6 +1122,7 @@ fn store_location_from_output(output: &str) -> Option<String> {
 /// exe candidates inside a Store package: the current `app\` layout first,
 /// then the package root. Both ChatGPT.exe and Codex.exe names are used by
 /// the Store packages.
+#[cfg(any(windows, test))]
 fn store_exe_paths(location: &str) -> Vec<String> {
     [
         "app\\ChatGPT.exe",
@@ -1254,6 +1259,86 @@ fn kill_chatgpt_processes(force: bool) {
 
 /// Restarts the Codex app with the CDP flags (the chips need the debug port;
 /// an already running instance cannot gain the flags any other way).
+pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, String> {
+    let (exe, source) = resolve_codex_exe(settings).ok_or_else(|| "codex_not_found".to_string())?;
+    let was_running = codex_is_running();
+    if was_running {
+        #[cfg(windows)]
+        kill_chatgpt_processes(false);
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !codex_is_running() {
+                break;
+            }
+        }
+        if codex_is_running() {
+            #[cfg(windows)]
+            kill_chatgpt_processes(true);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+    #[cfg(windows)]
+    if codex_is_running() {
+        // A previously elevated Codex survives the regular taskkill; ask for
+        // admin rights once and give it a moment to actually stop.
+        kill_codex_elevated();
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !codex_is_running() {
+                break;
+            }
+        }
+        if codex_is_running() {
+            return Err("codex_launch_failed".to_string());
+        }
+    }
+    let port = free_local_port().ok_or_else(|| "codex_launch_failed".to_string())?;
+    let mut command = std::process::Command::new(&exe);
+    command.args([
+        "--remote-debugging-address=127.0.0.1",
+        &format!("--remote-debugging-port={}", port),
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let spawn_result = command.spawn();
+    #[cfg(windows)]
+    {
+        let access_denied = spawn_result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        if access_denied {
+            // The exe inside WindowsApps can be blocked by the folder ACL:
+            // retry elevated — Windows shows the UAC dialog, the user confirms.
+            return match spawn_codex_elevated(&exe, port) {
+                Ok(()) => {
+                    remember_launched_port(port);
+                    Ok(json!({
+                        "path": exe.to_string_lossy(),
+                        "source": source,
+                        "debugPort": port,
+                        "restarted": was_running,
+                        "elevated": true,
+                    }))
+                }
+                Err(_) => Err("codex_launch_failed".to_string()),
+            };
+        }
+    }
+    spawn_result.map_err(|_| "codex_launch_failed".to_string())?;
+    remember_launched_port(port);
+    Ok(json!({
+        "path": exe.to_string_lossy(),
+        "source": source,
+        "debugPort": port,
+        "restarted": was_running,
+        "elevated": false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1354,84 +1439,4 @@ mod tests {
         assert_eq!(candidates.len(), 4);
         assert!(candidates[0].ends_with("ChatGPT.exe") || candidates[0].ends_with("ChatGPT.exe"));
     }
-}
-
-pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, String> {
-    let (exe, source) = resolve_codex_exe(settings).ok_or_else(|| "codex_not_found".to_string())?;
-    let was_running = codex_is_running();
-    if was_running {
-        #[cfg(windows)]
-        kill_chatgpt_processes(false);
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if !codex_is_running() {
-                break;
-            }
-        }
-        if codex_is_running() {
-            #[cfg(windows)]
-            kill_chatgpt_processes(true);
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    }
-    #[cfg(windows)]
-    if codex_is_running() {
-        // A previously elevated Codex survives the regular taskkill; ask for
-        // admin rights once and give it a moment to actually stop.
-        kill_codex_elevated();
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if !codex_is_running() {
-                break;
-            }
-        }
-        if codex_is_running() {
-            return Err("codex_launch_failed".to_string());
-        }
-    }
-    let port = free_local_port().ok_or_else(|| "codex_launch_failed".to_string())?;
-    let mut command = std::process::Command::new(&exe);
-    command.args([
-        "--remote-debugging-address=127.0.0.1",
-        &format!("--remote-debugging-port={}", port),
-    ]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    let spawn_result = command.spawn();
-    #[cfg(windows)]
-    {
-        let access_denied = spawn_result
-            .as_ref()
-            .err()
-            .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
-        if access_denied {
-            // The exe inside WindowsApps can be blocked by the folder ACL:
-            // retry elevated — Windows shows the UAC dialog, the user confirms.
-            return match spawn_codex_elevated(&exe, port) {
-                Ok(()) => {
-                    remember_launched_port(port);
-                    Ok(json!({
-                        "path": exe.to_string_lossy(),
-                        "source": source,
-                        "debugPort": port,
-                        "restarted": was_running,
-                        "elevated": true,
-                    }))
-                }
-                Err(_) => Err("codex_launch_failed".to_string()),
-            };
-        }
-    }
-    spawn_result.map_err(|_| "codex_launch_failed".to_string())?;
-    remember_launched_port(port);
-    Ok(json!({
-        "path": exe.to_string_lossy(),
-        "source": source,
-        "debugPort": port,
-        "restarted": was_running,
-        "elevated": false,
-    }))
 }

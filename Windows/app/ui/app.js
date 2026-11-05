@@ -516,20 +516,45 @@ const ICONS = {
   scheduler: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
   donate: '<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h5l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>',
+  local_ai: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 
 const NAV = [
-  { group: "codex", items: ["dashboard", "accounts", "api", "providers", "composer", "instances"] },
-  { group: "general", items: ["scheduler", "settings", "donate"] },
+  { group: "overview", items: ["dashboard"] },
+  { group: "schedulerGroup", items: ["scheduler"] },
+  { group: "local_ai", items: ["local_ai"] },
+  { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
+  { group: "general", items: ["settings", "donate"] },
 ];
 
 // MARK: - Render
+
+let localAiPollTimer = null;
+function localAiPollSync() {
+  if (S.section !== "local_ai") {
+    if (localAiPollTimer) {
+      clearInterval(localAiPollTimer);
+      localAiPollTimer = null;
+    }
+    return;
+  }
+  if (localAiPollTimer) return;
+  localAiPollTimer = setInterval(() => {
+    if (S.section !== "local_ai") {
+      clearInterval(localAiPollTimer);
+      localAiPollTimer = null;
+      return;
+    }
+    if (typeof A.localAiPoll === "function") A.localAiPoll();
+  }, 2000);
+}
 
 function render() {
   document.documentElement.lang = S.lang || "ru";
   // The queue poll lives and dies with the scheduler page: it starts on entry
   // and is cleared on exit, before any DOM work.
   schedulerQueueSync();
+  localAiPollSync();
   // Polling must not wipe an input the user is editing. User actions move
   // focus to their button first, so navigation and save operations still
   // render normally.
@@ -545,6 +570,7 @@ function render() {
     composer: composerPage,
     instances: instancesPage,
     scheduler: schedulerPage,
+    local_ai: typeof localAiPage === "function" ? localAiPage : () => "",
     donate: donatePage,
     settings: settingsPage,
   };
@@ -575,6 +601,7 @@ function sectionLoads(section) {
     }).catch(() => {});
   }
   if (section === "instances" && !S.instancesData) A.instancesLoad();
+  if (section === "local_ai") A.localAiLoad();
   if (section === "settings" && !S.backupLastLoaded) A.backupLastLoad();
 }
 
@@ -684,6 +711,28 @@ function actionArgs(action, el) {
       return [el.value];
     case "copy":
       return [el.dataset.text || ""];
+    case "localAiTab":
+      return [el.dataset.id || el.dataset.tab || "models"];
+    case "localAiProfileChange":
+    case "localAiSearch":
+    case "localAiHfSearchInput":
+    case "localAiSystemPromptInput":
+    case "localAiTestPromptInput":
+      return [el.value];
+    case "localAiHfPreset":
+      return [el.dataset.query || el.dataset.id || ""];
+    case "localAiDownloadQuant":
+      return [
+        el.dataset.repo,
+        el.dataset.file,
+        Number(el.dataset.size || 0),
+        el.dataset.sha || null,
+        // Already percent-encoded by the backend; rebuilding it here lost the
+        // LFS redirect and mangled `#`/`?` in file names.
+        el.dataset.url || null,
+      ];
+    case "localAiRuntimeCatalogInstall":
+      return [el.dataset.tag, el.dataset.variant];
     default:
       return el.dataset.id === undefined ? [] : [el.dataset.id];
   }

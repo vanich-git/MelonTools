@@ -36,6 +36,27 @@ mkdir -p build
   rm -f "$ROOT/build/cliproxyapi-arm64" "$ROOT/build/cliproxyapi-amd64"
 )
 
+echo "==> 1b/6 llama.cpp runtime (pinned, universal: arm64 + x86_64)"
+# Never trust an existing folder: an arm64-only runtime left by an older build
+# produces a bundle that cannot start on Intel Macs. The script checks the lipo
+# slices, the dependency closure and the signatures, rebuilds in a staging
+# folder when the runtime is stale, and swaps it in only after it passed.
+"$ROOT/scripts/fetch-runtime.sh"
+RUNTIME_ARCHS="$(lipo -archs "$ROOT/app/Resources/runtime/llama-server")"
+for ARCH in arm64 x86_64; do
+  case " $RUNTIME_ARCHS " in
+    *" $ARCH "*) ;;
+    *)
+      echo "bundled llama-server has no $ARCH slice ($RUNTIME_ARCHS)" >&2
+      exit 1
+      ;;
+  esac
+done
+# llama-server prints its build banner on stderr.
+RUNTIME_VERSION="$("$ROOT/app/Resources/runtime/llama-server" --version 2>&1 | head -1 || true)"
+[ -n "${RUNTIME_VERSION:-}" ] || RUNTIME_VERSION="unknown"
+echo "    $RUNTIME_VERSION ($RUNTIME_ARCHS)"
+
 echo "==> 2/6 app icon"
 ICON_SRC=scripts/assets/source-appicon.png
 ICONSET=build/AppIcon.iconset

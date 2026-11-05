@@ -78,7 +78,15 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.5.8
+## What's new in 5.5.8 (latest published)
+
+> **6.0.0 is in development and is not published yet.** The download links
+> above, the Homebrew Cask and the winget manifests still point at the
+> published 5.5.8 artifacts. 6.0.0 adds Local AI; its draft notes live in
+> [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md), and its hashes are
+> generated from the release build by
+> `scripts/verify_release_checksums.py --stage` — never copied from a local
+> development build.
 
 - **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved.
 - **CSS state collision fixed.** The old `.expanded` rule also matched `<body>`, so the whole panel document painted nothing. The body state is now `island-open` and the hide rule is scoped to `.island > .expanded`.
@@ -193,6 +201,7 @@ On an exFAT volume, run `./scripts/doctor.sh` first: it reports AppleDouble side
 - [Security model](docs/SECURITY-MODEL.md) — local data, the loopback gateway, CDP trust and updater verification.
 - [macOS guide](MacOS/README.md) and [Windows guide](Windows/README.md) — setup, data locations and build details.
 - [Packaging and signing](packaging/README.md) — release secrets, checksums, Homebrew Cask and winget manifests.
+- [Release acceptance](docs/RELEASE_ACCEPTANCE.md) — native macOS/Windows checks, metadata staging and the manual release sign-off.
 
 ## Security and privacy
 
