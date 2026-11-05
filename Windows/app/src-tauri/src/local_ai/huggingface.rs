@@ -292,6 +292,7 @@ mod tests {
         let info = HardwareInfo {
             os_version: "test".to_string(),
             architecture: "x86_64".to_string(),
+            models_dir: String::new(),
             cpu_model: "cpu".to_string(),
             cpu_cores: 8,
             total_ram: 16 * 1024 * 1024 * 1024,

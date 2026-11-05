@@ -52,7 +52,7 @@ const HOUR_SECONDS = 3600;
 const DAY_SECONDS = 86400;
 const DASHBOARD_CARD_SETTINGS = [
   "dashboardShowPoolHealth",
-  "dashboardShowQuotaTrends",
+  "dashboardShowAntigravityPool",
   "dashboardShowSpend",
   "dashboardShowScheduler",
 ];
@@ -263,7 +263,7 @@ function dashboardVisibility(settings) {
   const value = settings || {};
   return {
     pool: value.dashboardShowPoolHealth !== false,
-    trends: value.dashboardShowQuotaTrends !== false,
+    antigravity: value.dashboardShowAntigravityPool !== false,
     spend: value.dashboardShowSpend !== false,
     scheduler: value.dashboardShowScheduler !== false,
   };
@@ -273,7 +273,7 @@ function dashboardCardToggles(settings) {
   const value = settings || {};
   const cards = [
     ["dashboardShowPoolHealth", "dashCardPool"],
-    ["dashboardShowQuotaTrends", "dashCardTrends"],
+    ["dashboardShowAntigravityPool", "dashCardAntigravity"],
     ["dashboardShowSpend", "dashCardSpend"],
     ["dashboardShowScheduler", "dashCardScheduler"],
   ];
@@ -549,7 +549,11 @@ function localAiPollSync() {
   }, 2000);
 }
 
-function render() {
+// `force` is the explicit "this action changed other fields" override: a
+// profile preset rewrites context/layers/KV while the `<select>` still owns the
+// focus, so the guard below would skip the repaint and the visible numbers
+// would keep the previous preset. Only controls that never accept text pass it.
+function render(force) {
   document.documentElement.lang = S.lang || "ru";
   // The queue poll lives and dies with the scheduler page: it starts on entry
   // and is cleared on exit, before any DOM work.
@@ -558,7 +562,7 @@ function render() {
   // Polling must not wipe an input the user is editing. User actions move
   // focus to their button first, so navigation and save operations still
   // render normally.
-  if (typeof editsInProgress === "function" && editsInProgress()) return;
+  if (!force && typeof editsInProgress === "function" && editsInProgress()) return;
   renderNav();
   renderFooter();
   const main = document.getElementById("main");
@@ -574,6 +578,9 @@ function render() {
     donate: donatePage,
     settings: settingsPage,
   };
+  // The Local AI page is a working surface: its split panes and model grid
+  // use the full window width, unlike the centred reading column elsewhere.
+  main.classList.toggle("board-fluid", S.section === "local_ai");
   main.innerHTML = (pages[S.section] || dashboardPage)();
   if (S.section === "donate") renderDonateQr();
 }
@@ -595,9 +602,12 @@ function sectionLoads(section) {
       if (S.section === "providers") render();
     }).catch(() => {});
   }
-  if (section === "providers" && IS_TAURI && !S.antigravity && !S.antigravityLogin) {
+  // The dashboard carries the Antigravity pool card, so it needs the same
+  // snapshot as Providers. The demo build serves it from mt-api, hence no
+  // IS_TAURI guard here; a failure is silent and retried by the poll below.
+  if ((section === "providers" || section === "dashboard") && !S.antigravity && !S.antigravityLogin) {
     A.antigravityUsageLoad().then(() => {
-      if (S.section === "providers") render();
+      if (S.section === "providers" || S.section === "dashboard") render();
     }).catch(() => {});
   }
   if (section === "instances" && !S.instancesData) A.instancesLoad();
@@ -754,9 +764,17 @@ function dispatchAction(el) {
 }
 
 document.addEventListener("click", (event) => {
+  // Card menus are native <details> popovers: a click anywhere else closes
+  // them, and so does picking an entry (which may not repaint the board).
+  document.querySelectorAll("details.local-ai-menu[open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
   const el = event.target.closest("[data-action]");
   if (!el || el.dataset.on) return;
   dispatchAction(el);
+  document.querySelectorAll("details.local-ai-menu[open]").forEach((menu) => {
+    menu.open = false;
+  });
 });
 document.addEventListener("change", (event) => {
   const el = event.target.closest('[data-action][data-on="change"]');
@@ -1142,7 +1160,7 @@ async function statusPoll() {
       A.antigravityUsageLoad().then(() => {
         S.antigravityFailures = 0;
         S.antigravityBackoffUntil = 0;
-        if (S.section === "providers" && !S.antigravityLogin) render();
+        if ((S.section === "providers" || S.section === "dashboard") && !S.antigravityLogin) render();
       }).catch(() => {
         S.antigravityFailures = Math.min(4, (S.antigravityFailures || 0) + 1);
         S.antigravityBackoffUntil = Date.now() + Math.min(300000, 30000 * Math.pow(2, S.antigravityFailures));

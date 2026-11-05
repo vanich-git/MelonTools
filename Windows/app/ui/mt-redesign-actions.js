@@ -46,7 +46,7 @@ const baseOnboardingGo = A.onboardingGo;
 
 // Preserve the scroll position across background refreshes. Navigation resets
 // it explicitly in A.go below.
-render = function renderWithScroll() {
+render = function renderWithScroll(force) {
   const detail = document.querySelector(".detail");
   const scrollTop = detail ? detail.scrollTop : 0;
   // The Console is its own scroller: a full render must not throw the reader
@@ -57,7 +57,7 @@ render = function renderWithScroll() {
   const logAtBottom = logBox
     ? logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <= 24
     : true;
-  baseRender();
+  baseRender(force);
   if (detail) detail.scrollTop = scrollTop;
   const nextLog = document.getElementById("local-ai-logs");
   if (nextLog) nextLog.scrollTop = logAtBottom ? nextLog.scrollHeight : logTop;

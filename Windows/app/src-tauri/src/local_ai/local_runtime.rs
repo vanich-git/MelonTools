@@ -1320,6 +1320,55 @@ fn load_custom_binary_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// How long the first model start may wait for the engine download. The
+/// archive is roughly 40–120 MB, so a slow link still finishes inside this.
+const ENGINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const ENGINE_INSTALL_POLL: Duration = Duration::from_millis(250);
+
+/// Binary of the newest installed runtime package. Packages are published as
+/// `runtime/packages/<digest prefix>`, so the lexicographically last folder is
+/// the most recent install.
+fn installed_package_binary() -> Option<PathBuf> {
+    let packages = local_runtime_dir().join("packages");
+    let mut directories: Vec<PathBuf> = fs::read_dir(packages)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .map(|entry| entry.path())
+        .collect();
+    directories.sort();
+    directories
+        .into_iter()
+        .rev()
+        .find_map(|package| find_llama_server(&package))
+}
+
+/// The variant the first-launch download should install. Vulkan is preferred
+/// when the hardware detector found a Vulkan-capable GPU; the CPU build is the
+/// safe fallback, exactly like the Runtime tab's default row.
+fn preferred_runtime_variant() -> &'static str {
+    let hardware = super::hardware::detect_hardware(None);
+    if hardware.recommended_backend == InferenceBackend::Vulkan {
+        "vulkan"
+    } else {
+        "cpu"
+    }
+}
+
+/// Newest release that ships the requested variant, as `(url, sha256)`.
+fn pick_runtime_asset(
+    releases: &[super::runtime_catalog::RuntimeCatalogRelease],
+    variant_id: &str,
+) -> Option<(String, String)> {
+    releases.iter().find_map(|release| {
+        release
+            .variants
+            .iter()
+            .find(|variant| variant.id == variant_id && !variant.sha256.is_empty())
+            .map(|variant| (variant.url.clone(), variant.sha256.clone()))
+    })
+}
+
 /// Resolves once `generation` is no longer the newest lifecycle intent. The
 /// sender lives in the manager, so a closed channel also resolves: a dropped
 /// manager can never leave a launch waiting on it.
@@ -1682,6 +1731,67 @@ impl LocalRuntimeManager {
         }
     }
 
+    /// The Mac build ships `llama-server` inside the app bundle. Windows has
+    /// no bundled engine, so the first model start fetches the official
+    /// llama.cpp build the Runtime tab lists, verifies its SHA-256 and records
+    /// the installed binary. A fresh install must never fail with
+    /// "llama-server executable not found"; only a failed download reports an
+    /// error, and that error names the retry path.
+    pub async fn ensure_engine(&self) -> Result<(), String> {
+        if self.binary_path().is_some() {
+            return Ok(());
+        }
+
+        let installing = *self
+            .installer
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !installing {
+            let releases = super::runtime_catalog::fetch_catalog().await.map_err(|error| {
+                format!("Cannot list the official llama.cpp builds: {}", error)
+            })?;
+            let variant = preferred_runtime_variant();
+            let (url, sha256) = pick_runtime_asset(&releases, variant).ok_or_else(|| {
+                format!(
+                    "The official llama.cpp catalog has no {} build for Windows.",
+                    variant
+                )
+            })?;
+            self.start_install(&url, &sha256)?;
+        }
+
+        let deadline = Instant::now() + ENGINE_INSTALL_TIMEOUT;
+        loop {
+            let status = self.installer.status();
+            match status.stage {
+                RuntimeInstallStage::Done => {
+                    let binary = status.binary_path.ok_or_else(|| {
+                        "The installed runtime did not report a llama-server path.".to_string()
+                    })?;
+                    self.set_custom_binary_path(Some(PathBuf::from(binary)));
+                    return Ok(());
+                }
+                RuntimeInstallStage::Failed => {
+                    return Err(status.error.unwrap_or_else(|| {
+                        "The llama.cpp runtime download failed.".to_string()
+                    }))
+                }
+                RuntimeInstallStage::Cancelled => {
+                    return Err("The llama.cpp runtime download was cancelled.".to_string())
+                }
+                _ => {}
+            }
+            if Instant::now() > deadline {
+                return Err(
+                    "The llama.cpp runtime download timed out. Check the connection and retry from the Runtime tab."
+                        .to_string(),
+                );
+            }
+            tokio::time::sleep(ENGINE_INSTALL_POLL).await;
+        }
+    }
+
     pub fn binary_path(&self) -> Option<PathBuf> {
         let inner = self.inner.lock().unwrap();
         if let Some(ref custom) = inner.custom_binary_path {
@@ -1696,7 +1806,14 @@ impl LocalRuntimeManager {
             return Some(standard);
         }
 
-        // 2. Check PATH
+        // 2. Installed runtime packages. The persisted choice can be gone
+        // while `runtime/packages/<id>` survives, so a downloaded engine keeps
+        // working after a restart without another download.
+        if let Some(packaged) = installed_package_binary() {
+            return Some(packaged);
+        }
+
+        // 3. Check PATH
         if let Some(paths) = std::env::var_os("PATH") {
             for p in std::env::split_paths(&paths) {
                 let candidate1 = p.join("llama-server.exe");
@@ -2543,6 +2660,7 @@ mod runtime_tests {
             last_used_at: None,
             license: None,
             checksum: None,
+            architecture: None,
             user_settings: Default::default(),
         }
     }

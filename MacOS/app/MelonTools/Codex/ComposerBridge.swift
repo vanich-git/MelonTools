@@ -545,6 +545,16 @@ final class ComposerBridge: ObservableObject {
             entry["error"] = NSNull()
             payload["zai"] = entry
         }
+        if !sources.commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            var entry: [String: Any] = [
+                "title": "CommandCode",
+                "modelCount": sources.commandCodeSource?.models.count ?? 0,
+                "selectedCount": sources.commandCodeSource?.selectedModels.count ?? 0,
+            ]
+            entry["updatedAt"] = NSNull()
+            entry["error"] = NSNull()
+            payload["commandcode"] = entry
+        }
         if let stats = providerUsage.claude {
             var entry: [String: Any] = ["title": "Claude", "connected": stats.connected, "modelCount": stats.modelCount]
             entry["email"] = Self.maskedEmail(stats.email)
@@ -1019,6 +1029,7 @@ final class ComposerBridge: ObservableObject {
             "providers": [
                 "openai": "OpenAI",
                 "opencode": "OpenCode",
+                "commandcode": "CommandCode",
                 "openrouter": "OpenRouter",
                 "claude": "Claude",
                 "antigravity": "Antigravity",

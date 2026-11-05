@@ -42,6 +42,7 @@ enum ProviderDiagnostics {
             var deepInfra = false
             var vercel = false
             var zai = false
+            var commandCode = false
             var claude = false
         }
     }
@@ -61,7 +62,7 @@ enum ProviderDiagnostics {
 
     static let ids = [
         "codex", "claude", "antigravity", "openrouter", "opencode",
-        "deepinfra", "vercel", "zai",
+        "deepinfra", "vercel", "zai", "commandcode",
     ]
 
     static func title(for id: String) -> String {
@@ -74,6 +75,7 @@ enum ProviderDiagnostics {
         case "deepinfra": return "DeepInfra"
         case "vercel": return "Vercel"
         case "zai": return "Z.ai"
+        case "commandcode": return "CommandCode"
         default: return id
         }
     }
@@ -133,6 +135,10 @@ enum ProviderDiagnostics {
             return models.filter { isOwned($0, by: "vercel") }.count
         case "zai":
             return models.filter { $0.id.hasPrefix("zai/") || isOwned($0, by: "zai") }.count
+        case "commandcode":
+            return models.filter {
+                $0.id.hasPrefix("commandcode/") || isOwned($0, by: "commandcode")
+            }.count
         default:
             return models.filter {
                 !isClaudeModel(id: $0.id, owner: $0.owner)
@@ -143,6 +149,8 @@ enum ProviderDiagnostics {
                     && !isOwned($0, by: "vercel")
                     && !$0.id.hasPrefix("zai/")
                     && !isOwned($0, by: "zai")
+                    && !$0.id.hasPrefix("commandcode/")
+                    && !isOwned($0, by: "commandcode")
             }.count
         }
     }
@@ -207,6 +215,7 @@ enum ProviderDiagnostics {
         case "deepinfra": return keys.deepInfra
         case "vercel": return keys.vercel
         case "zai": return keys.zai
+        case "commandcode": return keys.commandCode
         case "claude": return keys.claude
         default: return false
         }
@@ -249,6 +258,7 @@ final class ProviderDiagnosticsStore: ObservableObject {
             deepInfra: !sources.deepInfraKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             vercel: !sources.vercelKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             zai: !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            commandCode: !sources.commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             claude: !sources.claudeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
 

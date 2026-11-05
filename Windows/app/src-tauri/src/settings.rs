@@ -16,6 +16,9 @@ pub struct ProviderModel {
     pub completion_per_token: Option<f64>,
     pub cache_read_per_token: Option<f64>,
     pub supports_images: Option<bool>,
+    /// CommandCode: the model is served only through the Anthropic
+    /// `/messages` endpoint and must ride `api-keys.claude`.
+    pub anthropic_only: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -27,12 +30,15 @@ pub struct Settings {
     pub quota_interval: u32,
     pub openrouter_key: String,
     pub opencode_key: String,
+    /// CommandCode provider API key (`CMD_API_KEY`).
+    pub commandcode_key: String,
     pub deepinfra_key: String,
     pub vercel_key: String,
     pub zai_key: String,
-    /// opencode / openrouter / deepinfra / vercel / zai upstreams in the
-    /// gateway config.
+    /// opencode / commandcode / openrouter / deepinfra / vercel / zai
+    /// upstreams in the gateway config.
     pub opencode_enabled: bool,
+    pub commandcode_enabled: bool,
     pub openrouter_enabled: bool,
     pub deepinfra_enabled: bool,
     pub vercel_enabled: bool,
@@ -42,6 +48,11 @@ pub struct Settings {
     pub deepinfra_models: Vec<ProviderModel>,
     pub vercel_models: Vec<ProviderModel>,
     pub zai_models: Vec<ProviderModel>,
+    /// OpenCode and CommandCode keep their fetched catalogues too; an empty
+    /// list falls back to the built-in OpenCode set or leaves the provider
+    /// out of the config.
+    pub opencode_models: Vec<ProviderModel>,
+    pub commandcode_models: Vec<ProviderModel>,
     /// Claude (Anthropic) provider: engine-managed OAuth account and/or the
     /// API-key fallback.
     pub claude_enabled: bool,
@@ -74,12 +85,12 @@ pub struct Settings {
     pub island_auto_collapse_seconds: u32,
     /// Dashboard 2.0 card visibility. Default on.
     pub dashboard_show_pool_health: bool,
-    pub dashboard_show_quota_trends: bool,
+    pub dashboard_show_antigravity_pool: bool,
     pub dashboard_show_spend: bool,
     pub dashboard_show_scheduler: bool,
     /// `<account>:<window>:<reset>` markers for reset notifications. Bounded.
     pub quota_reset_notified: Vec<String>,
-    /// Unix seconds of the last update check (auto-check is daily).
+    /// Unix seconds of the last update check (auto-check runs hourly).
     pub last_update_check: Option<i64>,
     /// Upstream network proxy. Empty URL with the switch on means system proxy.
     pub proxy_enabled: bool,
@@ -117,10 +128,12 @@ impl Default for Settings {
             quota_interval: 300,
             openrouter_key: String::new(),
             opencode_key: String::new(),
+            commandcode_key: String::new(),
             deepinfra_key: String::new(),
             vercel_key: String::new(),
             zai_key: String::new(),
             opencode_enabled: true,
+            commandcode_enabled: true,
             openrouter_enabled: true,
             deepinfra_enabled: true,
             vercel_enabled: true,
@@ -128,6 +141,8 @@ impl Default for Settings {
             deepinfra_models: Vec::new(),
             vercel_models: Vec::new(),
             zai_models: Vec::new(),
+            opencode_models: Vec::new(),
+            commandcode_models: Vec::new(),
             claude_enabled: false,
             claude_api_key: String::new(),
             management_secret: String::new(),
@@ -140,7 +155,7 @@ impl Default for Settings {
             island_visible: true,
             island_auto_collapse_seconds: default_island_auto_collapse_seconds(),
             dashboard_show_pool_health: true,
-            dashboard_show_quota_trends: true,
+            dashboard_show_antigravity_pool: true,
             dashboard_show_spend: true,
             dashboard_show_scheduler: true,
             quota_reset_notified: Vec::new(),
@@ -175,6 +190,16 @@ pub fn carry_provider_models(merged: &mut Settings, old: &Settings) {
         merged.zai_models.clear();
     } else if merged.zai_models.is_empty() {
         merged.zai_models = old.zai_models.clone();
+    }
+    if merged.opencode_key != old.opencode_key {
+        merged.opencode_models.clear();
+    } else if merged.opencode_models.is_empty() {
+        merged.opencode_models = old.opencode_models.clone();
+    }
+    if merged.commandcode_key != old.commandcode_key {
+        merged.commandcode_models.clear();
+    } else if merged.commandcode_models.is_empty() {
+        merged.commandcode_models = old.commandcode_models.clone();
     }
 }
 
@@ -254,11 +279,12 @@ pub fn save_to(path: &std::path::Path, s: &Settings) -> Result<(), String> {
 }
 
 /// The secrets stored in `settings.json`. Vault tokens use the same helpers.
-fn secret_fields(s: &mut Settings) -> [&mut String; 8] {
+fn secret_fields(s: &mut Settings) -> [&mut String; 9] {
     [
         &mut s.api_key,
         &mut s.openrouter_key,
         &mut s.opencode_key,
+        &mut s.commandcode_key,
         &mut s.deepinfra_key,
         &mut s.vercel_key,
         &mut s.zai_key,
@@ -461,7 +487,7 @@ mod tests {
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
         assert!(s.dashboard_show_pool_health);
-        assert!(s.dashboard_show_quota_trends);
+        assert!(s.dashboard_show_antigravity_pool);
         assert!(s.dashboard_show_spend);
         assert!(s.dashboard_show_scheduler);
         assert!(s.quota_reset_notified.is_empty());
@@ -477,7 +503,7 @@ mod tests {
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
         assert!(s.dashboard_show_pool_health);
-        assert!(s.dashboard_show_quota_trends);
+        assert!(s.dashboard_show_antigravity_pool);
         assert!(s.dashboard_show_spend);
         assert!(s.dashboard_show_scheduler);
         assert!(s.quota_reset_notified.is_empty());
@@ -488,7 +514,7 @@ mod tests {
             "notifyScheduler",
             "notifyQuotaReset",
             "dashboardShowPoolHealth",
-            "dashboardShowQuotaTrends",
+            "dashboardShowAntigravityPool",
             "dashboardShowSpend",
             "dashboardShowScheduler",
             "quotaResetNotified",

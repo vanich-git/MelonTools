@@ -106,13 +106,23 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function formatBytes(bytes) {
+/// Human byte size in the language the app is running in. The macOS build
+/// prints `3,52 ГБ` for Russian and `3.52 GB` for English, so the unit names
+/// and the decimal separator follow `S.lang` instead of staying ASCII-only.
+function formatBytes(bytes, fixedDigits) {
   const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return "0 B";
-  if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
-  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
-  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
-  return Math.round(n) + " B";
+  const ru = typeof S !== "undefined" && S && S.lang === "ru";
+  const units = ru ? ["Б", "КБ", "МБ", "ГБ", "ТБ"] : ["B", "KB", "MB", "GB", "TB"];
+  const separator = ru ? "," : ".";
+  if (!Number.isFinite(n) || n <= 0) return "0 " + units[0];
+  const steps = [1, 1024, 1048576, 1073741824, 1099511627776];
+  let unit = steps.length - 1;
+  while (unit > 0 && n < steps[unit]) unit -= 1;
+  // Gigabytes and terabytes carry two decimals on macOS, megabytes one; a few
+  // places (the "%.1f GB total" header) ask for a single decimal on purpose.
+  const digits = typeof fixedDigits === "number" ? fixedDigits : unit >= 3 ? 2 : unit === 0 ? 0 : 1;
+  const text = (n / steps[unit]).toFixed(digits).replace(".", separator);
+  return text + " " + units[unit];
 }
 
 /// Download states come from Rust's `DownloadStatus` enum, which serializes as

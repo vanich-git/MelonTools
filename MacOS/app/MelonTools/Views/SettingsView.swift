@@ -22,7 +22,7 @@ struct SettingsView: View {
     @AppStorage(NotchHUDController.styleDefaultsKey) private var notchHUDCompactStyle = NotchHUDCompactStyle.inside.rawValue
     @AppStorage("taskNotifications") private var taskNotifications = true
     @AppStorage(DashboardWidgetKey.poolHealth) private var showPoolHealth = true
-    @AppStorage(DashboardWidgetKey.quotaTrends) private var showQuotaTrends = true
+    @AppStorage(DashboardWidgetKey.antigravityPool) private var showAntigravityPool = true
     @AppStorage(DashboardWidgetKey.spend) private var showSpend = true
     @AppStorage(DashboardWidgetKey.scheduler) private var showScheduler = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -233,7 +233,7 @@ struct SettingsView: View {
                         Toggle(L("Show pool health"), isOn: $showPoolHealth)
                             .toggleStyle(.switch)
                             .font(MTTheme.body(12))
-                        Toggle(L("Show quota limits"), isOn: $showQuotaTrends)
+                        Toggle(L("Show Antigravity pool health"), isOn: $showAntigravityPool)
                             .toggleStyle(.switch)
                             .font(MTTheme.body(12))
                         Toggle(L("Show spend & top providers"), isOn: $showSpend)

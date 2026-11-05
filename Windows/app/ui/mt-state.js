@@ -83,6 +83,7 @@ const S = {
     catalogQuery: "",
     catalogPreset: "all",
     catalogResults: [],
+    catalogSearched: false,
     catalogLoading: false,
     selectedRepoId: null,
     repoDetails: null,

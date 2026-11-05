@@ -245,15 +245,46 @@ pub fn api_keys_yaml_with_local(
     let zai = settings.zai_enabled
         && !settings.zai_key.trim().is_empty()
         && !settings.zai_models.is_empty();
+    let commandcode = settings.commandcode_enabled
+        && !settings.commandcode_key.trim().is_empty()
+        && !settings.commandcode_models.is_empty();
+    let commandcode_openai: Vec<&crate::settings::ProviderModel> = settings
+        .commandcode_models
+        .iter()
+        .filter(|model| model.anthropic_only != Some(true))
+        .collect();
+    let commandcode_anthropic: Vec<&crate::settings::ProviderModel> = settings
+        .commandcode_models
+        .iter()
+        .filter(|model| model.anthropic_only == Some(true))
+        .collect();
+    let commandcode_openai = commandcode && !commandcode_openai.is_empty();
+    let commandcode_anthropic = commandcode && !commandcode_anthropic.is_empty();
     let claude = settings.claude_enabled && !settings.claude_api_key.trim().is_empty();
     let local_ai = !local_models.is_empty();
-    if !opencode && !openrouter && !deepinfra && !vercel && !zai && !claude && !local_ai {
+    if !opencode
+        && !openrouter
+        && !deepinfra
+        && !vercel
+        && !zai
+        && !commandcode_openai
+        && !claude
+        && !commandcode_anthropic
+        && !local_ai
+    {
         return String::new();
     }
 
     let mut yaml = String::from("api-keys:\n");
 
-    if opencode || openrouter || deepinfra || vercel || zai || local_ai {
+    if opencode
+        || openrouter
+        || deepinfra
+        || vercel
+        || zai
+        || commandcode_openai
+        || local_ai
+    {
         yaml.push_str("  openai-compatibility:\n");
         if local_ai {
             yaml.push_str("    - name: \"melon-local-ai\"\n");
@@ -304,11 +335,15 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.opencode_key)
             ));
-            yaml.push_str("      models:\n");
-            for (name, display) in OPENCODE_MODELS {
-                yaml.push_str(&format!(
-                    "        - name: \"{name}\"\n          alias: \"opencode/{name}\"\n          display-name: \"{display}\"\n"
-                ));
+            if settings.opencode_models.is_empty() {
+                yaml.push_str("      models:\n");
+                for (name, display) in OPENCODE_MODELS {
+                    yaml.push_str(&format!(
+                        "        - name: \"{name}\"\n          alias: \"opencode/{name}\"\n          display-name: \"{display}\"\n"
+                    ));
+                }
+            } else {
+                push_cached_models(&mut yaml, "opencode", &settings.opencode_models);
             }
         }
         if openrouter {
@@ -349,21 +384,59 @@ pub fn api_keys_yaml_with_local(
             ));
             push_cached_models(&mut yaml, "zai", &settings.zai_models);
         }
+        if commandcode_openai {
+            yaml.push_str("    - name: \"commandcode\"\n");
+            yaml.push_str(&format!(
+                "      base-url: \"{}\"\n",
+                crate::providers::COMMANDCODE_BASE_URL
+            ));
+            yaml.push_str(&format!(
+                "      keys:\n        - api-key: \"{}\"\n",
+                yaml_escape(&settings.commandcode_key)
+            ));
+            let models: Vec<crate::settings::ProviderModel> = settings
+                .commandcode_models
+                .iter()
+                .filter(|model| model.anthropic_only != Some(true))
+                .cloned()
+                .collect();
+            push_cached_models(&mut yaml, "commandcode", &models);
+        }
     }
 
-    if claude {
+    if claude || commandcode_anthropic {
         yaml.push_str("  claude:\n");
-        yaml.push_str("    - name: \"claude\"\n");
-        yaml.push_str("      base-url: \"https://api.anthropic.com\"\n");
-        yaml.push_str(&format!(
-            "      keys:\n        - api-key: \"{}\"\n",
-            yaml_escape(&settings.claude_api_key)
-        ));
-        yaml.push_str("      models:\n");
-        for (name, display) in CLAUDE_MODELS {
+        if claude {
+            yaml.push_str("    - name: \"claude\"\n");
+            yaml.push_str("      base-url: \"https://api.anthropic.com\"\n");
             yaml.push_str(&format!(
-                "        - name: \"{name}\"\n          alias: \"{name}\"\n          display-name: \"{display}\"\n"
+                "      keys:\n        - api-key: \"{}\"\n",
+                yaml_escape(&settings.claude_api_key)
             ));
+            yaml.push_str("      models:\n");
+            for (name, display) in CLAUDE_MODELS {
+                yaml.push_str(&format!(
+                    "        - name: \"{name}\"\n          alias: \"{name}\"\n          display-name: \"{display}\"\n"
+                ));
+            }
+        }
+        if commandcode_anthropic {
+            yaml.push_str("    - name: \"commandcode-anthropic\"\n");
+            yaml.push_str(&format!(
+                "      base-url: \"{}\"\n",
+                crate::providers::COMMANDCODE_BASE_URL
+            ));
+            yaml.push_str(&format!(
+                "      keys:\n        - api-key: \"{}\"\n",
+                yaml_escape(&settings.commandcode_key)
+            ));
+            let models: Vec<crate::settings::ProviderModel> = settings
+                .commandcode_models
+                .iter()
+                .filter(|model| model.anthropic_only == Some(true))
+                .cloned()
+                .collect();
+            push_cached_models(&mut yaml, "commandcode", &models);
         }
     }
 
@@ -1342,6 +1415,7 @@ mod tests {
             last_used_at: None,
             license: None,
             checksum: None,
+            architecture: None,
             user_settings: {
                 crate::local_ai::LocalModelSettings {
                     context_length: 16384,
@@ -1453,6 +1527,59 @@ mod tests {
         assert!(yaml.contains("        - name: \"glm-5.3\"\n          alias: \"zai/glm-5.3\"\n"));
         assert!(yaml.contains("          display-name: \"GLM-5.3 Flash\"\n"));
         assert!(yaml.contains("          max-context-length: 1000000\n"));
+    }
+
+    #[test]
+    fn api_keys_yaml_splits_commandcode_by_endpoint() {
+        let mut s = settings();
+        s.commandcode_key = "cmd-key".to_string();
+        s.commandcode_models = vec![
+            crate::settings::ProviderModel {
+                id: "claude-sonnet-5-5".to_string(),
+                display: "Claude Sonnet 5.5".to_string(),
+                context_window: Some(1_000_000),
+                anthropic_only: Some(true),
+                ..Default::default()
+            },
+            crate::settings::ProviderModel {
+                id: "gpt-6-astra".to_string(),
+                display: "GPT-6 Astra".to_string(),
+                anthropic_only: Some(false),
+                ..Default::default()
+            },
+        ];
+        let yaml = api_keys_yaml_test(&s);
+        assert_eq!(yaml.matches("api-keys:").count(), 1);
+        // OpenAI-compatible models ride one upstream, Claude models the other.
+        assert!(yaml.contains("    - name: \"commandcode\"\n"));
+        assert!(yaml.contains(
+            "      base-url: \"https://api.commandcode.ai/provider/v1\"\n"
+        ));
+        assert!(yaml.contains("        - name: \"gpt-6-astra\"\n          alias: \"commandcode/gpt-6-astra\"\n"));
+        let split = yaml.find("  claude:\n").expect("claude section");
+        let (openai_part, claude_part) = yaml.split_at(split);
+        // Claude ids stay out of the OpenAI-compatible upstream.
+        assert!(!openai_part.contains("claude-sonnet-5-5"));
+        assert!(claude_part.contains("    - name: \"commandcode-anthropic\"\n"));
+        assert!(claude_part.contains("        - name: \"claude-sonnet-5-5\"\n          alias: \"commandcode/claude-sonnet-5-5\"\n"));
+        assert!(!claude_part.contains("gpt-6-astra"));
+    }
+
+    #[test]
+    fn api_keys_yaml_uses_the_fetched_opencode_catalogue() {
+        let mut s = settings();
+        s.opencode_key = "oc-key".to_string();
+        s.opencode_models = vec![crate::settings::ProviderModel {
+            id: "claude-fable-5".to_string(),
+            display: "Claude Fable 5".to_string(),
+            prompt_per_token: Some(0.00001),
+            ..Default::default()
+        }];
+        let yaml = api_keys_yaml_test(&s);
+        assert!(yaml.contains("    - name: \"opencode-go\"\n"));
+        assert!(yaml.contains("        - name: \"claude-fable-5\"\n          alias: \"opencode/claude-fable-5\"\n"));
+        // The built-in fallback list stays out once a catalogue was fetched.
+        assert!(!yaml.contains("alias: \"opencode/kimi-k3\""));
     }
 
     #[test]

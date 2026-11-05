@@ -2,6 +2,66 @@ import XCTest
 @testable import MelonTools
 
 final class AntigravityPoolTests: XCTestCase {
+
+    /// The dashboard card must agree with the Providers card: a paused account
+    /// or one in a cooldown cannot serve a request, and the two 5-hour pools
+    /// are summed separately because Antigravity has no weekly window.
+    func testDashboardHealthCountsPausedAndCoolingAccounts() {
+        func account(
+            _ name: String,
+            disabled: Bool = false,
+            cooling: Bool = false,
+            gemini: Double? = nil,
+            claude: Double? = nil,
+            error: String? = nil
+        ) -> AntigravityAccount {
+            AntigravityAccount(
+                name: name,
+                email: nil,
+                projectID: nil,
+                authIndex: nil,
+                priority: 0,
+                disabled: disabled,
+                status: nil,
+                statusMessage: nil,
+                unavailable: false,
+                cooldowns: cooling
+                    ? [AntigravityCooldown(
+                        scope: "account",
+                        modelKey: nil,
+                        reason: "quota",
+                        retryAt: nil,
+                        remainingSeconds: 60,
+                        httpStatus: nil
+                    )]
+                    : [],
+                modelIDs: [],
+                geminiQuota: gemini.map {
+                    AntigravityQuotaWindow(remaining: $0, resetAt: nil, modelIDs: [])
+                },
+                claudeQuota: claude.map {
+                    AntigravityQuotaWindow(remaining: $0, resetAt: nil, modelIDs: [])
+                },
+                quotaError: error
+            )
+        }
+
+        let accounts = [
+            account("a", gemini: 1, claude: 0.5),
+            account("b", disabled: true, gemini: 0.25, claude: 1),
+            account("c", cooling: true),
+            account("d", error: "quota"),
+        ]
+        let health = DashboardMetrics.antigravityHealth(accounts: accounts)
+
+        XCTAssertEqual(health.total, 4)
+        XCTAssertEqual(health.usable, 2)
+        XCTAssertEqual(health.paused, 2)
+        XCTAssertEqual(health.errors, 1)
+        XCTAssertEqual(health.geminiTotal ?? -1, 125, accuracy: 0.001)
+        XCTAssertEqual(health.claudeTotal ?? -1, 150, accuracy: 0.001)
+    }
+
     func testQuotaGroupsGeminiAndThirdPartyPools() throws {
         let data = Data("""
         {"models":{

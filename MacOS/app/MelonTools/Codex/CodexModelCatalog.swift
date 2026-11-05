@@ -313,6 +313,7 @@ enum CodexModelCatalog {
         case .deepInfra: return 300
         case .vercel: return 400
         case .zai: return 500
+        case .commandCode: return 550
         case .claude: return 600
         case .antigravity: return 700
         case .localAI: return 800
@@ -327,6 +328,7 @@ enum CodexModelCatalog {
         case .deepInfra: return "deepinfra"
         case .vercel: return "vercel"
         case .zai: return "zai"
+        case .commandCode: return "commandcode"
         case .claude: return "Claude"
         case .antigravity: return "Antigravity"
         case .localAI: return "Local AI"

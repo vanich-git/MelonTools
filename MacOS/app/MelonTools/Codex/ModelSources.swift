@@ -3,7 +3,7 @@ import Combine
 
 /// A model source is an upstream provider registered in the Melon gateway
 /// (`api-keys.openai-compatibility`). Key-based sources are OpenRouter,
-/// OpenCode, DeepInfra and the Vercel AI Gateway.
+/// OpenCode, CommandCode, DeepInfra and the Vercel AI Gateway.
 ///
 /// OpenCode Console serves every model family (GPT, Claude, Gemini, GLM, …)
 /// through its OpenAI-compatible surface, so one upstream entry is enough.
@@ -11,6 +11,10 @@ struct ModelSource: Identifiable, Codable, Equatable {
     enum Kind: String, Codable {
         case openRouter
         case openCode
+        /// CommandCode provider API: the OpenAI-compatible models ride
+        /// `openai-compatibility`, the Claude ids served only through
+        /// `/messages` ride `api-keys.claude`.
+        case commandCode
         case deepInfra
         case vercel
         /// Z.ai GLM Coding Plan: OpenAI-compatible Coding endpoint with an
@@ -53,6 +57,9 @@ struct SourceModel: Identifiable, Codable, Equatable {
     var cacheReadPerToken: Double?
     /// OpenCode: the model is served by the Go subscription endpoints.
     var goTier: Bool?
+    /// CommandCode: the model is served only through the Anthropic
+    /// `/messages` endpoint, so it cannot ride `openai-compatibility`.
+    var anthropicOnly: Bool?
     /// Whether the upstream model accepts image input. `nil` means unknown
     /// (stores written before this field); the Codex catalog treats unknown
     /// as text-only.
@@ -110,6 +117,12 @@ final class ModelSourcesStore: ObservableObject {
     static let openCodeGoBaseURL = "https://opencode.ai/inference/go/openai/v1"
     static let openRouterModelsURL = "https://openrouter.ai/api/v1/models"
     static let openRouterBaseURL = "https://openrouter.ai/api/v1"
+    /// CommandCode provider API: one base URL serves both surfaces, and
+    /// `/models` is public (the key is validated by a completion call).
+    static let commandCodeBaseURL = "https://api.commandcode.ai/provider/v1"
+    static let commandCodeModelsURL = "https://api.commandcode.ai/provider/v1/models"
+    /// Every CommandCode model is aliased with this prefix.
+    static let commandCodeAliasPrefix = "commandcode/"
     static let appUserAgent = "MelonTools/1.4"
     /// DeepInfra's OpenAI-compatible surface. The model list is public, but the
     /// key is validated against `/v1/me` before it is saved.
@@ -132,6 +145,7 @@ final class ModelSourcesStore: ObservableObject {
     }
     @Published var openRouterKey: String = ""
     @Published var openCodeKey: String = ""
+    @Published var commandCodeKey: String = ""
     @Published var deepInfraKey: String = ""
     @Published var vercelKey: String = ""
     @Published var zaiKey: String = ""
@@ -150,6 +164,7 @@ final class ModelSourcesStore: ObservableObject {
     private struct Persisted: Codable {
         var openRouterKey: String?
         var openCodeKey: String?
+        var commandCodeKey: String?
         var deepInfraKey: String?
         var vercelKey: String?
         var zaiKey: String?
@@ -161,6 +176,7 @@ final class ModelSourcesStore: ObservableObject {
     private struct PersistedKeys: Codable {
         var openRouterKey: String?
         var openCodeKey: String?
+        var commandCodeKey: String?
         var deepInfraKey: String?
         var vercelKey: String?
         var zaiKey: String?
@@ -180,6 +196,7 @@ final class ModelSourcesStore: ObservableObject {
         if let persisted = try? JSONDecoder().decode(Persisted.self, from: data) {
             openRouterKey = persisted.openRouterKey ?? ""
             openCodeKey = persisted.openCodeKey ?? ""
+            commandCodeKey = persisted.commandCodeKey ?? ""
             deepInfraKey = persisted.deepInfraKey ?? ""
             vercelKey = persisted.vercelKey ?? ""
             zaiKey = persisted.zaiKey ?? persisted.sources?.first { $0.kind == .zai }?.apiKey ?? ""
@@ -195,6 +212,7 @@ final class ModelSourcesStore: ObservableObject {
         if let keys = try? JSONDecoder().decode(PersistedKeys.self, from: data) {
             openRouterKey = keys.openRouterKey ?? ""
             openCodeKey = keys.openCodeKey ?? ""
+            commandCodeKey = keys.commandCodeKey ?? ""
             deepInfraKey = keys.deepInfraKey ?? ""
             vercelKey = keys.vercelKey ?? ""
             zaiKey = keys.zaiKey ?? ""
@@ -254,6 +272,7 @@ final class ModelSourcesStore: ObservableObject {
         let persisted = Persisted(
             openRouterKey: openRouterKey,
             openCodeKey: openCodeKey,
+            commandCodeKey: commandCodeKey,
             deepInfraKey: deepInfraKey,
             vercelKey: vercelKey,
             zaiKey: zaiKey,
@@ -305,7 +324,7 @@ final class ModelSourcesStore: ObservableObject {
                     images = Self.antigravitySupportsImages(id)
                 case .zai:
                     images = Self.zaiSupportsImages(id)
-                case .openRouter, .openCode, .deepInfra, .vercel:
+                case .openRouter, .openCode, .commandCode, .deepInfra, .vercel:
                     images = nil
                 case .localAI:
                     images = false
@@ -323,6 +342,8 @@ final class ModelSourcesStore: ObservableObject {
     var openRouterSource: ModelSource? { sources.first { $0.id == "openrouter" } }
 
     var openCodeSource: ModelSource? { sources.first { $0.id == "opencode" } }
+
+    var commandCodeSource: ModelSource? { sources.first { $0.id == "commandcode" } }
 
     var deepInfraSource: ModelSource? { sources.first { $0.id == "deepinfra" } }
 
@@ -597,6 +618,10 @@ final class ModelSourcesStore: ObservableObject {
             let architecture: Architecture?
             let metadata: Metadata?
             let modalities: Modalities?
+            /// CommandCode publishes the protocols a model is served on
+            /// (`/chat/completions`, `/messages`, `/responses`); an empty or
+            /// absent list means OpenAI-compatible.
+            let supported_endpoints: [String]?
         }
         let data: [Entry]
     }
@@ -792,6 +817,84 @@ final class ModelSourcesStore: ObservableObject {
             models: models
         ))
         openCodeKey = key
+        save()
+    }
+
+    // MARK: - CommandCode (API key)
+
+    nonisolated static func commandCodeAlias(_ id: String) -> String {
+        id.hasPrefix(commandCodeAliasPrefix) ? id : commandCodeAliasPrefix + id
+    }
+
+    /// CommandCode serves the Claude ids only through the Anthropic
+    /// `/messages` endpoint; every other model accepts `/chat/completions`.
+    /// An empty endpoint list means OpenAI-compatible.
+    nonisolated static func commandCodeIsAnthropicOnly(_ entry: ModelList.Entry) -> Bool {
+        guard let endpoints = entry.supported_endpoints, !endpoints.isEmpty else { return false }
+        let normalized = endpoints.map { $0.lowercased() }
+        return normalized.contains("/messages") && !normalized.contains("/chat/completions")
+    }
+
+    func loadCommandCodeModels() async {
+        let key = commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            note = L("Enter a CommandCode key first.")
+            return
+        }
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            // `/models` is public, so the key is not validated here: a wrong
+            // key surfaces as a 401 on the first routed request.
+            let entries = try await fetchModels(
+                url: Self.commandCodeModelsURL,
+                key: key,
+                userAgent: Self.appUserAgent
+            )
+            guard !entries.isEmpty else {
+                note = L("CommandCode returned no models.")
+                return
+            }
+            mergeCommandCode(entries: entries, key: key)
+            note = String(format: L("CommandCode: %d models"), entries.count)
+        } catch {
+            note = L("CommandCode did not accept the key.")
+        }
+    }
+
+    private func mergeCommandCode(entries: [ModelList.Entry], key: String) {
+        let existing = commandCodeSource
+        var enabledById: [String: Bool] = [:]
+        var imagesById: [String: Bool] = [:]
+        for model in existing?.models ?? [] {
+            enabledById[model.id] = model.enabled
+            if let images = model.supportsImages { imagesById[model.id] = images }
+        }
+        let models = entries
+            .map { entry in
+                SourceModel(
+                    id: entry.id,
+                    display: Self.displayName(id: entry.id, fallback: entry.name),
+                    contextLength: entry.context_length,
+                    enabled: enabledById[entry.id] ?? false,
+                    alias: Self.commandCodeAlias(entry.id),
+                    anthropicOnly: Self.commandCodeIsAnthropicOnly(entry),
+                    supportsImages: imagesById[entry.id]
+                        ?? Self.supportsImages(inputModalities: entry.modalities?.input)
+                )
+            }
+            .sorted { $0.id.lowercased() < $1.id.lowercased() }
+        replace(ModelSource(
+            id: "commandcode",
+            kind: .commandCode,
+            title: "CommandCode",
+            baseURL: Self.commandCodeBaseURL,
+            apiKey: key,
+            enabled: existing?.enabled ?? true,
+            models: models
+        ))
+        commandCodeKey = key
         save()
     }
 
@@ -1336,6 +1439,29 @@ final class ModelSourcesStore: ObservableObject {
                 claudeBlocks.append(claudeBlock(source: source, key: key, models: selected))
                 continue
             }
+            if source.kind == .commandCode {
+                let key = source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { continue }
+                // Claude ids are served only through the Anthropic `/messages`
+                // endpoint, so they need the `claude` upstream; every other
+                // model speaks `/chat/completions`.
+                let anthropicModels = selected.filter { $0.anthropicOnly == true }
+                let openAIModels = selected.filter { $0.anthropicOnly != true }
+                if !openAIModels.isEmpty {
+                    compatBlocks.append(block(name: source.id,
+                                              baseURL: source.baseURL,
+                                              key: key,
+                                              models: openAIModels,
+                                              headers: nil))
+                }
+                if !anthropicModels.isEmpty {
+                    claudeBlocks.append(claudeBlock(name: "\(source.id)-anthropic",
+                                                    source: source,
+                                                    key: key,
+                                                    models: anthropicModels))
+                }
+                continue
+            }
             let key = source.apiKey
             guard !key.isEmpty else { continue }
             if source.kind == .openCode {
@@ -1388,9 +1514,14 @@ final class ModelSourcesStore: ObservableObject {
 
     /// One `api-keys.claude` entry (Anthropic API-key fallback): same model
     /// mapping shape as `openai-compatibility`, no `prefix` namespace.
-    private nonisolated static func claudeBlock(source: ModelSource, key: String, models: [SourceModel]) -> String {
+    private nonisolated static func claudeBlock(
+        name: String? = nil,
+        source: ModelSource,
+        key: String,
+        models: [SourceModel]
+    ) -> String {
         var lines: [String] = []
-        lines.append("    - name: \"\(yamlEscape(source.id))\"")
+        lines.append("    - name: \"\(yamlEscape(name ?? source.id))\"")
         lines.append("      base-url: \"\(yamlEscape(source.baseURL))\"")
         lines.append("      keys:")
         lines.append("        - api-key: \"\(yamlEscape(key))\"")

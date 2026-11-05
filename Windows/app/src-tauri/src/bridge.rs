@@ -372,7 +372,8 @@ fn injection_source(lang: &str) -> String {
             "openrouter": "OpenRouter",
             "deepinfra": "DeepInfra",
             "vercel": "Vercel",
-            "zai": "Z.ai"
+            "zai": "Z.ai",
+            "commandcode": "CommandCode"
         },
     });
     format!(
@@ -392,6 +393,8 @@ fn provider_of(model: &str) -> &'static str {
         "vercel"
     } else if model.starts_with("zai/") {
         "zai"
+    } else if model.starts_with("commandcode/") {
+        "commandcode"
     } else {
         "openai"
     }
@@ -531,10 +534,14 @@ async fn picker_models(state: &BridgeState, port: u16, api_key: &str) -> Vec<Val
 /// endpoint, so its entry carries the cached model count only.
 async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Settings) -> Value {
     let openrouter_key = settings.openrouter_key.trim();
+    let opencode_key = settings.opencode_key.trim();
+    let commandcode_key = settings.commandcode_key.trim();
     let vercel_key = settings.vercel_key.trim();
     let deepinfra_key = settings.deepinfra_key.trim();
     let zai_key = settings.zai_key.trim();
     if openrouter_key.is_empty()
+        && opencode_key.is_empty()
+        && commandcode_key.is_empty()
         && vercel_key.is_empty()
         && deepinfra_key.is_empty()
         && zai_key.is_empty()
@@ -610,6 +617,28 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
             json!({
                 "title": "Z.ai",
                 "modelCount": settings.zai_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
+    if !opencode_key.is_empty() {
+        providers.insert(
+            "opencode".to_string(),
+            json!({
+                "title": "OpenCode",
+                "modelCount": settings.opencode_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
+    if !commandcode_key.is_empty() {
+        providers.insert(
+            "commandcode".to_string(),
+            json!({
+                "title": "CommandCode",
+                "modelCount": settings.commandcode_models.len(),
                 "updatedAt": Value::Null,
                 "error": Value::Null,
             }),

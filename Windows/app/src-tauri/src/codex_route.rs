@@ -456,6 +456,8 @@ pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
         Some(("zai", 500))
+    } else if id.starts_with("commandcode/") {
+        Some(("commandcode", 550))
     } else if crate::claude::is_claude_model_id(id) {
         Some(("Claude", 600))
     } else if id.starts_with("local/") {
@@ -482,6 +484,8 @@ pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> 
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
         Some(("zai", 500))
+    } else if id.starts_with("commandcode/") {
+        Some(("commandcode", 550))
     } else if crate::claude::is_claude_model_id(id) {
         Some(("Claude", 600))
     } else if id.starts_with("local/")
@@ -1001,6 +1005,7 @@ fn provider_display_name(tag: &str) -> &str {
         "deepinfra" => "DeepInfra",
         "vercel" => "Vercel",
         "zai" => "Z.ai",
+        "commandcode" => "CommandCode",
         "local" | "Local AI" => "Local AI",
         other => other,
     }
@@ -1340,9 +1345,14 @@ mod tests {
             Some(("vercel", 400))
         );
         assert_eq!(third_party_band("zai/glm-5.3"), Some(("zai", 500)));
+        assert_eq!(
+            third_party_band("commandcode/claude-sonnet-5-5"),
+            Some(("commandcode", 550))
+        );
         assert_eq!(provider_tag("deepinfra/x"), "deepinfra");
         assert_eq!(provider_tag("vercel/y"), "vercel");
         assert_eq!(provider_tag("zai/glm-5.3"), "zai");
+        assert_eq!(provider_tag("commandcode/gpt-6-astra"), "commandcode");
         assert_eq!(
             third_party_band_for_model(&json!({"id": "deepinfra/x", "owned_by": "deepinfra"})),
             Some(("deepinfra", 300))

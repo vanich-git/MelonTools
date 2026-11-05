@@ -211,6 +211,11 @@ Object.assign(DICT.ru, {
   "zaiKey": "Ключ Z.ai Coding Plan (id.secret)",
   "zaiHint": "Ключ из Personal Coding Plan → Plan Overview, не обычный API-ключ. Coding-эндпоинт: api.z.ai/api/coding/paas/v4. GLM Coding Plan разрешён только в поддерживаемых Z.ai инструментах — прямое использование через шлюз на ваш риск. После загрузки перезапустите шлюз.",
   "sgZai": "Z.ai",
+  "commandcode": "CommandCode",
+  "ccKey": "Ключ CommandCode (cmd_…)",
+  "ccHint": "Ключ провайдера CommandCode. Модели с поддержкой /messages уходят в Anthropic-совместимый апстрим, остальные — в OpenAI-совместимый; алиасы commandcode/* одинаковы для обоих. Каталог отдаёт 95 моделей и не сообщает цены. После загрузки перезапустите шлюз.",
+  "ccAnthropicModels": "Anthropic-модели",
+  "sgCommandCode": "CommandCode",
   "sessionSpend": "Расход сессии",
   "teamBalance": "Баланс команды",
   "lifetimeSpend": "Всего израсходовано",
@@ -258,7 +263,7 @@ Object.assign(DICT.ru, {
   "accent": "Акцент",
   "goldenMelon": "золотая дыня",
   "showPoolHealth": "Показывать состояние пула",
-  "showQuotaTrends": "Показывать лимиты квот",
+  "showAntigravity": "Показывать состояние пула Antigravity",
   "showSpend": "Показывать расход и топ провайдеров",
   "showScheduler": "Показывать сводку планировщика",
   "settingsPort": "Порт сервиса",
@@ -537,7 +542,7 @@ Object.assign(DICT.ru, {
   "notificationsHint": "Главный переключатель уведомлений; ниже — отдельные категории.",
   "dashCards": "Карточки дашборда",
   "dashCardPool": "Здоровье пула",
-  "dashCardTrends": "Лимиты квот",
+  "dashCardAntigravity": "Состояние пула Antigravity",
   "dashCardSpend": "Расход",
   "dashCardScheduler": "Планировщик",
   "dashProviders": "Провайдеры",
@@ -557,7 +562,9 @@ Object.assign(DICT.ru, {
   "dashErrors": "С ошибкой",
   "dashAvgFive": "Средний 5ч",
   "dashAvgWeek": "Средняя неделя",
-  "dashQuotaTrends": "Лимиты квот",
+  "dashAntigravityPool": "Состояние пула Antigravity",
+  "dashTotalGemini": "Общий остаток Gemini 5 ч",
+  "dashTotalClaude": "Общий остаток Claude / GPT 5 ч",
   "dashLast24h": "24 часа · по часам",
   "dashLast7d": "7 дней · по дням",
   "dashTrendEmpty": "Данных пока нет",
@@ -780,6 +787,11 @@ Object.assign(DICT.en, {
   "zaiKey": "Z.ai Coding Plan key (id.secret)",
   "zaiHint": "Use a key from Personal Coding Plan → Plan Overview, not a standard API key. Coding endpoint: api.z.ai/api/coding/paas/v4. GLM Coding Plan is limited to Z.ai's supported tools — direct gateway use is at your own risk. Restart the gateway after loading.",
   "sgZai": "Z.ai",
+  "commandcode": "CommandCode",
+  "ccKey": "CommandCode provider key (cmd_…)",
+  "ccHint": "CommandCode provider key. Models that support /messages go to the Anthropic-compatible upstream, the rest to the OpenAI-compatible one; both publish the same commandcode/* aliases. The catalogue lists 95 models and reports no prices. Restart the gateway after loading.",
+  "ccAnthropicModels": "Anthropic models",
+  "sgCommandCode": "CommandCode",
   "sessionSpend": "Session spend",
   "teamBalance": "Team balance",
   "lifetimeSpend": "Lifetime spend",
@@ -827,7 +839,7 @@ Object.assign(DICT.en, {
   "accent": "Accent",
   "goldenMelon": "golden melon",
   "showPoolHealth": "Show pool health",
-  "showQuotaTrends": "Show quota limits",
+  "showAntigravity": "Show Antigravity pool health",
   "showSpend": "Show spend & top providers",
   "showScheduler": "Show scheduler summary",
   "settingsPort": "Service port",
@@ -1106,7 +1118,7 @@ Object.assign(DICT.en, {
   "notificationsHint": "Master notification switch; individual categories below.",
   "dashCards": "Dashboard cards",
   "dashCardPool": "Pool health",
-  "dashCardTrends": "Quota limits",
+  "dashCardAntigravity": "Antigravity pool health",
   "dashCardSpend": "Spend",
   "dashCardScheduler": "Scheduler",
   "dashProviders": "Providers",
@@ -1126,7 +1138,9 @@ Object.assign(DICT.en, {
   "dashErrors": "Errors",
   "dashAvgFive": "Avg 5h",
   "dashAvgWeek": "Avg week",
-  "dashQuotaTrends": "Quota limits",
+  "dashAntigravityPool": "Antigravity pool health",
+  "dashTotalGemini": "Total left Gemini 5h",
+  "dashTotalClaude": "Total left Claude / GPT 5h",
   "dashLast24h": "24 hours · hourly",
   "dashLast7d": "7 days · daily",
   "dashTrendEmpty": "No data yet",
@@ -1693,7 +1707,7 @@ function settingsPage() {
     <h2>${t("dashboardWidgets")}</h2>
     <div class="stack" style="gap:6px">
       <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowPoolHealth !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowPoolHealth" data-on="change"> ${t("showPoolHealth")}</label>
-      <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowQuotaTrends !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowQuotaTrends" data-on="change"> ${t("showQuotaTrends")}</label>
+      <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowAntigravityPool !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowAntigravityPool" data-on="change"> ${t("showAntigravity")}</label>
       <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowSpend !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowSpend" data-on="change"> ${t("showSpend")}</label>
       <label class="card-toggle"><input type="checkbox" ${settings.dashboardShowScheduler !== false ? "checked" : ""} data-action="dashboardCardToggle" data-id="dashboardShowScheduler" data-on="change"> ${t("showScheduler")}</label>
     </div>
@@ -1919,10 +1933,11 @@ function providerLines() {
     tint: "var(--info)",
   });
   if (hasKey(settings.openRouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: `${countModels("openrouter/")} ${t("modelsShort")}`, tint: "var(--violet)" });
-  if (hasKey(settings.openCodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: `${countModels("opencode/")} ${t("modelsShort")}`, tint: "var(--info)" });
-  if (hasKey(settings.deepInfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: `${countModels("deepinfra/")} ${t("modelsShort")}`, tint: "var(--ok)" });
+  if (hasKey(settings.opencodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: `${countModels("opencode/")} ${t("modelsShort")}`, tint: "var(--info)" });
+  if (hasKey(settings.deepinfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: `${countModels("deepinfra/")} ${t("modelsShort")}`, tint: "var(--ok)" });
   if (hasKey(settings.vercelKey)) lines.push({ id: "vercel", name: "Vercel", on: true, detail: `${countModels("vercel/")} ${t("modelsShort")}`, tint: "var(--text2)" });
   if (hasKey(settings.zaiKey)) lines.push({ id: "zai", name: "Z.ai", on: true, detail: `${countModels("zai/")} ${t("modelsShort")}`, tint: "var(--gold)" });
+  if (hasKey(settings.commandcodeKey)) lines.push({ id: "commandcode", name: "CommandCode", on: true, detail: `${countModels("commandcode/")} ${t("modelsShort")}`, tint: "var(--violet)" });
   if (claudeOn || hasKey(settings.claudeKey)) lines.push({ id: "claude", name: "Claude", on: true, detail: t("connected"), tint: "var(--gold)" });
   if (agAccounts.length) lines.push({ id: "antigravity", name: "Antigravity", on: true, detail: `${agAccounts.length} ${t("accountsShort")}`, tint: "var(--info)" });
 
@@ -2061,28 +2076,48 @@ function quotaTotals(accounts, field) {
   };
 }
 
-function quotaLimitRow(label, total, max) {
-  const fraction = total === null || !max ? 0 : Math.min(1, Math.max(0, total / max));
-  return `<div class="quota">
-    <div class="top"><span class="name">${esc(label)}</span><span class="val">${total === null ? "—" : `${round(total)}`}</span></div>
-    <div class="bar"><i class="${quotaTint(total === null ? null : fraction * 100)}" style="width:${(fraction * 100).toFixed(1)}%"></i></div>
-  </div>`;
-}
-
-function dashboardTrendsCard(accounts) {
-  const hourly = quotaTotals(accounts, "hourlyRemaining");
-  const weekly = quotaTotals(accounts, "weeklyRemaining");
-  const max = Math.max(hourly.max, weekly.max);
-  return `<div class="card dash-card" data-dashboard-card="quota-trends">
-    <h2>${cardIcon(CARD_ICONS.trends, "var(--info)")}${t("dashQuotaTrends")}</h2>
-    <div class="stack" style="gap:var(--s3)">
-      ${quotaLimitRow(t("fiveHour"), hourly.total, hourly.max)}
-      ${quotaLimitRow(t("week"), weekly.total, weekly.max)}
-      <div class="row">
-        <span class="footnote" style="margin:0">${esc(fmt(t("accountsInPool"), { n: hourly.accounts }))}</span>
-        <span class="spacer"></span>
-        <span class="footnote" style="margin:0">${max ? esc(fmt(t("dashOfMax"), { n: Math.round(max) })) : ""}</span>
-      </div>
+/// Antigravity exposes two 5-hour pools (Gemini and Claude / GPT) and no
+/// weekly window, so the second total tracks the Claude pool instead of
+/// inventing a weekly figure. An account on pause or in a cooldown cannot
+/// serve a request, which is what "usable" means here.
+function dashboardAntigravityCard(antigravity) {
+  const list = antigravity && Array.isArray(antigravity.accounts) ? antigravity.accounts : [];
+  let usable = 0;
+  let errors = 0;
+  let gemini = 0;
+  let geminiSeen = 0;
+  let claude = 0;
+  let claudeSeen = 0;
+  for (const account of list) {
+    if (!account) continue;
+    const cooling = Array.isArray(account.cooldowns) && account.cooldowns.length > 0;
+    if (!account.disabled && !cooling) usable += 1;
+    if (account.quotaError) errors += 1;
+    const geminiLeft = finiteNumber(account.gemini && account.gemini.remaining);
+    if (geminiLeft !== null) {
+      gemini += geminiLeft * 100;
+      geminiSeen += 1;
+    }
+    const claudeLeft = finiteNumber(account.claude && account.claude.remaining);
+    if (claudeLeft !== null) {
+      claude += claudeLeft * 100;
+      claudeSeen += 1;
+    }
+  }
+  const max = list.length * 100;
+  const stat = (label, value, cls) => `<div class="stat ${cls || ""}">
+    <span class="value">${value}</span><span class="label">${esc(label)}</span></div>`;
+  return `<div class="card dash-card" data-dashboard-card="antigravity-pool">
+    <h2>${cardIcon(CARD_ICONS.health, "var(--ok)")}${t("dashAntigravityPool")}</h2>
+    <div class="stat-grid">
+      ${stat(t("dashTotal"), list.length, "")}
+      ${stat(t("dashUsable"), usable, "ok")}
+      ${stat(t("dashPaused"), list.length - usable, "warn")}
+      ${stat(t("dashErrors"), errors, errors > 0 ? "danger" : "")}
+    </div>
+    <div class="average-grid">
+      ${totalCell(t("dashTotalGemini"), geminiSeen ? gemini : null, max)}
+      ${totalCell(t("dashTotalClaude"), claudeSeen ? claude : null, max)}
     </div>
   </div>`;
 }
@@ -2217,7 +2252,7 @@ function dashboardPage() {
     ${dashboardProvidersCard()}
     ${dashboardPoolsCard()}
     ${cards.pool ? dashboardPoolCard(health, accounts) : ""}
-    ${cards.trends ? dashboardTrendsCard(accounts) : ""}
+    ${cards.antigravity ? dashboardAntigravityCard(S.antigravity) : ""}
     ${cards.scheduler ? dashboardSchedulerCard(schedule) : ""}
     ${cards.spend ? dashboardSpendCard(usage) : ""}
     <div class="dash-wide">${dashboardGatewayCard(status)}</div>

@@ -9,6 +9,20 @@ function hfTokenArg() {
   return token && token !== "__stored__" ? token : null;
 }
 
+/// The backend reports engine problems in English; the Local AI page is
+/// localized. Keep the technical detail, but lead with an actionable sentence.
+function localAiStartErrorText(error) {
+  const text = errorText(error);
+  if (/llama-server executable not found/i.test(text)) return t("localAiEngineMissing");
+  if (/Cannot list the official llama\.cpp builds/i.test(text)) {
+    return `${t("localAiEngineCatalogFailed")} ${text}`;
+  }
+  if (/runtime download (failed|timed out)|Runtime download/i.test(text)) {
+    return `${t("localAiEngineDownloadFailed")} ${text}`;
+  }
+  return text;
+}
+
 /// Replaces the Console rows in place instead of rebuilding the whole page.
 /// A reader who scrolled up keeps the exact position; a reader who is at the
 /// bottom follows new output.
@@ -20,7 +34,7 @@ function updateRuntimeLogBox() {
   const previousTop = box.scrollTop;
   const logs = S.localAi.logs || [];
   box.innerHTML = logs.length === 0
-    ? '<span class="muted">No logs recorded yet.</span>'
+    ? `<span class="muted">${esc(t("localAiConsoleEmpty"))}</span>`
     : logs.map((line) => `<div>${esc(line)}</div>`).join("");
   box.scrollTop = wasAtBottom ? box.scrollHeight : previousTop;
   return true;
@@ -37,6 +51,45 @@ async function loadRuntimeLogs() {
   } catch (e) {
     // The backend logs section keeps its last good content on a read error.
   }
+}
+
+/// The presets are the same numbers as the macOS sheet, so "Max speed" means
+/// one thing across both apps. Only values the engine actually reads are here:
+/// `auto` restores the balanced defaults instead of leaving stale numbers.
+const LOCAL_AI_PROFILE_PRESETS = {
+  auto: { contextLength: 8192, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  performance: { contextLength: 16384, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  balanced: { contextLength: 8192, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  memory_saver: { contextLength: 4096, gpuOffloadLayers: 32, flashAttention: true, kvCacheType: "q4_0" },
+};
+
+/// `custom` is derived, not stored: the select must stop claiming a preset as
+/// soon as one of its four numbers no longer matches, otherwise Save would
+/// persist `performance` with a hand-edited 2048-token context.
+///
+/// `auto` and `balanced` describe the same numbers, so `current` breaks the tie
+/// — without it, picking "Auto" and saving would silently relabel the row as
+/// "Max quality".
+function localAiProfileForSettings(settings, current) {
+  const s = settings || {};
+  const matches = (id) => {
+    const preset = LOCAL_AI_PROFILE_PRESETS[id];
+    if (!preset) return false;
+    const layers = s.gpuOffloadLayers == null ? 999 : Number(s.gpuOffloadLayers);
+    return Number(s.contextLength) === preset.contextLength
+      && layers === preset.gpuOffloadLayers
+      && (s.kvCacheType || "f16") === preset.kvCacheType
+      && !!s.flashAttention === preset.flashAttention;
+  };
+  // `custom` is a deliberate choice: keep it until another preset is picked,
+  // otherwise a hand-edited number would make the select jump back on every
+  // repaint.
+  if (current === "custom") return "custom";
+  if (current && matches(current)) return current;
+  for (const id of ["performance", "memory_saver", "balanced", "auto"]) {
+    if (matches(id)) return id;
+  }
+  return "custom";
 }
 
 const A = {
@@ -363,7 +416,8 @@ const A = {
               && !id.startsWith("openrouter/")
               && !id.startsWith("deepinfra/")
               && !id.startsWith("vercel/")
-              && !id.startsWith("zai/")).length
+              && !id.startsWith("zai/")
+              && !id.startsWith("commandcode/")).length
             : null),
           quota: codexQuota ? { text: ageText(codexQuota), cls: "ok" } : { text: "—", cls: "" },
         },
@@ -401,6 +455,13 @@ const A = {
           quota: { text: "—", cls: "" },
         },
         {
+          name: t("commandcode"), reach: viaGateway,
+          auth: keyAuth(settings.commandcodeKey),
+          models: countCell(has("gatewayModels") ? countPrefix("commandcode/") : null),
+          // CommandCode publishes no account balance and no prices.
+          quota: { text: "—", cls: "" },
+        },
+        {
           name: t("claude"), reach: viaGateway,
           auth: countCell(claudeCredentials),
           models: countCell(claudeModels ? claudeModels.length : null),
@@ -432,6 +493,7 @@ const A = {
     const deepinfra = document.getElementById("di-enabled");
     const vercel = document.getElementById("vc-enabled");
     const zai = document.getElementById("zai-enabled");
+    const commandcode = document.getElementById("cc-enabled");
     const claude = document.getElementById("claude-enabled");
     S.settings = {
       ...S.settings,
@@ -440,6 +502,7 @@ const A = {
       ...(deepinfra ? { deepinfraEnabled: deepinfra.checked } : {}),
       ...(vercel ? { vercelEnabled: vercel.checked } : {}),
       ...(zai ? { zaiEnabled: zai.checked } : {}),
+      ...(commandcode ? { commandcodeEnabled: commandcode.checked } : {}),
       ...(claude ? { claudeEnabled: claude.checked } : {}),
     };
     inv("settings_set", { settings: S.settings })
@@ -627,11 +690,13 @@ const A = {
     const deepinfraNode = document.getElementById("di-key");
     const vercelNode = document.getElementById("vc-key");
     const zaiNode = document.getElementById("zai-key");
+    const commandcodeNode = document.getElementById("cc-key");
     const openrouterEnabledNode = document.getElementById("or-enabled");
     const opencodeEnabledNode = document.getElementById("oc-enabled");
     const deepinfraEnabledNode = document.getElementById("di-enabled");
     const vercelEnabledNode = document.getElementById("vc-enabled");
     const zaiEnabledNode = document.getElementById("zai-enabled");
+    const commandcodeEnabledNode = document.getElementById("cc-enabled");
     const openrouterKey = openrouterNode
       ? openrouterNode.value.trim()
       : (S.settings.openrouterKey || "");
@@ -647,6 +712,9 @@ const A = {
     const zaiKey = zaiNode
       ? zaiNode.value.trim()
       : (S.settings.zaiKey || "");
+    const commandcodeKey = commandcodeNode
+      ? commandcodeNode.value.trim()
+      : (S.settings.commandcodeKey || "");
     const openrouterEnabled = openrouterEnabledNode
       ? openrouterEnabledNode.checked
       : !!S.settings.openrouterEnabled;
@@ -662,11 +730,15 @@ const A = {
     const zaiEnabled = zaiEnabledNode
       ? zaiEnabledNode.checked
       : !!S.settings.zaiEnabled;
+    const commandcodeEnabled = commandcodeEnabledNode
+      ? commandcodeEnabledNode.checked
+      : !!S.settings.commandcodeEnabled;
     const previous = {
       openrouter: S.settings.openrouterKey || "",
       deepinfra: S.settings.deepinfraKey || "",
       vercel: S.settings.vercelKey || "",
       zai: S.settings.zaiKey || "",
+      commandcode: S.settings.commandcodeKey || "",
     };
     run("keys", async () => {
       S.settings = await inv("settings_set", {
@@ -677,11 +749,13 @@ const A = {
           deepinfraKey,
           vercelKey,
           zaiKey,
+          commandcodeKey,
           openrouterEnabled,
           opencodeEnabled,
           deepinfraEnabled,
           vercelEnabled,
           zaiEnabled,
+          commandcodeEnabled,
         },
       });
       // Metrics and cached model lists belong to the key they were fetched
@@ -698,12 +772,20 @@ const A = {
       if (zaiKey !== previous.zai) {
         S.providerModelsError.zai = null;
       }
+      if (commandcodeKey !== previous.commandcode) {
+        S.providerModelsError.commandcode = null;
+      }
       toast(t("done"));
     });
   },
 
   loadProviderModels(provider) {
-    const prefix = provider === "deepinfra" ? "di" : provider === "vercel" ? "vc" : provider;
+    const prefix =
+      provider === "deepinfra" ? "di"
+      : provider === "vercel" ? "vc"
+      : provider === "commandcode" ? "cc"
+      : provider === "opencode" ? "oc"
+      : provider;
     const keyNode = document.getElementById(prefix + "-key");
     const field = provider + "Key";
     const modelsField = provider + "Models";
@@ -1881,12 +1963,16 @@ const A = {
       S.update = result;
       if (result.newer) {
         title.textContent = fmt(t("updateAvailable"), { v: result.version });
-        sub.textContent = `${(S.info && S.info.version) || ""} → ${result.version}`;
+        const installed = result.current || (S.info && S.info.version) || "";
+        sub.textContent = `${installed} → ${result.version}`;
         notes.textContent = result.notes || "";
         notes.style.display = "block";
         apply.style.display = "";
       } else {
-        title.textContent = fmt(t("updateUpToDate"), { v: result.version });
+        // The release feed can lag behind a pre-release build, so the "up to
+        // date" line names the installed version, never the published one.
+        const installed = result.current || (S.info && S.info.version) || result.version;
+        title.textContent = fmt(t("updateUpToDate"), { v: installed });
       }
       A.updateButton();
     } catch (error) {
@@ -2029,9 +2115,31 @@ const A = {
     }
   },
 
+  // The search field must keep focus and caret while the list narrows, so only
+  // the result block is repainted instead of the whole board.
   localAiSearch(query) {
     S.localAi.searchQuery = query;
-    render();
+    const list = document.getElementById("local-ai-model-list");
+    if (!list) {
+      render();
+      return;
+    }
+    list.innerHTML = localAiModelListMarkup();
+    const clear = document.querySelector(".search-field .search-clear");
+    if (clear) clear.hidden = (query || "").trim().length === 0;
+  },
+
+  localAiClearSearch() {
+    S.localAi.searchQuery = "";
+    const input = document.querySelector(".search-field input");
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+    const list = document.getElementById("local-ai-model-list");
+    if (list) list.innerHTML = localAiModelListMarkup();
+    const clear = document.querySelector(".search-field .search-clear");
+    if (clear) clear.hidden = true;
   },
 
   async localAiImport() {
@@ -2049,7 +2157,7 @@ const A = {
       await window.api.localAi.importFile(filePath);
       const models = await window.api.localAi.modelsList();
       S.localAi.models = models;
-      toast(t("localAiImportSuccess") || "Модель импортирована");
+      toast(t("localAiImportSuccess"));
       render();
     } catch (e) {
       toast(errorText(e), true);
@@ -2058,18 +2166,35 @@ const A = {
 
   async localAiStart(id) {
     if (!id) return;
+    // The Mac build starts with a bundled engine. On Windows the first start
+    // downloads it, so show the download instead of a frozen "Starting..." —
+    // the install card on the Runtime tab reads the same status object.
+    const hasEngine = Boolean(S.localAi.runtime && S.localAi.runtime.binaryPath);
+    let installPoll = null;
     try {
-      toast(t("localAiStarting"));
+      if (hasEngine) {
+        toast(t("localAiStarting"));
+      } else {
+        toast(t("localAiEngineInstalling"));
+        installPoll = setInterval(async () => {
+          const status = await window.api.localAi.runtimeInstallStatus().catch(() => null);
+          if (!status) return;
+          S.localAi.install = status;
+          if (S.section === "local_ai") render();
+        }, 1500);
+      }
       await window.api.localAi.startModel(id);
       const rt = await window.api.localAi.runtimeStatus();
       S.localAi.runtime = rt;
       render();
       toast(t("localAiStarted"));
     } catch (e) {
-      toast(errorText(e), true);
+      toast(localAiStartErrorText(e), true);
       const rt = await window.api.localAi.runtimeStatus().catch(() => null);
       if (rt) S.localAi.runtime = rt;
       render();
+    } finally {
+      if (installPoll) clearInterval(installPoll);
     }
   },
 
@@ -2259,7 +2384,7 @@ const A = {
       const rt = await window.api.localAi.runtimeStatus().catch(() => null);
       if (rt) S.localAi.runtime = rt;
       render();
-      toast(t("localAiDeleted") || "Модель удалена");
+      toast(t("localAiDeleted"));
     } catch (e) {
       toast(errorText(e), true);
     }
@@ -2270,28 +2395,23 @@ const A = {
     if (!model) return;
     S.localAi.editingModel = JSON.parse(JSON.stringify(model));
     S.localAi.estimate = null;
+    S.localAi.estimateError = null;
     render();
-
-    const s = S.localAi.editingModel.userSettings || {};
-    try {
-      // The backend reads the real layer/head geometry from the installed
-      // GGUF header; a hard-coded `totalLayers: 32` used to distort the KV
-      // estimate for every model that is not a 32-layer 4096-hidden llama.
-      const est = await window.api.localAi.estimateMemory({
-        weightsSize: model.fileSize || 0,
-        contextLength: s.contextLength || 4096,
-        kvCacheType: s.kvCacheType || "f16",
-        batchSize: s.batchSize || 512,
-        modelId: model.id,
-      });
-      S.localAi.estimate = est;
-      render();
-    } catch {}
+    // The backend reads the real layer/head geometry from the installed GGUF
+    // header; a hard-coded `totalLayers: 32` used to distort the KV estimate
+    // for every model that is not a 32-layer 4096-hidden llama.
+    A.localAiRefreshEstimate();
   },
 
   localAiSettingsClose() {
+    if (A._localAiEstimateTimer) {
+      clearTimeout(A._localAiEstimateTimer);
+      A._localAiEstimateTimer = null;
+    }
     S.localAi.editingModel = null;
     S.localAi.estimate = null;
+    S.localAi.estimateError = null;
+    S.localAi.estimating = false;
     render();
   },
 
@@ -2304,29 +2424,92 @@ const A = {
   },
 
   localAiProfileChange(profile) {
-    if (!S.localAi.editingModel) return;
-    if (!S.localAi.editingModel.userSettings) S.localAi.editingModel.userSettings = {};
-    const s = S.localAi.editingModel.userSettings;
-    s.profile = profile;
-    // The preset ids are the Rust enum values (`performance`, `balanced`,
-    // `memory_saver`); `auto` leaves the engine's own defaults in place.
-    if (profile === "performance") {
-      s.gpuOffloadLayers = 999;
-      s.contextLength = 4096;
-      s.flashAttention = true;
-      s.kvCacheType = "f16";
-    } else if (profile === "balanced") {
-      s.gpuOffloadLayers = 999;
-      s.contextLength = 16384;
-      s.flashAttention = true;
-      s.kvCacheType = "f16";
-    } else if (profile === "memory_saver") {
-      s.gpuOffloadLayers = 0;
-      s.contextLength = 2048;
-      s.flashAttention = false;
-      s.kvCacheType = "q4_0";
-    }
-    render();
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    if (!m.userSettings) m.userSettings = {};
+    const s = m.userSettings;
+    const preset = LOCAL_AI_PROFILE_PRESETS[profile];
+    // `custom` means "keep the numbers I typed", so it only relabels them.
+    s.profile = preset ? profile : "custom";
+    if (preset) Object.assign(s, preset);
+    // The select still owns the focus here, and the status-poll guard skips a
+    // normal render while a form field is focused — the four inputs would keep
+    // the previous preset next to a select that already shows the new one.
+    // A repaint rebuilds the dialog, so its scroll offset would jump back to
+    // the top — the chips sit above a long form.
+    const card = document.getElementById("local-ai-settings-card");
+    const scrollTop = card ? card.scrollTop : 0;
+    render(true);
+    const nextCard = document.getElementById("local-ai-settings-card");
+    if (nextCard) nextCard.scrollTop = scrollTop;
+    const select = document.getElementById("local-ai-setting-profile");
+    if (select) select.focus();
+    A.localAiRefreshEstimate();
+  },
+
+  /// Context/KV edits change the memory figure, so they re-estimate without a
+  /// full repaint (that would drop the caret in the field being typed into).
+  localAiEstimateInput() {
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    if (!m.userSettings) m.userSettings = {};
+    const s = m.userSettings;
+    const read = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value : null;
+    };
+    const context = Number(read("local-ai-setting-context"));
+    if (Number.isFinite(context) && context > 0) s.contextLength = context;
+    const kv = read("local-ai-setting-kv-cache");
+    if (kv) s.kvCacheType = kv;
+    // A hand-edited number no longer belongs to the preset it came from.
+    s.profile = localAiProfileForSettings(s, s.profile);
+    const select = document.getElementById("local-ai-setting-profile");
+    if (select) select.value = s.profile;
+    A.localAiRefreshEstimate();
+  },
+
+  /// Asks the backend for a fresh estimate and repaints only the memory card.
+  /// Debounced because a number input fires on every keystroke and the estimate
+  /// walks the installed model's GGUF header.
+  localAiRefreshEstimate() {
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    if (A._localAiEstimateTimer) clearTimeout(A._localAiEstimateTimer);
+    S.localAi.estimating = true;
+    paintLocalAiEstimate();
+    A._localAiEstimateTimer = setTimeout(async () => {
+      A._localAiEstimateTimer = null;
+      const s = (S.localAi.editingModel && S.localAi.editingModel.userSettings) || {};
+      const positive = (value, fallback) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n > 0 ? n : fallback;
+      };
+      try {
+        const est = await window.api.localAi.estimateMemory({
+          weightsSize: Math.max(0, Number(m.fileSize) || 0),
+          contextLength: Math.round(positive(s.contextLength, 8192)),
+          kvCacheType: s.kvCacheType || "f16",
+          batchSize: Math.round(positive(s.batchSize, 512)),
+          modelId: m.id,
+        });
+        // The dialog may have been closed (or switched models) while awaiting.
+        if (!S.localAi.editingModel || S.localAi.editingModel.id !== m.id) return;
+        S.localAi.estimate = est;
+        S.localAi.estimateError = null;
+      } catch (error) {
+        // Same guard as the success path: a late failure must not paint an
+        // error into a dialog that now shows another model.
+        if (S.localAi.editingModel && S.localAi.editingModel.id === m.id) {
+          S.localAi.estimateError = errorText(error);
+        }
+      } finally {
+        if (S.localAi.editingModel && S.localAi.editingModel.id === m.id) {
+          S.localAi.estimating = false;
+          paintLocalAiEstimate();
+        }
+      }
+    }, 180);
   },
 
   async localAiSettingsSave() {
@@ -2384,6 +2567,18 @@ const A = {
       if (settings[key] === null) delete settings[key];
     });
 
+    // The select can lag behind the numbers (a preset was applied, then one
+    // field was corrected). Re-derive the profile from what is actually being
+    // saved, but keep an explicit `custom`: that is a deliberate choice.
+    if (settings.profile !== "custom") {
+      settings.profile = localAiProfileForSettings({
+        contextLength: settings.contextLength != null ? settings.contextLength : stored.contextLength,
+        gpuOffloadLayers: settings.gpuOffloadLayers != null ? settings.gpuOffloadLayers : stored.gpuOffloadLayers,
+        kvCacheType: settings.kvCacheType,
+        flashAttention: settings.flashAttention,
+      }, settings.profile);
+    }
+
     try {
       const updated = await window.api.localAi.saveSettings(m.id, settings);
       const idx = (S.localAi.models || []).findIndex((x) => x.id === m.id);
@@ -2406,8 +2601,14 @@ const A = {
         if (models) S.localAi.models = models;
         if (rt) S.localAi.runtime = rt;
       }
+      if (A._localAiEstimateTimer) {
+        clearTimeout(A._localAiEstimateTimer);
+        A._localAiEstimateTimer = null;
+      }
       S.localAi.editingModel = null;
       S.localAi.estimate = null;
+      S.localAi.estimateError = null;
+      S.localAi.estimating = false;
       // A successful save closes the dialog; a toast here only duplicated the
       // close and lingered over the list.
       render();
@@ -2560,6 +2761,24 @@ const A = {
 
   localAiHfSearchInput(val) {
     S.localAi.catalogQuery = val;
+    const clear = document.querySelector(".search-field .search-clear");
+    if (clear) clear.hidden = (val || "").length === 0;
+  },
+
+  localAiHfClear() {
+    S.localAi.catalogQuery = "";
+    S.localAi.catalogResults = [];
+    S.localAi.catalogSearched = false;
+    S.localAi.selectedRepoId = null;
+    S.localAi.repoDetails = null;
+    const clear = document.querySelector(".search-field .search-clear");
+    if (clear) clear.hidden = true;
+    const input = document.querySelector(".search-field input");
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+    render();
   },
 
   async localAiHfSearch() {
@@ -2570,6 +2789,7 @@ const A = {
     try {
       const results = await window.api.localAi.hfSearch(q, 20, hfTokenArg());
       S.localAi.catalogResults = results || [];
+      S.localAi.catalogSearched = true;
       if (results && results.length > 0 && !S.localAi.selectedRepoId) {
         A.localAiSelectRepo(results[0].id);
       }
@@ -2611,7 +2831,7 @@ const A = {
     const quantization = quantMatch ? quantMatch[1].toUpperCase() : "GGUF";
 
     try {
-      toast(t("localAiDownloadStarting") || "Запуск загрузки...");
+      toast(t("localAiDownloadStarting"));
       await window.api.localAi.downloadStart({
         repoId,
         filename,
@@ -2620,7 +2840,7 @@ const A = {
         token: hfTokenArg(),
         sha256: sha256 || null,
       });
-      toast(t("localAiDownloadStarted") || "Загрузка добавлена");
+      toast(t("localAiDownloadStarted"));
       S.localAi.tab = "downloads";
       const dls = await window.api.localAi.downloadsList().catch(() => []);
       S.localAi.downloads = dls;
@@ -2639,7 +2859,7 @@ const A = {
       S.localAi.downloads = dls;
       S.localAi.activeDownloadCount = dls.filter(isDownloadActive).length;
       render();
-      toast(t("localAiDownloadCancelled") || "Загрузка отменена");
+      toast(t("localAiDownloadCancelled"));
     } catch (e) {
       toast(errorText(e), true);
     }
@@ -2660,21 +2880,18 @@ const A = {
     render();
   },
 
-  async localAiPickModelsDir() {
+  // The backend owns the models directory location, so the honest action is to
+  // open it instead of offering a picker that could not move the files.
+  async localAiOpenModelsFolder() {
+    const dir = (S.localAi.hardware && S.localAi.hardware.modelsDir) || "";
+    if (!dir) {
+      toast(t("localAiUnknown"), true);
+      return;
+    }
     try {
-      const selected = await inv("plugin:dialog|open", {
-        options: {
-          directory: true,
-          multiple: false,
-        },
-      });
-      const dirPath = Array.isArray(selected) ? selected[0] : selected;
-      if (!dirPath) return;
-      const input = document.getElementById("local-ai-models-dir");
-      if (input) input.value = dirPath;
-      toast(dirPath);
+      await inv("open_url", { url: dir });
     } catch (e) {
-      toast(errorText(e), true);
+      toast(dir);
     }
   },
 

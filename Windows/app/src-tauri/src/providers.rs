@@ -137,6 +137,7 @@ fn parse_deepinfra_models(value: &Value) -> Vec<ProviderModel> {
                 cache_read_per_token: number(pricing.and_then(|p| p.get("cache_read_tokens")))
                     .map(|value| value / 1_000_000.0),
                 supports_images,
+                anthropic_only: None,
                 id,
             })
         })
@@ -233,6 +234,7 @@ fn parse_vercel_models(value: &Value) -> Vec<ProviderModel> {
                 completion_per_token: number(pricing.and_then(|p| p.get("output"))),
                 cache_read_per_token: number(pricing.and_then(|p| p.get("input_cache_read"))),
                 supports_images,
+                anthropic_only: None,
             })
         })
         .collect();
@@ -376,6 +378,151 @@ fn parse_zai_models(value: &Value) -> Vec<ProviderModel> {
     models
 }
 
+/// OpenCode. `*‑free` ids are restricted to the OpenCode app itself, so the
+/// catalogue drops them instead of routing requests that always fail.
+pub const OPENCODE_MODELS_URL: &str = "https://opencode.ai/inference/v1/models";
+
+pub async fn opencode_models(key: &str) -> Result<Vec<ProviderModel>, String> {
+    if key.trim().is_empty() {
+        return Err("ключ OpenCode не задан".to_string());
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let value = http_json(&client, OPENCODE_MODELS_URL, key).await?;
+    let models = parse_opencode_models(&value);
+    if models.is_empty() {
+        return Err("OpenCode: пустой список моделей".to_string());
+    }
+    Ok(models)
+}
+
+fn parse_opencode_models(value: &Value) -> Vec<ProviderModel> {
+    let Some(entries) = value.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut models: Vec<ProviderModel> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("type")
+                .and_then(Value::as_str)
+                .map(|kind| kind.eq_ignore_ascii_case("chat"))
+                .unwrap_or(true)
+        })
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            if id.is_empty() || id.ends_with("-free") {
+                return None;
+            }
+            let display = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::codex_route::prettify(&id));
+            let context_window = entry.pointer("/limit/context").and_then(Value::as_u64);
+            // `cost.*.price` is USD per million tokens.
+            let per_million = |pointer: &str| {
+                entry
+                    .pointer(pointer)
+                    .and_then(Value::as_f64)
+                    .filter(|price| *price > 0.0)
+                    .map(|price| price / 1_000_000.0)
+            };
+            let supports_images = entry
+                .pointer("/modalities/input")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|value| value.eq_ignore_ascii_case("image"))
+                });
+            Some(ProviderModel {
+                id,
+                display,
+                context_window,
+                prompt_per_token: per_million("/cost/text/input/price"),
+                completion_per_token: per_million("/cost/text/output/price"),
+                cache_read_per_token: per_million("/cost/text/input/cache/read"),
+                supports_images,
+                anthropic_only: None,
+            })
+        })
+        .collect();
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models
+}
+
+/// CommandCode. Claude ids are served only through the Anthropic `/messages`
+/// endpoint, so they ride `api-keys.claude`; everything else is
+/// OpenAI-compatible. The catalogue carries no prices.
+pub const COMMANDCODE_BASE_URL: &str = "https://api.commandcode.ai/provider/v1";
+pub const COMMANDCODE_MODELS_URL: &str = "https://api.commandcode.ai/provider/v1/models";
+
+pub async fn commandcode_models(key: &str) -> Result<Vec<ProviderModel>, String> {
+    if key.trim().is_empty() {
+        return Err("ключ CommandCode не задан".to_string());
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    // `/models` answers without auth, so a rejected key only shows up here
+    // when the endpoint starts requiring it.
+    let value = http_json(&client, COMMANDCODE_MODELS_URL, key).await?;
+    let models = parse_commandcode_models(&value);
+    if models.is_empty() {
+        return Err("CommandCode: пустой список моделей".to_string());
+    }
+    Ok(models)
+}
+
+fn parse_commandcode_models(value: &Value) -> Vec<ProviderModel> {
+    let Some(entries) = value.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut models: Vec<ProviderModel> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let display = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::codex_route::prettify(&id));
+            let endpoints: Vec<&str> = entry
+                .get("supported_endpoints")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let anthropic_only = endpoints
+                .iter()
+                .any(|endpoint| *endpoint == "/messages")
+                && !endpoints
+                    .iter()
+                    .any(|endpoint| *endpoint == "/chat/completions");
+            Some(ProviderModel {
+                id,
+                display,
+                context_window: entry.get("context_length").and_then(Value::as_u64),
+                anthropic_only: Some(anthropic_only),
+                ..Default::default()
+            })
+        })
+        .collect();
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models
+}
+
 /// Claude (Anthropic) metrics for the Providers page: connection status, the
 /// account email, the two quota windows and the model count the gateway
 /// serves. Without an auth file the account is not connected; without a usage
@@ -499,11 +646,84 @@ pub fn antigravity_metrics(
 #[cfg(test)]
 mod tests {
     use super::{
-        antigravity_metrics, claude_metrics, parse_deepinfra_models, parse_vercel_models,
-        parse_zai_models, vercel_metrics, zai_models_fallback, zai_supports_images,
+        antigravity_metrics, claude_metrics, parse_commandcode_models, parse_deepinfra_models,
+        parse_opencode_models, parse_vercel_models, parse_zai_models, vercel_metrics,
+        zai_models_fallback, zai_supports_images,
     };
     use crate::claude::UsageSnapshot;
     use serde_json::json;
+
+    // Shapes below are copied from live answers, so the parsers are pinned to
+    // what the upstreams actually return.
+    #[test]
+    fn opencode_catalogue_is_filtered_and_priced_per_token() {
+        let value = json!({
+            "data": [
+                {
+                    "id": "claude-fable-5",
+                    "name": "Claude Fable 5",
+                    "type": "chat",
+                    "modalities": { "input": ["text", "image"] },
+                    "limit": { "context": 200000 },
+                    "cost": {
+                        "text": {
+                            "input": { "price": 10.0 },
+                            "output": { "price": 50.0 },
+                            "input": { "price": 10.0, "cache": { "read": 1.0 } }
+                        }
+                    }
+                },
+                { "id": "beam-free", "name": "Beam Free", "type": "chat" },
+                { "id": "embed-3", "name": "Embed 3", "type": "embedding" },
+                { "id": "no-pricing", "type": "chat" }
+            ]
+        });
+        let models = parse_opencode_models(&value);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        // `-free` ids and non-chat entries never reach the gateway.
+        assert_eq!(ids, vec!["claude-fable-5", "no-pricing"]);
+        let fable = &models[0];
+        assert_eq!(fable.display, "Claude Fable 5");
+        assert_eq!(fable.context_window, Some(200_000));
+        assert_eq!(fable.prompt_per_token, Some(0.00001));
+        assert_eq!(fable.completion_per_token, Some(0.00005));
+        assert_eq!(fable.cache_read_per_token, Some(0.000001));
+        assert_eq!(fable.supports_images, Some(true));
+        let bare = &models[1];
+        assert_eq!(bare.prompt_per_token, None);
+        assert_eq!(bare.completion_per_token, None);
+        assert_eq!(bare.context_window, None);
+    }
+
+    #[test]
+    fn commandcode_catalogue_splits_the_anthropic_endpoint() {
+        let value = json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "claude-sonnet-5-5",
+                    "name": "Claude Sonnet 5.5",
+                    "context_length": 1000000,
+                    "supported_endpoints": ["/messages"]
+                },
+                {
+                    "id": "gpt-6-astra",
+                    "name": "GPT-6 Astra",
+                    "context_length": 400000,
+                    "supported_endpoints": ["/chat/completions", "/responses"]
+                }
+            ]
+        });
+        let models = parse_commandcode_models(&value);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-sonnet-5-5");
+        assert_eq!(models[0].anthropic_only, Some(true));
+        assert_eq!(models[0].context_window, Some(1_000_000));
+        // No pricing exists on this endpoint, so none is invented.
+        assert_eq!(models[0].prompt_per_token, None);
+        assert_eq!(models[1].id, "gpt-6-astra");
+        assert_eq!(models[1].anthropic_only, Some(false));
+    }
 
     #[test]
     fn claude_metrics_without_account_stays_empty() {

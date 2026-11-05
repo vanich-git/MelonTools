@@ -1371,7 +1371,7 @@ async fn autostart_set(enabled: bool) -> Result<bool, String> {
 
 // MARK: - Updater (GitHub releases)
 
-/// Latest release lookup. `force=false` throttles to once per 24 h.
+/// Latest release lookup. `force=false` throttles to once per hour.
 #[tauri::command]
 async fn update_check(state: State<'_, AppState>, force: bool) -> Result<Value, String> {
     let settings = state.settings();
@@ -1454,6 +1454,8 @@ async fn provider_models_load(
 ) -> Result<Value, String> {
     let settings = state.settings();
     let models = match provider.as_str() {
+        "opencode" => providers::opencode_models(&settings.opencode_key).await?,
+        "commandcode" => providers::commandcode_models(&settings.commandcode_key).await?,
         "deepinfra" => providers::deepinfra_models(&settings.deepinfra_key).await?,
         "vercel" => providers::vercel_models(&settings.vercel_key).await?,
         "zai" => providers::zai_models(&settings.zai_key).await?,
@@ -2031,6 +2033,9 @@ fn island_provider_count(settings: &settings::Settings, codex_accounts: usize) -
         count += 1;
     }
     if settings.opencode_enabled && !settings.opencode_key.is_empty() {
+        count += 1;
+    }
+    if settings.commandcode_enabled && !settings.commandcode_key.is_empty() {
         count += 1;
     }
     if settings.deepinfra_enabled && !settings.deepinfra_key.is_empty() {

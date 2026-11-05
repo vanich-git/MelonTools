@@ -517,6 +517,12 @@ impl ModelDownloadManager {
         // Register in models.json
         let now = Utc::now().to_rfc3339();
         let display_name = filename.trim_end_matches(".gguf").replace(['_', '-'], " ");
+        // The badge the Mac card shows (`qwen35`) comes from the GGUF header.
+        // A truncated or unusual download simply leaves it out.
+        let architecture = crate::local_ai::local_models::parse_gguf_metadata(&final_dest)
+            .ok()
+            .map(|info| info.architecture)
+            .filter(|value| !value.is_empty());
 
         let model = LocalModel {
             id: model_id.to_string(),
@@ -533,6 +539,7 @@ impl ModelDownloadManager {
             context_length: 8192,
             configured_context: 8192,
             backend: InferenceBackend::Cpu,
+            architecture,
             gpu_offload: None,
             threads: None,
             runtime_status: ModelRuntimeStatus::Installed,
@@ -1408,6 +1415,7 @@ mod tests {
                 last_used_at: None,
                 license: None,
                 checksum: Some("previous-checksum".to_string()),
+                architecture: None,
                 user_settings: LocalModelSettings::default(),
             }
         }

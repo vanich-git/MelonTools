@@ -130,6 +130,11 @@ pub fn local_ai_runtime_logs_clear(state: State<'_, AppState>) -> Result<(), Str
 
 #[tauri::command]
 pub async fn local_ai_start_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    // A fresh Windows install has no engine binary. Download the official
+    // build before the launch so a model starts out of the box, the way the
+    // Mac build starts with its bundled runtime. The lifecycle lock is not
+    // held here, so the user can still stop or cancel the download.
+    state.local_runtime.ensure_engine().await?;
     // The manager claims the lifecycle generation before it reads the model,
     // so a stop that raced ahead of this command wins instead of being
     // overwritten by a launch whose model lookup started earlier.

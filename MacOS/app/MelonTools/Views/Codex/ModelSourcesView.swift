@@ -33,6 +33,7 @@ struct CodexProvidersView: View {
     enum ProviderRoute: String, Identifiable {
         case openRouter
         case openCode
+        case commandCode
         case deepInfra
         case vercel
         case zai
@@ -46,6 +47,7 @@ struct CodexProvidersView: View {
             switch self {
             case .openRouter: return "OpenRouter"
             case .openCode: return "OpenCode"
+            case .commandCode: return "CommandCode"
             case .deepInfra: return "DeepInfra"
             case .vercel: return "Vercel"
             case .zai: return "Z.ai"
@@ -59,6 +61,7 @@ struct CodexProvidersView: View {
             switch self {
             case .openRouter: return "point.3.connected.trianglepath.dotted"
             case .openCode: return "chevron.left.forwardslash.chevron.right"
+            case .commandCode: return "terminal"
             case .deepInfra: return "server.rack"
             case .vercel: return "triangle"
             case .zai: return "atom"
@@ -80,6 +83,7 @@ struct CodexProvidersView: View {
                     poolCard
                     openRouterCard
                     openCodeCard
+                    commandCodeCard
                     deepInfraCard
                     vercelCard
                     zaiCard
@@ -476,6 +480,44 @@ struct CodexProvidersView: View {
                     }
                     MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
                         route = .openRouter
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Board: CommandCode
+
+    private var commandCodeCard: some View {
+        let configured = !sources.commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let source = sources.commandCodeSource
+        let anthropicCount = source?.models.filter { $0.anthropicOnly == true }.count ?? 0
+        return MTCard(title: "CommandCode", systemImage: ProviderRoute.commandCode.systemImage, accent: MTTheme.violet, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(spacing: MTTheme.s2) {
+                    MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
+                    Spacer(minLength: MTTheme.s2)
+                }
+                HStack(alignment: .top, spacing: MTTheme.s3) {
+                    MTMetricTile(
+                        title: L("Models"),
+                        value: "\(source?.models.count ?? 0)",
+                        caption: L("Available")
+                    )
+                    MTMetricTile(
+                        title: L("Anthropic models"),
+                        value: "\(anthropicCount)",
+                        caption: L("Served over /messages"),
+                        valueColor: MTTheme.amber
+                    )
+                }
+                Text(L("CommandCode serves OpenAI-compatible models and Claude models through the matching gateway upstream."))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+                HStack(spacing: MTTheme.s3) {
+                    Spacer(minLength: MTTheme.s2)
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
+                        route = .commandCode
                     }
                 }
             }
@@ -1181,6 +1223,8 @@ struct CodexProvidersView: View {
             openRouterSettings
         case .openCode:
             openCodeSettings
+        case .commandCode:
+            commandCodeSettings
         case .deepInfra:
             deepInfraSettings
         case .vercel:
@@ -1201,6 +1245,7 @@ struct CodexProvidersView: View {
         switch route {
         case .openRouter: return L("Price routing: cheapest providers first.")
         case .openCode: return L("Paid models use your OpenCode account balance.")
+        case .commandCode: return L("Models served by CommandCode with your provider API key.")
         case .deepInfra: return L("Chat models served by DeepInfra with your API key.")
         case .vercel: return L("Language models served by the Vercel AI Gateway with your gateway key.")
         case .zai: return L("GLM Coding Plan models served by Z.ai with your Coding Plan API key.")
@@ -1244,6 +1289,30 @@ struct CodexProvidersView: View {
                     Text(L("Go models route through the Go endpoints (Go plan); other models use the console balance."))
                     Text(L("Free OpenCode models only work inside the OpenCode app itself."))
                     Text(L("Paid models use your OpenCode account balance."))
+                }
+                .font(MTTheme.mono(10))
+                .foregroundStyle(MTTheme.textTertiary)
+            }
+        }
+    }
+
+    private var commandCodeSettings: some View {
+        MTCard(title: "CommandCode", systemImage: ProviderRoute.commandCode.systemImage, accent: MTTheme.violet, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                keyRow(key: $sources.commandCodeKey) {
+                    Task { await sources.loadCommandCodeModels() }
+                }
+                if let source = sources.commandCodeSource {
+                    modelBlock(source: source)
+                } else {
+                    Text(L("Paste the CommandCode key to load the model list."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("The CommandCode model list is public, so a wrong key only fails on the first request."))
+                    Text(L("Claude models are served through /messages: the gateway gets them as an Anthropic upstream."))
+                    Text(L("CommandCode publishes no prices, so the session estimate shows no cost for its models."))
                 }
                 .font(MTTheme.mono(10))
                 .foregroundStyle(MTTheme.textTertiary)

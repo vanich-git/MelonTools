@@ -946,6 +946,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
     case deepInfra
     case vercel
     case zai
+    case commandCode
     case claude
     case antigravity
     case localAI
@@ -960,6 +961,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         case .deepInfra: return "DeepInfra"
         case .vercel: return "Vercel"
         case .zai: return "Z.ai"
+        case .commandCode: return "CommandCode"
         case .claude: return "Claude"
         case .antigravity: return "Antigravity"
         case .localAI: return "Local AI"
@@ -974,6 +976,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         if id.hasPrefix("deepinfra/") { return .deepInfra }
         if id.hasPrefix("vercel/") { return .vercel }
         if id.hasPrefix("zai/") { return .zai }
+        if id.hasPrefix("commandcode/") { return .commandCode }
         if id.hasPrefix("local/") { return .localAI }
         if AntigravityModelRegistry.ids.contains(id) { return .antigravity }
         if id.hasPrefix("claude-") { return .claude }

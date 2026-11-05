@@ -32,7 +32,7 @@ struct OnboardingView: View {
             Step(
                 number: 2,
                 title: L("Connect providers"),
-                detail: L("Claude, Antigravity, OpenRouter, OpenCode, DeepInfra and Vercel models appear in the Codex picker after you select them.")
+                detail: L("Claude, Antigravity, OpenRouter, OpenCode, CommandCode, DeepInfra and Vercel models appear in the Codex picker after you select them.")
             ),
             Step(
                 number: 3,

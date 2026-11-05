@@ -348,6 +348,11 @@ pub struct LocalModel {
     pub context_length: usize,
     pub configured_context: usize,
     pub backend: InferenceBackend,
+    /// `general.architecture` read from the GGUF header, e.g. `qwen35`. Shown
+    /// as a card badge, the way the Mac build reports it. Absent on rows
+    /// imported before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
     pub gpu_offload: Option<usize>,
     pub threads: Option<usize>,
     pub runtime_status: ModelRuntimeStatus,
@@ -1168,6 +1173,7 @@ impl LocalModelStore {
             context_length: metadata.context_length,
             configured_context: working_context,
             backend: hardware.recommended_backend,
+            architecture: (!metadata.architecture.is_empty()).then(|| metadata.architecture.clone()),
             gpu_offload: None,
             threads: None,
             runtime_status: ModelRuntimeStatus::Installed,
@@ -1908,6 +1914,7 @@ mod tests {
             last_used_at: None,
             license: None,
             checksum: None,
+            architecture: None,
             user_settings: LocalModelSettings::default(),
         }
     }

@@ -6,7 +6,7 @@ import SwiftUI
 /// `@AppStorage` keys shared by the dashboard and the settings toggles.
 enum DashboardWidgetKey {
     static let poolHealth = "dashboard.showPoolHealth"
-    static let quotaTrends = "dashboard.showQuotaTrends"
+    static let antigravityPool = "dashboard.showAntigravityPool"
     static let spend = "dashboard.showSpend"
     static let scheduler = "dashboard.showScheduler"
 }
@@ -43,10 +43,43 @@ struct DashboardQuotaTotals: Equatable {
     var max: Double
 }
 
+/// Antigravity has no weekly window: the two 5-hour windows (Gemini and
+/// Claude / GPT) are separate pools, so each total is summed over the accounts
+/// that actually report that window. An account on pause or in an engine
+/// cooldown is not routable, which is what "usable" means here.
+struct DashboardAntigravityHealth: Equatable {
+    var total = 0
+    var usable = 0
+    var paused = 0
+    var errors = 0
+    var geminiTotal: Double?
+    var claudeTotal: Double?
+
+    static func make(accounts: [AntigravityAccount]) -> DashboardAntigravityHealth {
+        var health = DashboardAntigravityHealth()
+        health.total = accounts.count
+        health.usable = accounts.filter { !$0.isPaused && $0.activeCooldown == nil }.count
+        health.paused = health.total - health.usable
+        health.errors = accounts.filter { $0.quotaError != nil }.count
+        health.geminiTotal = DashboardMetrics.total(
+            accounts.compactMap { $0.geminiQuota.map { $0.remaining * 100 } }
+        )
+        health.claudeTotal = DashboardMetrics.total(
+            accounts.compactMap { $0.claudeQuota.map { $0.remaining * 100 } }
+        )
+        return health
+    }
+}
+
 enum DashboardMetrics {
     static func average(_ values: [Double]) -> Double? {
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    /// Sum of the reported readings, or nil when no account reports the window.
+    static func total(_ values: [Double]) -> Double? {
+        values.isEmpty ? nil : values.reduce(0, +)
     }
 
     /// Current pool totals, not history averages. The denominator is the
@@ -55,10 +88,14 @@ enum DashboardMetrics {
         let hourlyValues = accounts.compactMap(\.quota?.hourlyRemainingPercent)
         let weeklyValues = accounts.compactMap(\.quota?.weeklyRemainingPercent)
         return DashboardQuotaTotals(
-            hourly: hourlyValues.isEmpty ? nil : hourlyValues.reduce(0, +),
-            weekly: weeklyValues.isEmpty ? nil : weeklyValues.reduce(0, +),
+            hourly: total(hourlyValues),
+            weekly: total(weeklyValues),
             max: Double(accounts.count) * 100
         )
+    }
+
+    static func antigravityHealth(accounts: [AntigravityAccount]) -> DashboardAntigravityHealth {
+        DashboardAntigravityHealth.make(accounts: accounts)
     }
 
     static func poolHealth(accounts: [CodexAccount]) -> DashboardPoolHealth {
@@ -162,7 +199,7 @@ struct DashboardView: View {
     @State private var claudeAccounts: [ClaudeAuthService.AuthFile] = []
 
     @AppStorage(DashboardWidgetKey.poolHealth) private var showPoolHealth = true
-    @AppStorage(DashboardWidgetKey.quotaTrends) private var showQuotaTrends = true
+    @AppStorage(DashboardWidgetKey.antigravityPool) private var showAntigravityPool = true
     @AppStorage(DashboardWidgetKey.spend) private var showSpend = true
     @AppStorage(DashboardWidgetKey.scheduler) private var showScheduler = true
 
@@ -176,10 +213,10 @@ struct DashboardView: View {
                     poolsCard
                 }
 
-                if showPoolHealth || showQuotaTrends {
+                if showPoolHealth || showAntigravityPool {
                     bentoRow {
                         if showPoolHealth { poolHealthCard }
-                        if showQuotaTrends { quotaTrendsCard }
+                        if showAntigravityPool { antigravityPoolHealthCard }
                     }
                 }
 
@@ -338,89 +375,44 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Quota limits
+    // MARK: - Antigravity pool health
 
-    /// Current pool totals. This is intentionally not a history average:
-    /// five accounts at 100% must read 500%, and the value must agree with the
-    /// quota bars on the account cards.
-    private var quotaLimitTotals: DashboardQuotaTotals {
-        DashboardMetrics.quotaTotals(accounts: codex.accounts)
-    }
-
-    private var quotaTrendsCard: some View {
-        let totals = quotaLimitTotals
-        let hourlyFraction = totals.max > 0 ? (totals.hourly.map { min(1, max(0, $0 / totals.max)) }) : nil
-        let weeklyFraction = totals.max > 0 ? (totals.weekly.map { min(1, max(0, $0 / totals.max)) }) : nil
-
-        return MTCard(title: L("Quota limits"), systemImage: "gauge.with.dots.needle.33percent", accent: MTTheme.cyan) {
+    /// Same layout as the Codex card. Antigravity exposes two 5-hour windows
+    /// instead of a 5-hour plus a weekly one, so the second total cell tracks
+    /// the Claude / GPT pool rather than inventing a weekly figure.
+    private var antigravityPoolHealthCard: some View {
+        let health = DashboardMetrics.antigravityHealth(accounts: antigravity.accounts)
+        let limit = Double(health.total) * 100
+        return MTCard(title: L("Antigravity pool health"), systemImage: "heart.text.square", accent: MTTheme.emerald) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 84), spacing: MTTheme.s2)],
+                    spacing: MTTheme.s2
+                ) {
+                    MTMetricTile(title: L("Total"), value: "\(health.total)", tint: MTTheme.cyan)
+                    MTMetricTile(title: L("Usable"), value: "\(health.usable)", tint: MTTheme.emerald)
+                    MTMetricTile(title: L("Paused"), value: "\(health.paused)", tint: MTTheme.amber)
+                    MTMetricTile(
+                        title: L("Errors"),
+                        value: "\(health.errors)",
+                        tint: health.errors > 0 ? MTTheme.ruby : MTTheme.textTertiary
+                    )
+                }
                 HStack(spacing: MTTheme.s3) {
-                    HStack(spacing: MTTheme.s2) {
-                        MTQuotaRing(
-                            fraction: hourlyFraction,
-                            size: 56,
-                            ringTint: MTTheme.cyan,
-                            strokeWidth: 5
-                        )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(L("hourly").uppercased())
-                                .font(MTTheme.mono(9, weight: .semibold))
-                                .tracking(0.8)
-                                .foregroundStyle(MTTheme.textTertiary)
-                            Text(totals.hourly.map { "\(Int($0.rounded()))%" } ?? "—")
-                                .font(MTTheme.mono(13, weight: .semibold))
-                                .foregroundStyle(MTTheme.textPrimary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    HStack(spacing: MTTheme.s2) {
-                        MTQuotaRing(
-                            fraction: weeklyFraction,
-                            size: 56,
-                            ringTint: MTTheme.emerald,
-                            strokeWidth: 5
-                        )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(L("weekly").uppercased())
-                                .font(MTTheme.mono(9, weight: .semibold))
-                                .tracking(0.8)
-                                .foregroundStyle(MTTheme.textTertiary)
-                            Text(totals.weekly.map { "\(Int($0.rounded()))%" } ?? "—")
-                                .font(MTTheme.mono(13, weight: .semibold))
-                                .foregroundStyle(MTTheme.textPrimary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    totalCell(
+                        title: L("Total left Gemini 5 h"),
+                        value: health.geminiTotal,
+                        limit: limit,
+                        tint: MTTheme.cyan
+                    )
+                    totalCell(
+                        title: L("Total left Claude / GPT 5 h"),
+                        value: health.claudeTotal,
+                        limit: limit,
+                        tint: MTTheme.emerald
+                    )
                 }
-                .padding(.vertical, 2)
-
-                Divider().overlay(MTTheme.borderColor)
-
-                HStack(spacing: MTTheme.s2) {
-                    Text(String(format: L("Accounts in pool: %d"), codex.accounts.count))
-                    Spacer(minLength: 0)
-                    Text(String(format: L("of %d%%"), Int(totals.max)))
-                }
-                .font(MTTheme.mono(9))
-                .foregroundStyle(MTTheme.textSecondary)
             }
-        }
-    }
-
-    private func quotaLimitRow(title: String, value: Double?, limit: Double) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(title.uppercased())
-                    .font(MTTheme.mono(9, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(MTTheme.textTertiary)
-                Spacer()
-                Text(value.map { "\(Int($0.rounded()))%" } ?? "—")
-                    .font(MTTheme.mono(10, weight: .semibold))
-                    .foregroundStyle(MTTheme.textPrimary)
-            }
-            MTMeter(fraction: limit > 0 ? min(1, max(0, (value ?? 0) / limit)) : 0)
         }
     }
 
@@ -647,6 +639,7 @@ struct DashboardView: View {
         case .deepInfra: return MTTheme.emerald
         case .vercel: return MTTheme.textSecondary
         case .zai: return MTTheme.amber
+        case .commandCode: return MTTheme.violet
         case .claude: return MTTheme.amber
         case .antigravity: return MTTheme.cyan
         case .localAI: return MTTheme.emerald

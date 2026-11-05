@@ -90,7 +90,7 @@ function mock(cmd, args) {
   ];
   const mocks = {
     app_info: { name: "Melon Tools", version: "4.0.1", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
-    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
+    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", commandcodeKey: "", opencodeEnabled: true, commandcodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], opencodeModels: [], commandcodeModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowAntigravityPool: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
     codex_pool_models: () => demoPoolSnapshot(),
@@ -138,6 +138,17 @@ function mock(cmd, args) {
           { id: "glm-5.3", display: "GLM-5.3", contextWindow: 1000000, supportsImages: false },
           { id: "glm-5.3-flash", display: "GLM-5.3 Flash", contextWindow: 1000000, supportsImages: true },
         ] }
+      : a.provider === "commandcode"
+      ? { count: 3, models: [
+          { id: "claude-sonnet-5-5", display: "Claude Sonnet 5.5", contextWindow: 1000000, anthropicOnly: true, supportsImages: true },
+          { id: "gpt-6-astra", display: "GPT-6 Astra", contextWindow: 400000, anthropicOnly: false, supportsImages: true },
+          { id: "gpt-6.1-sol", display: "GPT-6.1 Sol", contextWindow: 400000, anthropicOnly: false, supportsImages: false },
+        ] }
+      : a.provider === "opencode"
+      ? { count: 2, models: [
+          { id: "claude-fable-5", display: "Claude Fable 5", contextWindow: 200000, promptPerToken: 0.00001, completionPerToken: 0.00005, cacheReadPerToken: 0.000001, supportsImages: true },
+          { id: "gpt-6-luna", display: "GPT-6 Luna", contextWindow: 400000, supportsImages: true },
+        ] }
       : { count: 2, models: [
           { id: "anthropic/claude-sonnet-4.6", display: "Claude Sonnet 4.6", contextWindow: 200000, promptPerToken: 0.000003, completionPerToken: 0.000015, supportsImages: true },
           { id: "openai/gpt-6.1", display: "GPT-6.1", contextWindow: 400000, promptPerToken: 0.000001, completionPerToken: 0.000004, supportsImages: true },
@@ -166,7 +177,12 @@ function mock(cmd, args) {
       { id: "gemini-3.1-flash-lite", displayName: "Gemini 3.1 Flash Lite" },
       { id: "gemini-3.5-flash-lite", displayName: "Gemini 3.5 Flash Lite" },
     ], count: 11 },
-    antigravity_metrics: { connected: true, email: "demo@gmail.invalid", projectId: "melon-demo-project", modelCount: 11, updatedAt: new Date().toISOString(), error: null, status: "ok" },
+    antigravity_metrics: { connected: true, email: "demo@gmail.invalid", projectId: "melon-demo-project", modelCount: 11, updatedAt: new Date().toISOString(), error: null, status: "ok", accounts: [
+      { name: "ag-demo-1", email: "one@gmail.invalid", projectId: "melon-demo-project", authIndex: "0", priority: 0, disabled: false, status: "ok", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.82 }, claude: { remaining: 0.41 }, quotaError: null },
+      { name: "ag-demo-2", email: "two@gmail.invalid", projectId: "melon-demo-project", authIndex: "1", priority: 1, disabled: false, status: "ok", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.55 }, claude: { remaining: 1 }, quotaError: null },
+      { name: "ag-demo-3", email: "three@gmail.invalid", projectId: "melon-demo-project", authIndex: "2", priority: 2, disabled: true, status: "disabled", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.3 }, claude: { remaining: 0.2 }, quotaError: null },
+      { name: "ag-demo-4", email: "four@gmail.invalid", projectId: "melon-demo-project", authIndex: "3", priority: 3, disabled: false, status: "cooldown", statusMessage: null, unavailable: false, cooldowns: [{ scope: "account", retryAt: new Date(Date.now() + 900000).toISOString() }], models: [], gemini: { remaining: 0 }, claude: { remaining: 0.6 }, quotaError: "quota" }
+    ] },
     antigravity_disconnect: { removed: 1, remaining: 0 },
     codex_route_status: { configPath: "C:\\Users\\you\\.codex\\config.toml", provider: "melon_local_access", ours: true, catalogExists: true, catalogPath: "C:\\Users\\you\\.codex\\melon-model-catalog.json" },
     codex_route_apply: { route: { provider: "melon_local_access", ours: true, catalogExists: true }, catalogCustom: 32 },
@@ -264,7 +280,7 @@ function mock(cmd, args) {
       return { path: "C:\\Users\\you\\Downloads\\MelonTools-backup-demo.melon", bytes: 20480, createdAt: DEMO_BACKUP_LAST };
     },
     backup_import: (a) => ({ schedulerTasks: 1, schedulerHistory: 3, accounts: 2, authFiles: 2, modelSourcesIncluded: true, settingsKeys: 14 }),
-    update_check: { skipped: false, version: "1.4.8", tag: "v1.4.8", newer: false, notes: "", assetName: "", assetURL: "", digest: null },
+    update_check: { skipped: false, version: "1.4.8", current: "1.4.8", tag: "v1.4.8", newer: false, notes: "", assetName: "", assetURL: "", digest: null },
     update_apply: { ok: true },
     // Local AI GGUF / llama-server mocks for browser preview
     local_ai_hardware_info: () => demoLocalAiHardware(),
@@ -533,11 +549,13 @@ function demoLocalAiHardware() {
   return {
     osVersion: "Windows 11 Pro 23H2 (Build 22631)",
     architecture: "x86_64",
+    modelsDir: "C:\\Users\\you\\AppData\\Local\\MelonTools\\models",
     cpuModel: "13th Gen Intel(R) Core(TM) i9-13900K",
     cpuCores: 24,
     totalRam: 34359738368,
     freeRam: 21474836480,
     gpuName: "NVIDIA GeForce RTX 4090",
+    gpuDriver: "537.58",
     gpuHasUnifiedMemory: false,
     gpuRecommendedMaxWorkingSetSize: 25769803776,
     supportedBackends: ["cuda", "cpu"],

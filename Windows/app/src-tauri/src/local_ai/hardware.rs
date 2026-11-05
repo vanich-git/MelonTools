@@ -104,6 +104,9 @@ pub struct MemoryEstimation {
 pub struct HardwareInfo {
     pub os_version: String,
     pub architecture: String,
+    /// Absolute models directory the app actually reads. The Settings tab shows
+    /// it verbatim; an empty string means no directory could be resolved.
+    pub models_dir: String,
     pub cpu_model: String,
     pub cpu_cores: usize,
     pub total_ram: u64,
@@ -448,6 +451,9 @@ pub fn detect_hardware(models_dir: Option<&Path>) -> HardwareInfo {
         gpu_driver: detect_gpu_driver(),
         os_version,
         architecture,
+        models_dir: models_dir
+            .map(|dir| dir.to_string_lossy().to_string())
+            .unwrap_or_default(),
         cpu_model,
         cpu_cores,
         total_ram,
@@ -521,6 +527,7 @@ mod tests {
             gpu_driver: Some("test-driver".to_string()),
             os_version: "test".to_string(),
             architecture: "x86_64".to_string(),
+            models_dir: String::new(),
             cpu_model: "test cpu".to_string(),
             cpu_cores: 8,
             total_ram: 32 * 1024 * 1024 * 1024,
@@ -624,6 +631,7 @@ mod tests {
         let info = HardwareInfo {
             os_version: "test".to_string(),
             architecture: "x86_64".to_string(),
+            models_dir: String::new(),
             cpu_model: "test cpu".to_string(),
             cpu_cores: 8,
             total_ram: 16 * 1024 * 1024 * 1024,
