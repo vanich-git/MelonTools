@@ -2,11 +2,11 @@
 
 Release candidate for macOS and Windows. **This is a test build, not a stable
 release.** 6.0.0-rc.1 is published as a GitHub **prerelease**: it is not
-"latest", it does not replace 5.5.8 in Homebrew or winget, and the in-app
-updaters ignore it because they read `/releases/latest`. Homebrew, winget and
-the download README keep describing the last published 5.5.8 artifacts until
-6.0.0 passes acceptance and is promoted. See `packaging/README.md` and
-`docs/RELEASE_ACCEPTANCE.md`.
+"latest", it does not replace the stable 5.5.x line in Homebrew or winget, and
+the in-app updaters ignore it because they read `/releases/latest`. Homebrew,
+winget and the download README keep describing the last published stable
+artifacts until 6.0.0 passes acceptance and is promoted. See
+`packaging/README.md` and `docs/RELEASE_ACCEPTANCE.md`.
 
 > **Read before installing**
 >
@@ -57,11 +57,12 @@ the download README keep describing the last published 5.5.8 artifacts until
   secrets are absent, so SmartScreen reputation is untested.
 - **No interactive Windows install/upgrade/soak run.** CI builds the installer
   and portable exe on a native Windows runner and validates PE headers, hashes
-  and the legacy alias. Clean install, upgrade from 5.5.8,
-  uninstall, WebView2 IPC and DPAPI behaviour remain manual checks in
+  and the legacy alias. Clean install, upgrade from the last published stable
+  release, uninstall, WebView2 IPC and DPAPI behaviour remain manual checks in
   `docs/RELEASE_ACCEPTANCE.md`.
 - **No Homebrew/winget promotion.** Both manifests intentionally still point at
-  5.5.8 with its published hashes; promotion applies to stable releases only.
+  the last stable version and its published hashes; promotion applies to stable
+  releases only.
 
 ## 5.5.8
 

@@ -420,6 +420,10 @@ jobs:
           path: .
           format: cyclonedx-json
           output-file: melontools.cdx.json
+          # The next step uploads the file as the single "sbom" artifact. The
+          # action's own artifact would be a second, differently named SBOM
+          # that publish cannot list in RELEASE_METADATA.json.
+          upload-artifact: false
 
       - name: Upload the SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -469,6 +473,12 @@ jobs:
         with:
           name: sbom
           path: release-assets
+
+      # The acceptance reports are build evidence and stay in the run's
+      # artifacts. They are not part of the published asset set that
+      # release-promote.yml requires to match exactly.
+      - name: Drop the acceptance reports from the published set
+        run: rm -f release-assets/*-acceptance.txt
 
       - name: List the release assets
         run: ls -l release-assets
