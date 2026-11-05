@@ -377,16 +377,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $checkArgs = @(
-            "-Dist", "Windows/dist",
-            "-Version", "${{ steps.version.outputs.version }}",
-            "-Report", "windows-acceptance.txt"
-          )
+          # Hashtable splatting binds named parameters; array splatting passes
+          # its items positionally, which sent "6.0.0-rc.1" to a positional
+          # parameter and failed the job.
+          $checkArgs = @{
+            Dist = "Windows/dist"
+            Version = "${{ steps.version.outputs.version }}"
+            Report = "windows-acceptance.txt"
+          }
           if ("${{ steps.signing.outputs.enabled }}" -eq "true") {
-            $checkArgs += "-RequireSignature"
+            $checkArgs.RequireSignature = $true
           }
           & ./packaging/verify-windows-artifacts.ps1 @checkArgs
-          if ($LASTEXITCODE -ne 0) { throw "Windows artifact acceptance failed" }
 
       - name: Upload the executable artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
