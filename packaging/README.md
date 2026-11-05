@@ -6,7 +6,7 @@ touched by the packaging scripts.
 
 ## Current status
 
-The application source tree is **6.0.0-rc.1**, published as a GitHub
+The application source tree is **6.0.0-rc.2**, published as a GitHub
 **prerelease**. The stable **6.0.0** promotion is still pending. The Homebrew
 Cask and winget manifests below still describe the last published stable
 release, 5.5.8, with its real hashes. That is deliberate: a prerelease is never
@@ -26,7 +26,7 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## 6.0.0-rc.1 (prerelease)
+## 6.0.0-rc.2 (prerelease)
 
 A prerelease ships through the draft → GitHub prerelease path only:
 
@@ -34,7 +34,7 @@ A prerelease ships through the draft → GitHub prerelease path only:
   version contains `-`, and leaves the release as a **draft** for a human.
 - Publishing the draft keeps it a prerelease: it never becomes "latest", so
   the in-app updaters (which read `/releases/latest`) ignore it.
-- `release-promote.yml` and `docs_lint.py --release 6.0.0-rc.1` (without
+- `release-promote.yml` and `docs_lint.py --release 6.0.0-rc.2` (without
   `--preflight`) refuse a prerelease on purpose: Homebrew and winget describe
   stable artifacts, and an RC must not reach `brew upgrade` or
   `winget upgrade`.
@@ -42,7 +42,7 @@ A prerelease ships through the draft → GitHub prerelease path only:
 The pre-tag gate accepts a prerelease only in `--preflight` form:
 
 ```bash
-python3 .github/scripts/docs_lint.py --release 6.0.0-rc.1 --preflight
+python3 .github/scripts/docs_lint.py --release 6.0.0-rc.2 --preflight
 ```
 
 Stable promotion is unchanged and applies to `6.0.0` only:
@@ -61,7 +61,7 @@ python3 scripts/verify_release_checksums.py \
 `--stage` generates draft metadata from real build outputs; it refuses to run
 when the DMG, NSIS setup, portable exe, or their `.sha256` siblings are
 missing, and it never writes a placeholder digest. For a prerelease,
-`--stage 6.0.0-rc.1` is used by `release.yml` to verify the uploaded draft
+`--stage 6.0.0-rc.2` is used by `release.yml` to verify the uploaded draft
 assets only — its output is not committed and never edits the manifests.
 `docs_lint.py` without `--release` allows the application version to run ahead
 of the published distribution metadata and prints a note. See
@@ -313,7 +313,7 @@ The manifest lives at
 [`homebrew/Casks/melon-tools.rb`](homebrew/Casks/melon-tools.rb). It points at
 the DMG for the matching GitHub release and currently carries the published
 5.5.8 DMG SHA-256. Do not change it to 6.0.0 until the stable 6.0.0 artifacts
-are built, acceptance-checked and promoted; the 6.0.0-rc.1 prerelease is never
+are built, acceptance-checked and promoted; the 6.0.0-rc.2 prerelease is never
 promoted into this manifest.
 
 Local validation and installation:

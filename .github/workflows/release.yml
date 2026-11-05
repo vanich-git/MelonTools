@@ -319,7 +319,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = "${{ steps.version.outputs.version }}"
           # NSIS version resources are four numeric fields, so a prerelease tag
-          # such as 6.0.0-rc.1 uses its numeric core (6.0.0) there. The display
+          # such as 6.0.0-rc.2 uses its numeric core (6.0.0) there. The display
           # name, output file and uninstall entry keep the full version.
           $numericVersion = $version.Split('-')[0]
           $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
@@ -378,7 +378,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           # Hashtable splatting binds named parameters; array splatting passes
-          # its items positionally, which sent "6.0.0-rc.1" to a positional
+          # its items positionally, which sent "6.0.0-rc.2" to a positional
           # parameter and failed the job.
           $checkArgs = @{
             Dist = "Windows/dist"

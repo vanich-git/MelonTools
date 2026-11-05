@@ -1,3 +1,81 @@
+# Melon Tools 6.0.0-rc.2
+
+Release candidate for macOS and Windows. **This is a test build, not a stable
+release.** 6.0.0-rc.2 is published as a GitHub **prerelease**: it is not
+"latest", it does not replace the stable 5.5.x line in Homebrew or winget, and
+the in-app updaters keep reading `/releases/latest`, so a 5.5.x install is
+never offered this RC. Homebrew, winget and the download README keep describing
+the last published stable artifacts until 6.0.0 passes acceptance and is
+promoted. See `packaging/README.md` and `docs/RELEASE_ACCEPTANCE.md`.
+
+> **Read before installing**
+>
+> - **macOS: ad-hoc signed, not notarized.** Gatekeeper blocks the first
+>   launch. Use right-click → Open (or System Settings → Privacy & Security →
+>   Open Anyway) only after the downloaded file matches its `.sha256` sibling.
+>   Developer ID signing and notarization stay blocked until the Apple secrets
+>   are configured.
+> - **Windows: not Authenticode-signed.** SmartScreen may show "Windows
+>   protected your PC" and refuse the first launch. Choose **More info → Run
+>   anyway** only after the SHA-256 matches. The installer is per-user and does
+>   not request elevation.
+> - **Release-candidate quality.** Settings, the model storage layout and the
+>   local-AI API can still change before 6.0.0. Back up anything you cannot
+>   download again, and do not hand this build to other people.
+> - **Local AI is hardware-hungry.** No GGUF model is bundled: models are
+>   downloaded on demand and can be many gigabytes. Expect high RAM/VRAM use
+>   and a slow first load; throughput depends on the machine.
+> - **Verify every download.** Each asset has a `.sha256` sibling, and
+>   `SHA256SUMS` lists all of them.
+
+## What changed in 6.0.0-rc.2
+
+- **The updater compares versions the way SemVer does.** A final release now
+  ranks above its own pre-release, so `6.0.0` is offered to a `6.0.0-rc.1`
+  install, `rc.10` ranks above `rc.9`, a numeric identifier ranks below an
+  alphanumeric one, and `+build` metadata is ignored. Both the macOS and the
+  Windows updater were wrong here: `6.0.0-rc.1` users would never have been
+  offered `6.0.0`.
+- **The update sheet names the build you are running.** "You are up to date"
+  and the from → to line now use the installed version reported by the
+  backend instead of the newest version on GitHub, so a 6.0.0-rc.2 install no
+  longer claims to be 5.5.7.
+- **No dead-end "Update" button.** When a release payload has no API `digest`,
+  the check resolves the asset's `.sha256` sibling up front. Previously the
+  strip offered an update and the install then refused with "no verified
+  update data".
+- **A failed swap reopens the app.** If the Windows self-update cannot start
+  the new build, the script restores the backup and now launches it again
+  instead of leaving the app closed.
+- **Local AI runs out of the box on Windows.** The Windows app provisions and
+  supervises a `llama-server` runtime the same way macOS does, so local models
+  no longer fail with `llama-server executable not found`; the runtime card
+  installs, repairs and reports its state, and hardware estimates drive the
+  recommendation.
+- **Local AI parity between the platforms.** The macOS and Windows Local AI
+  screens now share one layout: the same cards, model list, compatibility
+  badges, runtime controls and estimate panel, and the right pane stretches to
+  the full board height instead of leaving empty space.
+- **CommandCode provider.** A new upstream with its own Anthropic-compatible
+  endpoint, catalogue import and per-model selection on both platforms.
+- **OpenCode catalogue with per-token pricing**, filtered to the models the
+  key can actually use.
+- **Codex and composer polish:** provider diagnostics, model-source editing and
+  composer chips behave the same on macOS and Windows.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.2/MelonTools-6.0.0-rc.2.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.2/MelonTools-6.0.0-rc.2-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.2/MelonTools-6.0.0-rc.2-win-x64-portable.exe)
+
+### SHA-256
+
+Every asset above has a `.sha256` sibling next to it on the release page, and
+`SHA256SUMS` lists the whole set. The release body is generated from the built
+bytes after signing, so copy the digest from there or from the sibling file
+instead of trusting a value pasted into these notes.
+
 # Melon Tools 6.0.0-rc.1
 
 Release candidate for macOS and Windows. **This is a test build, not a stable

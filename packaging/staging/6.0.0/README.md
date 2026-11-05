@@ -1,7 +1,7 @@
 # 6.0.0 staging — not generated
 
 Status: **no stable 6.0.0 release artifacts exist in this checkout**. The source
-tree is `6.0.0-rc.1`, which ships as a GitHub prerelease and is never promoted
+tree is `6.0.0-rc.2`, which ships as a GitHub prerelease and is never promoted
 into Homebrew or winget; the last published distribution is 5.5.8. Therefore
 this directory contains no Cask, winget manifest, `SHA256SUMS`, or digest.
 
