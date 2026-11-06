@@ -451,7 +451,7 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
         await service.waitForPublication()
 
         let error = try XCTUnwrap(service.publicationError)
-        XCTAssertTrue(error.contains("routes were not written"), error)
+        XCTAssertTrue(error.contains(String(format: L("Local AI routes were not written: %@"), "disk is full")), error)
         XCTAssertEqual(catalogSyncs, 0)
     }
 
@@ -559,7 +559,7 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
         await service.waitForPublication()
 
         let error = try XCTUnwrap(service.publicationError)
-        XCTAssertTrue(error.contains("still served"), error)
+        XCTAssertTrue(error.contains(String(format: L("Local AI models are still served after stop: %@"), "local/old")), error)
         XCTAssertTrue(error.contains("local/old"), error)
     }
 

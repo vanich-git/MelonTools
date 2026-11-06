@@ -257,7 +257,7 @@ final class CodexGatewayEngineTests: XCTestCase {
         await service.waitForPublication()
 
         let error = try XCTUnwrap(service.publicationError)
-        XCTAssertTrue(error.contains("could not be rewritten"), error)
+        XCTAssertTrue(error.contains(String(format: L("Local AI gateway config could not be rewritten: %@"), "disk is full")), error)
         XCTAssertEqual(writes, 2)
         XCTAssertEqual(servedCalls, 1, "a failed rewrite must not fall through to a matching catalogue")
     }

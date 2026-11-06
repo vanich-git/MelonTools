@@ -2033,7 +2033,11 @@ impl LocalRuntimeManager {
             return Err("No installed model files to serve.".to_string());
         }
 
-        let path = local_metadata_dir().join("models.ini");
+        let dir = local_metadata_dir();
+        // First launch on a clean Windows profile has no metadata directory yet.
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create models preset directory: {}", e))?;
+        let path = dir.join("models.ini");
         std::fs::write(&path, lines.join("\n") + "\n")
             .map_err(|e| format!("Failed to write models preset: {}", e))?;
         Ok(path)
