@@ -103,10 +103,14 @@ struct HFModelDetails: Identifiable, Equatable {
     let id: String
     let author: String
     let description: String
-    let downloads: Int
-    let likes: Int
+    let downloads: Int?
+    let likes: Int?
     let license: String?
     let ggufFiles: [HFGGUFFile]
+    var architecture: String? = nil
+    var parameterCount: UInt64? = nil
+    var capabilities: [String] = []
+    var lastModified: String? = nil
 }
 
 /// Service interacting with Hugging Face Hub APIs.
@@ -127,7 +131,7 @@ enum HuggingFaceService {
             case .downloads: return "Downloads"
             case .likes: return "Likes"
             case .lastModified: return "Recently updated"
-            case .trendingScore: return "Trending"
+            case .trendingScore: return "Recommended"
             }
         }
     }
@@ -151,6 +155,7 @@ enum HuggingFaceService {
         }
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "filter", value: "gguf"),
+            URLQueryItem(name: "full", value: "true"),
             URLQueryItem(name: "sort", value: sort.rawValue),
             URLQueryItem(name: "direction", value: "-1"),
             URLQueryItem(name: "limit", value: "\(limit)")
@@ -194,8 +199,12 @@ enum HuggingFaceService {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
 
-        if let range = text.range(of: "huggingface.co/") {
-            text = String(text[range.upperBound...])
+        if text.contains("://") {
+            guard let url = URL(string: text), url.scheme == "https" || url.scheme == "http",
+                  url.host?.lowercased() == "huggingface.co" else { return nil }
+            text = url.path
+        } else if text.hasPrefix("huggingface.co/") {
+            text = String(text.dropFirst("huggingface.co/".count))
         }
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         // Drop a trailing sub-path such as `tree/main/file.gguf`.
@@ -205,7 +214,11 @@ enum HuggingFaceService {
             }
         }
         let parts = text.split(separator: "/").map(String.init)
-        guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        guard parts.count >= 2,
+              parts.prefix(2).allSatisfy({ part in
+                  !part.isEmpty && part != "." && part != ".." && part.unicodeScalars.allSatisfy(allowed.contains)
+              }) else { return nil }
         return "\(parts[0])/\(parts[1])"
     }
 
@@ -237,60 +250,82 @@ enum HuggingFaceService {
             throw NSError(domain: "HuggingFaceService", code: status, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch model details (status: \(status))"])
         }
 
+        return try await parseModelDetails(data, repoId: repoId)
+    }
+
+    /// Keeps absent Hub metadata absent. No model-name or weight-size inference.
+    static func parseModelDetails(_ data: Data, repoId: String) async throws -> HFModelDetails {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw NSError(domain: "HuggingFaceService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON response"])
+            throw URLError(.cannotParseResponse)
         }
-
-        let author = json["author"] as? String ?? (repoId.split(separator: "/").first.map(String.init) ?? "Unknown")
-        let description = (json["cardData"] as? [String: Any])?["description"] as? String ?? ""
-        let downloads = json["downloads"] as? Int ?? 0
-        let likes = json["likes"] as? Int ?? 0
-        let license = (json["cardData"] as? [String: Any])?["license"] as? String
-
-        var ggufFiles: [HFGGUFFile] = []
+        let card = json["cardData"] as? [String: Any] ?? [:]
+        let config = json["config"] as? [String: Any] ?? [:]
+        let gguf = json["gguf"] as? [String: Any] ?? [:]
+        let safetensors = json["safetensors"] as? [String: Any] ?? [:]
+        let tags = json["tags"] as? [String] ?? []
         let siblings = json["siblings"] as? [[String: Any]] ?? []
-
+        let sizes = Dictionary(siblings.compactMap { sibling -> (String, UInt64)? in
+            guard let name = sibling["rfilename"] as? String else { return nil }
+            return (name, ggufFileSize(fromSibling: sibling))
+        }, uniquingKeysWith: { first, _ in first })
+        var files: [HFGGUFFile] = []
         for sibling in siblings {
-            guard let rfilename = sibling["rfilename"] as? String,
-                  rfilename.lowercased().hasSuffix(".gguf") else {
-                continue
-            }
-
-            // `#` and `?` in a repository file name used to become URL
-            // fragment/query and fetched a different object (or 404).
-            guard let downloadURL = downloadURL(repoId: repoId, rfilename: rfilename) else { continue }
-            let quant = extractQuantization(from: rfilename)
-            // LFS-backed files carry their size under `lfs`, while small or
-            // non-LFS siblings only report a top-level `size`. Reading just the
-            // LFS branch leaves GGUF entries at zero bytes, which breaks the
-            // progress bar and shows "0 KB" for the total.
-            let size = ggufFileSize(fromSibling: sibling)
-
-            let estimation = await LocalHardwareService.shared.estimateMemory(
-                weightsSize: size > 0 ? size : 4 * 1024 * 1024 * 1024
-            )
-
+            guard let name = sibling["rfilename"] as? String,
+                  name.lowercased().hasSuffix(".gguf"),
+                  let url = downloadURL(repoId: repoId, rfilename: name) else { continue }
+            let shard = LocalModelStore.shardInfo(for: name)
+            let size = sizes[name] ?? 0
+            // Evaluate the complete split model, never one deceptively small shard.
+            let groupSizes = shard.map { shard in
+                sizes.filter { entry in
+                    let part = LocalModelStore.shardInfo(for: entry.key)
+                    return part?.base == shard.base && part?.total == shard.total
+                        && (entry.key as NSString).deletingLastPathComponent == (name as NSString).deletingLastPathComponent
+                }.map(\.value)
+            } ?? [size]
+            let total = groupSizes.contains(0) ? 0 : groupSizes.reduce(0, +)
+            let estimation = await LocalHardwareService.shared.estimateMemory(weightsSize: total)
             let lfs = sibling["lfs"] as? [String: Any]
-            ggufFiles.append(HFGGUFFile(
-                rfilename: rfilename,
-                size: size,
-                downloadURL: downloadURL,
-                quantization: quant,
-                estimation: estimation,
-                sha256: (lfs?["sha256"] as? String)?.lowercased(),
-                shard: LocalModelStore.shardInfo(for: rfilename)
+            files.append(HFGGUFFile(
+                rfilename: name, size: size, downloadURL: url,
+                quantization: extractQuantization(from: name), estimation: estimation,
+                sha256: (lfs?["sha256"] as? String)?.lowercased(), shard: shard
             ))
         }
-
+        let architecture = gguf["architecture"] as? String
+            ?? config["model_type"] as? String
+            ?? (config["architectures"] as? [String])?.first
+        let parameters = (gguf["total"] as? NSNumber)?.uint64Value
+            ?? (safetensors["total"] as? NSNumber)?.uint64Value
+        let capabilities = ["text-generation", "image-text-to-text", "text-to-image", "automatic-speech-recognition", "feature-extraction", "tool-use", "reasoning"]
+            .filter { tags.contains($0) || (json["pipeline_tag"] as? String) == $0 }
         return HFModelDetails(
             id: repoId,
-            author: author,
-            description: description,
-            downloads: downloads,
-            likes: likes,
-            license: license,
-            ggufFiles: ggufFiles.sorted(by: { $0.size < $1.size })
+            author: json["author"] as? String ?? String(repoId.split(separator: "/").first ?? ""),
+            description: card["description"] as? String ?? json["description"] as? String ?? "",
+            downloads: json["downloads"] as? Int, likes: json["likes"] as? Int,
+            license: card["license"] as? String ?? tags.first(where: { $0.hasPrefix("license:") }).map { String($0.dropFirst(8)) },
+            ggufFiles: files.sorted { $0.size < $1.size },
+            architecture: architecture, parameterCount: parameters, capabilities: capabilities,
+            lastModified: json["lastModified"] as? String
         )
+    }
+
+    static func fetchReadme(repoId: String, token: String? = nil) async throws -> String {
+        guard let url = downloadURL(repoId: repoId, rfilename: "README.md") else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await NetworkProxy.session().data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 404 { return "" }
+        guard (200...299).contains(http.statusCode) else {
+            throw NSError(domain: "HuggingFaceService", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "README: HTTP \(http.statusCode)"])
+        }
+        guard let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
+        return text
     }
 
     /// Percent-encoded resolve URL for one repository file.
@@ -300,14 +335,14 @@ enum HuggingFaceService {
     /// and whose fragment carried the rest.
     static func downloadURL(repoId: String, rfilename: String) -> URL? {
         let repo = repoId.split(separator: "/").map(String.init)
-        guard repo.count == 2 else { return nil }
+        guard repo.count == 2, repositoryID(from: repoId) == repoId else { return nil }
         let fileComponents = rfilename.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard !fileComponents.isEmpty,
               fileComponents.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             return nil
         }
         func encode(_ component: String) -> String? {
-            component.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            component.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%")))
         }
         guard let owner = encode(repo[0]), let name = encode(repo[1]) else { return nil }
         var path = "/\(owner)/\(name)/resolve/main"
@@ -325,7 +360,11 @@ enum HuggingFaceService {
     /// Files that belong to the same split model as `file`.
     static func splitGroup(for file: HFGGUFFile, in files: [HFGGUFFile]) -> [HFGGUFFile] {
         guard let shard = file.shard else { return [file] }
-        let siblings = files.filter { $0.shard?.base == shard.base && $0.shard?.total == shard.total }
+        let directory = (file.rfilename as NSString).deletingLastPathComponent
+        let siblings = files.filter {
+            $0.shard?.base == shard.base && $0.shard?.total == shard.total
+                && ($0.rfilename as NSString).deletingLastPathComponent == directory
+        }
         return siblings.isEmpty ? [file] : siblings.sorted { ($0.shard?.index ?? 0) < ($1.shard?.index ?? 0) }
     }
 

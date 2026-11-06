@@ -398,6 +398,27 @@ final class LocalAICoreTests: XCTestCase {
         XCTAssertEqual(model.nativeContextLength, 32768)
     }
 
+    func testModelSettingsSaveReportsFailureAndRollsBackMemory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("melon-save-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalModelStore(directory: directory)
+        var model = LocalModel(
+            id: "local/save", displayName: "Save", provider: "Local AI", source: "import",
+            repoId: nil, revision: nil, files: ["save.gguf"], fileSize: 0,
+            quantization: "Q4_K_M", format: "GGUF", contextLength: 32768, configuredContext: 8192,
+            backend: .metal, gpuOffload: nil, threads: nil, runtimeStatus: .installed,
+            capabilities: [.text], installedAt: Date(), updatedAt: Date(), lastUsedAt: nil,
+            license: nil, checksum: nil, userSettings: .defaultSettings(forContext: 8192)
+        )
+        XCTAssertTrue(store.addOrUpdateModel(model))
+        try FileManager.default.removeItem(at: store.registryFileURL)
+        try FileManager.default.createDirectory(at: store.registryFileURL, withIntermediateDirectories: false)
+        model.userSettings.contextLength = 4096
+        XCTAssertFalse(store.addOrUpdateModel(model))
+        XCTAssertEqual(store.models.first?.userSettings.contextLength, 8192)
+    }
+
     // MARK: - Metrics (audit M4)
 
     func testMetricsParserHandlesLabelsAndTotals() {
@@ -569,7 +590,7 @@ final class LocalAICoreTests: XCTestCase {
         // as ordinary attention over-estimates by a wide margin.
         XCTAssertLessThan(hybrid.kvCacheSize, naive.kvCacheSize)
         XCTAssertGreaterThan(hybrid.stateCacheSize, 0)
-        XCTAssertEqual(hybrid.confidence, .medium)
+        XCTAssertEqual(hybrid.confidence, .low)
         XCTAssertLessThanOrEqual(hybrid.totalLow, hybrid.totalRequired)
         XCTAssertGreaterThanOrEqual(hybrid.totalHigh, hybrid.totalRequired)
         // The advisor explains itself; the exact wording is localized, so the
@@ -595,7 +616,7 @@ final class LocalAICoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(estimate.totalLow, estimate.totalHigh)
     }
 
-    func testMemoryEstimateDividesContextBetweenSlots() {
+    func testMemoryEstimateKeepsTotalKVCapacityAcrossSlots() {
         let single = LocalHardwareService.calculateMemoryEstimation(
             info: hardware, weightsSize: 4 * 1024 * 1024 * 1024, contextLength: 8192,
             kvCacheType: "f16", batchSize: 512, gpuLayers: 99, totalLayers: 32,
@@ -606,7 +627,69 @@ final class LocalAICoreTests: XCTestCase {
             kvCacheType: "f16", batchSize: 512, gpuLayers: 99, totalLayers: 32,
             profile: nil, slots: 4, backend: .metal
         )
-        XCTAssertEqual(four.kvCacheSize, single.kvCacheSize / 4)
+        XCTAssertEqual(four.kvCacheSize, single.kvCacheSize)
+    }
+
+    func testGgufScalarKVHeadsAndZeroLayerEntriesArePreserved() throws {
+        var scalar = GgufBuilder()
+        scalar.u32("llama.attention.head_count_kv", 8)
+        let scalarURL = try writeFixture(scalar.finish(kvCount: 1), name: "scalar-kv.gguf")
+        defer { try? FileManager.default.removeItem(at: scalarURL) }
+        XCTAssertEqual(try GgufMetadataReader.read(from: scalarURL).headCountKV, [8])
+        var array = GgufBuilder()
+        array.u32Array("qwen35.attention.head_count_kv", [0, 0, 2, 0])
+        let arrayURL = try writeFixture(array.finish(kvCount: 1), name: "layer-kv.gguf")
+        defer { try? FileManager.default.removeItem(at: arrayURL) }
+        XCTAssertEqual(try GgufMetadataReader.read(from: arrayURL).headCountKV, [0, 0, 2, 0])
+    }
+
+    private func attentionProfile(heads: [Int] = [8], interval: Int? = nil) -> GgufMemoryProfile? {
+        GgufMemoryProfile(info: GgufInfo(
+            version: 3, tensorCount: 0, architecture: "llama", name: nil,
+            contextLength: 32768, blockCount: 4, embeddingLength: 4096,
+            headCount: 32, headCountKV: heads, keyLength: 128, valueLength: 64,
+            slidingWindow: interval == nil ? nil : 4096, fullAttentionInterval: interval,
+            ssmInnerSize: nil, ssmStateSize: nil, ssmConvKernel: nil,
+            expertCount: nil, quantization: "Q4_K_M", chatTemplate: nil,
+            license: nil, fileType: 15
+        ))
+    }
+
+    func testMemoryUsesAsymmetricHeadsAndPerLayerZeroEntries() {
+        let estimate = LocalHardwareService.calculateMemoryEstimation(
+            info: hardware, weightsSize: 1_000_000, contextLength: 8192,
+            kvCacheType: "f16", batchSize: 128, gpuLayers: 0, totalLayers: 4,
+            profile: attentionProfile(heads: [0, 2, 0, 4]), backend: .cpu
+        )
+        XCTAssertEqual(estimate.kvCacheSize, UInt64((128 + 64) * 6 * 8192 * 2))
+    }
+
+    func testSlidingIntervalDoesNotMakeLayersRecurrent() {
+        let estimate = LocalHardwareService.calculateMemoryEstimation(
+            info: hardware, weightsSize: 1_000_000, contextLength: 8192,
+            kvCacheType: "f16", batchSize: 128, gpuLayers: 0, totalLayers: 4,
+            profile: attentionProfile(interval: 4), backend: .cpu
+        )
+        XCTAssertEqual(estimate.kvCacheSize, UInt64((128 + 64) * 8 * 4 * 8192 * 2))
+        XCTAssertEqual(estimate.stateCacheSize, 0)
+    }
+
+    func testOffloadAndFlashAttentionUseSeparateBudgets() {
+        let cpu = LocalHardwareService.calculateMemoryEstimation(
+            info: hardware, weightsSize: 1_000_000, contextLength: 8192,
+            kvCacheType: "f16", batchSize: 512, gpuLayers: 0, totalLayers: 4,
+            profile: attentionProfile(), backend: .metal
+        )
+        let gpu = LocalHardwareService.calculateMemoryEstimation(
+            info: hardware, weightsSize: 1_000_000, contextLength: 8192,
+            kvCacheType: "f16", batchSize: 512, gpuLayers: 4, totalLayers: 4,
+            profile: attentionProfile(), backend: .metal, flashAttention: false
+        )
+        XCTAssertEqual(cpu.gpuRequired, 0)
+        XCTAssertNil(cpu.gpuBudget)
+        XCTAssertEqual(gpu.gpuBudget, hardware.gpuRecommendedMaxWorkingSetSize)
+        XCTAssertGreaterThan(gpu.computeBuffers, cpu.computeBuffers)
+        XCTAssertEqual(gpu.ramRequired, gpu.totalRequired) // unified counted once
     }
 
     // MARK: - Migration (audit F9)

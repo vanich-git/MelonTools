@@ -83,6 +83,8 @@ pub struct Settings {
     /// One of 0 (never), 5, 10, 15 or 20. Default 15.
     #[serde(default = "default_island_auto_collapse_seconds")]
     pub island_auto_collapse_seconds: u32,
+    /// Separate compact overlay next to the primary taskbar tray. Opt-in.
+    pub taskbar_widget_visible: bool,
     /// Dashboard 2.0 card visibility. Default on.
     pub dashboard_show_pool_health: bool,
     pub dashboard_show_antigravity_pool: bool,
@@ -154,6 +156,7 @@ impl Default for Settings {
             notify_quota_reset: true,
             island_visible: true,
             island_auto_collapse_seconds: default_island_auto_collapse_seconds(),
+            taskbar_widget_visible: false,
             dashboard_show_pool_health: true,
             dashboard_show_antigravity_pool: true,
             dashboard_show_spend: true,
@@ -327,6 +330,19 @@ fn generate_management_secret() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn taskbar_widget_is_opt_in_and_survives_settings_roundtrip() {
+        let legacy: super::Settings = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.taskbar_widget_visible);
+        let enabled: super::Settings = serde_json::from_str(r#"{"taskbarWidgetVisible":true,"islandVisible":false}"#).unwrap();
+        assert!(enabled.taskbar_widget_visible);
+        assert!(!enabled.island_visible);
+        let stored = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(stored["taskbarWidgetVisible"], true);
+        let loaded: super::Settings = serde_json::from_value(stored).unwrap();
+        assert!(loaded.taskbar_widget_visible);
+    }
+
     use super::{
         carry_provider_models, protect_secrets, secret_fields, unprotect_secrets, ProviderModel,
         Settings,

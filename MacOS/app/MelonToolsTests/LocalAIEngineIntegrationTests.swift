@@ -14,13 +14,26 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
     private var overrideRoot: URL?
 
     override func tearDown() async throws {
-        await LocalInferenceService.shared.stop()
         if let root = overrideRoot {
+            // Stop while the temp vault is still installed: the real gateway is
+            // running and must not receive the test model on its way out.
+            LocalInferenceService.shared.suspendPublicationForTesting()
+            await LocalInferenceService.shared.stop()
+            // stop() starts an async publication task. Wait for it before
+            // restoring live hooks, otherwise it can still be scheduled after
+            // resetPublicationForTesting() and write the real gateway config.
+            await LocalInferenceService.shared.waitForPublication()
+            // Clear the test rows while the temp vault is still installed.
+            // Reloading after clearing the override would read (and possibly
+            // repair/save) the user's real registry and schedule a metadata
+            // repair against it. No singleton is touched on a skipped run.
+            LocalModelStore.shared.replaceModelsForTesting([])
             LocalPaths.baseOverride = nil
+            LocalInferenceService.shared.customBinaryPath = nil
+            LocalInferenceService.shared.resetPublicationForTesting()
             try? FileManager.default.removeItem(at: root)
             overrideRoot = nil
         }
-        LocalInferenceService.shared.customBinaryPath = nil
         try await super.tearDown()
     }
 
@@ -62,10 +75,29 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("melon-engine-e2e-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // Nothing above this line touched a shared service, so the override is
+        // installed before the store (and the engine) can read any real path.
         LocalPaths.baseOverride = root
         overrideRoot = root
+        LocalModelStore.shared.reloadFromDiskForTesting()
         LocalInferenceService.shared.customBinaryPath = binary.path
+        // These tests own a real llama-server, not the user's gateway. Any
+        // publication they trigger must stay in the temp vault: no config
+        // write, no catalog refresh, no monitor. The dedicated real-gateway
+        // test installs its own hooks pointed at its temp config.
+        LocalInferenceService.shared.publicationHooks = Self.isolatedPublicationHooks
+        print("E2E isolated vault: \(root.path)")
         return (binary, model)
+    }
+
+    private static var isolatedPublicationHooks: LocalInferenceService.PublicationHooks {
+        LocalInferenceService.PublicationHooks(
+            writeConfig: {},
+            refreshCatalog: {},
+            gatewayIsRunning: { false },
+            servedModelIDs: { [] },
+            readyAliases: { [] }
+        )
     }
 
     private func linkedModel(_ url: URL) -> LocalModel {
@@ -121,6 +153,25 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
         // The engine reports the context it really allocated (2048 here).
         XCTAssertEqual(stored.configuredContext, 2048)
 
+        // R2: a ready model must reach the gateway contract. `effectiveSources`
+        // is the single list both the catalog and `config.yaml` are built from.
+        await LocalInferenceService.shared.waitForPublication()
+        let sources = ModelSourcesStore.effectiveSources(
+            base: [],
+            localModels: LocalModelStore.shared.models,
+            port: LocalInferenceService.shared.publishedPort,
+            token: LocalInferenceService.shared.internalToken,
+            slots: LocalInferenceService.parallelRequests
+        )
+        let local = try XCTUnwrap(sources.first { $0.kind == .localAI })
+        XCTAssertEqual(local.id, "melon-local-ai")
+        XCTAssertEqual(local.baseURL, "http://127.0.0.1:\(LocalInferenceService.shared.publishedPort)/v1")
+        XCTAssertTrue(local.models.contains { $0.alias == model.id || $0.alias == "local/\(model.id)" })
+        let yaml = ModelSourcesStore.gatewayYAML(sources: sources)
+        XCTAssertTrue(yaml.contains("name: \"melon-local-ai\""), yaml)
+        XCTAssertTrue(yaml.contains("alias: \"\(model.id)\""), yaml)
+        XCTAssertTrue(yaml.contains("proxy-url: \"direct\""), yaml)
+
         // M5: the console pane has to receive real output, and the loopback API
         // key must never appear in it.
         var logs: [String] = []
@@ -132,6 +183,25 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
         XCTAssertFalse(logs.isEmpty, "the engine produced no console output")
         let token = LocalInferenceService.shared.internalToken
         XCTAssertFalse(logs.contains { $0.contains(token) }, "the API key leaked into the log")
+
+        // R2: Stop removes the source from the same contract; a stale ready row
+        // or a lingering local source would keep advertising a dead endpoint.
+        await LocalInferenceService.shared.stop()
+        XCTAssertFalse(LocalInferenceService.shared.status.isRunning)
+        // Build the contract from a pure empty base. Reading the real
+        // `ModelSourcesStore.shared` here would load/migrate/save the user's
+        // sources just to prove that this test's stopped engine is absent.
+        let stoppedSources = ModelSourcesStore.effectiveSources(
+            base: [],
+            localModels: LocalModelStore.shared.models,
+            port: LocalInferenceService.shared.publishedPort,
+            token: LocalInferenceService.shared.internalToken,
+            slots: LocalInferenceService.parallelRequests
+        )
+        XCTAssertFalse(
+            stoppedSources.contains { $0.kind == .localAI },
+            "a stopped engine must not stay in effectiveSources"
+        )
     }
 
     /// M4: the metrics endpoint needs `?model=` and the app used to poll without
@@ -273,4 +343,508 @@ final class LocalAIEngineIntegrationTests: XCTestCase {
             XCTAssertNotEqual(stored.runtimeStatus, .ready)
         }
     }
+
+    // MARK: - Publication contract (no engine opt-in required)
+
+    /// The exact YAML the app hands to the engine, normalised to placeholders.
+    /// The tracked fixture makes the engine-facing contract reviewable without
+    /// a live gateway; `/tmp` is the artifact the engine harness can consume.
+    func testNativeGatewayYAMLMatchesTheTrackedFixture() throws {
+        let alias = "__MODEL_ALIAS__"
+        let model = SourceModel(
+            id: "__MODEL_ID__",
+            display: alias,
+            contextLength: 4096,
+            enabled: true,
+            alias: alias
+        )
+        let source = ModelSource(
+            id: "melon-local-ai",
+            kind: .localAI,
+            title: "Local AI",
+            baseURL: "http://127.0.0.1:59999/v1",
+            apiKey: "__LOCAL_TOKEN__",
+            enabled: true,
+            models: [model]
+        )
+        let yaml = ModelSourcesStore.gatewayYAML(sources: [source])
+            .replacingOccurrences(of: "59999", with: "__LOCAL_PORT__")
+            .trimmingCharacters(in: .newlines)
+
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/local-ai-gateway.yaml")
+        let expected = try String(contentsOf: fixture, encoding: .utf8)
+            .trimmingCharacters(in: .newlines)
+        XCTAssertEqual(yaml, expected)
+
+        let output = URL(fileURLWithPath: "/tmp/melon-local-ai-macos.yaml")
+        try Data((yaml + "\n").utf8).write(to: output, options: .atomic)
+        XCTAssertFalse(yaml.contains("59999"), "a real port leaked into the fixture")
+    }
+
+    /// A ready model must be published without any opt-in switch: the only
+    /// filter in the loop is readiness, and verification happens after the
+    /// gateway lists the alias.
+    func testReadyModelIsPublishedWithoutOptIn() async throws {
+        let service = LocalInferenceService.shared
+        var writes = 0
+        var catalogSyncs = 0
+        var written = ""
+        let alias = "local/ready"
+
+        service.publicationHooks = .init(
+            writeConfig: {
+                writes += 1
+                written = ModelSourcesStore.gatewayYAML(sources: [Self.localSource(alias: alias)])
+            },
+            refreshCatalog: { catalogSyncs += 1 },
+            gatewayIsRunning: { true },
+            servedModelIDs: { written.contains("alias: \"\(alias)\"") ? [alias] : [] },
+            readyAliases: { [alias] }
+        )
+
+        service.publishLocalRoutes()
+        await service.waitForPublication()
+
+        XCTAssertNil(service.publicationError)
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(catalogSyncs, 1)
+        XCTAssertTrue(written.contains("name: \"melon-local-ai\""))
+        XCTAssertTrue(written.contains("alias: \"\(alias)\""))
+    }
+
+    /// A catalog failure must stay visible. It used to be assigned and then
+    /// cleared by the success path of the same publication.
+    func testCatalogFailureIsNotMaskedBySuccessfulVerification() async throws {
+        let service = LocalInferenceService.shared
+        var servedCalls = 0
+        service.publicationHooks = .init(
+            writeConfig: {},
+            refreshCatalog: { throw PublicationTestError("catalog is read-only") },
+            gatewayIsRunning: { true },
+            servedModelIDs: { servedCalls += 1; return ["local/ready"] },
+            readyAliases: { ["local/ready"] }
+        )
+
+        service.publishLocalRoutes()
+        await service.waitForPublication()
+
+        let error = try XCTUnwrap(service.publicationError)
+        XCTAssertTrue(error.contains("catalog"), error)
+        XCTAssertTrue(error.contains("catalog is read-only"), error)
+        XCTAssertEqual(servedCalls, 0, "verification must not run after a failed publish")
+    }
+
+    func testWriterFailureIsSurfaced() async throws {
+        let service = LocalInferenceService.shared
+        var catalogSyncs = 0
+        service.publicationHooks = .init(
+            writeConfig: { throw PublicationTestError("disk is full") },
+            refreshCatalog: { catalogSyncs += 1 },
+            gatewayIsRunning: { true },
+            servedModelIDs: { ["local/ready"] },
+            readyAliases: { ["local/ready"] }
+        )
+
+        service.publishLocalRoutes()
+        await service.waitForPublication()
+
+        let error = try XCTUnwrap(service.publicationError)
+        XCTAssertTrue(error.contains("routes were not written"), error)
+        XCTAssertEqual(catalogSyncs, 0)
+    }
+
+    /// A queued task can be cancelled before the main actor ever runs it. It
+    /// must not capture the current hooks and write through them: teardown may
+    /// already have restored the live gateway by the time it is scheduled.
+    func testPublicationCancelledBeforeStartingDoesNotWrite() async {
+        let service = LocalInferenceService.shared
+        var writes = 0
+        var catalogSyncs = 0
+        var servedCalls = 0
+        service.publicationHooks = .init(
+            writeConfig: { writes += 1 },
+            refreshCatalog: { catalogSyncs += 1 },
+            gatewayIsRunning: { true },
+            servedModelIDs: { servedCalls += 1; return ["local/ready"] },
+            readyAliases: { ["local/ready"] }
+        )
+
+        service.publishLocalRoutes()
+        // No suspension has happened since the task was created, so it cannot
+        // have started yet; the cancel is deterministic.
+        service.cancelPendingPublicationForTesting()
+        await service.waitForPublication()
+
+        XCTAssertEqual(writes, 0, "a cancelled-before-start task wrote the config")
+        XCTAssertEqual(catalogSyncs, 0)
+        XCTAssertEqual(servedCalls, 0)
+    }
+
+    /// Cancelling publication A and starting B must leave B's result in place;
+    /// A's late answer may not overwrite the newer state.
+    func testStalePublicationCannotOverwriteTheNewerResult() async throws {
+        let service = LocalInferenceService.shared
+        var servedCalls = 0
+        var firstStarted = false
+        service.publicationHooks = .init(
+            writeConfig: {},
+            refreshCatalog: {},
+            gatewayIsRunning: { true },
+            servedModelIDs: {
+                servedCalls += 1
+                if servedCalls == 1 {
+                    firstStarted = true
+                    // A is cancelled while suspended here.
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                    return []
+                }
+                return ["local/ready"]
+            },
+            readyAliases: { ["local/ready"] },
+            wait: { _ in }
+        )
+
+        service.publishLocalRoutes()
+        while !firstStarted { await Task.yield() }
+        service.publishLocalRoutes() // cancels the first task
+        await service.waitForPublication()
+
+        XCTAssertNil(service.publicationError)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertNil(service.publicationError, "a cancelled publication overwrote the newer result")
+        XCTAssertEqual(servedCalls, 2)
+    }
+
+    /// Stop rewrites the config and proves the alias is gone, instead of
+    /// assuming the watcher applied the removal.
+    func testStopVerifiesThatTheAliasIsNoLongerServed() async throws {
+        let service = LocalInferenceService.shared
+        var writes = 0
+        var servedCalls = 0
+        var served: Set<String> = ["local/old"]
+        service.publicationHooks = .init(
+            writeConfig: {
+                writes += 1
+                if writes == 2 { served = [] }
+            },
+            refreshCatalog: {},
+            gatewayIsRunning: { true },
+            servedModelIDs: { servedCalls += 1; return served },
+            readyAliases: { [] },
+            wait: { _ in }
+        )
+
+        service.publishLocalRoutes(expectingAbsent: ["local/old"])
+        await service.waitForPublication()
+
+        XCTAssertNil(service.publicationError)
+        XCTAssertEqual(writes, 2, "the retry must rewrite the config in place")
+        XCTAssertEqual(servedCalls, 2)
+    }
+
+    func testStopReportsAnAliasThatStaysServed() async throws {
+        let service = LocalInferenceService.shared
+        service.publicationHooks = .init(
+            writeConfig: {},
+            refreshCatalog: {},
+            gatewayIsRunning: { true },
+            servedModelIDs: { ["local/old"] },
+            readyAliases: { [] },
+            wait: { _ in }
+        )
+
+        service.publishLocalRoutes(expectingAbsent: ["local/old"])
+        await service.waitForPublication()
+
+        let error = try XCTUnwrap(service.publicationError)
+        XCTAssertTrue(error.contains("still served"), error)
+        XCTAssertTrue(error.contains("local/old"), error)
+    }
+
+    func testStoppedGatewayClearsThePublicationError() async throws {
+        let service = LocalInferenceService.shared
+        var servedCalls = 0
+        service.publicationHooks = .init(
+            writeConfig: {},
+            refreshCatalog: {},
+            gatewayIsRunning: { false },
+            servedModelIDs: { servedCalls += 1; return [] },
+            readyAliases: { ["local/ready"] }
+        )
+
+        service.publishLocalRoutes()
+        await service.waitForPublication()
+
+        XCTAssertNil(service.publicationError)
+        XCTAssertEqual(servedCalls, 0)
+    }
+
+    // MARK: - Real gateway app-path convergence
+
+    /// The exact production path a Ready model takes: `effectiveSources` →
+    /// `gatewayYAML` → atomic config write → the real engine's `/v1/models`.
+    /// The gateway runs against a temporary support directory and port; the
+    /// installed app, its config and its gateway process are never touched.
+    /// Skips only when no engine binary is available (CI); on a developer Mac
+    /// with the installed app this test executes the real process.
+    func testProductionWriterPublishesAndRemovesRoutesOnARealGateway() async throws {
+        guard let binary = Self.gatewayBinary() else {
+            throw XCTSkip("no gateway engine binary; set MELON_GATEWAY_BIN to run the real-process check")
+        }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("melon-gateway-e2e-\(UUID().uuidString)", isDirectory: true)
+        let authDir = root.appendingPathComponent("auths", isDirectory: true)
+        let configURL = root.appendingPathComponent("config.yaml")
+        let logURL = root.appendingPathComponent("gateway.log")
+        try FileManager.default.createDirectory(at: authDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close() }
+
+        let gatewayPort = try Self.freePort()
+        let localPort = try Self.freePort()
+        let gatewayKey = "test-gateway-\(UUID().uuidString)"
+        let localToken = "test-local-\(UUID().uuidString)"
+        let alias = "local/qwen3-integrated"
+
+        var models = [publicationModel(status: .installed, alias: alias)]
+        var writeCount = 0
+        var servedCalls = 0
+
+        func writeConfig() throws {
+            let sources = ModelSourcesStore.effectiveSources(
+                base: [],
+                localModels: models,
+                port: localPort,
+                token: localToken,
+                slots: 2
+            )
+            let yaml = Self.gatewayBaseConfig(
+                port: gatewayPort,
+                apiKey: gatewayKey,
+                authDir: authDir.path
+            ) + ModelSourcesStore.gatewayYAML(sources: sources)
+            try SecureFile.write(Data(yaml.utf8), to: configURL)
+            writeCount += 1
+        }
+
+        // Start with an installed-only model: the real gateway must come up
+        // without any local route, so the later publication is the only cause.
+        try writeConfig()
+        XCTAssertFalse(try String(contentsOf: configURL, encoding: .utf8).contains(alias))
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["-config", configURL.path]
+        process.currentDirectoryURL = root
+        process.standardOutput = log
+        process.standardError = log
+        try process.run()
+        defer {
+            LocalInferenceService.shared.resetPublicationForTesting()
+            if process.isRunning { process.terminate() }
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning && Date() < deadline { usleep(50_000) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        var started = false
+        for _ in 0..<40 {
+            if !process.isRunning { break }
+            if let ids = try? await Self.gatewayModelIDs(port: gatewayPort, key: gatewayKey),
+               !ids.contains(alias) {
+                started = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(started, "gateway did not answer: \(Self.tail(logURL))")
+
+        let service = LocalInferenceService.shared
+        service.resetPublicationForTesting()
+        service.publicationHooks = LocalInferenceService.PublicationHooks(
+            writeConfig: writeConfig,
+            refreshCatalog: {},
+            gatewayIsRunning: { process.isRunning },
+            servedModelIDs: {
+                servedCalls += 1
+                return try await Self.gatewayModelIDs(port: gatewayPort, key: gatewayKey)
+            },
+            readyAliases: { LocalInferenceService.readyAliases(in: models) }
+        )
+
+        // Ready: the production generator must add the route to the live API.
+        let writesBeforeAdd = writeCount
+        models = [publicationModel(status: .ready, alias: alias)]
+        service.publishLocalRoutes()
+        await service.waitForPublication()
+        XCTAssertNil(service.publicationError)
+        // The first write can be observed before the watcher answers; a retry
+        // is allowed but not required. The retry path has its own deterministic
+        // hooks test.
+        XCTAssertGreaterThanOrEqual(writeCount, writesBeforeAdd + 1)
+        XCTAssertGreaterThan(servedCalls, 0)
+        let served = try await Self.gatewayModelIDs(port: gatewayPort, key: gatewayKey)
+        XCTAssertTrue(served.contains(alias), "published routes: \(served.sorted())")
+
+        // Stop/delete: the same production generator must remove it again.
+        let writesBeforeRemove = writeCount
+        models = [publicationModel(status: .installed, alias: alias)]
+        service.publishLocalRoutes(expectingAbsent: [alias])
+        await service.waitForPublication()
+        XCTAssertNil(service.publicationError)
+        XCTAssertGreaterThanOrEqual(writeCount, writesBeforeRemove + 1)
+        let remaining = try await Self.gatewayModelIDs(port: gatewayPort, key: gatewayKey)
+        XCTAssertFalse(remaining.contains(alias), "stale routes: \(remaining.sorted())")
+    }
+
+    private func publicationModel(status: ModelRuntimeStatus, alias: String) -> LocalModel {
+        var model = LocalModel(
+            id: String(alias.dropFirst("local/".count)),
+            displayName: "Qwen 3 Integrated",
+            provider: "Local AI",
+            source: "import",
+            repoId: nil,
+            revision: nil,
+            files: ["integrated.gguf"],
+            fileSize: 1,
+            quantization: "Q4_K_M",
+            format: "GGUF",
+            contextLength: 8192,
+            configuredContext: 8192,
+            backend: .metal,
+            gpuOffload: nil,
+            threads: nil,
+            runtimeStatus: status,
+            capabilities: [.text],
+            installedAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastUsedAt: nil,
+            license: nil,
+            checksum: nil,
+            userSettings: .defaultSettings(forContext: 8192)
+        )
+        model.userSettings.contextLength = 8192
+        return model
+    }
+
+    private static func gatewayBinary() -> URL? {
+        let environment = ProcessInfo.processInfo.environment["MELON_GATEWAY_BIN"]
+        let candidates = [
+            environment,
+            NSHomeDirectory() + "/Library/Application Support/MelonTools/gateway/bin/cliproxyapi",
+            "/Applications/Melon Tools.app/Contents/Resources/gateway/cliproxyapi",
+        ].compactMap { $0 }
+        return candidates
+            .map { URL(fileURLWithPath: $0) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func gatewayBaseConfig(port: Int, apiKey: String, authDir: String) -> String {
+        """
+        # Melon Tools test gateway — temporary config, never the user's.
+        config-version: 8
+
+        server:
+          host: "127.0.0.1"
+          port: \(port)
+
+        access:
+          api-keys:
+            - "\(apiKey)"
+
+        oauth:
+          auth-dir: "\(authDir)"
+
+        remote-management:
+          allow-remote: false
+          secret-key: "test-management-\(UUID().uuidString)"
+          disable-control-panel: true
+          disable-auto-update-panel: true
+
+        routing:
+          strategy: "round-robin"
+        request-retry: 3
+        max-retry-interval: 45
+        transient-error-cooldown-seconds: 20
+        stream-bootstrap-timeout-seconds: 30
+
+        requests:
+          proxy-url: ""
+
+        """
+    }
+
+    private static func gatewayModelIDs(port: Int, key: String) async throws -> Set<String> {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/models")!)
+        request.timeoutInterval = 2
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await NetworkProxy.directSession().data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        struct Payload: Decodable {
+            struct Entry: Decodable { let id: String }
+            let data: [Entry]
+        }
+        return Set(try JSONDecoder().decode(Payload.self, from: data).data.map(\.id))
+    }
+
+    private static func freePort() throws -> Int {
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw PublicationTestError("socket() failed") }
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else { throw PublicationTestError("bind() failed") }
+        var local = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &local) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.getsockname(fd, $0, &length)
+            }
+        }
+        guard named == 0 else { throw PublicationTestError("getsockname() failed") }
+        return Int(UInt16(bigEndian: local.sin_port))
+    }
+
+    private static func tail(_ url: URL) -> String {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return String(text.suffix(1200))
+    }
+
+    private static func localSource(alias: String) -> ModelSource {
+        let model = SourceModel(
+            id: String(alias.dropFirst("local/".count)),
+            display: "Ready",
+            contextLength: 4096,
+            enabled: true,
+            alias: alias
+        )
+        return ModelSource(
+            id: "melon-local-ai",
+            kind: .localAI,
+            title: "Local AI",
+            baseURL: "http://127.0.0.1:59999/v1",
+            apiKey: "__LOCAL_TOKEN__",
+            enabled: true,
+            models: [model]
+        )
+    }
+}
+
+private struct PublicationTestError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
 }

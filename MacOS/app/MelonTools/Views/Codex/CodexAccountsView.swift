@@ -226,7 +226,7 @@ struct CodexAccountsView: View {
 
     private func accountCard(_ account: CodexAccount) -> some View {
         let isCurrent = store.currentAccountId == account.id
-        let accentTint: Color = isCurrent ? MTTheme.emerald : MTTheme.cyan
+        let accentTint: Color = account.poolEnabled == false ? MTTheme.textSecondary : (isCurrent ? MTTheme.emerald : MTTheme.cyan)
         return MTCard(accent: accentTint, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(alignment: .top, spacing: MTTheme.s3) {
@@ -250,7 +250,9 @@ struct CodexAccountsView: View {
                         }
                     }
                     Spacer()
-                    if isCurrent {
+                    if account.poolEnabled == false {
+                        MTStatusPill(text: L("Disabled from pool"), status: .idle)
+                    } else if isCurrent {
                         MTStatusPill(text: L("active"), status: .ok)
                     }
                     Button {
@@ -264,6 +266,7 @@ struct CodexAccountsView: View {
                     }
                     .buttonStyle(.plain)
                     .help(L("Account routing settings"))
+                    .accessibilityLabel(L("Account routing settings"))
                 }
 
                 routingBadges(account)
@@ -365,6 +368,7 @@ struct CodexAccountsView: View {
                 }
             }
         }
+        .saturation(account.poolEnabled == false ? 0 : 1)
     }
 
     /// Small chips under the account name: quota limits, “first”, “backup”
@@ -964,6 +968,7 @@ private struct AccountRoutingSheet: View {
     @State private var weekly = 5
     @State private var preferred = false
     @State private var backup = false
+    @State private var poolEnabled = true
     @State private var initialized = false
     @State private var showModels = false
 
@@ -975,6 +980,14 @@ private struct AccountRoutingSheet: View {
                     .foregroundStyle(MTTheme.textPrimary)
                 Text(account.displayName)
                     .font(MTTheme.mono(11))
+                    .foregroundStyle(MTTheme.textSecondary)
+            }
+
+            VStack(alignment: .leading, spacing: MTTheme.s2) {
+                Toggle(L("Participate in pool"), isOn: $poolEnabled)
+                    .toggleStyle(.switch)
+                Text(L("When off, the account is excluded from routing. Its data and quotas stay visible and keep updating. Enable it here to return it to the pool."))
+                    .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
             }
 
@@ -1047,7 +1060,8 @@ private struct AccountRoutingSheet: View {
                         hourlyPercent: hourlyEnabled ? hourly : nil,
                         weeklyPercent: weeklyEnabled ? weekly : nil,
                         preferredFirst: preferred,
-                        isBackup: backup
+                        isBackup: backup,
+                        poolEnabled: poolEnabled
                     )
                     dismiss()
                 }
@@ -1068,6 +1082,7 @@ private struct AccountRoutingSheet: View {
             weekly = account.weeklyReservePercent ?? 5
             preferred = account.preferredFirst == true
             backup = account.isBackup == true
+            poolEnabled = account.poolEnabled != false
         }
     }
 

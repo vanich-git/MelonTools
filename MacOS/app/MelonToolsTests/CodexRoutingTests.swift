@@ -33,6 +33,58 @@ final class CodexRoutingTests: XCTestCase {
         return account
     }
 
+    func testManualDisableExcludesAccountInEveryRoutingMode() {
+        var disabled = account(id: "disabled", preferred: true)
+        disabled.poolEnabled = false
+        let healthy = account(id: "healthy", hourly: 50)
+        for strategy in CodexRoutingStrategy.allCases {
+            let resolution = CodexRoutingPlanner.resolve(
+                accounts: [disabled, healthy], strategy: strategy, manualOrder: [disabled.id, healthy.id]
+            )
+            XCTAssertEqual(resolution.orderedIds, [healthy.id], "\(strategy)")
+            XCTAssertNotNil(resolution.blockReasons[disabled.id])
+            XCTAssertNil(CodexRoutingPlanner.priorities(from: resolution.orderedIds)[disabled.id])
+        }
+    }
+
+    func testQuotaRecoveryAndStalenessDoNotLiftManualDisable() {
+        var disabled = account(hourly: 0, weekly: 0)
+        disabled.poolEnabled = false
+        disabled.quota?.hourlyRemainingPercent = 100
+        disabled.quota?.weeklyRemainingPercent = 100
+        for stamp in [Date(), Date.distantPast] {
+            disabled.quotaUpdatedAt = stamp
+            XCTAssertNotNil(CodexRoutingPlanner.blockReason(disabled))
+            XCTAssertTrue(CodexRoutingPlanner.resolve(accounts: [disabled], strategy: .auto, manualOrder: []).orderedIds.isEmpty)
+        }
+        disabled.poolEnabled = true
+        XCTAssertNil(CodexRoutingPlanner.blockReason(disabled))
+        XCTAssertEqual(CodexRoutingPlanner.resolve(accounts: [disabled], strategy: .auto, manualOrder: []).orderedIds, [disabled.id])
+    }
+
+    func testManualEnableStillRespectsQuotaLimits() {
+        var enabled = account(hourly: 5, hourlyReserve: 10)
+        enabled.poolEnabled = true
+        XCTAssertEqual(CodexRoutingPlanner.blockCause(enabled), .hourlyReserve)
+        XCTAssertNotNil(CodexRoutingPlanner.blockReason(enabled))
+    }
+
+    func testPoolMembershipRoundTripsAndOldAccountsDefaultToEnabled() throws {
+        let legacy = account()
+        let oldData = try JSONEncoder().encode(legacy)
+        let restored = try JSONDecoder().decode(CodexAccount.self, from: oldData)
+        XCTAssertNil(restored.poolEnabled)
+        XCTAssertNil(CodexRoutingPlanner.blockReason(restored))
+        for enabled in [false, true] {
+            var changed = legacy
+            changed.poolEnabled = enabled
+            let roundTrip = try JSONDecoder().decode(CodexAccount.self, from: JSONEncoder().encode(changed))
+            XCTAssertEqual(roundTrip.poolEnabled, enabled)
+            XCTAssertEqual(roundTrip.quota, legacy.quota)
+            XCTAssertEqual(roundTrip.tokens, legacy.tokens)
+        }
+    }
+
     func testExhaustedWeeklyWindowBlocks() {
         let account = account(hourly: 80, weekly: 0)
         XCTAssertNotNil(CodexRoutingPlanner.blockReason(account))
@@ -82,6 +134,21 @@ final class CodexRoutingTests: XCTestCase {
         let values = CodexRoutingPlanner.priorities(from: [first.id, second.id])
         XCTAssertEqual(values[first.id], 2)
         XCTAssertEqual(values[second.id], 1)
+    }
+
+    func testManualOrderMovesAcrossDisabledAccountsInOneClick() {
+        let a = account(id: "a")
+        var hidden = account(id: "hidden")
+        hidden.poolEnabled = false
+        let b = account(id: "b")
+        let accounts = [a, hidden, b]
+        let order = [a.id, hidden.id, b.id]
+        let expected = [b.id, hidden.id, a.id]
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(b.id, up: true, order: order, accounts: accounts), expected)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(a.id, up: false, order: order, accounts: accounts), expected)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(a.id, up: true, order: order, accounts: accounts), order)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(b.id, up: false, order: order, accounts: accounts), order)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(hidden.id, up: true, order: order, accounts: accounts), order)
     }
 
     func testManualOrderIsRespected() {
@@ -311,6 +378,17 @@ final class CodexPoolPauseSummaryTests: XCTestCase {
         ]))
 
         XCTAssertEqual(summary.resetAt, knownReset)
+    }
+
+    func testManualDisabledAccountsAreNeverLiftedByPoolPauseSummary() throws {
+        var disabled = account(id: "disabled", hourly: 0, weekly: 0)
+        disabled.poolEnabled = false
+        XCTAssertNil(CodexPoolPauseSummary.make(accounts: [disabled]))
+        let reserved = account(id: "reserved", hourly: 5, hourlyReserve: 10)
+        let summary = try XCTUnwrap(CodexPoolPauseSummary.make(accounts: [disabled, reserved]))
+        XCTAssertEqual(summary.causes, [reserved.id: .hourlyReserve])
+        XCTAssertTrue(summary.canLift)
+        XCTAssertNil(CodexPoolPauseSummary.make(accounts: [disabled, account(id: "usable")]))
     }
 
     func testSummaryRequiresANonEmptyFullyPausedPool() {

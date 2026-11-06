@@ -68,7 +68,12 @@ final class LocalModelStore: ObservableObject {
     init(directory: URL? = nil) {
         directoryOverride = directory
         if directory == nil {
-            hfTokenConfigured = LocalKeychainHelper.loadHuggingFaceToken() != nil
+            // The real app remembers whether a Hugging Face token exists. The
+            // test host must not trigger a Keychain prompt for a UI flag it
+            // never uses.
+            if !AppRuntime.isTesting {
+                hfTokenConfigured = LocalKeychainHelper.loadHuggingFaceToken() != nil
+            }
             loadCustomPath()
             ensureDirectoriesExist()
         } else if let directory {
@@ -911,7 +916,8 @@ final class LocalModelStore: ObservableObject {
     private func scheduleMetadataRepair() {
         metadataRepairTask?.cancel()
         let candidates = models.filter {
-            $0.memoryProfile == nil || $0.blockCount == nil || $0.architecture == nil
+            $0.memoryProfile == nil || $0.memoryProfile?.headCountKVByLayer == nil
+                || $0.blockCount == nil || $0.architecture == nil
                 || $0.quantization == "GGUF" || $0.quantization == "Unknown"
         }
         guard !candidates.isEmpty else { return }
@@ -954,7 +960,7 @@ final class LocalModelStore: ObservableObject {
                 models[index].quantization = info.quantization
                 changed = true
             }
-            if models[index].memoryProfile == nil, let profile = GgufMemoryProfile(info: info) {
+            if let profile = GgufMemoryProfile(info: info), profile != models[index].memoryProfile {
                 models[index].memoryProfile = profile
                 changed = true
             }
@@ -978,14 +984,20 @@ final class LocalModelStore: ObservableObject {
         }
     }
 
-    func addOrUpdateModel(_ model: LocalModel) {
-        guard canWriteRegistry else { return }
+    @discardableResult
+    func addOrUpdateModel(_ model: LocalModel) -> Bool {
+        guard canWriteRegistry else { return false }
+        let previous = models
         if let idx = models.firstIndex(where: { $0.id == model.id }) {
             models[idx] = model
         } else {
             models.append(model)
         }
-        saveRegistry()
+        guard saveRegistry() else {
+            models = previous
+            return false
+        }
+        return true
     }
 
     func updateModelStatus(id: String, status: ModelRuntimeStatus) {
@@ -1007,6 +1019,25 @@ final class LocalModelStore: ObservableObject {
     /// Resets every live-engine state to `installed`. Called when the router is
     /// stopped or found dead so the catalog cannot advertise a model that no
     /// process is serving.
+#if DEBUG
+    /// Test seam: reload the registry from the current `LocalPaths.baseOverride`
+    /// instead of keeping rows loaded from the real vault at app startup.
+    func reloadFromDiskForTesting() {
+        metadataRepairTask?.cancel()
+        models = []
+        registryError = nil
+        activeModelId = nil
+        loadRegistry()
+    }
+
+    /// Replaces the in-memory rows without reading or writing any registry.
+    /// Cancels a pending metadata repair so it cannot outlive the test vault.
+    func replaceModelsForTesting(_ models: [LocalModel]) {
+        metadataRepairTask?.cancel()
+        self.models = models
+    }
+#endif
+
     func normalizeRuntimeStates() {
         guard canWriteRegistry else { return }
         var changed = false

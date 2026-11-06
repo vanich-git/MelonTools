@@ -30,6 +30,7 @@ mod routing;
 mod scheduler;
 mod schema;
 mod settings;
+mod taskbar_widget;
 mod updater;
 mod vault;
 
@@ -179,12 +180,16 @@ async fn settings_set(
     }
     bridge::invalidate_providers(&state.bridge);
     if was_running && old.port == merged.port {
+        // Every settings save lands here; `write_config` compares the generated
+        // YAML with the last generation and leaves the file untouched, so a
+        // change that does not affect the gateway no longer reloads the engine.
         let _ = gateway::write_config(&merged);
     }
     if old.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
     }
     set_island_visible(&app, merged.island_visible);
+    taskbar_widget::set_visible(&app, merged.taskbar_widget_visible);
     if was_running && old.port != merged.port {
         let _ = stop_gateway(state.inner()).await;
         let _ = start_gateway(state.inner()).await;
@@ -725,10 +730,16 @@ async fn save_reserves(
     id: String,
     hourly: Option<i64>,
     weekly: Option<i64>,
+    pool_enabled: Option<bool>,
 ) -> Result<Vec<Value>, String> {
     vault::set_account_field(&id, move |item| {
         item["hourlyReservePercent"] = json!(hourly);
         item["weeklyReservePercent"] = json!(weekly);
+        if let Some(enabled) = pool_enabled {
+            if item.get("poolEnabled").and_then(Value::as_bool).unwrap_or(true) != enabled {
+                item["poolEnabled"] = json!(enabled);
+            }
+        }
     })?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
@@ -814,22 +825,24 @@ async fn move_priority(state: State<'_, AppState>, id: String, up: bool) -> Resu
         if order.is_empty() {
             order = vault::accounts().iter().map(|a| a.id.clone()).collect();
         }
-        if let Some(index) = order.iter().position(|value| value == &id) {
-            let target = if up {
-                index.checked_sub(1)
-            } else if index + 1 < order.len() {
-                Some(index + 1)
-            } else {
-                None
-            };
-            if let Some(target) = target {
-                order.swap(index, target);
-            }
-        }
+        let enabled: std::collections::HashSet<String> = vault::accounts()
+            .iter().filter(|account| account.pool_enabled()).map(|account| account.id.clone()).collect();
+        move_enabled_priority(&mut order, &id, up, &enabled);
         s.priority_order = order;
     })?;
     mutate_settings(&state, |s| s.routing_strategy = "custom".to_string())?;
     resync(&state).await
+}
+
+fn move_enabled_priority(order: &mut [String], id: &str, up: bool, enabled: &std::collections::HashSet<String>) {
+    if !enabled.contains(id) { return; }
+    let Some(index) = order.iter().position(|value| value == id) else { return; };
+    let target = if up {
+        (0..index).rev().find(|&candidate| enabled.contains(&order[candidate]))
+    } else {
+        (index + 1..order.len()).find(|&candidate| enabled.contains(&order[candidate]))
+    };
+    if let Some(target) = target { order.swap(index, target); }
 }
 
 #[tauri::command]
@@ -1716,7 +1729,9 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
                 if crate::catalog::refresh_in_background().await {
                     let state = handle.state::<AppState>();
                     let settings = state.settings();
-                    let _ = crate::gateway::write_config(&settings);
+                    // Coalesced with the other config writers; an unchanged
+                    // generation leaves the file untouched.
+                    crate::gateway::schedule_write_config(settings);
                 }
             });
         }
@@ -2077,10 +2092,11 @@ async fn island_snapshot(state: State<'_, AppState>) -> Result<Value, String> {
     Ok(value)
 }
 
-async fn build_island_snapshot(state: &AppState) -> Value {
-    let settings = state.settings();
-    let running = gateway::health(settings.port, &settings.api_key).await;
-    let accounts = vault::list_views();
+fn island_codex_summary(accounts: Vec<Value>) -> Value {
+    let accounts: Vec<Value> = accounts
+        .into_iter()
+        .filter(|account| account.get("poolEnabled").and_then(Value::as_bool) != Some(false))
+        .collect();
     let hourly: Vec<f64> = accounts
         .iter()
         .filter_map(|account| account.get("hourlyRemaining").and_then(Value::as_f64))
@@ -2089,24 +2105,32 @@ async fn build_island_snapshot(state: &AppState) -> Value {
         .iter()
         .filter_map(|account| account.get("weeklyRemaining").and_then(Value::as_f64))
         .collect();
+    json!({
+        "accounts": accounts.len(),
+        "hourly": if hourly.is_empty() { Value::Null } else { Value::from(hourly.iter().sum::<f64>()) },
+        "weekly": if weekly.is_empty() { Value::Null } else { Value::from(weekly.iter().sum::<f64>()) },
+        "max": (accounts.len() as f64) * 100.0,
+    })
+}
+
+async fn build_island_snapshot(state: &AppState) -> Value {
+    let settings = state.settings();
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    let codex = island_codex_summary(vault::list_views());
+    let count = codex["accounts"].as_u64().unwrap_or(0) as usize;
     let summary = scheduler::summary();
     json!({
         "lang": settings.lang,
         "islandAutoCollapseSeconds": settings.island_auto_collapse_seconds,
         "gateway": { "running": running, "port": settings.port },
-        "codex": {
-            "accounts": accounts.len(),
-            "hourly": if hourly.is_empty() { Value::Null } else { Value::from(hourly.iter().sum::<f64>()) },
-            "weekly": if weekly.is_empty() { Value::Null } else { Value::from(weekly.iter().sum::<f64>()) },
-            "max": (accounts.len() as f64) * 100.0,
-        },
+        "codex": codex,
         "antigravity": { "accounts": antigravity::auth_files().len() },
         "scheduler": {
             "due": summary.get("dueCount").cloned().unwrap_or(json!(0)),
             "nextRunAt": summary.get("nextRunAt").cloned().unwrap_or(Value::Null),
             "running": summary.get("running").cloned().unwrap_or(Value::Null),
         },
-        "providers": island_provider_count(&settings, accounts.len()),
+        "providers": island_provider_count(&settings, count),
     })
 }
 
@@ -2300,6 +2324,7 @@ fn main() {
     let initial_settings = settings::load();
     let initial_lang = initial_settings.lang.clone();
     let island_visible = initial_settings.island_visible;
+    let taskbar_widget_visible = initial_settings.taskbar_widget_visible;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2355,6 +2380,7 @@ fn main() {
                 build_island_panel(app.handle());
                 set_island_visible(app.handle(), true);
             }
+            taskbar_widget::set_visible(app.handle(), taskbar_widget_visible);
 
             // Auto-start the gateway, point Codex at it, then keep the chips
             // bridge ticking every 5 seconds.
@@ -2646,6 +2672,10 @@ fn main() {
             // orderly case where the engine would otherwise linger.
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
+                // A coalesced write still sleeping in the runtime dies with it;
+                // persist the current intent so the next launch and the audit
+                // trail see the last configured state (no-op when unchanged).
+                let _ = gateway::write_config(&state.settings());
                 let _ = gateway::stop(&state.gw);
                 let runtime = state.local_runtime.clone();
                 tauri::async_runtime::block_on(async move {
@@ -2662,6 +2692,34 @@ mod tests {
         pool_toggle_selection, settings_view, tray_event_payload, ApiToggle,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn island_quota_summary_excludes_manual_off_and_preserves_unknown() {
+        let summary = super::island_codex_summary(vec![
+            serde_json::json!({"poolEnabled":false,"hourlyRemaining":100,"weeklyRemaining":100}),
+            serde_json::json!({"poolEnabled":true,"hourlyRemaining":90,"weeklyRemaining":0}),
+            serde_json::json!({"hourlyRemaining":80}),
+        ]);
+        assert_eq!(summary["accounts"], 2);
+        assert_eq!(summary["hourly"], 170.0);
+        assert_eq!(summary["weekly"], 0.0);
+        assert_eq!(summary["max"], 200.0);
+        let empty = super::island_codex_summary(vec![]);
+        assert!(empty["hourly"].is_null());
+        assert!(empty["weekly"].is_null());
+    }
+
+    #[test]
+    fn priority_moves_skip_manually_excluded_accounts() {
+        let mut order = vec!["a".to_string(), "disabled".to_string(), "b".to_string()];
+        let enabled = HashSet::from(["a".to_string(), "b".to_string()]);
+        super::move_enabled_priority(&mut order, "b", true, &enabled);
+        assert_eq!(order, vec!["b", "disabled", "a"]);
+        super::move_enabled_priority(&mut order, "disabled", true, &enabled);
+        assert_eq!(order, vec!["b", "disabled", "a"]);
+        super::move_enabled_priority(&mut order, "b", false, &enabled);
+        assert_eq!(order, vec!["a", "disabled", "b"]);
+    }
 
     #[test]
     fn tray_events_map_to_frontend_actions() {

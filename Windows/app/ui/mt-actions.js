@@ -324,6 +324,10 @@ const A = {
         ["gatewayStatus", "gateway_status", () => inv("gateway_status")],
         ["gatewayCheck", "gateway_check", () => inv("gateway_check")],
         ["gatewayModels", "gateway_models", () => inv("gateway_models")],
+        // Local AI is part of the same gateway catalogue: a running model is
+        // only usable once it shows up in `local/*`.
+        ["localAiRuntime", "local_ai_runtime_status", () => inv("local_ai_runtime_status")],
+        ["localAiModels", "local_ai_models_list", () => inv("local_ai_models_list")],
         ["claudeCredentials", "claude_credentials", () => inv("claude_credentials")],
         ["claudeModels", "claude_models", () => inv("claude_models")],
         ["claudeUsage", "claude_usage", () => inv("claude_usage")],
@@ -363,6 +367,16 @@ const A = {
         gatewayIds.push(id);
       }
       const countPrefix = (prefix) => gatewayIds.filter((id) => id.startsWith(prefix)).length;
+
+      const localRuntime = data.localAiRuntime || {};
+      const localModels = Array.isArray(data.localAiModels) ? data.localAiModels : [];
+      const localReady = localModels.filter((model) => model && model.runtimeStatus === "ready").length;
+      const localReach = localRuntime.error
+        ? { text: errorText(localRuntime.error), cls: "danger" }
+        : { text: localRuntime.isRunning ? t("running") : t("stopped"), cls: localRuntime.isRunning ? "ok" : "warn" };
+      const localAuth = localRuntime.publicationError
+        ? { text: t("localAiNotPublished"), cls: "danger" }
+        : { text: `${localReady} ${t("localAiReady")}`, cls: localReady ? "ok" : "warn" };
 
       const claudeModels = data.claudeModels && Array.isArray(data.claudeModels.models)
         ? data.claudeModels.models
@@ -406,6 +420,12 @@ const A = {
           name: t("gateway"), reach,
           auth: { text: "—", cls: "" },
           models: countCell(has("gatewayModels") ? gatewayIds.length : null),
+          quota: { text: "—", cls: "" },
+        },
+        {
+          name: "Local AI", reach: localReach,
+          auth: localAuth,
+          models: countCell(has("gatewayModels") ? countPrefix("local/") : null),
           quota: { text: "—", cls: "" },
         },
         {
@@ -531,6 +551,8 @@ const A = {
     run("quotas", async () => {
       const result = await inv("quota_refresh");
       S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
       else toast(`${t("refreshQuotas")}: ${t("done")}`);
@@ -541,6 +563,8 @@ const A = {
     run("quotas", async () => {
       const result = await inv("quota_refresh", { id });
       S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
     });
@@ -581,6 +605,13 @@ const A = {
       S.accounts = await inv("account_refresh_tokens", { id });
       toast(t("done"));
     });
+  },
+
+  launchAccountInCodex(id) {
+    if (!(S.accounts || []).some((account) => account.id === id)) return;
+    // Match macOS: open Codex through the shared gateway, not a direct login.
+    // Launching never changes currentAccountId or manual pool participation.
+    return A.codexOpen();
   },
 
   switchAccount(id) {
@@ -678,6 +709,8 @@ const A = {
     if (!window.confirm(fmt(t("confirmDelete"), { name }))) return;
     run("delete-" + id, async () => {
       S.accounts = await inv("delete_account", { id });
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       toast(t("done"));
     });
   },
@@ -1332,8 +1365,102 @@ const A = {
     }
   },
 
+  localAiConnectionsOpen() {
+    S.localAi.tab = "models";
+    A.go("local_ai");
+  },
+
+  async localAiConnectionsRefresh() {
+    try {
+      const [models, runtime] = await Promise.all([
+        window.api.localAi.modelsList(), window.api.localAi.runtimeStatus(),
+      ]);
+      S.localAi.models = models;
+      S.localAi.runtime = runtime;
+    } catch (error) {
+      S.localAi.error = errorText(error);
+    }
+    render();
+    return A.modelsLoad();
+  },
+
+  localAiConnectionsCheck() {
+    const alias = (id) => {
+      const value = String(id || "");
+      return value.startsWith("local/") ? value : `local/${value}`;
+    };
+    return run("localAiCheck", async () => {
+      let models;
+      let runtime;
+      let check;
+      try {
+        [models, runtime] = await Promise.all([
+          window.api.localAi.modelsList(),
+          window.api.localAi.runtimeStatus(),
+        ]);
+      } catch (error) {
+        // An IPC failure is not evidence of a healthy catalogue. Reporting it
+        // as a pass would tell the user everything works while the app cannot
+        // even read its own state.
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: errorText(error) }) };
+        S.localAi.connectionCheck = check;
+        render();
+        toast(check.text, true);
+        return;
+      }
+      S.localAi.models = models || [];
+      S.localAi.runtime = runtime || {};
+      S.localAi.error = null;
+      // The gateway is the public catalogue: this is what a client sees in
+      // /v1/models, independent of what the registry says.
+      const gateway = (await inv("gateway_models").catch(() => null)) || [];
+      const served = gateway
+        .map((model) => String((model && model.id) || ""))
+        .filter((id) => id.startsWith("local/"));
+      const ready = (models || [])
+        .filter((model) => model.runtimeStatus === "ready")
+        .map((model) => alias(model.id));
+      const missing = ready.filter((id) => !served.includes(id));
+      const stale = served.filter((id) => !ready.includes(id));
+      if (runtime && runtime.publicationError) {
+        // The alias may be visible while the last publication attempt still
+        // failed (a lost reload, a failed catalogue refresh). That is not a
+        // pass: the card shows the reason and the check must not contradict it.
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: runtime.publicationError }) };
+      } else if (runtime && runtime.error) {
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: runtime.error }) };
+      } else if (!runtime || !runtime.isRunning) {
+        check = stale.length
+          ? { ok: false, text: fmt(t("localAiCheckStale"), { models: stale.join(", ") }) }
+          : { ok: true, text: t("localAiCheckStopped") };
+      } else if (!ready.length) {
+        check = { ok: false, text: t("localAiCheckNoReady") };
+      } else if (missing.length) {
+        check = { ok: false, text: fmt(t("localAiCheckMissing"), { missing: missing.join(", ") }) };
+      } else if (stale.length) {
+        // The engine advertises an alias that no Ready row backs any more.
+        // Clients can call it and get a 404, so this is a failure even though
+        // every expected alias is present.
+        check = { ok: false, text: fmt(t("localAiCheckStale"), { models: stale.join(", ") }) };
+      } else {
+        check = { ok: true, text: fmt(t("localAiCheckOk"), { models: ready.join(", ") }) };
+      }
+      S.localAi.connectionCheck = check;
+      render();
+      if (check.ok) toast(t("done"));
+      else toast(check.text, true);
+    });
+  },
+
   modelsLoad() {
-    run("models", async () => {
+    return run("models", async () => {
+      // Connections can be opened without visiting the Local AI page first.
+      const [localModels, localRuntime] = await Promise.all([
+        window.api.localAi.modelsList().catch(() => null),
+        window.api.localAi.runtimeStatus().catch(() => null),
+      ]);
+      if (localModels) S.localAi.models = localModels;
+      if (localRuntime) S.localAi.runtime = localRuntime;
       let rawModels = [];
       try {
         rawModels = (await inv("gateway_models")) || [];
@@ -1910,6 +2037,21 @@ const A = {
     });
   },
 
+  taskbarWidgetToggle(enabled) {
+    if (S.busy["taskbar-widget"]) return;
+    const previous = S.settings?.taskbarWidgetVisible === true;
+    // Keep sibling full-settings saves from sending the old widget value.
+    S.settings = { ...(S.settings || {}), taskbarWidgetVisible: enabled };
+    return run("taskbar-widget", async () => {
+      try {
+        S.settings = await inv("settings_set", { settings: { ...S.settings } });
+      } catch (error) {
+        S.settings = { ...S.settings, taskbarWidgetVisible: previous };
+        throw error;
+      }
+    }).finally(() => render(true));
+  },
+
   islandAutoCollapse(seconds) {
     if ([0, 5, 10, 15, 20].indexOf(seconds) < 0) return;
     S.settings = { ...(S.settings || {}), islandAutoCollapseSeconds: seconds };
@@ -2108,8 +2250,9 @@ const A = {
       // Show the tail immediately instead of waiting up to a poll interval.
       loadRuntimeLogs();
     }
-    if (tab === "catalog" && (!S.localAi.catalogResults || S.localAi.catalogResults.length === 0)) {
-      A.localAiHfPreset("Qwen2.5-Coder");
+    if (tab === "catalog" && !S.localAi.catalogSearched && !S.localAi.catalogLoading) {
+      render();
+      A.localAiHfSearch();
     } else {
       render();
     }
@@ -2187,6 +2330,9 @@ const A = {
       const rt = await window.api.localAi.runtimeStatus();
       S.localAi.runtime = rt;
       render();
+      // The Models page and Connections read the public catalogue, which the
+      // gateway rewrites asynchronously after this transition.
+      await A.modelsLoad();
       toast(t("localAiStarted"));
     } catch (e) {
       toast(localAiStartErrorText(e), true);
@@ -2206,6 +2352,7 @@ const A = {
       S.localAi.metrics = null;
       S.localAi.metricsError = null;
       render();
+      await A.modelsLoad();
       toast(t("localAiStopped"));
     } catch (e) {
       toast(errorText(e), true);
@@ -2391,8 +2538,10 @@ const A = {
   },
 
   async localAiSettingsModal(id) {
+    if (S.localAi.savingSettings) return;
     const model = (S.localAi.models || []).find((m) => m.id === id);
     if (!model) return;
+    S.localAi.estimateGeneration = (S.localAi.estimateGeneration || 0) + 1;
     S.localAi.editingModel = JSON.parse(JSON.stringify(model));
     S.localAi.estimate = null;
     S.localAi.estimateError = null;
@@ -2404,6 +2553,8 @@ const A = {
   },
 
   localAiSettingsClose() {
+    if (S.localAi.savingSettings) return;
+    S.localAi.estimateGeneration = (S.localAi.estimateGeneration || 0) + 1;
     if (A._localAiEstimateTimer) {
       clearTimeout(A._localAiEstimateTimer);
       A._localAiEstimateTimer = null;
@@ -2462,6 +2613,10 @@ const A = {
     if (Number.isFinite(context) && context > 0) s.contextLength = context;
     const kv = read("local-ai-setting-kv-cache");
     if (kv) s.kvCacheType = kv;
+    const layers = read("local-ai-setting-gpu-layers");
+    if (layers !== null && Number.isFinite(Number(layers)) && Number(layers) >= 0) s.gpuOffloadLayers = Number(layers);
+    const flash = document.getElementById("local-ai-setting-flash-attn");
+    if (flash) s.flashAttention = !!flash.checked;
     // A hand-edited number no longer belongs to the preset it came from.
     s.profile = localAiProfileForSettings(s, s.profile);
     const select = document.getElementById("local-ai-setting-profile");
@@ -2473,14 +2628,21 @@ const A = {
   /// Debounced because a number input fires on every keystroke and the estimate
   /// walks the installed model's GGUF header.
   localAiRefreshEstimate() {
+    // Invalidate at input/debounce scheduling time, not when IPC starts: an
+    // older response must not repaint during the next input's debounce window.
+    const generation = (S.localAi.estimateGeneration || 0) + 1;
+    S.localAi.estimateGeneration = generation;
     const m = S.localAi.editingModel;
     if (!m) return;
+    const isCurrent = () => S.localAi.estimateGeneration === generation
+      && S.localAi.editingModel === m;
     if (A._localAiEstimateTimer) clearTimeout(A._localAiEstimateTimer);
     S.localAi.estimating = true;
     paintLocalAiEstimate();
     A._localAiEstimateTimer = setTimeout(async () => {
+      if (!isCurrent()) return;
       A._localAiEstimateTimer = null;
-      const s = (S.localAi.editingModel && S.localAi.editingModel.userSettings) || {};
+      const s = m.userSettings || {};
       const positive = (value, fallback) => {
         const n = Number(value);
         return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -2492,19 +2654,20 @@ const A = {
           kvCacheType: s.kvCacheType || "f16",
           batchSize: Math.round(positive(s.batchSize, 512)),
           modelId: m.id,
+          gpuOffloadLayers: s.gpuOffloadLayers == null ? null : Number(s.gpuOffloadLayers),
+          flashAttention: s.flashAttention !== false,
         });
-        // The dialog may have been closed (or switched models) while awaiting.
-        if (!S.localAi.editingModel || S.localAi.editingModel.id !== m.id) return;
+        // Includes newer settings and close/reopen of the same model id.
+        if (!isCurrent()) return;
         S.localAi.estimate = est;
         S.localAi.estimateError = null;
       } catch (error) {
-        // Same guard as the success path: a late failure must not paint an
-        // error into a dialog that now shows another model.
-        if (S.localAi.editingModel && S.localAi.editingModel.id === m.id) {
+        // Stale errors must not replace the newest result either.
+        if (isCurrent()) {
           S.localAi.estimateError = errorText(error);
         }
       } finally {
-        if (S.localAi.editingModel && S.localAi.editingModel.id === m.id) {
+        if (isCurrent()) {
           S.localAi.estimating = false;
           paintLocalAiEstimate();
         }
@@ -2513,18 +2676,13 @@ const A = {
   },
 
   async localAiSettingsSave() {
-    return A.localAiSettingsPersist(false);
-  },
-
-  /// Saves the patch and immediately restarts the model, because the engine
-  /// only reads context/KV/offload/threads from `models.ini` at launch.
-  async localAiSettingsSaveRestart() {
-    return A.localAiSettingsPersist(true);
-  },
-
-  async localAiSettingsPersist(restart) {
     const m = S.localAi.editingModel;
-    if (!m) return;
+    if (!m || S.localAi.savingSettings) return;
+    // The backend owns save + conditional restart, using the live runtime
+    // state rather than a potentially stale poll from this dialog.
+    S.localAi.savingSettings = true;
+    const saveButton = document.querySelector('[data-action="localAiSettingsSave"]');
+    if (saveButton) saveButton.disabled = true;
     const value = (id) => {
       const el = document.getElementById(id);
       return el ? el.value : null;
@@ -2585,22 +2743,12 @@ const A = {
       if (idx !== -1) {
         S.localAi.models[idx] = updated;
       }
-      if (restart) {
-        // Saved settings are pending until the engine relaunches with the
-        // rewritten preset. Surface a failed restart instead of leaving the
-        // old engine silently serving stale knobs.
-        try {
-          await window.api.localAi.startModel(m.id);
-        } catch (e) {
-          toast(errorText(e), true);
-        }
-        const [models, rt] = await Promise.all([
-          window.api.localAi.modelsList().catch(() => null),
-          window.api.localAi.runtimeStatus().catch(() => null),
-        ]);
-        if (models) S.localAi.models = models;
-        if (rt) S.localAi.runtime = rt;
-      }
+      const [models, rt] = await Promise.all([
+        window.api.localAi.modelsList().catch(() => null),
+        window.api.localAi.runtimeStatus().catch(() => null),
+      ]);
+      if (models) S.localAi.models = models;
+      if (rt) S.localAi.runtime = rt;
       if (A._localAiEstimateTimer) {
         clearTimeout(A._localAiEstimateTimer);
         A._localAiEstimateTimer = null;
@@ -2609,11 +2757,13 @@ const A = {
       S.localAi.estimate = null;
       S.localAi.estimateError = null;
       S.localAi.estimating = false;
-      // A successful save closes the dialog; a toast here only duplicated the
-      // close and lingered over the list.
+      // Close only after both persistence and the conditional restart succeed.
       render();
     } catch (e) {
       toast(errorText(e), true);
+    } finally {
+      S.localAi.savingSettings = false;
+      if (saveButton) saveButton.disabled = false;
     }
   },
 
@@ -2632,173 +2782,218 @@ const A = {
   },
 
   localAiTestModal(id) {
-    const m = (S.localAi.models || []).find((x) => x.id === id);
-    const name = m ? (m.displayName || m.name || m.id) : id;
+    A.localAiTestStop();
+    const model = (S.localAi.models || []).find((item) => item.id === id);
     S.localAi.testModal = {
-      modelId: id,
-      modelName: name,
-      prompt: "Why is the sky blue? Answer in 2 sentences.",
-      response: "",
-      tokensPerSec: null,
-      generating: false,
+      modelId: id, modelName: model ? (model.displayName || model.name || id) : id,
+      prompt: "Why is the sky blue? Answer in 2 sentences.", response: "", rawResponse: "",
+      stats: localAiTestStats(), generating: false, mode: "engine", toolProbe: null,
     };
     render();
   },
 
   localAiTestClose() {
+    A.localAiTestStop();
     S.localAi.testModal = null;
     render();
   },
 
-  localAiTestPromptInput(val) {
-    if (S.localAi.testModal) {
-      S.localAi.testModal.prompt = val;
-    }
+  localAiTestStop() {
+    const tm = S.localAi.testModal;
+    if (tm && tm.controller) tm.controller.abort();
+    // Keep the run owned until its finally block completes; a second start
+    // must not race an IPC model launch that cannot be aborted by fetch.
   },
 
-  async localAiTestSend() {
+  localAiTestCancel() {
+    A.localAiTestStop();
+    render();
+  },
+
+  localAiTestMode(mode) {
+    const tm = S.localAi.testModal;
+    if (tm && !tm.generating) { tm.mode = mode; render(); }
+  },
+
+  localAiTestPromptInput(value) {
+    if (S.localAi.testModal) S.localAi.testModal.prompt = value;
+  },
+
+  localAiTestSend() { return A.localAiTestRun(false); },
+  localAiTestTool() { return A.localAiTestRun(true); },
+
+  async localAiTestRun(tools) {
     const tm = S.localAi.testModal;
     if (!tm || tm.generating) return;
-    const promptInput = document.getElementById("local-ai-test-prompt-input");
-    const prompt = promptInput ? promptInput.value.trim() : (tm.prompt || "").trim();
-    if (!prompt) return;
-
-    const rt = S.localAi.runtime;
-    if (!rt || !rt.isRunning || !rt.currentModel || rt.currentModel.id !== tm.modelId) {
-      toast(t("localAiStarting"));
-      await window.api.localAi.startModel(tm.modelId);
-      const newRt = await window.api.localAi.runtimeStatus();
-      S.localAi.runtime = newRt;
+    const input = document.getElementById("local-ai-test-prompt-input");
+    tm.prompt = input ? input.value : tm.prompt;
+    if (!tools && !tm.prompt.trim()) return;
+    const rt = S.localAi.runtime || {};
+    if ((rt.isRunning || rt.isStarting) && (rt.modelId || rt.startingModelId) !== tm.modelId) {
+      if (!confirm(t("localAiSwitchTestConfirm"))) return;
     }
-
+    const controller = new AbortController();
+    tm.controller = controller;
     tm.generating = true;
-    tm.response = "";
-    tm.tokensPerSec = null;
-    tm.truncated = false;
+    tm.response = ""; tm.rawResponse = ""; tm.error = null;
+    tm.hadReasoning = false; tm.truncated = false; tm.toolProbe = null;
+    tm.stats = localAiTestStats();
+    const startedAt = performance.now();
+    let lastPaint = 0;
+    const paint = () => {
+      if (S.localAi.testModal !== tm) return;
+      tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+      const box = document.getElementById("local-ai-test-response");
+      if (box) {
+        const follow = box.scrollHeight - box.scrollTop - box.clientHeight <= 32;
+        box.innerHTML = tm.response ? renderMarkdown(tm.response) : `<span class="muted">${esc(t("localAiWaitingFirstToken"))}</span>`;
+        if (follow) box.scrollTop = box.scrollHeight;
+      }
+      const metrics = document.getElementById("local-ai-test-metrics");
+      if (metrics) metrics.innerHTML = localAiTestMetricsMarkup(tm);
+    };
+    const ticker = setInterval(paint, 200);
     render();
-
-    const startTime = performance.now();
-    let tokenCount = 0;
-
     try {
-      const rtNow = S.localAi.runtime || {};
-      const port = rtNow.port || 18318;
-      // The engine is started with a per-launch UUID token, so a fixed string
-      // here would always answer 401.
-      const token = rtNow.internalToken || "";
-      const resp = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
+      if (!rt.isRunning || (rt.modelId || (rt.currentModel && rt.currentModel.id)) !== tm.modelId) {
+        await window.api.localAi.startModel(tm.modelId);
+      }
+      if (controller.signal.aborted) return;
+      S.localAi.runtime = await window.api.localAi.runtimeStatus();
+      if (controller.signal.aborted) return;
+      const model = (S.localAi.models || []).find((item) => item.id === tm.modelId);
+      const body = {
+        model: tm.modelId,
+        messages: [{ role: "user", content: tools ? "What is the weather in Paris? Use the get_weather tool." : tm.prompt.trim() }],
+        stream: !tools, max_tokens: 1536,
+        temperature: model && model.userSettings ? model.userSettings.temperature : 0.7,
+      };
+      if (tools) {
+        body.tools = [{ type: "function", function: { name: "get_weather",
+          description: "Get the current weather for a city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] } } }];
+        body.tool_choice = "auto";
+      } else body.stream_options = { include_usage: true };
+      const result = await window.api.localAi.testRequest({
+        runtime: S.localAi.runtime, settings: S.settings || {}, gateway: tm.mode === "gateway",
+        body, signal: controller.signal,
+        onChunk: (chunk) => {
+          localAiTestNote(tm, chunk, startedAt);
+          if (performance.now() - lastPaint > 80) { paint(); lastPaint = performance.now(); }
         },
-        body: JSON.stringify({
-          model: tm.modelId,
-          messages: [{ role: "user", content: prompt }],
-          stream: true,
-          temperature: 0.7,
-          max_tokens: 1536,
-        }),
       });
-
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      if (tools) {
+        localAiTestNote(tm, result, startedAt);
+        const call = result.choices && result.choices[0] && result.choices[0].message
+          && result.choices[0].message.tool_calls && result.choices[0].message.tool_calls[0];
+        const fn = call && call.type === "function" && call.function;
+        let args;
+        try { args = fn && JSON.parse(fn.arguments); } catch (_) {}
+        tm.toolProbe = fn && fn.name === "get_weather" && args && typeof args.city === "string" && args.city.trim()
+          ? { ok: true, name: fn.name, arguments: fn.arguments }
+          : { ok: false };
       }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const dataStr = trimmed.slice(5).trim();
-          if (dataStr === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(dataStr);
-            const choice = parsed.choices && parsed.choices[0];
-            const deltaObj = (choice && choice.delta) || {};
-            // Reasoning models stream their scratchpad in reasoning_content and
-            // leave content null, which used to produce an empty box.
-            const delta = deltaObj.content || deltaObj.reasoning_content || "";
-            if (choice && choice.finish_reason === "length") {
-              tm.truncated = true;
-            }
-            if (parsed.timings && parsed.timings.predicted_per_second) {
-              tm.tokensPerSec = parsed.timings.predicted_per_second;
-            }
-            if (delta) {
-              tm.response += delta;
-              tokenCount++;
-              const elapsedSec = (performance.now() - startTime) / 1000;
-              if (elapsedSec > 0.5) {
-                tm.tokensPerSec = tokenCount / elapsedSec;
-              }
-              const logBox = document.querySelector(".terminal-logs.mono");
-              if (logBox) logBox.textContent = tm.response;
-            }
-          } catch {}
-        }
-      }
-      const elapsedSec = (performance.now() - startTime) / 1000;
-      if (elapsedSec > 0) {
-        tm.tokensPerSec = tokenCount / elapsedSec;
-      }
-    } catch (e) {
-      tm.response += `\n[Error: ${errorText(e)}]`;
+    } catch (error) {
+      if (!controller.signal.aborted) tm.error = localAiStartErrorText(error);
     } finally {
-      tm.generating = false;
-      render();
+      clearInterval(ticker);
+      tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+      if (tm.controller === controller) { tm.generating = false; tm.controller = null; }
+      if (S.localAi.testModal === tm) render();
     }
   },
 
   localAiHfSearchInput(val) {
     S.localAi.catalogQuery = val;
-    const clear = document.querySelector(".search-field .search-clear");
-    if (clear) clear.hidden = (val || "").length === 0;
+    // Invalidate immediately, not after debounce: stale responses never select
+    // a repository while the user is already typing the next query.
+    S.localAi.catalogGeneration = (S.localAi.catalogGeneration || 0) + 1;
+    S.localAi.catalogHasMore = false;
+    const more = document.querySelector(".hf-more");
+    if (more) more.disabled = true;
+    clearTimeout(A._hfDebounce);
+    const clear = document.querySelector(".hf-searchbar .search-clear");
+    if (clear) clear.hidden = !val;
+    A._hfDebounce = setTimeout(() => A.localAiHfSearch(), 350);
   },
 
   localAiHfClear() {
+    clearTimeout(A._hfDebounce);
     S.localAi.catalogQuery = "";
-    S.localAi.catalogResults = [];
-    S.localAi.catalogSearched = false;
-    S.localAi.selectedRepoId = null;
-    S.localAi.repoDetails = null;
-    const clear = document.querySelector(".search-field .search-clear");
-    if (clear) clear.hidden = true;
-    const input = document.querySelector(".search-field input");
-    if (input) {
-      input.value = "";
-      input.focus();
-    }
-    render();
+    const input = document.getElementById("hf-search");
+    if (input) { input.value = ""; input.focus(); }
+    A.localAiHfSearch();
   },
 
-  async localAiHfSearch() {
-    const q = (S.localAi.catalogQuery || "").trim();
-    if (!q) return;
-    S.localAi.catalogLoading = true;
-    render();
-    try {
-      const results = await window.api.localAi.hfSearch(q, 20, hfTokenArg());
-      S.localAi.catalogResults = results || [];
-      S.localAi.catalogSearched = true;
-      if (results && results.length > 0 && !S.localAi.selectedRepoId) {
-        A.localAiSelectRepo(results[0].id);
-      }
-    } catch (e) {
-      toast(errorText(e), true);
-    } finally {
-      S.localAi.catalogLoading = false;
-      render();
+  async localAiHfSearch(loadMore = false) {
+    const state = S.localAi;
+    const query = (state.catalogQuery || "").trim(), sort = state.catalogSort || "trendingScore";
+    if (loadMore && (state.catalogResultQuery !== query || state.catalogResultSort !== sort)) return;
+    clearTimeout(A._hfDebounce);
+    const generation = state.catalogGeneration = (state.catalogGeneration || 0) + 1;
+    const offset = loadMore ? (state.catalogNextOffset || 0) : 0;
+    state.catalogError = null;
+    state.catalogLoading = !loadMore;
+    state.catalogLoadingMore = loadMore;
+    if (!loadMore) {
+      state.catalogResults = [];
+      state.selectedRepoId = null;
+      state.repoDetails = null;
+      state.repoDetailsLoading = false;
+      state.repoDetailsError = null;
     }
+    hfRefreshCatalog();
+    try {
+      const repositoryID = !loadMore && hfRepositoryID(query);
+      if (repositoryID) {
+        if (generation !== state.catalogGeneration) return;
+        state.catalogResults = [{ id: repositoryID, author: repositoryID.split("/")[0] }];
+        state.catalogSearched = true;
+        state.catalogHasMore = false;
+        A.localAiSelectRepo(repositoryID);
+        return;
+      }
+      const results = await window.api.localAi.hfSearch(query, 30, hfTokenArg(), sort, offset);
+      if (generation !== state.catalogGeneration) return;
+      const rows = results || [];
+      state.catalogResults = loadMore ? [...state.catalogResults, ...rows.filter(row => !state.catalogResults.some(old => old.id === row.id))] : rows;
+      state.catalogSearched = true;
+      state.catalogHasMore = rows.length === 30;
+      state.catalogResultQuery = query;
+      state.catalogResultSort = sort;
+      state.catalogNextOffset = offset + rows.length;
+    } catch (error) {
+      if (generation !== state.catalogGeneration) return;
+      state.catalogError = errorText(error);
+    } finally {
+      if (generation === state.catalogGeneration) {
+        state.catalogLoading = false;
+        state.catalogLoadingMore = false;
+        hfRefreshCatalog();
+      }
+    }
+  },
+
+  localAiHfMore() {
+    const state = S.localAi;
+    if (state.catalogHasMore && !state.catalogLoadingMore && !state.catalogLoading
+        && state.catalogResultQuery === (state.catalogQuery || "").trim()
+        && state.catalogResultSort === (state.catalogSort || "trendingScore")) A.localAiHfSearch(true);
+  },
+
+  localAiHfSort(sort) {
+    S.localAi.catalogSort = sort;
+    A.localAiHfSearch();
+  },
+
+  localAiHfCompatible() {
+    S.localAi.hfCompatibleOnly = !S.localAi.hfCompatibleOnly;
+    hfRefreshCatalog();
+  },
+
+  localAiHfVariant(filename) {
+    S.localAi.hfSelectedFile = filename;
+    hfRefreshCatalog();
   },
 
   localAiHfPreset(query) {
@@ -2807,18 +3002,28 @@ const A = {
   },
 
   async localAiSelectRepo(repoId) {
-    S.localAi.selectedRepoId = repoId;
-    S.localAi.repoDetailsLoading = true;
-    S.localAi.repoDetails = null;
-    render();
+    const state = S.localAi;
+    const generation = state.repoDetailsGeneration = (state.repoDetailsGeneration || 0) + 1;
+    state.selectedRepoId = repoId;
+    state.hfSelectedFile = null;
+    state.repoDetailsLoading = true;
+    state.repoDetails = null;
+    state.repoDetailsError = null;
+    hfRefreshCatalog();
+    const detail = document.getElementById("hf-detail");
+    if (detail) detail.scrollTop = 0;
     try {
       const details = await window.api.localAi.hfModelDetails(repoId, hfTokenArg());
-      S.localAi.repoDetails = details;
-    } catch (e) {
-      toast(errorText(e), true);
+      if (state.selectedRepoId !== repoId || generation !== state.repoDetailsGeneration) return;
+      state.repoDetails = details;
+    } catch (error) {
+      if (state.selectedRepoId !== repoId || generation !== state.repoDetailsGeneration) return;
+      state.repoDetailsError = errorText(error);
     } finally {
-      S.localAi.repoDetailsLoading = false;
-      render();
+      if (state.selectedRepoId === repoId && generation === state.repoDetailsGeneration) {
+        state.repoDetailsLoading = false;
+        hfRefreshCatalog();
+      }
     }
   },
 

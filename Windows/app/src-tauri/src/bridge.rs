@@ -49,7 +49,7 @@ pub struct BridgeState {
     /// Rollout path per thread id: saves a full sessions walk every tick.
     session_path: Mutex<Option<(String, PathBuf, std::time::Instant)>>,
     /// Gateway model list for the chips (short freshness).
-    models: Mutex<Option<(Value, std::time::Instant)>>,
+    models: std::sync::Arc<Mutex<Option<(Value, std::time::Instant)>>>,
     /// OpenRouter metrics for the chips popover (5-minute freshness).
     providers: Mutex<Option<(Value, std::time::Instant)>>,
 }
@@ -60,7 +60,7 @@ impl BridgeState {
             status: Mutex::new(json!({"attached": false, "reason": "starting"})),
             discovery: Mutex::new(None),
             session_path: Mutex::new(None),
-            models: Mutex::new(None),
+            models: std::sync::Arc::new(Mutex::new(None)),
             providers: Mutex::new(None),
         }
     }
@@ -80,6 +80,15 @@ pub fn invalidate_providers(state: &BridgeState) {
     }
     if let Ok(mut guard) = state.models.lock() {
         *guard = None;
+    }
+}
+
+/// The reload watcher outlives the IPC command's borrowed AppState.
+/// Carry only the shared model cache into it, not application credentials.
+pub fn model_cache_invalidator(state: &BridgeState) -> impl Fn() + Send + 'static {
+    let models = state.models.clone();
+    move || {
+        if let Ok(mut guard) = models.lock() { *guard = None; }
     }
 }
 
@@ -373,7 +382,8 @@ fn injection_source(lang: &str) -> String {
             "deepinfra": "DeepInfra",
             "vercel": "Vercel",
             "zai": "Z.ai",
-            "commandcode": "CommandCode"
+            "commandcode": "CommandCode",
+            "local": "Local AI"
         },
     });
     format!(
@@ -395,6 +405,8 @@ fn provider_of(model: &str) -> &'static str {
         "zai"
     } else if model.starts_with("commandcode/") {
         "commandcode"
+    } else if model.starts_with("local/") {
+        "local"
     } else {
         "openai"
     }
@@ -415,6 +427,10 @@ async fn status_payload(
     let mut latest = 0f64;
 
     for account in &accounts {
+        if !account.pool_enabled() {
+            paused += 1;
+            continue;
+        }
         let plan = account
             .plan_type
             .clone()
@@ -1396,6 +1412,12 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn local_models_are_not_reported_as_openai_in_composer() {
+        assert_eq!(super::provider_of("local/qwen"), "local");
+        assert_eq!(super::provider_of("gpt-5"), "openai");
     }
 
     #[test]

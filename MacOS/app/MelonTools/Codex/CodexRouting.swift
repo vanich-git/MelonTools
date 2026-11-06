@@ -178,6 +178,7 @@ enum CodexRoutingPlanner {
     /// A limit of 0 (or none) means “no limit”. Quota readings older than
     /// `quotaFreshness` never block — a stale gauge must not park an account.
     static func blockReason(_ account: CodexAccount) -> String? {
+        if account.poolEnabled == false { return L("Disabled from pool") }
         guard let cause = blockCause(account) else { return nil }
         // Prefer the persisted reading: it is what actually stopped routing,
         // even if the live gauge has moved a little since then.
@@ -274,7 +275,7 @@ enum CodexRoutingPlanner {
             return ISO8601DateFormatter().date(from: raw)
         }
 
-        let sorted = accounts.sorted { lhs, rhs in
+        let sorted = accounts.filter { $0.poolEnabled != false }.sorted { lhs, rhs in
             let leftGroup = groupKey(lhs)
             let rightGroup = groupKey(rhs)
             if leftGroup != rightGroup { return leftGroup < rightGroup }
@@ -319,6 +320,21 @@ enum CodexRoutingPlanner {
         }
 
         return Resolution(orderedIds: sorted.map(\.id), blocked: blocked, blockReasons: reasons)
+    }
+
+    /// Move across enabled neighbours without losing disabled accounts' saved
+    /// slots. Hidden accounts must not consume a click in the manual queue.
+    static func movingPriority(_ id: String, up: Bool, order: [String], accounts: [CodexAccount]) -> [String] {
+        let enabled = Set(accounts.filter { $0.poolEnabled != false }.map(\.id))
+        let visible = order.filter { enabled.contains($0) }
+        guard let position = visible.firstIndex(of: id) else { return order }
+        let neighbour = up ? position - 1 : position + 1
+        guard visible.indices.contains(neighbour),
+              let source = order.firstIndex(of: id),
+              let target = order.firstIndex(of: visible[neighbour]) else { return order }
+        var result = order
+        result.swapAt(source, target)
+        return result
     }
 
     /// Gateway priorities: the first account gets the highest number (that is

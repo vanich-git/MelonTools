@@ -105,6 +105,28 @@ struct LocalModelsView: View {
                 .padding(.top, MTTheme.s2)
             }
 
+            // A local engine that is running is not the same as a model the
+            // gateway serves. Surface a failed publication instead of leaving
+            // the user with an empty model list and no explanation.
+            if let err = runtime.publicationError ?? runtime.engineError {
+                HStack {
+                    Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                        .foregroundStyle(MTTheme.warn)
+                    Text(err)
+                        .font(MTTheme.body(11))
+                        .foregroundStyle(MTTheme.warn)
+                    Spacer()
+                    Button(action: { runtime.clearVisibleError() }) {
+                        Image(systemName: "xmark")
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L("Dismiss"))
+                }
+                .padding(.horizontal, MTTheme.s4)
+                .padding(.top, MTTheme.s2)
+            }
+
             Divider().background(Color.primary.opacity(0.06))
 
             // Models list or empty state
@@ -519,11 +541,13 @@ struct LocalModelsView: View {
         isDeleting = true
         defer { isDeleting = false }
 
+        let alias = model.id.hasPrefix("local/") ? model.id : "local/\(model.id)"
+        let wasReady = model.runtimeStatus == .ready || runtime.currentModel?.id == model.id
         await runtime.releaseModelFiles(model)
         let failed = store.removeModel(id: model.id, deleteFiles: true)
         // The catalog is part of the gateway contract: a deleted model must not
         // stay advertised in config.yaml until some later restart.
-        try? CodexGatewayService.shared.writeConfig()
+        runtime.publishLocalRoutes(expectingAbsent: wasReady ? [alias] : [])
         if !failed.isEmpty {
             deletionWarning = String(
                 format: L("Model removed, but %d file(s) could not be deleted: %@"),

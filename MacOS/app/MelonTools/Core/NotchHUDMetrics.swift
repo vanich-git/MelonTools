@@ -76,7 +76,7 @@ final class NotchHUDMetrics: ObservableObject {
 
     private func makeSnapshot() -> Snapshot {
         let now = Date()
-        let accounts = CodexStore.shared.accounts
+        let accounts = CodexStore.shared.accounts.filter { $0.poolEnabled != false }
         let totals = DashboardMetrics.quotaTotals(accounts: accounts)
         let due = SchedulerPolicy.due(SchedulerStore.shared.tasks, now: now)
         let antigravity = AntigravityPoolStore.shared.accounts

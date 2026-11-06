@@ -1,0 +1,11 @@
+api-keys:
+  openai-compatibility:
+    - name: "melon-local-ai"
+      base-url: "http://127.0.0.1:59999/v1"
+      keys:
+        - api-key: "__LOCAL_TOKEN__"
+          proxy-url: "direct"
+      models:
+        - name: "local/__MODEL_ID__"
+          alias: "local/__MODEL_ID__"
+          max-context-length: 8192

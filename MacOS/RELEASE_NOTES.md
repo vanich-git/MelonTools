@@ -1,3 +1,56 @@
+# Melon Tools 6.0.0-rc.4
+
+Release candidate for macOS and Windows. **This is a test build, not a stable
+release.** 6.0.0-rc.4 is published as a GitHub **prerelease**: it is not
+"latest", it does not replace the stable 5.5.x line in Homebrew or winget, and
+the in-app updaters keep reading `/releases/latest`, so a 5.5.x install is
+never offered this RC. Homebrew, winget and the download README keep describing
+the last published stable artifacts until 6.0.0 passes acceptance and is
+promoted. See `packaging/README.md` and `docs/RELEASE_ACCEPTANCE.md`.
+
+The installation caveats below still apply: the macOS build is ad-hoc signed
+and not notarized, the Windows build is not Authenticode-signed, and no GGUF
+model is bundled.
+
+## What changed in 6.0.0-rc.4
+
+- **Local AI models now actually reach the API.** The gateway served HTTP
+  before its config watcher was installed, so a model published during startup
+  could stay missing from `/v1/models` until the next unrelated config edit.
+  After installing the watcher the app now reconciles the config once more, and
+  both platforms rebuild the local source whenever the engine starts, stops or
+  crashes. Loading a model adds its route, unloading or removing it deletes the
+  route, and a removed alias is rejected by the gateway instead of being served
+  from a stale catalogue.
+- **Publication retries replace the config even when the YAML is unchanged.**
+  An explicit local-AI publication forces the atomic write, so a missed reload
+  is repaired on the next attempt. Ordinary settings edits keep the debounce
+  and skip byte-identical writes.
+- **A broken model-sources file fails visibly.** If `model-sources.json` cannot
+  be decoded, the gateway write is refused with a visible publication error
+  instead of silently publishing a config with no providers.
+- **Connections and Models report the real state.** A failed IPC call, a stale
+  alias or a publication error no longer leaves a green checkmark; the UI
+  shows what the gateway actually serves.
+- **Safer config replacement on Windows.** A failed atomic rename returns an
+  error and leaves the previous config untouched instead of falling back to an
+  in-place, truncating write.
+- **Fewer unnecessary gateway reloads.** Concurrent settings edits are
+  coalesced and identical configs are skipped.
+
+### Downloads
+
+- [macOS universal DMG](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.4/MelonTools-6.0.0-rc.4.dmg)
+- [Windows installer](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.4/MelonTools-6.0.0-rc.4-setup.exe)
+- [Windows portable](https://github.com/vanich-git/MelonTools/releases/download/v6.0.0-rc.4/MelonTools-6.0.0-rc.4-win-x64-portable.exe)
+
+### SHA-256
+
+Every asset above has a `.sha256` sibling next to it on the release page, and
+`SHA256SUMS` lists the whole set. The release body is generated from the built
+bytes after signing, so copy the digest from there or from the sibling file
+instead of trusting a value pasted into these notes.
+
 # Melon Tools 6.0.0-rc.2
 
 Release candidate for macOS and Windows. **This is a test build, not a stable

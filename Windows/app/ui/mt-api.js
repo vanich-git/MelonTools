@@ -47,6 +47,9 @@ function demoPoolSnapshot() {
   };
 }
 
+// Browser preview keeps manual participation across independent mock calls.
+const DEMO_POOL_ENABLED = new Map();
+
 // Browser preview data (used only outside Tauri).
 function mock(cmd, args) {
   const nowSec = Date.now() / 1000;
@@ -71,6 +74,14 @@ function mock(cmd, args) {
       selectedModels: ["gpt-6.1-sol"],
     },
   ];
+  for (const account of demoAccounts) {
+    account.poolEnabled = DEMO_POOL_ENABLED.get(account.id) !== false;
+    if (!account.poolEnabled) {
+      account._quotaBlock = { blocked: account.blocked, blockInfo: account.blockInfo };
+      account.blocked = true;
+      account.blockInfo = { code: "manual_disabled" };
+    }
+  }
   const historySeries = (key, hourlyLatest, weeklyLatest) => Array.from({ length: 12 }, (_, index) => {
     const age = 11 - index;
     const drift = Math.min(age * 0.4, 6);
@@ -124,7 +135,26 @@ function mock(cmd, args) {
     switch_account: { authPath: "C:\\Users\\you\\.codex\\auth.json" },
     import_current_auth: { result: "added", accounts: demoAccounts },
     account_refresh_tokens: demoAccounts,
-    save_reserves: demoAccounts,
+    save_reserves: (a) => {
+      const account = demoAccounts.find((item) => item.id === a.id);
+      if (account) {
+        account.hourlyReservePercent = a.hourly;
+        account.weeklyReservePercent = a.weekly;
+        if (typeof a.poolEnabled === "boolean") {
+          account.poolEnabled = a.poolEnabled;
+          DEMO_POOL_ENABLED.set(account.id, a.poolEnabled);
+        }
+        if (account.poolEnabled === false) {
+          if (!account._quotaBlock) account._quotaBlock = { blocked: account.blocked, blockInfo: account.blockInfo };
+          account.blocked = true;
+          account.blockInfo = { code: "manual_disabled" };
+        } else if (account._quotaBlock) {
+          Object.assign(account, account._quotaBlock);
+          delete account._quotaBlock;
+        }
+      }
+      return demoAccounts;
+    },
     delete_account: demoAccounts,
     openrouter_refresh: { totalCredits: 30, totalUsage: 29.87, remaining: 0.13, label: "melon", usage: 0.09, limit: 1000, limitRemaining: 999.9, isFreeTier: false, status: "ok" },
     vercel_refresh: { balance: 42.5, totalUsed: 118.2, status: "ok", updatedAt: new Date().toISOString() },
@@ -672,6 +702,10 @@ function demoHfDetails(repoId) {
     likes: 2130,
     tags: ["gguf", "code"],
     license: "Apache-2.0",
+    architecture: "qwen2",
+    parameters: 7610000000,
+    lastModified: "2026-11-04T10:00:00Z",
+    readme: "# Model card\n\nOpen-weight code assistant for local inference.\n\n## Quantizations\n\n| Quant | Size | Notes |\n| --- | --- | --- |\n| Q4_K_M | 4.36 GiB | Balanced |\n| Q5_K_M | 5.06 GiB | Higher quality |\n| Q8_0 | 7.54 GiB | Larger |\n\n```python\nprint(\"Hello from local AI\")\n```\n\n[View on Hugging Face](https://huggingface.co/)",
     ggufFiles: [
       demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4680000000, "Q4_K_M"),
       demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q5_k_m.gguf", 5430000000, "Q5_K_M"),
@@ -792,8 +826,113 @@ function demoMemoryEstimate(params) {
   };
 }
 
+// Test chat protocol helpers. Counts reported tokens, never SSE chunks as
+// tokens, and never substitutes the model's scratchpad for a final answer.
+function localAiTestStats() {
+  return { promptTokens: null, completionTokens: null, tokensPerSec: null,
+    promptPerSec: null, promptMs: null, generationMs: null, firstTokenMs: null, elapsed: 0 };
+}
+
+function localAiTestNote(tm, parsed, startedAt) {
+  const choice = parsed.choices && parsed.choices[0];
+  const delta = (choice && (choice.delta || choice.message)) || {};
+  if (typeof delta.content === "string") tm.rawResponse = (tm.rawResponse || "") + delta.content;
+  if (delta.reasoning_content || delta.reasoning) tm.hadReasoning = true;
+  // Some templates put <think> in content rather than reasoning_content.
+  const raw = tm.rawResponse || "";
+  tm.response = raw.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/gi, "")
+    // A tag split across SSE events must not flash a partial scratchpad tag.
+    .replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, "");
+  if (tm.response.trim() && tm.stats.firstTokenMs == null) tm.stats.firstTokenMs = performance.now() - startedAt;
+  if (raw !== tm.response) tm.hadReasoning = true;
+  tm.truncated = tm.truncated || !!(choice && choice.finish_reason === "length");
+  const usage = parsed.usage || {};
+  const timings = parsed.timings || {};
+  const pick = (...values) => values.find((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+  for (const [key, values] of Object.entries({
+    promptTokens: [usage.prompt_tokens, timings.prompt_n],
+    completionTokens: [usage.completion_tokens, timings.predicted_n],
+    tokensPerSec: [timings.predicted_per_second], promptPerSec: [timings.prompt_per_second],
+    promptMs: [timings.prompt_ms], generationMs: [timings.predicted_ms],
+  })) {
+    const value = pick(...values);
+    if (value !== undefined) tm.stats[key] = value;
+  }
+  tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+}
+
+function localAiTestError(status, body, token) {
+  let detail = body;
+  try {
+    const json = JSON.parse(body);
+    detail = json.error && (json.error.message || json.error) || json.message || body;
+  } catch (_) {}
+  detail = String(detail);
+  if (token) detail = detail.split(token).join("<redacted>");
+  detail = detail.replace(/\b(?:sk-|hf_)[A-Za-z0-9_.-]+\b/g, "<redacted>").slice(0, 600);
+  return new Error(`HTTP ${status}: ${detail}`);
+}
+
+async function localAiTestRequest({ runtime, settings, gateway, body, signal, onChunk }) {
+  const port = gateway ? settings.port : runtime.port;
+  const token = gateway ? settings.apiKey : runtime.internalToken;
+  if (!port || !token) throw new Error("Local AI endpoint is not ready");
+  if (gateway) {
+    const alias = body.model.startsWith("local/") ? body.model : `local/${body.model}`;
+    let ready = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (signal && signal.aborted) throw new Error("Cancelled");
+      const models = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+        signal, headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!models.ok) throw localAiTestError(models.status, await models.text(), token);
+      const catalogue = await models.json();
+      if ((catalogue.data || []).some((model) => model.id === alias)) { ready = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (!ready) throw new Error(t("localAiGatewayNotPublished"));
+    body = Object.assign({}, body, { model: alias });
+  }
+  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST", signal,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw localAiTestError(response.status, await response.text(), token);
+  if (!body.stream) return response.json();
+  if (!response.body) throw new Error("Empty response stream");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  const line = (text) => {
+    if (!text.startsWith("data:")) return;
+    const data = text.slice(5).trim();
+    if (data === "[DONE]") { finished = true; return; }
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed.error) throw localAiTestError(200, data, token);
+      onChunk(parsed);
+    }
+  };
+  try {
+    while (!finished) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop();
+      for (const text of lines) { line(text); if (finished) break; }
+      if (done) { if (buffer && !finished) line(buffer); break; }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
 const api = {
   localAi: {
+    testRequest: localAiTestRequest,
     hardwareInfo: () => inv("local_ai_hardware_info"),
     modelsList: () => inv("local_ai_models_list"),
     registryHealth: () => inv("local_ai_registry_health"),
@@ -813,7 +952,7 @@ const api = {
     startModel: (id) => inv("local_ai_start_model", { id }),
     stopRuntime: () => inv("local_ai_stop_runtime"),
     setBinaryPath: (path) => inv("local_ai_set_binary_path", { path }),
-    hfSearch: (query, limit, token) => inv("local_ai_hf_search", { query, limit, token }),
+    hfSearch: (query, limit, token, sort = "trendingScore", offset = 0) => inv("local_ai_hf_search", { query, limit, token, sort, offset }),
     hfModelDetails: (repoId, token) => inv("local_ai_hf_model_details", { repoId, token }),
     // One typed request object: the previous positional signature dropped the
     // SHA-256 that `DownloadRequest` expects, so LFS digests were never checked.

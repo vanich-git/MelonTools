@@ -63,7 +63,7 @@ pub fn resolve(
         manual_index.entry(id.as_str()).or_insert(index);
     }
 
-    let mut sorted: Vec<&Account> = accounts.iter().collect();
+    let mut sorted: Vec<&Account> = accounts.iter().filter(|a| a.pool_enabled()).collect();
     sorted.sort_by(|lhs, rhs| {
         let group = |account: &Account| -> i32 {
             match (account.is_backup.unwrap_or(false), account.is_blocked()) {
@@ -161,6 +161,25 @@ mod tests {
             ..Default::default()
         };
         plan_rank(&account)
+    }
+
+    #[test]
+    fn manual_exclusion_wins_over_every_strategy_and_role() {
+        let disabled = Account {
+            id: "disabled".into(),
+            pool_enabled: Some(false),
+            preferred_first: Some(true),
+            ..Default::default()
+        };
+        let enabled = Account { id: "enabled".into(), ..Default::default() };
+        for strategy in STRATEGIES {
+            let (ordered, blocked) = resolve(
+                &[disabled.clone(), enabled.clone()], strategy, &["disabled".into()],
+            );
+            assert_eq!(ordered, vec!["enabled"], "{strategy}");
+            assert!(blocked.is_empty(), "manual exclusion is not a quota pause");
+        }
+        assert_eq!(resolve(&[disabled], "auto", &[]), (vec![], vec![]));
     }
 
     #[test]

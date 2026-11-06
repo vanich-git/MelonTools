@@ -133,6 +133,9 @@ struct GgufMemoryProfile: Codable, Equatable {
     var headCount: Int?
     /// KV heads per attention layer (the last value for per-layer metadata).
     var headCountKV: Int?
+    var headCountKVByLayer: [Int]?
+    var architecture: String?
+    var blockCount: Int?
     var keyLength: Int?
     var valueLength: Int?
     var slidingWindow: Int?
@@ -148,6 +151,9 @@ struct GgufMemoryProfile: Codable, Equatable {
         embeddingLength = info.embeddingLength
         headCount = info.headCount
         headCountKV = info.headCountKV.max()
+        headCountKVByLayer = info.headCountKV.isEmpty ? nil : info.headCountKV
+        architecture = info.architecture
+        blockCount = info.blockCount
         keyLength = info.keyLength
         valueLength = info.valueLength
         slidingWindow = info.slidingWindow
@@ -160,8 +166,8 @@ struct GgufMemoryProfile: Codable, Equatable {
     /// Layers that keep a KV cache, out of `blockCount`.
     func attentionLayers(blockCount: Int) -> Int {
         let layers = max(1, blockCount)
-        guard let interval = fullAttentionInterval, interval > 1 else { return layers }
-        return max(1, Int((Double(layers) / Double(interval)).rounded(.up)))
+        guard ssmInnerSize != nil, let interval = fullAttentionInterval, interval > 1 else { return layers }
+        return layers / interval
     }
 
     /// Head dimension of K and V. Falls back to `embedding_length / head_count`,
@@ -170,10 +176,9 @@ struct GgufMemoryProfile: Codable, Equatable {
         if let keyLength, let valueLength, keyLength > 0, valueLength > 0 {
             return (keyLength, valueLength)
         }
-        if let keyLength, keyLength > 0 { return (keyLength, keyLength) }
         if let embeddingLength, let headCount, headCount > 0, embeddingLength > 0 {
             let dim = embeddingLength / headCount
-            return dim > 0 ? (dim, dim) : nil
+            return dim > 0 ? (keyLength ?? dim, valueLength ?? dim) : nil
         }
         return nil
     }

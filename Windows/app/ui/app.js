@@ -87,6 +87,7 @@ function poolHealth(accounts, routing) {
     if (account.quotaError || account.needsRelogin) errors += 1;
     if (account.blocked || account.blockInfo || blockedIds.has(String(account.id))) paused += 1;
     else usable += 1;
+    if (account.poolEnabled === false) continue;
     const hourly = finiteNumber(account.hourlyRemaining);
     if (hourly !== null) { hourlySum += hourly; hourlyCount += 1; }
     const weekly = finiteNumber(account.weeklyRemaining);
@@ -364,6 +365,7 @@ function blockText(info) {
   if (!info) return "";
   const stopped = info.blockedAt !== null && info.blockedAt !== undefined;
   switch (info.code) {
+    case "manual_disabled": return t("poolDisabled");
     case "hourly_exhausted": return stopped
       ? fmt(t("bHourlyExhaustedStopped"), { r: percentLabel(info.remaining) })
       : t("bHourly");
@@ -411,7 +413,7 @@ function poolPauseResetTime(unixTs, weekly) {
 }
 
 function poolPauseState() {
-  const accounts = S.accounts || [];
+  const accounts = (S.accounts || []).filter((account) => account && account.poolEnabled !== false);
   if (!accounts.length) return null;
   const blockedIds = new Set(((S.routing && S.routing.blockedIds) || []).map(String));
   const paused = accounts.filter((account) => account &&
@@ -700,6 +702,7 @@ function actionArgs(action, el) {
     case "schedulerToggle":
       return [el.dataset.id, !!el.checked];
     case "islandToggle":
+    case "taskbarWidgetToggle":
       return [!!el.checked];
     case "islandAutoCollapse":
       return [Number(el.value)];
@@ -725,6 +728,8 @@ function actionArgs(action, el) {
       return [el.dataset.id || el.dataset.tab || "models"];
     case "localAiProfileChange":
     case "localAiSearch":
+    case "localAiHfSort":
+    case "localAiHfVariant":
     case "localAiHfSearchInput":
     case "localAiSystemPromptInput":
     case "localAiTestPromptInput":

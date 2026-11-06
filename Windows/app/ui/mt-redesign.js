@@ -314,6 +314,9 @@ Object.assign(DICT.ru, {
   "resetsNone": "нет",
   "accountModels": "Модели на аккаунте",
   "accountSettings": "Настройки аккаунта",
+  "poolEnabled": "Участвует в общем пуле",
+  "poolDisabled": "Выключен из пула",
+  "poolEnabledHint": "Квоты продолжают обновляться. Выключенный аккаунт вернётся в маршрутизацию только после ручного включения.",
   "availableShort": "есть",
   "unavailableShort": "нет",
   "routing": "Роутинг",
@@ -890,6 +893,9 @@ Object.assign(DICT.en, {
   "resetsNone": "none",
   "accountModels": "Models on this account",
   "accountSettings": "Account settings",
+  "poolEnabled": "Participates in the shared pool",
+  "poolDisabled": "Excluded from pool",
+  "poolEnabledHint": "Quotas keep updating. An excluded account returns to routing only when manually enabled.",
   "availableShort": "yes",
   "unavailableShort": "no",
   "routing": "Routing",
@@ -1166,6 +1172,47 @@ Object.assign(DICT.en, {
   "dashRunNextDone": "Started: {name}"
 });
 
+// Account card/sheet terminology follows the macOS CodexAccountsView.
+Object.assign(DICT.ru, {
+  accountSettings: "Настройки маршрута аккаунта",
+  accountActive: "Активный", accountSwitch: "Переключить", accountQuota: "Квота", accountLaunch: "Запустить в Codex",
+  accountHourly: "часовая", accountWeekly: "недельная", accountPreferred: "Всегда первый", accountBackup: "Резерв",
+  accountHourlyReserve: "5 ч ≤ {n}%", accountWeeklyReserve: "Неделя ≤ {n}%",
+  accountSubscriptionExpires: "Подписка истекает {date}", accountSubscriptionExpired: "Подписка истекла {date}", accountDays: "{n} дн.",
+  accountNoResets: "Нет доступных сбросов", accountCredits: "Кредиты", accountAvailable: "доступна", accountUnavailable: "недоступна",
+  accountWeeklyExhausted: "Недельная квота — 0%, поэтому 5-часовое окно недоступно",
+  accountLimits: "Лимиты", accountHourlyLimit: "Лимит 5 часов", accountWeeklyLimit: "Недельный лимит",
+  accountThresholdHint: "переключать, когда остаток квоты упадёт до этого процента",
+  accountRecoveryHint: "Когда порог достигнут, автоматически включается следующий аккаунт, а этот вернётся после восстановления квоты.",
+  accountPreferredHint: "Аккаунт «Всегда первый» идёт первым, пока не на паузе по лимитам.",
+  accountBackupHint: "Резервный аккаунт используется только когда обычные аккаунты недоступны.",
+  accountQueuePosition: "Позиция в очереди: №{n}", accountChooseModels: "Выбрать модели для аккаунта…",
+  accountModelsHint: "По умолчанию доступны все модели из пула. Можно оставить только нужные модели для этого аккаунта.",
+  accountInvalidLimit: "Укажите целый порог от 1 до 100% или выключите лимит.",
+  accountSelect: "Выбрать {name}", accountSelectAll: "Выбрать все", accountClearSelection: "Снять выделение", accountSelected: "Выбрано: {n}",
+  accountRefreshSelected: "Обновить выбранные", accountDeleteSelected: "Удалить выбранные",
+  accountDeleteSelectedConfirm: "Удалить выбранные аккаунты ({n}) из пула?",
+});
+Object.assign(DICT.en, {
+  accountActive: "Active", accountSwitch: "Switch", accountQuota: "Quota", accountLaunch: "Launch in Codex",
+  accountHourly: "hourly", accountWeekly: "weekly", accountPreferred: "Always first", accountBackup: "Backup",
+  accountHourlyReserve: "5h reserve {n}%", accountWeeklyReserve: "weekly reserve {n}%",
+  accountSubscriptionExpires: "Subscription until {date}", accountSubscriptionExpired: "Subscription expired {date}", accountDays: "{n}d",
+  accountNoResets: "No resets available", accountCredits: "Credits", accountAvailable: "available", accountUnavailable: "unavailable",
+  accountWeeklyExhausted: "Weekly quota is 0%, so the 5-hour window is unavailable",
+  accountLimits: "Limits", accountHourlyLimit: "5-hour limit", accountWeeklyLimit: "Weekly limit",
+  accountThresholdHint: "switch when quota left drops to this percent",
+  accountRecoveryHint: "When the threshold is reached, the next account takes over automatically; this one returns when its quota recovers.",
+  accountPreferredHint: "The “always first” account leads while it is not paused by limits.",
+  accountBackupHint: "A backup account is used only when the regular accounts are unavailable.",
+  accountQueuePosition: "Queue position: #{n}", accountChooseModels: "Choose models for this account…",
+  accountModelsHint: "All pool models are available by default. You can keep only the models needed for this account.",
+  accountInvalidLimit: "Enter a whole threshold from 1 to 100%, or turn the limit off.",
+  accountSelect: "Select {name}", accountSelectAll: "Select all", accountClearSelection: "Clear selection", accountSelected: "Selected: {n}",
+  accountRefreshSelected: "Refresh selected", accountDeleteSelected: "Delete selected",
+  accountDeleteSelectedConfirm: "Remove the selected accounts ({n}) from the pool?",
+});
+
 function orderingState() {
   const accounts = S.accounts || [];
   const routing = S.routing || {};
@@ -1210,14 +1257,17 @@ function priorityRow(account, index, blocked) {
     ${account.isBackup ? `<span class="role-badge">${t("backup")}</span>` : ""}
     ${blocked ? `<span class="priority-blocked">${esc(blockText(account.blockInfo))}</span>` : ""}
     <span class="spacer"></span>
-    ${index === 0 ? `<span class="pill ok">${t("current")}</span>` : ""}
+    ${index === 0 && !blocked ? `<span class="pill ok">${t("current")}</span>` : ""}
+    <button class="icon-btn priority-move" aria-label="${t("orderUp")}" title="${t("orderUp")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="true" ${index === 0 ? "disabled" : ""}>↑</button>
+    <button class="icon-btn priority-move" aria-label="${t("orderDown")}" title="${t("orderDown")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="false" ${index >= (S.accounts || []).filter((item) => item.poolEnabled !== false).length - 1 ? "disabled" : ""}>↓</button>
   </div>`;
 }
 
 function priorityList() {
   const { accounts, ordered, byId, strategy, blockedIds } = orderingState();
   if (!accounts.length) return `<div class="footnote">${t("warnNoAccounts")}</div>`;
-  return `<div class="priority-list">${ordered.map((id, index) => {
+  const enabled = ordered.filter((id) => byId.get(id).poolEnabled !== false);
+  return `<div class="priority-list">${enabled.map((id, index) => {
     const account = byId.get(id);
     const blocked = !!account.blocked || blockedIds.has(id);
     return priorityRow(account, index, blocked);
@@ -1367,17 +1417,54 @@ function miniApiCard() {
 function subscriptionText(raw) {
   if (!raw) return "";
   const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return `${t("subscription")}: ${esc(raw)}`;
-  const expired = date.getTime() < Date.now();
-  const text = `${t("subscription")}: ${t("until")} ${date.toLocaleDateString()}`;
-  return expired ? `${text} ⚠` : text;
+  if (Number.isNaN(date.getTime())) return `${t("subscription")}: ${raw}`;
+  const formatted = date.toLocaleDateString(S.lang === "en" ? "en-US" : "ru-RU", { day: "numeric", month: "short", year: "numeric" });
+  return fmt(t(date.getTime() < Date.now() ? "accountSubscriptionExpired" : "accountSubscriptionExpires"), { date: formatted });
+}
+
+function accountIcon(name) {
+  const paths = {
+    switch: '<path d="M4 7h15l-4-4M20 17H5l4 4M19 7l-4 4M5 17l4-4"/>',
+    quota: '<circle cx="12" cy="12" r="9"/><path d="m12 12 4-4M6 12h1m10 0h1M12 6v1M8 8l1 1"/>',
+    launch: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M9 15l6-6m-6 0h6v6"/>',
+    models: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    trash: '<path d="M4 6h16M9 6V3h6v3M7 6l1 15h8l1-15M10 10v7m4-7v7"/>',
+    reset: '<path d="M4 10a8 8 0 1 0 3-5M4 3v7h7"/>',
+    calendar: '<rect x="3" y="5" width="16" height="15" rx="2"/><path d="M7 3v4m8-4v4M3 10h16m-12 4h1m4 0h1m-6 3h1"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[name] || ""}</svg>`;
+}
+
+function accountQueuePosition(account) {
+  if (account.poolEnabled === false) return null;
+  const state = orderingState();
+  const ids = state.ordered.filter((id) => state.byId.get(id).poolEnabled !== false);
+  const index = ids.indexOf(account.id);
+  return index < 0 ? null : index + 1;
+}
+
+function accountModelSelection(account) {
+  const models = (S.pool && S.pool.models) || [];
+  const selected = account.selectedModels;
+  const count = Array.isArray(selected)
+    ? models.filter((model) => selected.includes(model.slug)).length : models.length;
+  return fmt(t("poolAccountSelected"), { n: count, total: models.length });
+}
+
+function accountHistoryStrip(id) {
+  if (!(S.history || []).some((sample) => sample && sample.key === id)) return "";
+  return `<div class="spark-row account-history" title="${esc(t("historyHint"))}">
+    <span class="spark-label">${t("accountHourly")}</span>${sparkline(id, "hourlyLeft", t("accountHourly"))}
+    <span class="spark-label">${t("accountWeekly")}</span><span class="account-weekly-spark">${sparkline(id, "weeklyLeft", t("accountWeekly"))}</span>
+  </div>`;
 }
 
 function quotaBlock(title, percent, resetUnix, present) {
   const width = percent === null || percent === undefined ? 0 : Math.min(100, Math.max(0, percent));
   return `
   <div class="quota">
-    <div class="top"><span class="name">${esc(title)}</span><span class="val">${round(percent)}</span></div>
+    <div class="top"><span class="name">${esc(title)}</span><span class="val ${quotaTint(percent)}">${round(percent)}</span></div>
     <div class="bar"><i class="${quotaTint(percent)}" style="width:${width}%"></i></div>
     <div class="bottom">
       <span>${present ? resetText(resetUnix) : t("onceReset")}</span>
@@ -1388,6 +1475,20 @@ function quotaBlock(title, percent, resetUnix, present) {
 const ACCOUNT_SETTINGS_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.1"/><circle cx="7" cy="17" r="2.1"/></svg>';
 
 function accountCard(account) {
+  const poolDisabled = account.poolEnabled === false;
+  const position = accountQueuePosition(account);
+  const selected = (S.selectedAccounts || []).includes(account.id);
+  const plan = String(account.planType || "").replace(/(^|[_ -])(\w)/g, (_, space, letter) => (space ? " " : "") + letter.toUpperCase());
+  const subscription = subscriptionText(account.subscriptionActiveUntil);
+  const expiry = account.subscriptionActiveUntil ? new Date(account.subscriptionActiveUntil) : null;
+  const days = expiry && Number.isFinite(expiry.getTime()) ? Math.floor((expiry.getTime() - Date.now()) / 86400000) : null;
+  const roles = [
+    account.hourlyReservePercent > 0 ? `<span class="account-role">${fmt(t("accountHourlyReserve"), { n: account.hourlyReservePercent })}</span>` : "",
+    account.weeklyReservePercent > 0 ? `<span class="account-role">${fmt(t("accountWeeklyReserve"), { n: account.weeklyReservePercent })}</span>` : "",
+    account.preferredFirst ? `<span class="account-role gold">${t("accountPreferred")}</span>` : "",
+    account.isBackup ? `<span class="account-role gold">${t("accountBackup")}</span>` : "",
+    account.blocked && !poolDisabled ? `<span class="account-role warn" title="${esc(blockText(account.blockInfo))}">${esc(blockText(account.blockInfo))}</span>` : "",
+  ].join("");
   const resetCount = Number(account.resetCreditsAvailable);
   const hasResets = Number.isFinite(resetCount) && resetCount > 0;
   const resetBusy = !!S.busy["reset-" + account.id];
@@ -1397,94 +1498,114 @@ function accountCard(account) {
       })
     : t("resetActivate");
   const resetControl = hasResets
-    ? `<button class="btn small" data-action="resetActivate" data-id="${esc(account.id)}" title="${esc(resetTitle)}" ${resetBusy ? "disabled" : ""}>↻ ${esc(resetBusy ? t("resetInFlight") : resetCountLabel(resetCount))}</button>`
-    : `<span class="footnote">${t("resetsAvailable")}: ${t("resetsNone")}</span>`;
+    ? `<button class="btn small account-reset" data-action="resetActivate" data-id="${esc(account.id)}" title="${esc(resetTitle)}" ${resetBusy ? "disabled" : ""}>${accountIcon("reset")} ${esc(resetBusy ? t("resetInFlight") : resetCountLabel(resetCount))}</button>`
+    : account.resetCreditsAvailable != null ? `<span class="footnote">${t("accountNoResets")}</span>` : "";
   const models = account.modelAvailability || [];
   const modelsBlock = models.length
-    ? `<details><summary class="footnote" style="cursor:pointer">${t("accountModels")} (${models.length})</summary>
-         <div class="stack" style="margin-top:8px">
-           ${models.map((m) => `<div class="row" style="gap:8px"><span class="pill ${m.available ? "ok" : ""}">${m.available ? t("availableShort") : t("unavailableShort")}</span><span class="mono" style="font-size:11px">${esc(m.model)}</span></div>`).join("")}
+    ? `<details class="account-models"><summary>${t("accountModels")} (${models.length})</summary>
+         <div class="stack">
+           ${models.map((m) => `<div class="row"><span class="dot ${m.available ? "ok" : ""}"></span><span class="mono">${esc(m.model)}</span><span class="spacer"></span><span class="footnote">${t(m.available ? "accountAvailable" : "accountUnavailable")}</span></div>`).join("")}
          </div>
        </details>`
     : "";
   return `
-    <div class="card">
+    <div class="card account-card codex-account-card${poolDisabled ? " account-pool-disabled" : ""}">
       <div class="account-head">
-        <span class="email">${esc(account.email || account.displayName)}</span>
-        ${account.planType ? `<span class="plan">${esc(account.planType)}</span>` : ""}
-        ${account.preferredFirst ? `<span class="pill gold">${t("preferred")}</span>` : ""}
-        ${account.isBackup ? `<span class="pill">${t("backup")}</span>` : ""}
-        ${account.current ? `<span class="pill ok">${t("current")}</span>` : ""}
-        ${account.blocked
-          ? `<span class="pill warn" title="${esc(blockText(account.blockInfo))}">${t("paused")}</span>`
-          : `<span class="pill ok">${t("ready")}</span>`}
+        <input class="account-select" type="checkbox" aria-label="${esc(fmt(t("accountSelect"), { name: account.displayName || account.email }))}" data-action="accountSelect" data-id="${esc(account.id)}" data-on="change" ${selected ? "checked" : ""}>
+        <div class="account-identity"><span class="email">${esc(account.displayName || account.email)}</span>
+          <div class="account-plan-line"><span class="plan">${esc(plan)}</span>${position ? `<span>· №${position}</span>` : ""}</div>
+        </div>
         <span class="spacer"></span>
-        <button class="icon-btn" title="${t("accountSettings")}" data-action="accountSettingsOpen" data-id="${esc(account.id)}">${ACCOUNT_SETTINGS_ICON}</button>
-        <button class="ghost small" title="${t("orderUp")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="true">↑</button>
-        <button class="ghost small" title="${t("orderDown")}" data-action="movePriority" data-id="${esc(account.id)}" data-value="false">↓</button>
+        ${poolDisabled ? `<span class="pill">${t("poolDisabled")}</span>` : account.current ? `<span class="pill ok">${t("accountActive")}</span>` : ""}
+        <button class="icon-btn" aria-label="${t("accountSettings")}" title="${t("accountSettings")}" data-action="accountSettingsOpen" data-id="${esc(account.id)}">${ACCOUNT_SETTINGS_ICON}</button>
       </div>
-
-      <div class="stack">
-        ${quotaBlock(t("fiveHour"), account.hourlyRemaining, account.hourlyResetAt, account.hourlyWindowPresent)}
-        ${quotaBlock(t("week"), account.weeklyRemaining, account.weeklyResetAt, account.weeklyWindowPresent)}
-        ${historyStrip(account.id)}
-
-        ${account.blocked ? `<div class="footnote">⏸ ${esc(blockText(account.blockInfo))}</div>` : ""}
-        <div class="row">
-          ${account.subscriptionActiveUntil ? `<span class="footnote">${esc(subscriptionText(account.subscriptionActiveUntil))}</span>` : ""}
-          <span class="spacer"></span>
-          ${resetControl}
-        </div>
-        <div class="footnote">${t("quotaAge")}: ${esc(ageText(account.quotaUpdatedAt))} · ${t(account.quotaSource === "gateway" ? "quotaLive" : "quotaUsage")}${account.quotaError ? " · " + esc(account.quotaError) : ""}</div>
-        ${modelsBlock}
-
-        <div class="row">
-          ${account.current ? "" : `<button class="btn small" data-action="switchAccount" data-id="${esc(account.id)}">${t("makeCurrent")}</button>`}
-          <button class="ghost small" data-action="refreshQuota" data-id="${esc(account.id)}">${t("refreshQuota")}</button>
-          <button class="ghost small" data-action="refreshLogin" data-id="${esc(account.id)}">${t("refreshLogin")}</button>
-          <button class="ghost small" data-action="poolOpenAccount" data-id="${esc(account.id)}">${t("models")}</button>
-          <span class="spacer"></span>
-          <button class="ghost small danger" data-action="deleteAccount" data-id="${esc(account.id)}">${t("remove")}</button>
-        </div>
+      ${roles ? `<div class="account-roles">${roles}</div>` : ""}
+      ${subscription ? `<div class="account-subscription${days != null && days < 0 ? " expired" : ""}">${accountIcon("calendar")}<span>${esc(subscription)}</span>${days != null && days >= 0 ? `<span class="footnote">${fmt(t("accountDays"), { n: days })}</span>` : ""}</div>` : ""}
+      <div class="stack account-quota-stack">
+        ${quotaBlock(t("accountHourly"), account.hourlyRemaining, account.hourlyResetAt, account.hourlyWindowPresent)}
+        ${quotaBlock(t("accountWeekly"), account.weeklyRemaining, account.weeklyResetAt, account.weeklyWindowPresent)}
+        ${accountHistoryStrip(account.id)}
+        <div class="row account-credits">${resetControl}${account.unlimitedCredits ? `<span class="pill ok">${t("accountCredits")}</span>` : account.creditsBalance && account.creditsBalance !== "0" ? `<span class="footnote">${t("accountCredits")}: ${esc(account.creditsBalance)}</span>` : ""}</div>
+      </div>
+      ${account.weeklyRemaining === 0 && account.hourlyRemaining > 0 ? `<div class="footnote account-warning">${t("accountWeeklyExhausted")}</div>` : ""}
+      ${account.quotaError ? `<div class="footnote account-error">${esc(account.quotaError)}</div>` : ""}
+      <div class="footnote account-updated">${t("quotaAge")} ${esc(ageText(account.quotaUpdatedAt))} · ${t(account.quotaSource === "gateway" ? "quotaLive" : "quotaUsage")}</div>
+      ${modelsBlock}
+      <div class="account-actions">
+        <button class="ghost small" data-action="switchAccount" data-id="${esc(account.id)}" ${account.current ? "disabled" : ""}>${accountIcon("switch")}${t(account.current ? "accountActive" : "accountSwitch")}</button>
+        <button class="ghost small" data-action="refreshQuota" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""}>${accountIcon("quota")}${t("accountQuota")}</button>
+        <button class="ghost small" data-action="launchAccountInCodex" data-id="${esc(account.id)}" ${S.busy.launch ? "disabled" : ""}>${accountIcon("launch")}${t("accountLaunch")}</button>
+        <button class="ghost small account-models-button" data-action="poolOpenAccount" data-id="${esc(account.id)}" title="${esc(accountModelSelection(account))}">${accountIcon("models")}${t("models")}</button>
+        <button class="icon-btn account-delete" aria-label="${t("remove")}" title="${t("remove")}" data-action="deleteAccount" data-id="${esc(account.id)}">${accountIcon("trash")}</button>
       </div>
     </div>`;
+}
+
+function accountSettingsValues(account) {
+  if (S.accountSettingsDraft && S.accountSettingsDraft.id === account.id) return S.accountSettingsDraft;
+  return {
+    id: account.id, poolEnabled: account.poolEnabled !== false,
+    hourlyEnabled: account.hourlyReservePercent > 0, hourly: account.hourlyReservePercent || 5,
+    weeklyEnabled: account.weeklyReservePercent > 0, weekly: account.weeklyReservePercent || 5,
+    preferred: !!account.preferredFirst, backup: !!account.isBackup,
+  };
+}
+
+function accountLimitRow(kind, title, enabled, value) {
+  const suffix = kind === "hourly" ? "h" : "w";
+  return `<div class="account-limit">
+    <label class="card-toggle"><input type="checkbox" role="switch" id="account-res-${suffix}-enabled" data-action="accountSettingsDraftChange" data-on="change" ${enabled ? "checked" : ""}>${t(title)}</label>
+    <div class="account-limit-value" ${enabled ? "" : "hidden"}>
+      <div class="account-stepper"><label class="sr-only" for="account-res-${suffix}">${t(title)} (%)</label><input type="number" id="account-res-${suffix}" min="1" max="100" step="1" value="${esc(value)}" data-action="accountSettingsDraftChange" data-on="input"><span>%</span></div>
+      <span class="footnote">${t("accountThresholdHint")}</span>
+    </div>
+  </div>`;
 }
 
 function accountSettingsModal() {
   if (!S.accountSettings) return "";
   const account = (S.accounts || []).find((item) => item.id === S.accountSettings);
   if (!account) return "";
+  const draft = accountSettingsValues(account);
+  const position = accountQueuePosition(account);
+  const busy = !!S.busy["account-settings-" + account.id];
   return `
   <div class="modal">
-    <div class="modal-card account-settings-card">
-      <div class="row" style="align-items:flex-start">
-        <div class="stack" style="gap:2px">
-          <span class="stat-label">${t("accountSettings")}</span>
-          <b style="font-size:15px">${esc(account.email || account.displayName)}</b>
+    <section class="modal-card account-settings-card" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
+      <h2 id="account-settings-title">${t("accountSettings")}</h2>
+      <div class="account-settings-email">${esc(account.email || account.displayName)}</div>
+      <fieldset ${busy ? "disabled" : ""}>
+        <div class="account-settings-section">
+          <label class="card-toggle"><input type="checkbox" role="switch" id="account-pool-enabled" data-action="accountSettingsDraftChange" data-on="change" ${draft.poolEnabled ? "checked" : ""}>${t("poolEnabled")}</label>
+          <p class="footnote">${t("poolEnabledHint")}</p>
         </div>
-        <span class="spacer"></span>
-        <button class="icon-btn" title="${t("cancel")}" data-action="accountSettingsClose">×</button>
-      </div>
-      <div class="divider"></div>
-      <div class="row">
-        <label class="field">${t("reserveHourly")}
-          <input type="number" id="account-res-h" min="0" max="100" value="${account.hourlyReservePercent ?? ""}">
-        </label>
-        <label class="field">${t("reserveWeekly")}
-          <input type="number" id="account-res-w" min="0" max="100" value="${account.weeklyReservePercent ?? ""}">
-        </label>
-      </div>
-      <div class="stack" style="gap:8px">
-        <label class="card-toggle"><input type="checkbox" id="account-preferred" ${account.preferredFirst ? "checked" : ""}> ${t("preferred")}</label>
-        <label class="card-toggle"><input type="checkbox" id="account-backup" ${account.isBackup ? "checked" : ""}> ${t("backup")}</label>
-      </div>
-      <div class="footnote">${t("reserveExact")}</div>
+        <div class="account-settings-section">
+          <h3>${t("accountLimits")}</h3>
+          ${accountLimitRow("hourly", "accountHourlyLimit", draft.hourlyEnabled, draft.hourly)}
+          ${accountLimitRow("weekly", "accountWeeklyLimit", draft.weeklyEnabled, draft.weekly)}
+          <p class="footnote">${t("accountRecoveryHint")}</p>
+          <p class="footnote">${t("reserveExact")}</p>
+        </div>
+        <div class="divider"></div>
+        <div class="account-settings-section">
+          <label class="card-toggle"><input type="checkbox" role="switch" id="account-preferred" data-action="accountSettingsDraftChange" data-on="change" ${draft.preferred ? "checked" : ""}>${t("accountPreferred")}</label>
+          <p class="footnote">${t("accountPreferredHint")}</p>
+          <label class="card-toggle"><input type="checkbox" role="switch" id="account-backup" data-action="accountSettingsDraftChange" data-on="change" ${draft.backup ? "checked" : ""}>${t("accountBackup")}</label>
+          <p class="footnote">${t("accountBackupHint")}</p>
+        </div>
+        <p class="footnote account-queue-position">${draft.poolEnabled && position ? fmt(t("accountQueuePosition"), { n: position }) : t("poolDisabled")}</p>
+        <div class="divider"></div>
+        <div class="account-settings-section">
+          <div class="row account-model-settings-row"><h3>${t("models")}</h3><span class="footnote">${esc(accountModelSelection(account))}</span><span class="spacer"></span><button class="ghost small account-choose-models" data-action="accountSettingsModels" data-id="${esc(account.id)}" title="${t("accountChooseModels")}">${accountIcon("models")}${t("models")}</button></div>
+          <p class="footnote">${t("accountModelsHint")}</p>
+          ${account.quotaError ? `<button class="ghost small" data-action="refreshLogin" data-id="${esc(account.id)}">${t("refreshLogin")}</button>` : ""}
+        </div>
+      </fieldset>
       <div class="codex-modal-actions">
-        <button class="ghost" data-action="accountSettingsClose">${t("cancel")}</button>
-        <button class="ghost" data-action="accountSettingsModels" data-id="${esc(account.id)}">${t("models")}</button>
-        <button class="btn" data-action="accountSettingsSave" data-id="${esc(account.id)}">${t("save")}</button>
+        <button class="ghost" data-action="accountSettingsClose" ${busy ? "disabled" : ""}>${t("cancel")}</button>
+        <button class="btn" data-action="accountSettingsSave" data-id="${esc(account.id)}" ${busy ? "disabled" : ""}>${t("save")}</button>
       </div>
-    </div>
+    </section>
   </div>`;
 }
 
@@ -1492,6 +1613,8 @@ function accountsPage() {
   const { accounts, byId, ordered } = orderingState();
   const deviceLogin = S.deviceLogin;
   const cards = ordered.map((id) => accountCard(byId.get(id))).join("");
+  const selected = (S.selectedAccounts || []).filter((id) => byId.has(id));
+  const allSelected = accounts.length > 0 && selected.length === accounts.length;
 
   const deviceBlock = deviceLogin && !deviceLogin.done
     ? `<div class="row">
@@ -1520,6 +1643,12 @@ function accountsPage() {
     <div class="stack">${deviceBlock}</div>
   </div>
   ${poolPauseBanner()}
+  ${accounts.length ? `<div class="row account-selection-bar">
+    <label><input type="checkbox" data-action="accountsSelectAll" data-on="change" ${allSelected ? "checked" : ""}>${t(allSelected ? "accountClearSelection" : "accountSelectAll")}</label>
+    <span class="footnote">${fmt(t("accountSelected"), { n: selected.length })}</span><span class="spacer"></span>
+    <button class="ghost small" data-action="accountsRefreshSelected" ${!selected.length || S.busy.quotas ? "disabled" : ""}>${t("accountRefreshSelected")}</button>
+    <button class="ghost small danger" data-action="accountsDeleteSelected" ${!selected.length || S.busy["accounts-delete"] ? "disabled" : ""}>${t("accountDeleteSelected")}</button>
+  </div>` : ""}
   <div class="account-grid">
     ${miniApiCard()}
     ${cards || `<div class="card"><div class="muted">${t("warnNoAccounts")}</div></div>`}
@@ -1583,7 +1712,7 @@ function apiPage() {
         ${orderingState().accounts.length > 1 ? `<button class="ghost small" data-action="resetOrder">${t("resetOrder")}</button>` : ""}
         <button class="btn small" data-action="gatewaySync" ${S.busy.sync ? "disabled" : ""}>${t("applyRouting")}</button>
         <span class="spacer"></span>
-        <span class="footnote">${esc(fmt(t("accountsInPool"), { n: orderingState().accounts.length }))}</span>
+        <span class="footnote">${esc(fmt(t("accountsInPool"), { n: orderingState().accounts.filter((account) => account.poolEnabled !== false).length }))}</span>
       </div>
     </div>
   </div>
@@ -1701,6 +1830,12 @@ function settingsPage() {
       </select>
     </label>
     <div class="footnote" style="margin:4px 0 0">${t("islandAutoCollapseHint")}</div>
+  </div>
+
+  <div class="card">
+    <h2>${t("taskbarWidget")}</h2>
+    <label class="card-toggle"><input type="checkbox" role="switch" ${settings.taskbarWidgetVisible === true ? "checked" : ""} data-action="taskbarWidgetToggle" data-on="change" ${S.busy["taskbar-widget"] ? "disabled" : ""}> ${t("showTaskbarWidget")}</label>
+    <div class="footnote">${t("taskbarWidgetHint")}</div>
   </div>
 
   <div class="card">
@@ -2060,7 +2195,7 @@ function dashboardPoolCard(health, accounts) {
 }
 
 function quotaTotals(accounts, field) {
-  const list = Array.isArray(accounts) ? accounts : [];
+  const list = Array.isArray(accounts) ? accounts.filter((account) => account && account.poolEnabled !== false) : [];
   let sum = 0;
   let seen = 0;
   for (const account of list) {

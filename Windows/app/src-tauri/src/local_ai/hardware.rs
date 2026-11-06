@@ -66,6 +66,10 @@ pub struct KvGeometry {
     pub kv_heads: usize,
     /// `*.embedding_length / *.attention.head_count`.
     pub head_dim: usize,
+    pub value_dim: usize,
+    pub total_kv_heads: Option<usize>,
+    /// True for a fallback shape (e.g. MLA/SSM); never label it metadata-exact.
+    pub approximate: bool,
 }
 
 impl KvGeometry {
@@ -74,9 +78,8 @@ impl KvGeometry {
     }
 }
 
-/// One shared estimation DTO. The UI reads exactly these keys, and
-/// `total_bytes` is unambiguously the sum the machine must have free — it is
-/// not the weights file size and not the KV cache alone.
+/// Shared estimation DTO. `total_bytes` includes an OS reserve; it is not
+/// current free RAM or measured residency. RAM and GPU use separate budgets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEstimation {
@@ -97,6 +100,10 @@ pub struct MemoryEstimation {
     pub confidence: EstimationConfidence,
     pub recommendation: CompatibilityRecommendation,
     pub warning: Option<String>,
+    pub ram_required_bytes: u64,
+    pub gpu_required_bytes: Option<u64>,
+    pub gpu_available_bytes: Option<u64>,
+    pub assumptions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,17 +183,45 @@ pub fn estimate_kv_cache_bytes(
     geometry: Option<KvGeometry>,
 ) -> (u64, EstimationConfidence) {
     let bytes_per_element = kv_bytes_per_element(kv_cache_type);
-    let (width, confidence) = match geometry.filter(KvGeometry::is_complete) {
-        Some(geometry) => (
-            geometry.layers as f64 * geometry.kv_heads as f64 * geometry.head_dim as f64,
-            EstimationConfidence::Metadata,
-        ),
+    let quantized = kv_cache_type.starts_with('q') || kv_cache_type == "iq4_nl";
+    let row_bytes = |width: usize| {
+        let elements = if quantized {
+            width.div_ceil(32) * 32
+        } else {
+            width
+        };
+        elements as f64 * bytes_per_element
+    };
+    let (bytes, confidence) = match geometry.filter(KvGeometry::is_complete) {
+        Some(g) => {
+            let value_dim = if g.value_dim > 0 {
+                g.value_dim
+            } else {
+                g.head_dim
+            };
+            let heads = g
+                .total_kv_heads
+                .unwrap_or(g.kv_heads.saturating_mul(g.layers));
+            // Quantized row alignment is per layer. Sum-head metadata is exact
+            // for regular aligned widths; preserve conservative max alignment.
+            let per_token = (row_bytes(g.kv_heads.saturating_mul(g.head_dim))
+                + row_bytes(g.kv_heads.saturating_mul(value_dim)))
+                * heads as f64
+                / g.kv_heads as f64;
+            (
+                per_token * context_length as f64,
+                if g.approximate {
+                    EstimationConfidence::Heuristic
+                } else {
+                    EstimationConfidence::Metadata
+                },
+            )
+        }
         None => (
-            HEURISTIC_LAYERS as f64 * HEURISTIC_KV_WIDTH as f64,
+            2.0 * HEURISTIC_LAYERS as f64 * row_bytes(HEURISTIC_KV_WIDTH) * context_length as f64,
             EstimationConfidence::Heuristic,
         ),
     };
-    let bytes = 2.0 * width * context_length as f64 * bytes_per_element;
     (bytes.round() as u64, confidence)
 }
 
@@ -198,48 +233,155 @@ pub fn calculate_memory_estimation(
     batch_size: usize,
     geometry: Option<KvGeometry>,
 ) -> MemoryEstimation {
+    calculate_configured_memory_estimation(
+        info,
+        weights_size,
+        context_length,
+        kv_cache_type,
+        batch_size,
+        geometry,
+        None,
+        info.recommended_backend,
+        true,
+    )
+}
+
+/// Layer placement is a proportional estimate, not a tensor allocation trace.
+/// CPU RAM and dedicated GPU memory are separate budgets; unified memory is
+/// counted once. Unknown hardware is never silently replaced by a 16 GB PC.
+#[allow(clippy::too_many_arguments)]
+pub fn calculate_configured_memory_estimation(
+    info: &HardwareInfo,
+    weights_size: u64,
+    context_length: usize,
+    kv_cache_type: &str,
+    batch_size: usize,
+    geometry: Option<KvGeometry>,
+    gpu_layers: Option<usize>,
+    backend: InferenceBackend,
+    flash_attention: bool,
+) -> MemoryEstimation {
     let (kv_cache_bytes, confidence) =
         estimate_kv_cache_bytes(context_length, kv_cache_type, geometry);
-    let compute_buffers = (batch_size as u64) * 1024 * 1024; // ~512 MB for 512 batch
-    let os_reserve: u64 = 2 * 1024 * 1024 * 1024; // 2 GB
-
-    let total_required = weights_size + kv_cache_bytes + compute_buffers + os_reserve;
-    let available_memory = if info.total_ram > 0 {
-        info.total_ram
+    let mut assumptions = vec![
+        "Weights use GGUF file size; mmap residency and tensor placement are not measured.".to_string(),
+        "Compute buffers are heuristic: microbatch, runtime version and architecture affect allocation.".to_string(),
+        "Context is total KV capacity shared by parallel slots, not per-slot capacity.".to_string(),
+        "Total includes an OS reserve; it is not current free RAM or a measured process footprint.".to_string(),
+    ];
+    if confidence == EstimationConfidence::Heuristic {
+        assumptions.push("Incomplete or non-standard GGUF geometry: KV is an order-of-magnitude estimate, not a fit guarantee. Hybrid recurrent state and MLA layouts are not measured.".to_string());
+    }
+    let mut compute_buffers = 256 * 1024 * 1024_u64;
+    compute_buffers = compute_buffers.max((batch_size as u64).saturating_mul(4096 * 4 * 3));
+    if !flash_attention {
+        compute_buffers = compute_buffers.saturating_add(
+            (batch_size.min(512) as u64)
+                .saturating_mul(context_length as u64)
+                .saturating_mul(32 * 4),
+        );
+        assumptions.push("Flash Attention off: attention-score scratch uses a conservative 32-head microbatch heuristic.".to_string());
+    }
+    let os_reserve = (2 * 1024 * 1024 * 1024_u64).max(info.total_ram * 15 / 100);
+    let total_required = weights_size
+        .saturating_add(kv_cache_bytes)
+        .saturating_add(compute_buffers)
+        .saturating_add(os_reserve);
+    let layers = geometry
+        .filter(KvGeometry::is_complete)
+        .map(|g| g.layers)
+        .unwrap_or(32);
+    let offloaded = if backend == InferenceBackend::Cpu {
+        0
     } else {
-        16 * 1024 * 1024 * 1024
+        gpu_layers.unwrap_or(layers).min(layers)
     };
-
-    let (recommendation, warning) = if total_required <= (available_memory * 70 / 100) {
-        (CompatibilityRecommendation::Recommended, None)
-    } else if total_required <= (available_memory * 85 / 100) {
-        (
-            CompatibilityRecommendation::FitsWithLimitations,
-            Some("Model will consume most of available system memory.".to_string()),
-        )
-    } else if total_required <= available_memory {
-        (
-            CompatibilityRecommendation::HighMemoryUsage,
-            Some("High risk of system slowdown or swapping.".to_string()),
-        )
+    let gpu_required = (offloaded > 0).then(|| {
+        assumptions.push("GPU layer placement assumes proportional weights/KV; individual layers and output tensors differ.".to_string());
+        ((weights_size.saturating_add(kv_cache_bytes)) as f64 * offloaded as f64 / layers as f64) as u64
+            + compute_buffers
+    });
+    let ram_required = if info.gpu_has_unified_memory || offloaded == 0 {
+        total_required
     } else {
+        // Keep scratch on the host too: staging/driver allocations are unknown.
+        total_required.saturating_sub(gpu_required.unwrap_or(0).saturating_sub(compute_buffers))
+    };
+    let gpu_budget = if offloaded > 0 {
+        info.gpu_recommended_max_working_set_size.filter(|n| *n > 0)
+    } else {
+        None
+    };
+    let (recommendation, warning) = if info.total_ram == 0 {
+        (
+            CompatibilityRecommendation::Unknown,
+            Some("Physical RAM could not be detected.".to_string()),
+        )
+    } else if ram_required > info.total_ram {
         (
             CompatibilityRecommendation::InsufficientMemory,
-            Some("Required memory exceeds total physical RAM.".to_string()),
+            Some("Estimated RAM requirement exceeds physical RAM.".to_string()),
         )
+    } else if gpu_required
+        .zip(gpu_budget)
+        .is_some_and(|(required, budget)| required > budget)
+    {
+        (
+            CompatibilityRecommendation::InsufficientMemory,
+            Some("Estimated GPU allocation exceeds the GPU memory budget.".to_string()),
+        )
+    } else if offloaded > 0 && gpu_budget.is_none() {
+        (
+            CompatibilityRecommendation::Unknown,
+            Some(
+                "GPU memory budget is unavailable; RAM alone cannot confirm compatibility."
+                    .to_string(),
+            ),
+        )
+    } else if ram_required > info.total_ram * 85 / 100
+        || gpu_required
+            .zip(gpu_budget)
+            .is_some_and(|(required, budget)| required > budget * 85 / 100)
+    {
+        (
+            CompatibilityRecommendation::HighMemoryUsage,
+            Some(
+                "Little memory headroom; actual runtime allocation may exceed this estimate."
+                    .to_string(),
+            ),
+        )
+    } else if confidence == EstimationConfidence::Heuristic {
+        (
+            CompatibilityRecommendation::FitsWithLimitations,
+            Some(
+                "Geometry is uncertain; verify the runtime allocation before increasing context."
+                    .to_string(),
+            ),
+        )
+    } else {
+        (CompatibilityRecommendation::Recommended, None)
     };
-
+    let fits_in_memory = info.total_ram > 0
+        && ram_required <= info.total_ram
+        && (offloaded == 0
+            || gpu_required
+                .zip(gpu_budget)
+                .is_some_and(|(required, budget)| required <= budget));
     MemoryEstimation {
         weights_bytes: weights_size,
         kv_cache_bytes,
         compute_buffers_bytes: compute_buffers,
         os_reserve_bytes: os_reserve,
         total_bytes: total_required,
-        available_bytes: available_memory,
-        fits_in_memory: total_required <= available_memory,
+        available_bytes: info.total_ram,
+        fits_in_memory,
         confidence,
         recommendation,
         warning,
+        ram_required_bytes: ram_required,
+        gpu_required_bytes: gpu_required,
+        gpu_available_bytes: gpu_budget,
+        assumptions,
     }
 }
 
@@ -321,6 +463,31 @@ fn parse_driver_version_output(stdout: &str) -> Option<String> {
     })
 }
 
+/// nvidia-smi reports dedicated VRAM in MiB, unlike CIM AdapterRAM (which
+/// truncates many modern cards to 32 bits). Unknown vendors stay unknown.
+#[cfg(any(windows, test))]
+fn parse_nvidia_memory_output(stdout: &str) -> Option<(String, u64)> {
+    let line = stdout.lines().next()?.trim();
+    let (name, mib) = line.rsplit_once(',')?;
+    let bytes = mib.trim().parse::<u64>().ok()?.checked_mul(1024 * 1024)?;
+    (!name.trim().is_empty() && bytes > 0).then(|| (name.trim().to_string(), bytes))
+}
+
+#[cfg(windows)]
+fn detect_nvidia_memory() -> Option<(String, u64)> {
+    let mut command = Command::new("nvidia-smi");
+    command.args([
+        "--query-gpu=name,memory.total",
+        "--format=csv,noheader,nounits",
+        "--id=0",
+    ]);
+    let output = run_output_with_timeout(command, NVIDIA_SMI_TIMEOUT)?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_nvidia_memory_output(&String::from_utf8_lossy(&output.stdout))
+}
+
 #[cfg(target_os = "windows")]
 fn detect_windows_gpu_driver() -> Option<String> {
     let mut nvidia = Command::new("nvidia-smi");
@@ -386,7 +553,7 @@ fn windows_memory() -> (u64, u64) {
     if unsafe { GlobalMemoryStatusEx(&mut memory) } != 0 {
         (memory.ullTotalPhys, memory.ullAvailPhys)
     } else {
-        (16 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024)
+        (0, 0)
     }
 }
 
@@ -413,13 +580,20 @@ pub fn detect_hardware(models_dir: Option<&Path>) -> HardwareInfo {
 
     #[cfg(windows)]
     {
-        // Check for CUDA / Vulkan environment or NVIDIA GPU via registry / environment
-        if std::env::var("CUDA_PATH").is_ok()
+        // Prefer a successful driver query over a toolkit installation hint.
+        let nvidia = detect_nvidia_memory();
+        if nvidia.is_some()
+            || std::env::var("CUDA_PATH").is_ok()
             || Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA").exists()
         {
             supported_backends.insert(0, InferenceBackend::Cuda);
             recommended_backend = InferenceBackend::Cuda;
-            gpu_name = Some("NVIDIA GPU (CUDA)".to_string());
+            if let Some((name, bytes)) = nvidia {
+                gpu_name = Some(name);
+                gpu_max_vram = Some(bytes);
+            } else {
+                gpu_name = Some("NVIDIA GPU (CUDA)".to_string());
+            }
         } else {
             supported_backends.insert(0, InferenceBackend::Vulkan);
             recommended_backend = InferenceBackend::Vulkan;
@@ -550,7 +724,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(est.recommendation, CompatibilityRecommendation::Recommended);
+        assert_eq!(
+            est.recommendation,
+            CompatibilityRecommendation::FitsWithLimitations
+        );
         assert_eq!(est.confidence, EstimationConfidence::Heuristic);
         assert!(est.total_bytes < info.total_ram);
         assert!(est.fits_in_memory);
@@ -570,6 +747,7 @@ mod tests {
             layers: 28,
             kv_heads: 8,
             head_dim: 128,
+            ..Default::default()
         };
         let (bytes, confidence) = estimate_kv_cache_bytes(8192, "f16", Some(geometry));
         let expected = 2.0 * 28.0 * 8.0 * 128.0 * 8192.0 * 2.0;
@@ -593,11 +771,13 @@ mod tests {
             layers: 32,
             kv_heads: 8,
             head_dim: 128,
+            ..Default::default()
         };
         let mha = KvGeometry {
             layers: 32,
             kv_heads: 32,
             head_dim: 128,
+            ..Default::default()
         };
         let (gqa_bytes, _) = estimate_kv_cache_bytes(8192, "f16", Some(gqa));
         let (mha_bytes, _) = estimate_kv_cache_bytes(8192, "f16", Some(mha));
@@ -621,6 +801,7 @@ mod tests {
             layers: 40,
             kv_heads: 0,
             head_dim: 128,
+            ..Default::default()
         };
         let (_, confidence) = estimate_kv_cache_bytes(4096, "f16", Some(partial));
         assert_eq!(confidence, EstimationConfidence::Heuristic);
@@ -672,6 +853,146 @@ mod tests {
                 + json["computeBuffersBytes"].as_u64().unwrap()
                 + json["osReserveBytes"].as_u64().unwrap()
         );
+    }
+
+    fn test_hardware() -> HardwareInfo {
+        HardwareInfo {
+            os_version: "test".into(),
+            architecture: "x86_64".into(),
+            models_dir: String::new(),
+            cpu_model: "test".into(),
+            cpu_cores: 8,
+            total_ram: 32 << 30,
+            free_ram: 16 << 30,
+            gpu_name: Some("GPU".into()),
+            gpu_driver: None,
+            gpu_has_unified_memory: false,
+            gpu_recommended_max_working_set_size: Some(4 << 30),
+            supported_backends: vec![InferenceBackend::Cpu, InferenceBackend::Cuda],
+            recommended_backend: InferenceBackend::Cuda,
+            models_disk_free_space: 0,
+            models_disk_total_space: 0,
+        }
+    }
+
+    #[test]
+    fn asymmetric_kv_lengths_and_quantized_rows_are_honored() {
+        let g = KvGeometry {
+            layers: 4,
+            kv_heads: 2,
+            head_dim: 128,
+            value_dim: 64,
+            total_kv_heads: None,
+            approximate: false,
+        };
+        assert_eq!(
+            estimate_kv_cache_bytes(8192, "f16", Some(g)).0,
+            (128 + 64) * 2 * 4 * 8192 * 2
+        );
+        let narrow = KvGeometry {
+            layers: 1,
+            kv_heads: 1,
+            head_dim: 33,
+            value_dim: 17,
+            total_kv_heads: None,
+            approximate: false,
+        };
+        assert_eq!(estimate_kv_cache_bytes(1, "q4_0", Some(narrow)).0, 54); // 3 quantization blocks
+    }
+
+    #[test]
+    fn cpu_offload_does_not_consume_gpu_budget_and_unknown_is_not_a_fit() {
+        let info = test_hardware();
+        let cpu = calculate_configured_memory_estimation(
+            &info,
+            8 << 30,
+            8192,
+            "f16",
+            512,
+            None,
+            Some(0),
+            InferenceBackend::Cuda,
+            true,
+        );
+        assert!(cpu.gpu_required_bytes.is_none());
+        assert!(cpu.fits_in_memory);
+        let gpu = calculate_configured_memory_estimation(
+            &info,
+            8 << 30,
+            8192,
+            "f16",
+            512,
+            None,
+            None,
+            InferenceBackend::Cuda,
+            true,
+        );
+        assert_eq!(
+            gpu.recommendation,
+            CompatibilityRecommendation::InsufficientMemory
+        );
+        assert!(!gpu.fits_in_memory);
+        let mut unknown = info;
+        unknown.gpu_recommended_max_working_set_size = None;
+        let est = calculate_configured_memory_estimation(
+            &unknown,
+            1 << 30,
+            1024,
+            "f16",
+            128,
+            None,
+            None,
+            InferenceBackend::Vulkan,
+            true,
+        );
+        assert_eq!(est.recommendation, CompatibilityRecommendation::Unknown);
+        assert!(!est.fits_in_memory);
+    }
+
+    #[test]
+    fn flash_attention_and_partial_offload_change_the_right_components() {
+        let info = test_hardware();
+        let geometry = Some(KvGeometry {
+            layers: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            ..Default::default()
+        });
+        let full = calculate_configured_memory_estimation(
+            &info,
+            2 << 30,
+            8192,
+            "f16",
+            512,
+            geometry,
+            Some(32),
+            InferenceBackend::Cuda,
+            true,
+        );
+        let half = calculate_configured_memory_estimation(
+            &info,
+            2 << 30,
+            8192,
+            "f16",
+            512,
+            geometry,
+            Some(16),
+            InferenceBackend::Cuda,
+            false,
+        );
+        assert!(half.compute_buffers_bytes > full.compute_buffers_bytes);
+        assert!(half.ram_required_bytes > full.ram_required_bytes);
+    }
+
+    #[test]
+    fn nvidia_vram_is_mib_and_invalid_output_stays_unknown() {
+        assert_eq!(
+            parse_nvidia_memory_output("NVIDIA RTX 4090, 24564\n"),
+            Some(("NVIDIA RTX 4090".into(), 24564 * 1024 * 1024))
+        );
+        assert!(parse_nvidia_memory_output("NVIDIA-SMI has failed").is_none());
+        assert!(parse_nvidia_memory_output("GPU, N/A").is_none());
+        assert!(parse_nvidia_memory_output("GPU, 0").is_none());
     }
 
     #[test]

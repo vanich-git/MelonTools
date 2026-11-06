@@ -158,13 +158,30 @@ function renderMarkdown(source) {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
 
-  // Inline: code, bold, italic. Escaping happens before markup is added.
+  // Tokenize code and links before emphasis: Markdown markers in code or
+  // URLs must stay literal. Raw HTML is never trusted, including model cards.
   const inline = (value) => {
-    let out = escapeHtml(value);
-    out = out.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
+    const tokens = [];
+    const token = (html) => { const index = tokens.push(html) - 1; return `\u0000${index}\u0000`; };
+    let out = String(value).replace(/\u0000/g, "");
+    out = out.replace(/`([^`]+)`/g, (_, code) => token(`<code class="md-code">${escapeHtml(code)}</code>`));
+    out = out.replace(/!?\[([^\]]+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g, (whole, label, rawURL) => {
+      // Images remain labelled text: no remote tracking pixels in model output.
+      if (whole.startsWith("!")) return token(escapeHtml(label));
+      let url;
+      try { url = new URL(rawURL); } catch (_) { return token(escapeHtml(label)); }
+      if (!["https:", "http:"].includes(url.protocol)) return token(escapeHtml(label));
+      return token(`<a href="${escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+    });
+    out = escapeHtml(out);
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
-    return out;
+    return out.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)] || "");
+  };
+  const tableCells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, "|"));
+  const tableSeparator = (line) => {
+    const cells = tableCells(line);
+    return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
   };
 
   const lines = text.split("\n");
@@ -180,7 +197,8 @@ function renderMarkdown(source) {
     }
   };
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const trimmed = line.trim();
 
     if (trimmed.startsWith("```")) {
@@ -196,6 +214,19 @@ function renderMarkdown(source) {
     }
     if (inCode) {
       codeBuffer.push(line);
+      continue;
+    }
+
+    if (trimmed.includes("|") && index + 1 < lines.length && tableSeparator(lines[index + 1])) {
+      closeList();
+      const headers = tableCells(line);
+      html.push(`<div class="md-table-wrap"><table class="md-table"><thead><tr>${headers.map(cell => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>`);
+      index += 1;
+      while (index + 1 < lines.length && lines[index + 1].trim().includes("|") && lines[index + 1].trim()) {
+        const cells = tableCells(lines[++index]);
+        html.push(`<tr>${headers.map((_, column) => `<td>${inline(cells[column] || "")}</td>`).join("")}</tr>`);
+      }
+      html.push("</tbody></table></div>");
       continue;
     }
 

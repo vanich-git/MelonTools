@@ -1,0 +1,182 @@
+diff --git a/internal/watcher/config_startup_race_test.go b/internal/watcher/config_startup_race_test.go
+new file mode 100644
+index 0000000..a2e3fd7
+--- /dev/null
++++ b/internal/watcher/config_startup_race_test.go
+@@ -0,0 +1,139 @@
++package watcher
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++func configFixture(port int, authDir string) []byte {
++	return []byte(fmt.Sprintf("config-version: 8\nserver:\n  host: \"127.0.0.1\"\n  port: %d\noauth:\n  auth-dir: %q\n", port, authDir))
++}
++
++func writeConfigAtomic(t *testing.T, path string, port int, authDir string) {
++	t.Helper()
++	tmp := path + ".next"
++	data := configFixture(port, authDir)
++	if err := os.WriteFile(tmp, data, 0o644); err != nil {
++		t.Fatalf("write temp config: %v", err)
++	}
++	if err := os.Rename(tmp, path); err != nil {
++		t.Fatalf("atomic replace config: %v", err)
++	}
++}
++
++func waitForPort(t *testing.T, w *Watcher, port int) {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		w.clientsMutex.RLock()
++		got := w.config.Port
++		w.clientsMutex.RUnlock()
++		if got == port {
++			return
++		}
++		time.Sleep(20 * time.Millisecond)
++	}
++	t.Fatalf("config port never became %d", port)
++}
++
++// A write that lands after the initial config load but before the fsnotify
++// watch is installed must still be applied: the HTTP server starts before the
++// watcher, so clients can save config during that window.
++func TestStartReconcilesConfigReplacedBeforeWatchInstalled(t *testing.T) {
++	dir := t.TempDir()
++	authDir := filepath.Join(dir, "auth")
++	if err := os.MkdirAll(authDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	configPath := filepath.Join(dir, "config.yaml")
++	if err := os.WriteFile(configPath, configFixture(8300, authDir), 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	staleConfig, err := config.LoadConfig(configPath)
++	if err != nil {
++		t.Fatalf("load initial config: %v", err)
++	}
++
++	var reloads int32
++	var appliedPort int32
++	w, err := NewWatcher(configPath, authDir, func(cfg *config.Config) {
++		atomic.AddInt32(&reloads, 1)
++		atomic.StoreInt32(&appliedPort, int32(cfg.Port))
++	})
++	if err != nil {
++		t.Fatalf("new watcher: %v", err)
++	}
++	w.SetConfig(staleConfig)
++
++	// Simulate a save while the gateway was already answering HTTP but the
++	// watcher had not attached yet.
++	writeConfigAtomic(t, configPath, 9300, authDir)
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	if err := w.Start(ctx); err != nil {
++		t.Fatalf("start watcher: %v", err)
++	}
++	defer w.Stop()
++
++	if got := atomic.LoadInt32(&reloads); got == 0 {
++		t.Fatalf("pre-attach config write was never applied")
++	}
++	if got := atomic.LoadInt32(&appliedPort); got != 9300 {
++		t.Fatalf("reload callback received stale config: port=%d, want 9300", got)
++	}
++	w.clientsMutex.RLock()
++	gotPort := w.config.Port
++	w.clientsMutex.RUnlock()
++	if gotPort != 9300 {
++		t.Fatalf("pre-attach config write was lost: port=%d, want 9300", gotPort)
++	}
++}
++
++// After the watch is active, repeated atomic replacements and in-place writes
++// must each be applied; waitForPort asserts every resulting port.
++func TestStartAppliesAtomicReplacementsAndInPlaceWrites(t *testing.T) {
++	dir := t.TempDir()
++	authDir := filepath.Join(dir, "auth")
++	if err := os.MkdirAll(authDir, 0o755); err != nil {
++		t.Fatal(err)
++	}
++	configPath := filepath.Join(dir, "config.yaml")
++	if err := os.WriteFile(configPath, configFixture(8300, authDir), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	initialConfig, err := config.LoadConfig(configPath)
++	if err != nil {
++		t.Fatalf("load initial config: %v", err)
++	}
++
++	w, err := NewWatcher(configPath, authDir, nil)
++	if err != nil {
++		t.Fatalf("new watcher: %v", err)
++	}
++	w.SetConfig(initialConfig)
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	if err := w.Start(ctx); err != nil {
++		t.Fatalf("start watcher: %v", err)
++	}
++	defer w.Stop()
++
++	for _, port := range []int{9301, 9302} {
++		writeConfigAtomic(t, configPath, port, authDir)
++		waitForPort(t, w, port)
++	}
++	if err := os.WriteFile(configPath, configFixture(9303, authDir), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	waitForPort(t, w, 9303)
++}
+diff --git a/internal/watcher/events.go b/internal/watcher/events.go
+index f6a55d0..955cab7 100644
+--- a/internal/watcher/events.go
++++ b/internal/watcher/events.go
+@@ -41,6 +41,16 @@ func (w *Watcher) start(ctx context.Context) error {
+ 
+ 	go w.processEvents(ctx)
+ 
++	// The HTTP server starts before the watcher, so a config write can land
++	// after the initial load but before the watch above is installed. Reconcile
++	// once with the watch active so such a write is not lost until the next one.
++	w.clientsMutex.RLock()
++	startupHash := w.lastConfigHash
++	w.clientsMutex.RUnlock()
++	if startupHash != "" {
++		w.reloadConfigIfChanged()
++	}
++
+ 	w.reloadClients(true, nil, false)
+ 	return nil
+ }
+diff --git a/internal/watcher/watcher.go b/internal/watcher/watcher.go
+index 60a5f68..1dd0717 100644
+--- a/internal/watcher/watcher.go
++++ b/internal/watcher/watcher.go
+@@ -171,6 +171,11 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
+ 	w.clientsMutex.Lock()
+ 	defer w.clientsMutex.Unlock()
+ 	w.config = cloned
++	if cloned != nil && cloned.SourceHash != "" {
++		// The config was parsed from these exact bytes. Remember them so the
++		// watcher can tell whether the file changed while it was starting up.
++		w.lastConfigHash = cloned.SourceHash
++	}
+ 	w.oldConfigYaml, _ = yaml.Marshal(cloned)
+ }
+ 

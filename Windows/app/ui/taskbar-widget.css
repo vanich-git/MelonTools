@@ -1,0 +1,26 @@
+/* Taskbar-density companion: no card chrome, no focus stealing. */
+:root { color-scheme: dark; --text: #f5f5f7; --muted: #b0b0b8; --gold: #f59e0b; --surface: #202024; --hover: #303035; }
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+body { container-type: size; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; font-size: 11px; user-select: none; }
+#widget { position: relative; width: 100%; height: 100%; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 4px; padding: 3px 8px; color: var(--text); background: var(--surface); font: inherit; text-align: left; cursor: pointer; }
+#widget:hover { background: var(--hover); }
+#widget:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+.mark { position: relative; flex: 0 0 24px; width: 24px; height: 24px; }
+.mark img { width: 24px; height: 24px; object-fit: contain; }
+#api-dot { position: absolute; left: 26px; top: calc(50% + 5px); width: 7px; height: 7px; border-radius: 50%; background: #96969f; border: 1px solid var(--surface); }
+#api-dot.running { background: #10b981; }
+#api-dot.failed { background: #ef4444; }
+.content { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.headline { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.headline b { font-weight: 600; font-size: 10px; }
+#api-status { color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; }
+.metrics { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.metrics small { color: var(--muted); font-size: 9px; }
+.metrics strong { font-size: 11px; font-weight: 600; }
+.separator { color: var(--muted); }
+@media (prefers-color-scheme: light) { :root { color-scheme: light; --text: #202024; --muted: #585861; --surface: #f0f0f2; --hover: #e1e1e6; } }
+@container (max-height: 32px) { .headline { display: none; } .mark, .mark img { width: 20px; height: 20px; }.mark{flex-basis:20px;} #api-dot { left: 22px; top: calc(50% + 3px); } }
+@container (max-width: 120px) { #widget { padding: 3px; gap: 3px; } .mark { display: none; } #api-dot { left: 2px; top: 2px; width: 5px; height: 5px; } .headline { display: none; } .metrics { flex-wrap: wrap; gap: 0 3px; } .metrics > span:not(.separator) { display: block; width: 100%; text-align: center; line-height: 16px; } .separator { display: none; } }
+@container (max-width: 60px) { .metrics small { display: none; } .metrics strong { font-size: 10px; } .metrics > span:not(.separator) { overflow: hidden; text-overflow: ellipsis; } }
+@media (prefers-contrast: more) { #widget { border: 1px solid currentColor; } }

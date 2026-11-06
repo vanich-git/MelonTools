@@ -99,6 +99,9 @@ pub struct Account {
     pub weekly_reserve_percent: Option<i64>,
     pub preferred_first: Option<bool>,
     pub is_backup: Option<bool>,
+    /// Manual pool participation. Legacy vaults default to enabled; quota and
+    /// token refreshes must never change this preference.
+    pub pool_enabled: Option<bool>,
     /// Account-level model filter, like the OpenCode/OpenRouter connections.
     /// `None` (legacy vaults) means every visible pool model; an explicit list
     /// is the only set this account may route. The union of all accounts is
@@ -116,9 +119,16 @@ impl Account {
             .unwrap_or_else(|| self.id.chars().take(8).collect())
     }
 
-    /// Reason this account is paused by the routing planner, if any.
-    /// Quota readings older than 30 minutes never block.
+    pub fn pool_enabled(&self) -> bool {
+        self.pool_enabled.unwrap_or(true)
+    }
+
+    /// Reason this account cannot route. Manual exclusion takes precedence
+    /// over quota blocks and can only be lifted by an explicit settings edit.
     pub fn block_info(&self) -> Option<Value> {
+        if !self.pool_enabled() {
+            return Some(json!({"code": "manual_disabled"}));
+        }
         if let Some(block) = &self.quota_block {
             let reserve_enabled = match block.code.as_str() {
                 "hourly_reserve" => self.hourly_reserve_percent.unwrap_or(0) > 0,
@@ -362,7 +372,10 @@ pub fn accounts() -> Vec<Account> {
 /// Extra quota keys written by the fetchers (reset credits, model
 /// availability) are read from the raw JSON so nothing is dropped.
 pub fn list_views() -> Vec<Value> {
-    let raw = load_raw();
+    list_views_from(&load_raw())
+}
+
+fn list_views_from(raw: &Value) -> Vec<Value> {
     let empty = Vec::new();
     let items = raw
         .get("accounts")
@@ -409,9 +422,12 @@ pub fn list_views() -> Vec<Value> {
             "weeklyReservePercent": account.weekly_reserve_percent,
             "preferredFirst": account.preferred_first.unwrap_or(false),
             "isBackup": account.is_backup.unwrap_or(false),
+            "poolEnabled": account.pool_enabled(),
             "selectedModels": account.selected_models,
             "needsRelogin": account.needs_relogin.unwrap_or(false),
             "hasTokens": account.tokens.access_token.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
+            "creditsBalance": quota_raw.get("creditsBalance").cloned().unwrap_or(Value::Null),
+            "unlimitedCredits": quota_raw.get("unlimitedCredits").cloned().unwrap_or(Value::Null),
             "resetCreditsAvailable": reset_available,
             "resetCreditsNextExpiry": reset_expiry,
             "modelAvailability": models,
@@ -523,29 +539,34 @@ fn clear_relogin(item: &mut Value) {
 
 pub fn update_quota(id: &str, quota: &Quota, raw_json: &str, extra: Value) -> Result<(), String> {
     set_account_field(id, move |item| {
-        let mut obj = item.get("quota").cloned().unwrap_or_else(|| json!({}));
-        obj["hourlyRemainingPercent"] = json!(quota.hourly_remaining_percent);
-        obj["weeklyRemainingPercent"] = json!(quota.weekly_remaining_percent);
-        obj["hourlyResetAt"] = json!(quota.hourly_reset_at);
-        obj["weeklyResetAt"] = json!(quota.weekly_reset_at);
-        obj["hourlyWindowPresent"] = json!(quota.hourly_window_present);
-        obj["weeklyWindowPresent"] = json!(quota.weekly_window_present);
-        obj["hourlyWindowMinutes"] = json!(quota.hourly_window_minutes);
-        obj["weeklyWindowMinutes"] = json!(quota.weekly_window_minutes);
-        obj["fetchedAt"] = json!(now_ref());
-        obj["rawJSON"] = json!(raw_json);
-        // Reset credits, model availability and anything else the fetchers
-        // produced merge into the same object.
-        if let (Some(target), Some(source)) = (obj.as_object_mut(), extra.as_object()) {
-            for (key, value) in source {
-                target.insert(key.clone(), value.clone());
-            }
-        }
+        let obj = quota_update(item, quota, raw_json, &extra);
         item["quota"] = obj;
         item["quotaUpdatedAt"] = json!(now_ref());
         item["quotaError"] = Value::Null;
         item["quotaSource"] = json!("usage");
     })
+}
+
+fn quota_update(item: &Value, quota: &Quota, raw_json: &str, extra: &Value) -> Value {
+    let mut obj = item.get("quota").cloned().unwrap_or_else(|| json!({}));
+    obj["hourlyRemainingPercent"] = json!(quota.hourly_remaining_percent);
+    obj["weeklyRemainingPercent"] = json!(quota.weekly_remaining_percent);
+    obj["hourlyResetAt"] = json!(quota.hourly_reset_at);
+    obj["weeklyResetAt"] = json!(quota.weekly_reset_at);
+    obj["hourlyWindowPresent"] = json!(quota.hourly_window_present);
+    obj["weeklyWindowPresent"] = json!(quota.weekly_window_present);
+    obj["hourlyWindowMinutes"] = json!(quota.hourly_window_minutes);
+    obj["weeklyWindowMinutes"] = json!(quota.weekly_window_minutes);
+    obj["fetchedAt"] = json!(now_ref());
+    obj["rawJSON"] = json!(raw_json);
+    // Reset credits, model availability and anything else the fetchers
+    // produced merge into the same object.
+    if let (Some(target), Some(source)) = (obj.as_object_mut(), extra.as_object()) {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    obj
 }
 
 /// Merge one passive gateway reading. Missing fields do not erase cached
@@ -970,6 +991,75 @@ mod tests {
             }],
             "currentAccountId": "acc-1",
         })
+    }
+
+    #[test]
+    fn usage_refreshes_keep_credits_metadata() {
+        let mut account = json!({"poolEnabled": false, "quota": {
+            "creditsBalance": "12.50", "unlimitedCredits": true, "hasCredits": true,
+            "resetCreditsAvailable": 2, "futureMetadata": "keep"
+        }});
+        account["quota"] = super::quota_update(&account, &super::Quota::default(), "{}", &json!({}));
+        assert_eq!(account["quota"]["creditsBalance"], "12.50");
+        assert_eq!(account["quota"]["unlimitedCredits"], true);
+        account["quota"] = super::quota_update(&account, &super::Quota::default(), "{}", &json!({
+            "creditsBalance": "0", "unlimitedCredits": false, "hasCredits": false
+        }));
+        assert_eq!(account["quota"]["creditsBalance"], "0");
+        assert_eq!(account["quota"]["unlimitedCredits"], false);
+        assert_eq!(account["quota"]["creditsBalance"], "0");
+        assert_eq!(account["quota"]["unlimitedCredits"], false);
+        assert_eq!(account["quota"]["resetCreditsAvailable"], 2);
+        assert_eq!(account["quota"]["futureMetadata"], "keep");
+        assert_eq!(account["poolEnabled"], false);
+    }
+
+    #[test]
+    fn account_views_keep_credits_for_excluded_accounts() {
+        let raw = json!({"accounts": [
+            {"id": "excluded", "poolEnabled": false, "quota": {
+                "creditsBalance": "12.50", "unlimitedCredits": false,
+                "hourlyRemainingPercent": 80.0, "resetCreditsAvailable": 2
+            }},
+            {"id": "unlimited", "quota": {"unlimitedCredits": true}},
+            {"id": "legacy"}
+        ]});
+        let views = super::list_views_from(&raw);
+        assert_eq!(views[0]["creditsBalance"], "12.50");
+        assert_eq!(views[0]["unlimitedCredits"], false);
+        assert_eq!(views[0]["hourlyRemaining"], 80.0);
+        assert_eq!(views[0]["resetCreditsAvailable"], 2);
+        assert_eq!(views[0]["poolEnabled"], false);
+        assert_eq!(views[1]["unlimitedCredits"], true);
+        assert!(views[2]["creditsBalance"].is_null());
+        assert!(views[2]["unlimitedCredits"].is_null());
+    }
+
+    #[test]
+    fn pool_preference_defaults_enabled_and_roundtrips_without_losing_details() {
+        let legacy: super::Account = serde_json::from_value(json!({"id": "legacy"})).unwrap();
+        assert!(legacy.pool_enabled());
+        let path = std::env::temp_dir().join(format!("melon-pool-test-{}.json", uuid::Uuid::new_v4()));
+        let mut raw = vault_with_tokens();
+        raw["accounts"][0]["poolEnabled"] = json!(false);
+        raw["accounts"][0]["selectedModels"] = json!(["gpt-test"]);
+        raw["accounts"][0]["futureField"] = json!({"keep": true});
+        super::save_raw_at(&path, &raw).unwrap();
+        super::set_account_field_at(&path, "acc-1", |item| {
+            item["quota"]["hourlyRemainingPercent"] = json!(100.0);
+            item["tokens"]["access_token"] = json!("refreshed-token");
+        }).unwrap();
+        let updated = super::load_raw_at(&path);
+        let account: super::Account = serde_json::from_value(updated["accounts"][0].clone()).unwrap();
+        assert!(!account.pool_enabled());
+        assert_eq!(account.block_info().unwrap()["code"], "manual_disabled");
+        assert_eq!(account.quota.unwrap().hourly_remaining_percent, Some(100.0));
+        assert_eq!(account.tokens.access_token.as_deref(), Some("refreshed-token"));
+        assert_eq!(updated["accounts"][0]["selectedModels"], json!(["gpt-test"]));
+        assert_eq!(updated["accounts"][0]["futureField"], json!({"keep": true}));
+        assert_eq!(updated["currentAccountId"], "acc-1");
+        assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub struct HFModelSearchResult {
     pub description: Option<String>,
     pub downloads: Option<i64>,
     pub likes: Option<i64>,
+    #[serde(alias = "lastModified")]
     pub last_modified: Option<String>,
     pub tags: Option<Vec<String>>,
     pub private: Option<bool>,
@@ -66,6 +67,11 @@ pub struct HFModelDetails {
     pub likes: i64,
     pub license: Option<String>,
     pub gguf_files: Vec<HFGGUFFile>,
+    pub last_modified: Option<String>,
+    pub tags: Vec<String>,
+    pub architecture: Option<String>,
+    pub parameters: Option<u64>,
+    pub readme: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +107,14 @@ struct HFRepoResponse {
     downloads: Option<i64>,
     likes: Option<i64>,
     siblings: Option<Vec<HFRepoSibling>>,
+    #[serde(rename = "lastModified")]
+    last_modified: Option<String>,
+    tags: Option<Vec<String>>,
+    #[serde(rename = "cardData")]
+    card_data: Option<serde_json::Value>,
+    config: Option<serde_json::Value>,
+    safetensors: Option<serde_json::Value>,
+    gguf: Option<serde_json::Value>,
 }
 
 pub struct HuggingFaceService;
@@ -108,33 +122,33 @@ pub struct HuggingFaceService;
 impl HuggingFaceService {
     const BASE_URL: &'static str = "https://huggingface.co/api";
 
+    fn search_url(query: &str, limit: usize, sort: &str, offset: usize) -> Result<url::Url, String> {
+        let sort = match sort {
+            "downloads" | "likes" | "lastModified" | "trendingScore" => sort,
+            _ => return Err("Unsupported Hugging Face sort order".to_string()),
+        };
+        let mut url = url::Url::parse(&format!("{}/models", Self::BASE_URL)).map_err(|e| e.to_string())?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("filter", "gguf").append_pair("full", "true").append_pair("sort", sort)
+                .append_pair("direction", "-1").append_pair("limit", &limit.clamp(1, 100).to_string());
+            if offset > 0 { pairs.append_pair("offset", &offset.to_string()); }
+            if !query.trim().is_empty() { pairs.append_pair("search", query.trim()); }
+        }
+        Ok(url)
+    }
+
     pub async fn search_models(
         query: &str,
         limit: usize,
         token: Option<&str>,
+        sort: &str,
+        offset: usize,
     ) -> Result<Vec<HFModelSearchResult>, String> {
         let client = super::external_client()?;
-        let mut url = format!(
-            "{}/models?filter=gguf&sort=downloads&direction=-1&limit={}",
-            Self::BASE_URL,
-            limit
-        );
-        let trimmed = query.trim();
-        if !trimmed.is_empty() {
-            let encoded: String = trimmed
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '~' {
-                        c.to_string()
-                    } else {
-                        format!("%{:02X}", c as u32)
-                    }
-                })
-                .collect();
-            url.push_str(&format!("&search={}", encoded));
-        }
+        let url = Self::search_url(query, limit, sort, offset)?;
 
-        let mut req = client.get(&url).header("Accept", "application/json");
+        let mut req = client.get(url).header("Accept", "application/json");
         if let Some(t) = token {
             if !t.trim().is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", t.trim()));
@@ -157,16 +171,25 @@ impl HuggingFaceService {
         Ok(results)
     }
 
+    pub fn validate_repository_id(repo_id: &str) -> Result<(), String> {
+        let parts: Vec<_> = repo_id.split('/').collect();
+        if parts.len() != 2 || parts.iter().any(|part| part.is_empty() || *part == "." || *part == ".." || !part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))) {
+            return Err("Invalid Hugging Face repository identifier".to_string());
+        }
+        Ok(())
+    }
+
     pub async fn get_model_details(
         repo_id: &str,
         token: Option<&str>,
     ) -> Result<HFModelDetails, String> {
+        Self::validate_repository_id(repo_id)?;
         let client = super::external_client()?;
         // `blobs=true` is what makes the API include per-file `size`/`lfs`
         // metadata; without it every GGUF sibling reports no size at all.
         let url = format!("{}/models/{}?blobs=true", Self::BASE_URL, repo_id);
 
-        let mut req = client.get(&url).header("Accept", "application/json");
+        let mut req = client.get(url).header("Accept", "application/json");
         if let Some(t) = token {
             if !t.trim().is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", t.trim()));
@@ -226,14 +249,45 @@ impl HuggingFaceService {
             .author
             .unwrap_or_else(|| repo_id.split('/').next().unwrap_or("").to_string());
 
+        let card = repo.card_data.as_ref();
+        let description = repo.description.or_else(|| card.and_then(|c| c["description"].as_str().map(str::to_string))).unwrap_or_default();
+        let license = card.and_then(|c| c["license"].as_str().map(str::to_string))
+            .or_else(|| repo.tags.as_ref().and_then(|tags| tags.iter().find_map(|tag| tag.strip_prefix("license:").map(str::to_string))));
+        let architecture = repo.gguf.as_ref().and_then(|c| c["architecture"].as_str().map(str::to_string))
+            .or_else(|| repo.config.as_ref().and_then(|c| c["model_type"].as_str().or_else(|| c["architectures"][0].as_str()).map(str::to_string)));
+        let parameters = repo.gguf.as_ref().and_then(|c| c["total"].as_u64())
+            .or_else(|| repo.safetensors.as_ref().and_then(|c| c["total"].as_u64()));
+        // A model card is optional; its absence must not hide downloadable files.
+        // Stream with a hard bound instead of buffering arbitrary remote content.
+        let readme_url = HFGGUFFile::resolve_url(repo_id, "README.md");
+        let mut request = client.get(readme_url).timeout(std::time::Duration::from_secs(12));
+        if let Some(token) = token.filter(|t| !t.trim().is_empty()) {
+            request = request.bearer_auth(token.trim());
+        }
+        let readme = match request.send().await {
+            Ok(mut response) if response.status().is_success() => {
+                let mut bytes = Vec::new();
+                while let Ok(Some(chunk)) = response.chunk().await {
+                    if bytes.len() + chunk.len() > 512 * 1024 { break; }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            _ => None,
+        };
         Ok(HFModelDetails {
             id: repo.id,
             author,
-            description: repo.description.unwrap_or_default(),
+            description,
             downloads: repo.downloads.unwrap_or(0),
             likes: repo.likes.unwrap_or(0),
-            license: None,
+            license,
             gguf_files,
+            last_modified: repo.last_modified,
+            tags: repo.tags.unwrap_or_default(),
+            architecture,
+            parameters,
+            readme,
         })
     }
 }
@@ -259,6 +313,34 @@ pub(crate) fn extract_quantization(filename: &str) -> String {
 mod tests {
     use super::{extract_quantization, HFGGUFFile};
     use crate::local_ai::hardware::{calculate_memory_estimation, HardwareInfo, InferenceBackend};
+
+    #[test]
+    fn search_url_encodes_unicode_and_honors_sort_and_pagination() {
+        let url = super::HuggingFaceService::search_url("модель & code", 200, "likes", 30).unwrap();
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs["search"], "модель & code");
+        assert_eq!(pairs["sort"], "likes");
+        assert_eq!(pairs["offset"], "30");
+        assert_eq!(pairs["limit"], "100");
+        assert!(super::HuggingFaceService::search_url("", 30, "invalid", 0).is_err());
+    }
+
+    #[test]
+    fn repository_ids_reject_traversal_and_urls() {
+        assert!(super::HuggingFaceService::validate_repository_id("org/model-v1.5").is_ok());
+        for id in ["../repo", "org/..", "https://example.com/repo", "org/repo/extra", "org/repo?x"] {
+            assert!(super::HuggingFaceService::validate_repository_id(id).is_err(), "{id}");
+        }
+    }
+
+    #[test]
+    fn search_response_accepts_hugging_face_last_modified_key() {
+        let row: super::HFModelSearchResult = serde_json::from_value(serde_json::json!({
+            "id": "org/model", "lastModified": "2026-11-05T00:00:00Z"
+        })).unwrap();
+        assert_eq!(row.last_modified.as_deref(), Some("2026-11-05T00:00:00Z"));
+        assert_eq!(serde_json::to_value(row).unwrap()["lastModified"], "2026-11-05T00:00:00Z");
+    }
 
     /// "F16" is a substring of "BF16"; matching in declaration order labels
     /// every BF16 file as F16.

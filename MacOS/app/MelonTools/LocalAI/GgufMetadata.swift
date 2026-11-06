@@ -70,8 +70,8 @@ struct GgufInfo: Equatable {
     /// blocks; everything else is a recurrent/linear layer with a fixed state.
     var attentionLayerCount: Int {
         let layers = effectiveLayerCount
-        guard let interval = fullAttentionInterval, interval > 1 else { return layers }
-        return max(1, Int((Double(layers) / Double(interval)).rounded(.up)))
+        guard ssmInnerSize != nil, let interval = fullAttentionInterval, interval > 1 else { return layers }
+        return layers / interval
     }
 
     /// KV heads of one specific layer, honouring per-layer metadata.
@@ -218,6 +218,7 @@ enum GgufMetadataReader {
                 applyIntegerArray(values, key: key, into: &headCountKV)
             case tBool, tUInt8, tInt8:
                 let raw = try reader.readUInt8(key)
+                if key.hasSuffix(".attention.head_count_kv") { headCountKV = [Int(raw)] }
                 applyInteger(Int(raw), key: key, fileType: &fileType,
                              contextLength: &contextLength, blockCount: &blockCount,
                              embeddingLength: &embeddingLength, headCount: &headCount,
@@ -228,6 +229,7 @@ enum GgufMetadataReader {
                              ssmConvKernel: &ssmConvKernel, expertCount: &expertCount)
             case tUInt16, tInt16:
                 let raw = try reader.readUInt16(key)
+                if key.hasSuffix(".attention.head_count_kv") { headCountKV = [Int(raw)] }
                 applyInteger(Int(raw), key: key, fileType: &fileType,
                              contextLength: &contextLength, blockCount: &blockCount,
                              embeddingLength: &embeddingLength, headCount: &headCount,
@@ -242,6 +244,7 @@ enum GgufMetadataReader {
                     // Not used by any field we read; consume and ignore.
                     break
                 }
+                if key.hasSuffix(".attention.head_count_kv") { headCountKV = [Int(raw)] }
                 applyInteger(Int(raw), key: key, fileType: &fileType,
                              contextLength: &contextLength, blockCount: &blockCount,
                              embeddingLength: &embeddingLength, headCount: &headCount,
@@ -254,6 +257,7 @@ enum GgufMetadataReader {
                 let raw = try reader.readUInt64(key)
                 if type == tFloat64 { break }
                 if let value = Int(exactly: raw) {
+                    if key.hasSuffix(".attention.head_count_kv") { headCountKV = [value] }
                     applyInteger(value, key: key, fileType: &fileType,
                                  contextLength: &contextLength, blockCount: &blockCount,
                                  embeddingLength: &embeddingLength, headCount: &headCount,
@@ -344,7 +348,9 @@ enum GgufMetadataReader {
         into headCountKV: inout [Int]
     ) {
         guard key.hasSuffix(".attention.head_count_kv"), !values.isEmpty else { return }
-        headCountKV = values.filter { $0 > 0 }
+        // Zero entries mark non-attention layers; preserve their positions.
+        guard values.allSatisfy({ $0 >= 0 }) else { return }
+        headCountKV = values
     }
 
     /// Quantization from a file name — fallback for files without

@@ -51,6 +51,10 @@ struct CodexAccount: Codable, Identifiable, Equatable {
     /// quota later looks stale or healthy.
     var quotaBlock: CodexQuotaBlock?
 
+    /// Manual pool membership. Old vaults default to enabled; only an explicit
+    /// user action changes this, never quota recovery or credential refresh.
+    var poolEnabled: Bool?
+
     // Routing preferences (Melon Tools). Optional so vaults written before
     // this feature still decode; nil means “off”.
     /// Pause this account when the 5-hour quota left drops to this percent (1…100).

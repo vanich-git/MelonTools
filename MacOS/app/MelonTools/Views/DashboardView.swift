@@ -27,11 +27,12 @@ struct DashboardPoolHealth: Equatable {
         health.usable = accounts.filter { CodexRoutingPlanner.blockReason($0) == nil }.count
         health.paused = health.total - health.usable
         health.errors = accounts.filter { $0.quotaError != nil }.count
+        let poolAccounts = accounts.filter { $0.poolEnabled != false }
         health.hourlyAverage = DashboardMetrics.average(
-            accounts.compactMap(\.quota?.hourlyRemainingPercent)
+            poolAccounts.compactMap(\.quota?.hourlyRemainingPercent)
         )
         health.weeklyAverage = DashboardMetrics.average(
-            accounts.compactMap(\.quota?.weeklyRemainingPercent)
+            poolAccounts.compactMap(\.quota?.weeklyRemainingPercent)
         )
         return health
     }
@@ -85,6 +86,7 @@ enum DashboardMetrics {
     /// Current pool totals, not history averages. The denominator is the
     /// number of accounts in the pool, so five accounts at 100% read 500%.
     static func quotaTotals(accounts: [CodexAccount]) -> DashboardQuotaTotals {
+        let accounts = accounts.filter { $0.poolEnabled != false }
         let hourlyValues = accounts.compactMap(\.quota?.hourlyRemainingPercent)
         let weeklyValues = accounts.compactMap(\.quota?.weeklyRemainingPercent)
         return DashboardQuotaTotals(

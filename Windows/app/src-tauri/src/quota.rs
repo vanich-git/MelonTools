@@ -273,7 +273,7 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
         Ok((quota, raw)) => {
             // Reset credits (5h-window refills) and model availability ride
             // along with the usage fetch.
-            let mut extra = serde_json::Map::new();
+            let mut extra = usage_credits(&raw);
             if let Some(models) = model_availability(&raw) {
                 extra.insert("modelAvailability".to_string(), models);
             }
@@ -318,6 +318,26 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
             Err(error)
         }
     }
+}
+
+/// Credits from the same usage response, using the macOS CodexService schema.
+/// Missing/malformed fields stay absent so a partial response cannot erase the
+/// last known balance when `vault::update_quota` merges this extra metadata.
+fn usage_credits(raw: &str) -> serde_json::Map<String, Value> {
+    let mut extra = serde_json::Map::new();
+    let value = serde_json::from_str::<Value>(raw).unwrap_or(Value::Null);
+    if let Some(credits) = value.get("credits").and_then(Value::as_object) {
+        if let Some(balance) = credits.get("balance").and_then(Value::as_str) {
+            extra.insert("creditsBalance".to_string(), json!(balance));
+        }
+        if let Some(unlimited) = credits.get("unlimited").and_then(Value::as_bool) {
+            extra.insert("unlimitedCredits".to_string(), json!(unlimited));
+        }
+        if let Some(has_credits) = credits.get("has_credits").and_then(Value::as_bool) {
+            extra.insert("hasCredits".to_string(), json!(has_credits));
+        }
+    }
+    extra
 }
 
 /// Model availability list from the usage response (`model_usage`).
@@ -705,6 +725,18 @@ mod tests {
     use crate::vault::APPLE_REF_UNIX_OFFSET;
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn usage_credits_match_macos_and_keep_explicit_false_and_zero() {
+        let credits = super::usage_credits(r#"{"credits":{"balance":"0","unlimited":false,"has_credits":false}}"#);
+        assert_eq!(credits.get("creditsBalance"), Some(&json!("0")));
+        assert_eq!(credits.get("unlimitedCredits"), Some(&json!(false)));
+        assert_eq!(credits.get("hasCredits"), Some(&json!(false)));
+        assert_eq!(super::usage_credits(r#"{"credits":{"balance":"12.50","unlimited":true}}"#).get("creditsBalance"), Some(&json!("12.50")));
+        assert!(super::usage_credits(r#"{"credits":{"balance":12,"unlimited":"true","has_credits":null}}"#).is_empty());
+        assert!(super::usage_credits(r#"{"rate_limit":{}}"#).is_empty());
+        assert!(super::usage_credits("not json").is_empty());
+    }
 
     #[test]
     fn reset_credits_keep_available_records_and_the_nearest_expiry() {

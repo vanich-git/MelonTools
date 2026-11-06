@@ -10,27 +10,44 @@ struct MelonToolsApp: App {
 
     var body: some Scene {
         Window("Melon Tools", id: "main") {
-            MainView()
-                .environmentObject(appState)
-                .frame(minWidth: 1060, minHeight: 680)
-                .id(l10n.code) // full re-render on language switch
+            if AppRuntime.isTesting {
+                // The XCTest host still runs the SwiftUI app. Building MainView
+                // would eagerly construct every real service (gateway, stores,
+                // scheduler) before a test can install its temp paths.
+                Color.clear
+            } else {
+                MainView()
+                    .environmentObject(appState)
+                    .frame(minWidth: 1060, minHeight: 680)
+                    .id(l10n.code) // full re-render on language switch
+            }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
 
         MenuBarExtra {
-            MenuBarView()
-                .environmentObject(appState)
-                .id(l10n.code)
+            if AppRuntime.isTesting {
+                // MenuBarView eagerly builds CodexStore and the gateway; the
+                // XCTest host must not touch them.
+                Color.clear
+            } else {
+                MenuBarView()
+                    .environmentObject(appState)
+                    .id(l10n.code)
+            }
         } label: {
             Image(nsImage: MelonAssets.menuBarLogo)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView()
-                .environmentObject(appState)
-                .id(l10n.code)
+            if AppRuntime.isTesting {
+                Color.clear
+            } else {
+                SettingsView()
+                    .environmentObject(appState)
+                    .id(l10n.code)
+            }
         }
     }
 }
@@ -133,6 +150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Self.logger.info("terminating")
+        // The XCTest host shares this app support directory. Tearing down its
+        // UI would flush the real stores and rewrite the user's gateway config
+        // with the test key, so tests own their cleanup instead.
+        guard !AppRuntime.isTesting else { return }
         MainActor.assumeIsolated {
             updateTimer?.invalidate()
             updateTimer = nil

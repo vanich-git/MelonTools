@@ -229,6 +229,22 @@ final class DashboardAggregationTests: XCTestCase {
         XCTAssertEqual(totals.max, 500, accuracy: 0.001)
     }
 
+    func testManualDisabledAccountKeepsReadingsButAddsNoPoolCapacity() {
+        let enabled = account(id: "enabled", hourly: 40, weekly: 60)
+        var disabled = account(id: "disabled", hourly: 100, weekly: 100)
+        disabled.poolEnabled = false
+        let totals = DashboardMetrics.quotaTotals(accounts: [enabled, disabled])
+        XCTAssertEqual(totals.hourly, 40)
+        XCTAssertEqual(totals.weekly, 60)
+        XCTAssertEqual(totals.max, 100)
+        XCTAssertEqual(disabled.quota?.hourlyRemainingPercent, 100)
+        XCTAssertEqual(DashboardMetrics.poolHealth(accounts: [disabled]).usable, 0)
+        XCTAssertEqual(DashboardMetrics.poolHealth(accounts: [enabled, disabled]).hourlyAverage, 40)
+        XCTAssertNil(DashboardMetrics.poolHealth(accounts: [disabled]).hourlyAverage)
+        XCTAssertNil(DashboardMetrics.quotaTotals(accounts: [disabled]).hourly)
+        XCTAssertEqual(DashboardMetrics.quotaTotals(accounts: [disabled]).max, 0)
+    }
+
     func testQuotaTotalsKeepThePoolMaximumWhenAReadingIsMissing() {
         let accounts = [
             account(id: "a", hourly: 100, weekly: 50),

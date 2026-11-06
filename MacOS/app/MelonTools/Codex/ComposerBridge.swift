@@ -642,12 +642,13 @@ final class ComposerBridge: ObservableObject {
     /// Pool snapshot consumed by the injected chips (no tokens, no emails).
     func statusPayload() -> [String: Any] {
         let store = CodexStore.shared
+        let accounts = store.accounts.filter { $0.poolEnabled != false }
         var groups: [String: (count: Int, quota: Int, five: Double, week: Double, hasQuota: Bool)] = [:]
         var failed = 0
         var paused = 0
         var latest: Date?
 
-        for account in store.accounts {
+        for account in accounts {
             let plan = (account.planType?.isEmpty == false ? account.planType! : "unknown").lowercased()
             var group = groups[plan] ?? (count: 0, quota: 0, five: 0, week: 0, hasQuota: false)
             group.count += 1
@@ -671,7 +672,7 @@ final class ComposerBridge: ObservableObject {
             groups[plan] = group
         }
 
-        let total = store.accounts.count
+        let total = accounts.count
         let working = max(0, total - failed - paused)
         let groupList: [[String: Any]] = groups.keys.sorted().map { key in
             let group = groups[key]!
@@ -707,16 +708,16 @@ final class ComposerBridge: ObservableObject {
         // capacity card would otherwise produce a continuation every couple of
         // minutes while every account is at its limit. The best account is the
         // signal — one healthy account is enough to keep retrying.
-        if let bestHourly = store.accounts.compactMap({ $0.quota?.hourlyRemainingPercent }).max() {
+        if let bestHourly = accounts.compactMap({ $0.quota?.hourlyRemainingPercent }).max() {
             autoRetry["poolHourlyRemaining"] = Int(bestHourly.rounded())
         }
-        if let bestWeekly = store.accounts.compactMap({ $0.quota?.weeklyRemainingPercent }).max() {
+        if let bestWeekly = accounts.compactMap({ $0.quota?.weeklyRemainingPercent }).max() {
             autoRetry["poolWeeklyRemaining"] = Int(bestWeekly.rounded())
         }
         // The routing planner's pool-wide pause is the authoritative signal:
         // every account is held back by a limit or reserve, so a capacity card
         // must not trigger another attempt.
-        autoRetry["poolPaused"] = store.poolPauseSummary() != nil
+        autoRetry["poolPaused"] = accounts.isEmpty || store.poolPauseSummary() != nil
         autoRetry["continueText"] = L("Continue the task from where you stopped. Do not repeat work already done.")
         payload["autoRetry"] = autoRetry
 

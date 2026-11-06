@@ -60,6 +60,9 @@ struct MemoryEstimation: Codable, Equatable {
     let warning: String?
     /// What the numbers were derived from, shown in the UI instead of a bare GB.
     let assumptions: [String]
+    var ramRequired: UInt64? = nil
+    var gpuRequired: UInt64? = nil
+    var gpuBudget: UInt64? = nil
 
     /// True when the range is wide enough that the point value should not be
     /// quoted as a promise.
@@ -119,7 +122,8 @@ final class LocalHardwareService: ObservableObject {
         totalLayers: Int = 32,
         profile: GgufMemoryProfile? = nil,
         slots: Int = 1,
-        backend: InferenceBackend? = nil
+        backend: InferenceBackend? = nil,
+        flashAttention: Bool = true
     ) -> MemoryEstimation {
         Self.calculateMemoryEstimation(
             info: hardwareInfo,
@@ -131,7 +135,8 @@ final class LocalHardwareService: ObservableObject {
             totalLayers: totalLayers,
             profile: profile,
             slots: slots,
-            backend: backend ?? hardwareInfo.recommendedBackend
+            backend: backend ?? hardwareInfo.recommendedBackend,
+            flashAttention: flashAttention
         )
     }
 
@@ -146,7 +151,8 @@ final class LocalHardwareService: ObservableObject {
             totalLayers: model.blockCount ?? 32,
             profile: model.memoryProfile,
             slots: LocalInferenceService.parallelRequests,
-            backend: model.backend
+            backend: model.backend,
+            flashAttention: model.userSettings.flashAttention
         )
     }
 
@@ -298,14 +304,14 @@ final class LocalHardwareService: ObservableObject {
         totalLayers: Int,
         profile: GgufMemoryProfile? = nil,
         slots: Int = 1,
-        backend: InferenceBackend = .metal
+        backend: InferenceBackend = .metal,
+        flashAttention: Bool = true
     ) -> MemoryEstimation {
         let bytesPerElement = kvCacheBytesPerElement(kvCacheType)
         let layers = max(1, totalLayers)
         let parallelSlots = max(1, slots)
-        // `--parallel` splits one context window between slots, so the KV cache
-        // holds `context / slots` tokens per request, not `context` per slot.
-        let tokensPerSlot = max(1, contextLength / parallelSlots)
+        // --ctx-size is the TOTAL KV capacity, shared across parallel slots.
+        let totalTokens = max(1, contextLength)
 
         var assumptions: [String] = []
         var confidence: EstimationConfidence = .low
@@ -346,71 +352,83 @@ final class LocalHardwareService: ObservableObject {
             assumptions.append(L("Head dimensions were not in the GGUF metadata; derived from embedding size."))
         }
 
-        if profile?.headCountKV != nil, dimensions != nil, profile?.fullAttentionInterval != nil {
-            confidence = .high
-        } else if profile?.headCountKV != nil, dimensions != nil {
-            confidence = .high
-        } else if profile != nil {
+        // Metadata can describe KV geometry, never the engine allocator's total.
+        if profile?.headCountKV != nil, dimensions != nil, profile?.blockCount != nil {
             confidence = .medium
         } else {
-            assumptions.append(L("No GGUF shape metadata: KV size is a heuristic, not a measurement."))
+            assumptions.append(L("No complete GGUF shape metadata: KV size is a heuristic, not a measurement."))
         }
-
         if profile?.headCountKV == nil {
             assumptions.append(L("KV heads were not in the GGUF metadata; assuming one K/V per attention head."))
         }
 
-        // KV: full-attention layers keep the whole window. Hybrid models keep a
-        // shorter window on sliding layers and a fixed recurrent state on the
-        // layers that have no attention at all.
-        let fullLayers: Int
-        let slidingLayers: Int
-        if let interval = profile?.fullAttentionInterval, interval > 1 {
-            fullLayers = max(1, Int((Double(layers) / Double(interval)).rounded(.up)))
-            slidingLayers = max(0, layers - fullLayers)
-            assumptions.append(String(
-                format: L("Hybrid attention: %d of %d layers keep a KV cache."),
-                fullLayers, layers
-            ))
-            if confidence == .low { confidence = .medium }
+        let hasRecurrentState = profile?.ssmInnerSize != nil
+        let interval = max(1, profile?.fullAttentionInterval ?? 1)
+        let perLayerHeads = profile?.headCountKVByLayer
+        let hasLayerShape = perLayerHeads?.count == layers
+        // full_attention_interval also occurs in SWA models: it does NOT imply
+        // that the other layers are recurrent. Keep full KV unless SSM says so.
+        let fullLayers = hasRecurrentState && interval > 1 ? layers / interval : attentionLayers
+        func rowBytes(_ width: Int) -> Double {
+            let quantized = kvCacheType.lowercased().hasPrefix("q") || kvCacheType.lowercased() == "iq4_nl"
+            return quantized ? ceil(Double(width) / 32) * 32 * bytesPerElement : Double(width) * bytesPerElement
+        }
+        let headsAcrossLayers: Int
+        if hasLayerShape, let perLayerHeads {
+            headsAcrossLayers = perLayerHeads.reduce(0) { $0 + max(0, $1) }
         } else {
-            fullLayers = attentionLayers
-            slidingLayers = max(0, layers - attentionLayers)
+            headsAcrossLayers = kvHeads * (hasRecurrentState ? fullLayers : layers)
         }
-
-        let bytesPerToken = Double(headDim.key + headDim.value) * Double(kvHeads) * bytesPerElement
-        var kvBytes = bytesPerToken * Double(tokensPerSlot) * Double(fullLayers)
-        if slidingLayers > 0, let window = profile?.slidingWindow, window > 0 {
-            let windowTokens = Double(min(window, tokensPerSlot))
-            kvBytes += bytesPerToken * windowTokens * Double(slidingLayers)
-            assumptions.append(String(
-                format: L("Sliding-window layers keep at most %d tokens."), window
-            ))
+        let bytesPerLayer: Double
+        if hasLayerShape, let perLayerHeads {
+            bytesPerLayer = perLayerHeads.reduce(0.0) { total, heads in
+                total + rowBytes(headDim.key * max(0, heads)) + rowBytes(headDim.value * max(0, heads))
+            }
+        } else {
+            bytesPerLayer = (rowBytes(headDim.key * kvHeads) + rowBytes(headDim.value * kvHeads))
+                * Double(headsAcrossLayers) / Double(max(1, kvHeads))
         }
-
-        // Recurrent (Mamba/DeltaNet) state: per layer, a convolution state and a
-        // recurrent state of `inner_size × state_size` floats.
+        let kvBytes = bytesPerLayer * Double(totalTokens)
+        if profile?.slidingWindow != nil {
+            assumptions.append(L("Sliding-window KV is budgeted at the full context; allocator reuse is not measured."))
+        }
         var stateBytes: UInt64 = 0
-        let recurrentLayers = max(0, layers - fullLayers)
+        let recurrentLayers = hasLayerShape
+            ? (perLayerHeads?.filter { $0 == 0 }.count ?? 0)
+            : (hasRecurrentState ? max(0, layers - fullLayers) : 0)
         if recurrentLayers > 0, let inner = profile?.ssmInnerSize, inner > 0 {
             let kernel = max(1, profile?.ssmConvKernel ?? 4)
             let state = max(1, profile?.ssmStateSize ?? 128)
-            let perLayer = UInt64(kernel) * UInt64(inner) * 4
-                + UInt64(inner) * UInt64(state) * 4
-            stateBytes = perLayer * UInt64(recurrentLayers)
-            assumptions.append(L("Recurrent-layer state is an estimate: the engine's allocator is not queried."))
-            if confidence == .high { confidence = .medium }
+            stateBytes = UInt64((Double(kernel) + Double(state)) * Double(inner) * 4
+                * Double(recurrentLayers) * Double(parallelSlots))
+            assumptions.append(L("Recurrent state is architecture-dependent; this SSM estimate is not an allocator measurement."))
+            confidence = .low
         }
-
+        if hasRecurrentState && interval == 1 && !hasLayerShape {
+            confidence = .low
+            assumptions.append(L("Hybrid layer layout is missing; full KV is a conservative fallback."))
+        }
+        if profile?.architecture?.contains("deepseek") == true {
+            confidence = .low
+            assumptions.append(L("MLA cache layout is runtime-dependent; standard K/V geometry is only a fallback."))
+        }
         let kvCacheBytes = UInt64(kvBytes)
-        let kvLow = UInt64(kvBytes * 0.85)
-        let kvHigh = UInt64(kvBytes * 1.20) + 64 * 1024 * 1024
+        let kvLow = UInt64(kvBytes * (confidence == .low ? 0.5 : 1.0))
+        let kvHigh = UInt64(kvBytes * (confidence == .low ? 2.0 : 1.1)) + 64 * 1024 * 1024
 
         // Compute buffers scale with the batch and the hidden size, not with the
         // context: the old `batchSize * 1 MB` was unrelated to either.
         let batch = max(1, batchSize)
         let computePerToken = Double(embeddingFallback) * 4.0 * 3.0
-        let computeBuffers = max(256 * 1024 * 1024, UInt64(computePerToken * Double(batch)))
+        var computeBuffers = max(256 * 1024 * 1024, UInt64(computePerToken * Double(batch)))
+        if !flashAttention {
+            // Non-FA attention materializes scores for a microbatch. The real
+            // microbatch is runtime-dependent, so cap this heuristic at 512.
+            computeBuffers += UInt64(Double(min(batch, 512)) * Double(totalTokens)
+                * Double(max(1, profile?.headCount ?? 32)) * 4)
+        }
+        assumptions.append(L("Compute buffers and weight residency are estimates; mmap, microbatch, Flash Attention and runtime version affect actual usage."))
+        assumptions.append(L("The total includes an OS reserve, not current free memory; GPU and RAM budgets are checked separately."))
         let osReserve: UInt64 = max(2 * 1024 * 1024 * 1024, UInt64(Double(info.totalRAM) * 0.15))
 
         let base = weightsSize + computeBuffers + osReserve
@@ -418,48 +436,57 @@ final class LocalHardwareService: ObservableObject {
         let totalLow = base + kvLow + UInt64(Double(stateBytes) * 0.8)
         let totalHigh = base + kvHigh + UInt64(Double(stateBytes) * 1.5)
 
-        // Offload decides which budget matters: a CPU-only model is limited by
-        // RAM, an offloaded one by the GPU working set. Ignoring `gpuLayers` made
-        // "0 layers on GPU" look like a GPU memory question.
-        let offloadsToGPU = backend != .cpu && (gpuLayers ?? 99) > 0
-        let availableMemory: UInt64
-        if offloadsToGPU, info.gpuHasUnifiedMemory,
-           let maxWorkingSet = info.gpuRecommendedMaxWorkingSetSize, maxWorkingSet > 0 {
-            availableMemory = maxWorkingSet
+        let offloadedLayers = backend == .cpu ? 0 : min(layers, max(0, gpuLayers ?? layers))
+        let fraction = Double(offloadedLayers) / Double(layers)
+        let gpuRequired = offloadedLayers > 0
+            ? UInt64(Double(weightsSize + kvCacheBytes + stateBytes) * fraction) + computeBuffers : 0
+        let ramRequired = info.gpuHasUnifiedMemory || offloadedLayers == 0
+            ? totalRequired
+            : totalRequired - UInt64(Double(weightsSize + kvCacheBytes + stateBytes) * fraction)
+        let gpuBudget = offloadedLayers > 0 ? info.gpuRecommendedMaxWorkingSetSize : nil
+        if offloadedLayers > 0 {
+            assumptions.append(L("GPU layer placement uses proportional weights; embeddings, output tensors and per-layer sizes may differ."))
+            if gpuBudget == nil {
+                confidence = .low
+                assumptions.append(L("GPU memory budget is unavailable; GPU compatibility cannot be confirmed."))
+            }
         } else {
-            availableMemory = info.totalRAM
-        }
-
-        if !offloadsToGPU {
             assumptions.append(L("CPU-only inference: no GPU working set is used."))
         }
+        let availableMemory = info.totalRAM
 
         var recommendation: CompatibilityRecommendation
         var warning: String? = nil
 
         // RAM exhaustion is checked first: a large model on an Intel Mac is not
         // "fits with limitations" when the weights alone exceed physical memory.
-        if totalLow > info.totalRAM {
+        if ramRequired > info.totalRAM {
             recommendation = .insufficientMemory
             warning = String(
-                format: L("Even the low estimate (%@) exceeds physical RAM (%@)."),
-                formatBytes(totalLow), formatBytes(info.totalRAM)
+                format: L("Estimated RAM requirement (%@) exceeds physical RAM (%@)."),
+                formatBytes(ramRequired), formatBytes(info.totalRAM)
             )
-        } else if totalRequired > info.totalRAM {
+        } else if let gpuBudget, gpuRequired > gpuBudget {
             recommendation = .highMemoryUsage
             warning = String(
-                format: L("Total estimated memory (%@) may exceed physical RAM (%@)."),
-                formatBytes(totalRequired), formatBytes(info.totalRAM)
+                format: L("Estimated GPU allocation (%@) may exceed the GPU budget (%@)."),
+                formatBytes(gpuRequired), formatBytes(gpuBudget)
             )
-        } else if totalHigh > availableMemory {
+        } else if offloadedLayers > 0 && gpuBudget == nil {
+            recommendation = .unknown
+            warning = L("GPU memory budget is unavailable; RAM alone cannot confirm compatibility.")
+        } else if totalHigh > availableMemory && info.gpuHasUnifiedMemory {
             recommendation = .highMemoryUsage
             warning = String(
                 format: L("High memory usage: up to %@ of the %@ budget may be needed."),
                 formatBytes(totalHigh), formatBytes(availableMemory)
             )
-        } else if totalHigh > (availableMemory * 85 / 100) {
+        } else if ramRequired > (availableMemory * 85 / 100) {
             recommendation = .fitsWithLimitations
             warning = L("Model fits, but context length or offload may need adjustment under heavy system load.")
+        } else if confidence == .low {
+            recommendation = .fitsWithLimitations
+            warning = L("Incomplete geometry: this estimate is not a fit guarantee. Verify actual runtime allocation.")
         } else {
             recommendation = .recommended
         }
@@ -484,7 +511,10 @@ final class LocalHardwareService: ObservableObject {
             recommendation: recommendation,
             confidence: confidence,
             warning: warning,
-            assumptions: assumptions
+            assumptions: assumptions,
+            ramRequired: ramRequired,
+            gpuRequired: gpuRequired,
+            gpuBudget: gpuBudget
         )
     }
 

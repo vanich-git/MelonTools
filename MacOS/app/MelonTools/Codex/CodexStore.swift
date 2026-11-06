@@ -263,6 +263,7 @@ struct CodexPoolPauseSummary: Equatable {
 
     /// Builds the summary when (and only when) every account is paused.
     static func make(accounts: [CodexAccount]) -> CodexPoolPauseSummary? {
+        let accounts = accounts.filter { $0.poolEnabled != false }
         guard !accounts.isEmpty else { return nil }
         let resolution = CodexRoutingPlanner.resolve(
             accounts: accounts,
@@ -564,10 +565,9 @@ final class CodexStore: ObservableObject {
     }
 
     func moveAccountPriority(_ id: String, up: Bool) {
-        guard let index = priorityOrder.firstIndex(of: id) else { return }
-        let target = up ? index - 1 : index + 1
-        guard priorityOrder.indices.contains(target) else { return }
-        priorityOrder.swapAt(index, target)
+        let moved = CodexRoutingPlanner.movingPriority(id, up: up, order: priorityOrder, accounts: accounts)
+        guard moved != priorityOrder else { return }
+        priorityOrder = moved
         applyRoutingIfNeeded(reason: L("order changed"))
     }
 
@@ -639,8 +639,11 @@ final class CodexStore: ObservableObject {
     }
 
     /// Saves per-account routing preferences and re-applies the pool order.
-    func updateRoutingSettings(_ account: CodexAccount, hourlyPercent: Int?, weeklyPercent: Int?, preferredFirst: Bool, isBackup: Bool) {
+    func updateRoutingSettings(_ account: CodexAccount, hourlyPercent: Int?, weeklyPercent: Int?, preferredFirst: Bool, isBackup: Bool, poolEnabled: Bool) {
         guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        if poolEnabled != (accounts[index].poolEnabled != false) {
+            accounts[index].poolEnabled = poolEnabled
+        }
         accounts[index].hourlyReservePercent = (hourlyPercent ?? 0) > 0 ? hourlyPercent : nil
         accounts[index].weeklyReservePercent = (weeklyPercent ?? 0) > 0 ? weeklyPercent : nil
         accounts[index].preferredFirst = preferredFirst ? true : nil
@@ -683,7 +686,8 @@ final class CodexStore: ObservableObject {
             let selection = account.selectedModels?.sorted().joined(separator: "+") ?? "*"
             return "\(account.id):\(selection)"
         }.joined(separator: ",")
-        return ids + "|" + values + "|" + credentials + "|" + models
+        let membership = accounts.map { "\($0.id):\($0.poolEnabled != false)" }.joined(separator: ",")
+        return ids + "|" + values + "|" + credentials + "|" + models + "|" + membership
     }
 
     private func routingNoteText() -> String? {
@@ -699,7 +703,10 @@ final class CodexStore: ObservableObject {
     }
 
     private func noteRoutingChange(reason: String) {
-        guard let note = routingNoteText() else { return }
+        guard let note = routingNoteText() else {
+            routingNote = nil
+            return
+        }
         routingNote = note
         CodexGatewayService.shared.auditLog("\(note) · \(reason)")
     }
@@ -962,6 +969,7 @@ final class CodexStore: ObservableObject {
             merged.weeklyReservePercent = old.weeklyReservePercent
             merged.preferredFirst = old.preferredFirst
             merged.isBackup = old.isBackup
+            merged.poolEnabled = old.poolEnabled
             merged.selectedModels = old.selectedModels
             merged.subscriptionUpdatedAt = old.subscriptionUpdatedAt
             accounts[idx] = merged
@@ -1436,13 +1444,13 @@ final class CodexStore: ObservableObject {
         for account in accounts {
             guard account.tokens.access_token?.isEmpty == false else { continue }
             guard let file = liveFile(for: account, in: files) else {
-                if account.quotaBlock != nil { fallback = true }
+                if account.poolEnabled == false || account.quotaBlock != nil { fallback = true }
                 continue
             }
             // Preserve a legacy disabled file until a fresh reading proves
             // that it can be re-enabled. A stale cache must never lift it.
-            let desired = account.quotaBlock != nil
-                || (file.disabled && account.quotaBlock == nil && !quotaIsActionable(account))
+            let desired = account.poolEnabled == false || account.quotaBlock != nil
+                || (file.disabled && account.poolEnabled == nil && account.quotaBlock == nil && !quotaIsActionable(account))
             guard file.disabled != desired else { continue }
             let ok = await gateway.setManagementAuthDisabled(
                 name: file.name,

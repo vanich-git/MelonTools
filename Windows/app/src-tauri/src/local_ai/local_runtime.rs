@@ -173,6 +173,9 @@ pub struct RuntimeStatusPayload {
     /// Settings snapshot the running engine was launched with. A newer saved
     /// registry value is pending until the model is restarted.
     pub applied_settings: Option<LocalModelSettings>,
+    /// Why the gateway catalogue does not match this runtime state. `None` once
+    /// the live `/v1/models` list confirms the expected local aliases.
+    pub publication_error: Option<String>,
 }
 
 /// Live counters and gauges from `llama-server --metrics`.
@@ -1438,11 +1441,78 @@ async fn post_router_model_load(
     ))
 }
 
+/// Last gateway publication outcome, tagged with the lifecycle revision it
+/// describes. A result from an older revision must not overwrite a newer one
+/// or surface as the current state.
+#[derive(Debug, Clone, Default)]
+pub struct PublicationState {
+    revision: u64,
+    message: Option<String>,
+}
+
+/// Cloneable handle the deferred catalogue poll uses to report its outcome.
+#[derive(Clone)]
+pub struct PublicationReporter {
+    slot: Arc<Mutex<PublicationState>>,
+    published: Arc<AtomicU64>,
+    /// Read-only view of the lifecycle revision, so the deferred poll can tell
+    /// whether the snapshot it confirmed is still the newest one before it
+    /// touches caches or the Codex catalogue.
+    revision_source: Arc<Mutex<RuntimeInner>>,
+}
+
+impl PublicationReporter {
+    fn new(published: Arc<AtomicU64>, revision_source: Arc<Mutex<RuntimeInner>>) -> Self {
+        Self {
+            slot: Arc::new(Mutex::new(PublicationState::default())),
+            published,
+            revision_source,
+        }
+    }
+
+    /// Records that `revision` reached the engine, without waiting for the
+    /// catalogue. Publication is only complete after `is_current` and the
+    /// gateway read-back succeeded, but the supervisor must not rewrite the
+    /// same file for a revision that is already on disk.
+    pub fn mark_synced(&self, revision: u64) {
+        self.published.fetch_max(revision, Ordering::AcqRel);
+    }
+
+    /// True while `revision` is still the manager's newest lifecycle snapshot.
+    pub fn is_current(&self, revision: u64) -> bool {
+        self.revision_source
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .revision
+            == revision
+    }
+
+    pub fn report(&self, revision: u64, message: Option<String>) {
+        let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
+        if revision >= slot.revision {
+            slot.revision = revision;
+            slot.message = message;
+        }
+    }
+
+    /// Marks the lifecycle dirty again so the supervisor rewrites the config on
+    /// its next tick. The engine accepts the config over HTTP before its file
+    /// watcher is armed, so the first write after a gateway start can be lost;
+    /// retrying the same revision is the recovery, not restarting the engine.
+    /// The compare-exchange keeps a newer revision published in the meantime
+    /// from being published twice.
+    pub fn request_resync(&self, revision: u64) {
+        let _ = self
+            .published
+            .compare_exchange(revision, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
 pub struct LocalRuntimeManager {
     inner: Arc<Mutex<RuntimeInner>>,
     installer: RuntimeInstaller,
     /// Last lifecycle revision whose effects were published to the gateway.
-    published_gateway: AtomicU64,
+    published_gateway: Arc<AtomicU64>,
     /// Serializes start/stop: only the holder may spawn, kill or publish a
     /// lifecycle state. A waiting start is cancelled before it gets the lock.
     lifecycle: tokio::sync::Mutex<()>,
@@ -1450,6 +1520,8 @@ pub struct LocalRuntimeManager {
     /// uses it to notice immediately that a stop or another start superseded
     /// it, instead of discovering that 30 seconds later through a timeout.
     lifecycle_changed: watch::Sender<u64>,
+    /// Last catalogue publication outcome, keyed by lifecycle revision.
+    publication: PublicationReporter,
 }
 
 struct RuntimeInner {
@@ -1502,7 +1574,14 @@ impl RuntimeInner {
                     | ModelRuntimeStatus::Generating
                     | ModelRuntimeStatus::Unloading
             ) {
-                LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Installed);
+                if let Err(error) =
+                    LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Installed)
+                {
+                    eprintln!(
+                        "local ai: could not clear the stale status of {}: {error}",
+                        model.id
+                    );
+                }
             }
         }
     }
@@ -1586,7 +1665,11 @@ impl StatusSnapshot {
     }
 }
 
-fn status_payload(snapshot: StatusSnapshot, binary_path: Option<String>) -> RuntimeStatusPayload {
+fn status_payload(
+    snapshot: StatusSnapshot,
+    binary_path: Option<String>,
+    publication_error: Option<String>,
+) -> RuntimeStatusPayload {
     let is_running = matches!(snapshot.state, LocalRuntimeState::Running { .. });
     let starting_model_id = match &snapshot.state {
         LocalRuntimeState::Starting { model_id } => Some(model_id.clone()),
@@ -1619,6 +1702,7 @@ fn status_payload(snapshot: StatusSnapshot, binary_path: Option<String>) -> Runt
         binary_path,
         revision: snapshot.revision,
         applied_settings: snapshot.applied_settings,
+        publication_error,
     }
 }
 
@@ -1631,31 +1715,34 @@ impl Default for LocalRuntimeManager {
 impl LocalRuntimeManager {
     pub fn new() -> Self {
         RuntimeInner::normalize_stale_statuses();
+        let published_gateway = Arc::new(AtomicU64::new(0));
+        let inner = Arc::new(Mutex::new(RuntimeInner {
+            child: None,
+            current_model: None,
+            port: 18318,
+            token: get_or_create_internal_token(),
+            state: LocalRuntimeState::Stopped,
+            custom_binary_path: load_custom_binary_path(),
+            // Start dirty: the first status poll republishes the gateway
+            // catalogue from the normalized registry, so a model that was
+            // `Ready` when the app last crashed is not advertised.
+            revision: 1,
+            state_changed_at: Instant::now(),
+            last_metrics: None,
+            logs_cleared_at: 0,
+            applied_settings: None,
+            generation: 0,
+        }));
         Self {
-            inner: Arc::new(Mutex::new(RuntimeInner {
-                child: None,
-                current_model: None,
-                port: 18318,
-                token: get_or_create_internal_token(),
-                state: LocalRuntimeState::Stopped,
-                custom_binary_path: load_custom_binary_path(),
-                // Start dirty: the first status poll republishes the gateway
-                // catalogue from the normalized registry, so a model that was
-                // `Ready` when the app last crashed is not advertised.
-                revision: 1,
-                state_changed_at: Instant::now(),
-                last_metrics: None,
-                logs_cleared_at: 0,
-                applied_settings: None,
-                generation: 0,
-            })),
             installer: RuntimeInstaller::new(),
-            published_gateway: AtomicU64::new(0),
+            published_gateway: published_gateway.clone(),
             lifecycle: tokio::sync::Mutex::new(()),
             lifecycle_changed: {
                 let (sender, _receiver) = watch::channel(0);
                 sender
             },
+            publication: PublicationReporter::new(published_gateway, inner.clone()),
+            inner,
         }
     }
 
@@ -1676,35 +1763,71 @@ impl LocalRuntimeManager {
     }
 
     pub fn mark_gateway_synced(&self, revision: u64) {
-        self.published_gateway.fetch_max(revision, Ordering::AcqRel);
+        self.publication.mark_synced(revision);
+    }
+
+    /// Handle for the deferred catalogue poll, which runs after the command
+    /// that triggered the rewrite has returned.
+    pub fn publication_reporter(&self) -> PublicationReporter {
+        self.publication.clone()
+    }
+
+    /// The publication error only applies while the lifecycle revision it was
+    /// recorded for is still current; an older attempt must not make a healthy
+    /// runtime look broken.
+    pub(crate) fn current_publication_error(&self) -> Option<String> {
+        let revision = self.revision();
+        let slot = self
+            .publication
+            .slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot.revision == revision {
+            slot.message.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Sets the lifecycle revision without running a transition, so the
+    /// publication tests can start from a dirty snapshot.
+    #[cfg(test)]
+    pub(crate) fn set_revision_for_test(&self, revision: u64) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .revision = revision;
     }
 
     /// Side-effect free manager for the regression tests: no token file, no
     /// registry rewrite, no binary lookup on the real machine.
     #[cfg(test)]
-    fn for_test() -> Self {
+    pub(crate) fn for_test() -> Self {
+        let published_gateway = Arc::new(AtomicU64::new(0));
+        let inner = Arc::new(Mutex::new(RuntimeInner {
+            child: None,
+            current_model: None,
+            port: 18318,
+            token: "test-token".to_string(),
+            state: LocalRuntimeState::Stopped,
+            custom_binary_path: None,
+            revision: 0,
+            state_changed_at: Instant::now(),
+            last_metrics: None,
+            logs_cleared_at: 0,
+            applied_settings: None,
+            generation: 0,
+        }));
         Self {
-            inner: Arc::new(Mutex::new(RuntimeInner {
-                child: None,
-                current_model: None,
-                port: 18318,
-                token: "test-token".to_string(),
-                state: LocalRuntimeState::Stopped,
-                custom_binary_path: None,
-                revision: 0,
-                state_changed_at: Instant::now(),
-                last_metrics: None,
-                logs_cleared_at: 0,
-                applied_settings: None,
-                generation: 0,
-            })),
             installer: RuntimeInstaller::new(),
-            published_gateway: AtomicU64::new(0),
+            published_gateway: published_gateway.clone(),
             lifecycle: tokio::sync::Mutex::new(()),
             lifecycle_changed: {
                 let (sender, _receiver) = watch::channel(0);
                 sender
             },
+            publication: PublicationReporter::new(published_gateway, inner.clone()),
+            inner,
         }
     }
 
@@ -1773,9 +1896,9 @@ impl LocalRuntimeManager {
                     return Ok(());
                 }
                 RuntimeInstallStage::Failed => {
-                    return Err(status.error.unwrap_or_else(|| {
-                        "The llama.cpp runtime download failed.".to_string()
-                    }))
+                    return Err(status
+                        .error
+                        .unwrap_or_else(|| "The llama.cpp runtime download failed.".to_string()))
                 }
                 RuntimeInstallStage::Cancelled => {
                     return Err("The llama.cpp runtime download was cancelled.".to_string())
@@ -1859,6 +1982,8 @@ impl LocalRuntimeManager {
             lines.push(format!("[{}]", model.id));
             lines.push(format!("model = {}", file.display()));
             lines.push(format!("alias = {}", model.id));
+            // Structured tool calling uses the model's Jinja chat template.
+            lines.push("jinja = true".to_string());
             lines.push(format!("ctx-size = {}", model.user_settings.context_length));
             lines.push(format!("batch-size = {}", model.user_settings.batch_size));
             lines.push(if backend != InferenceBackend::Cpu {
@@ -1934,21 +2059,25 @@ impl LocalRuntimeManager {
     /// same non-reentrant `Mutex`, so doing it under the guard deadlocked
     /// every status poll (and with it Start/Stop/metrics/delete).
     pub fn get_status(&self) -> RuntimeStatusPayload {
-        let (snapshot, registry_update) = {
+        let snapshot = {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            let registry_update = inner.settle();
-            (StatusSnapshot::capture(&inner), registry_update)
+            if let Some((model_id, status)) = inner.settle() {
+                if let Err(error) = LocalModelStore::update_model_status(&model_id, status) {
+                    eprintln!("local ai: could not publish the exit of {model_id}: {error}");
+                }
+                // A crashed router may have loaded models besides current_model.
+                // Do not leave any of those routes advertised after child exit.
+                RuntimeInner::normalize_stale_statuses();
+            }
+            StatusSnapshot::capture(&inner)
         };
-
-        if let Some((model_id, status)) = registry_update {
-            LocalModelStore::update_model_status(&model_id, status);
-        }
 
         // Safe now: the guard above is gone.
         let binary_path = self
             .binary_path()
             .map(|path| path.to_string_lossy().to_string());
-        status_payload(snapshot, binary_path)
+        let publication_error = self.current_publication_error();
+        status_payload(snapshot, binary_path, publication_error)
     }
 
     pub fn find_available_port(start: u16) -> u16 {
@@ -2089,7 +2218,9 @@ impl LocalRuntimeManager {
         if inner.generation != generation {
             return;
         }
-        LocalModelStore::update_model_status(model_id, status);
+        if let Err(error) = LocalModelStore::update_model_status(model_id, status) {
+            eprintln!("local ai: could not persist the status of {model_id}: {error}");
+        }
     }
 
     fn superseded_message() -> String {
@@ -2110,28 +2241,27 @@ impl LocalRuntimeManager {
     /// Kills the engine this manager owns and publishes `Stopped`. The caller
     /// must hold `lifecycle` and must still own the current generation.
     fn stop_locked(&self) {
-        let prev_model_id;
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(mut child) = inner.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut child) = inner.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        // Reset every warm router model before publishing the Stopped revision,
+        // for the same reason Ready is persisted before publishing Running.
+        if let Some(model) = inner.current_model.as_ref() {
+            if let Err(error) =
+                LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Installed)
+            {
+                eprintln!(
+                    "local ai: could not clear the status of {} on stop: {error}",
+                    model.id
+                );
             }
-            prev_model_id = inner.current_model.as_ref().map(|m| m.id.clone());
-            inner.current_model = None;
-            inner.applied_settings = None;
-            inner.transition(LocalRuntimeState::Stopped);
         }
-
-        // The registry status follows the engine, not the process handle: a
-        // crash already dropped the child, and a leftover `Ready` would keep
-        // the model advertised by the gateway after it stopped.
-        if let Some(ref id) = prev_model_id {
-            LocalModelStore::update_model_status(id, ModelRuntimeStatus::Installed);
-        }
-        // The router is gone, so no model may stay warm: drop every leftover
-        // transient status, not just the model that was current at stop.
         RuntimeInner::normalize_stale_statuses();
+        inner.current_model = None;
+        inner.applied_settings = None;
+        inner.transition(LocalRuntimeState::Stopped);
     }
 
     pub async fn stop(&self) {
@@ -2548,13 +2678,23 @@ impl LocalRuntimeManager {
             self.discard_child();
             return Err(Self::superseded_message());
         }
+        // Publish the registry and lifecycle revision under the same lock.
+        // Otherwise the supervisor can observe Running, write a catalogue with
+        // no Ready model, and mark that revision synced before Ready is saved.
+        // A failed write must abort the launch: without the Ready row the
+        // gateway can never advertise this model.
+        if let Err(error) = LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Ready)
+        {
+            drop(inner);
+            let message = format!("The model runtime status could not be saved: {error}");
+            self.fail_launch(generation, &model.id, &message);
+            return Err(message);
+        }
         inner.applied_settings = Some(model.user_settings.clone());
         inner.transition(LocalRuntimeState::Running {
             port,
             model_id: model.id.clone(),
         });
-        drop(inner);
-        self.update_model_status_if_current(generation, &model.id, ModelRuntimeStatus::Ready);
         Ok(())
     }
 
@@ -2581,6 +2721,15 @@ impl LocalRuntimeManager {
         let Some(states) = fetch_router_models(&client, port, &token).await else {
             return;
         };
+        self.apply_router_snapshot(generation, port, &states);
+    }
+
+    fn apply_router_snapshot(
+        &self,
+        generation: u64,
+        port: u16,
+        states: &std::collections::HashMap<String, RouterModelState>,
+    ) {
         if !self.is_current_generation(generation) {
             return;
         }
@@ -2602,7 +2751,7 @@ impl LocalRuntimeManager {
         // A start/stop owns the engine while this snapshot is applied. Write
         // every change under the same lock as that check, so a stale snapshot
         // cannot overwrite the new lifecycle's registry state.
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.generation != generation {
             return;
         }
@@ -2611,8 +2760,13 @@ impl LocalRuntimeManager {
             return;
         }
         for (model_id, status) in changes {
-            LocalModelStore::update_model_status(&model_id, status);
+            if let Err(error) = LocalModelStore::update_model_status(&model_id, status) {
+                eprintln!("local ai: could not reconcile the status of {model_id}: {error}");
+            }
         }
+        // Idle unload and router-side failures do not change Running, but they
+        // do change the public catalogue and must dirty the gateway snapshot.
+        inner.revision = inner.revision.wrapping_add(1);
     }
 }
 
@@ -3075,7 +3229,7 @@ mod runtime_tests {
             context_length: 4096,
             ..LocalModelSettings::default()
         });
-        let running = status_payload(StatusSnapshot::capture(&inner), None);
+        let running = status_payload(StatusSnapshot::capture(&inner), None, None);
         assert!(running.is_running);
         // The launch snapshot is what the UI compares stored settings with.
         assert_eq!(
@@ -3099,7 +3253,7 @@ mod runtime_tests {
         inner.transition(LocalRuntimeState::Starting {
             model_id: "local/qwen".to_string(),
         });
-        let starting = status_payload(StatusSnapshot::capture(&inner), None);
+        let starting = status_payload(StatusSnapshot::capture(&inner), None, None);
         assert!(starting.is_starting && !starting.is_running);
         assert_eq!(starting.starting_model_id.as_deref(), Some("local/qwen"));
         assert_eq!(
@@ -3113,10 +3267,46 @@ mod runtime_tests {
         inner.transition(LocalRuntimeState::Failed {
             error: "boom".to_string(),
         });
-        let failed = status_payload(StatusSnapshot::capture(&inner), None);
+        let failed = status_payload(StatusSnapshot::capture(&inner), None, None);
         assert_eq!(failed.error.as_deref(), Some("boom"));
         assert_eq!(failed.failed_model_id.as_deref(), Some("local/qwen"));
         assert!(!failed.is_running && !failed.is_starting);
+    }
+
+    #[test]
+    fn a_lost_engine_reload_is_retried_instead_of_marked_as_published() {
+        let manager = LocalRuntimeManager::for_test();
+        manager.inner.lock().unwrap().revision = 1;
+        manager.mark_gateway_synced(1);
+        assert_eq!(manager.pending_gateway_revision(), None);
+        assert!(manager.publication_reporter().is_current(1));
+        assert!(!manager.publication_reporter().is_current(0));
+
+        // The engine answered HTTP before its config watcher was armed, so the
+        // catalogue poll timed out and asked for another write.
+        manager.publication_reporter().request_resync(1);
+        assert_eq!(manager.pending_gateway_revision(), Some(1));
+
+        // A newer transition already published must not be rewritten by a
+        // late poll from the previous revision.
+        manager.inner.lock().unwrap().revision = 2;
+        manager.mark_gateway_synced(2);
+        manager.publication_reporter().request_resync(1);
+        assert_eq!(manager.pending_gateway_revision(), None);
+    }
+
+    #[test]
+    fn a_late_publication_result_cannot_overwrite_a_newer_one() {
+        let manager = LocalRuntimeManager::for_test();
+        let reporter = manager.publication_reporter();
+        manager.inner.lock().unwrap().revision = 6;
+        reporter.report(4, Some("stale".to_string()));
+        assert_eq!(manager.current_publication_error(), None);
+        reporter.report(6, Some("new".to_string()));
+        assert_eq!(
+            manager.current_publication_error().as_deref(),
+            Some("new")
+        );
     }
 
     #[test]
@@ -3171,6 +3361,112 @@ mod runtime_tests {
 
         assert_eq!(inner.settle(), None);
         assert!(matches!(inner.state, LocalRuntimeState::Starting { .. }));
+    }
+
+    #[test]
+    fn router_unload_and_reload_republish_catalogue_without_lifecycle_transition() {
+        use crate::local_ai::local_models::{with_test_root, LocalModelStore};
+        let root =
+            std::env::temp_dir().join(format!("melon-runtime-catalogue-{}", uuid::Uuid::new_v4()));
+        with_test_root(&root, || {
+            let model = demo_model("local/qwen");
+            LocalModelStore::save_registry(&[model]).unwrap();
+            let manager = LocalRuntimeManager::for_test();
+            let (generation, _) = manager.begin_lifecycle();
+            manager
+                .inner
+                .lock()
+                .unwrap()
+                .transition(LocalRuntimeState::Running {
+                    port: 18318,
+                    model_id: "local/qwen".to_string(),
+                });
+            manager.mark_gateway_synced(manager.pending_gateway_revision().unwrap());
+            let mut states = std::collections::HashMap::new();
+            states.insert("local/qwen".to_string(), RouterModelState::Unloaded);
+            manager.apply_router_snapshot(generation, 18318, &states);
+            assert!(crate::gateway::servable_local_models().is_empty());
+            let unloaded = manager
+                .pending_gateway_revision()
+                .expect("unload must dirty catalogue");
+            manager.mark_gateway_synced(unloaded);
+            manager.apply_router_snapshot(generation, 18318, &states);
+            assert_eq!(
+                manager.pending_gateway_revision(),
+                None,
+                "unchanged poll must not rewrite config"
+            );
+            states.insert("local/qwen".to_string(), RouterModelState::Loaded);
+            manager.apply_router_snapshot(generation, 18318, &states);
+            assert_eq!(crate::gateway::servable_local_models().len(), 1);
+            assert!(manager.pending_gateway_revision().is_some());
+            manager.apply_router_snapshot(generation.wrapping_sub(1), 18318, &Default::default());
+            assert_eq!(
+                crate::gateway::servable_local_models().len(),
+                1,
+                "stale snapshot cannot remove new route"
+            );
+        });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// REVIEW gap: a crash/restart leaves whatever status the last session
+    /// wrote. A stale `Ready` row must not reach the first gateway config —
+    /// `normalize_stale_statuses` clears it before the supervisor builds one,
+    /// and the manager starts with a dirty revision so that rewrite happens.
+    #[test]
+    fn stale_ready_status_is_normalized_before_the_first_gateway_config() {
+        use crate::local_ai::local_models::{with_test_root, LocalModelStore};
+        let root =
+            std::env::temp_dir().join(format!("melon-runtime-stale-{}", uuid::Uuid::new_v4()));
+        with_test_root(&root, || {
+            LocalModelStore::save_registry(&[demo_model("local/stale")]).unwrap();
+            assert_eq!(crate::gateway::servable_local_models().len(), 1);
+
+            RuntimeInner::normalize_stale_statuses();
+            assert_eq!(
+                LocalModelStore::load_registry()[0].runtime_status,
+                ModelRuntimeStatus::Installed
+            );
+            assert!(crate::gateway::servable_local_models().is_empty());
+
+            let manager = LocalRuntimeManager::for_test();
+            manager.set_revision_for_test(1);
+            assert_eq!(
+                manager.pending_gateway_revision(),
+                Some(1),
+                "a fresh manager must republish instead of trusting the old config"
+            );
+            let yaml =
+                crate::gateway::api_keys_yaml_with_local(&crate::settings::Settings::default(), &[], 0, "");
+            assert!(!yaml.contains("local/stale"), "{yaml}");
+            assert!(!yaml.contains("melon-local-ai"), "{yaml}");
+        });
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn router_preset_enables_structured_tool_call_templates() {
+        use crate::local_ai::local_models::{with_test_root, LocalModelStore};
+        let root =
+            std::env::temp_dir().join(format!("melon-runtime-tools-{}", uuid::Uuid::new_v4()));
+        with_test_root(&root, || {
+            let mut model = demo_model("local/qwen");
+            model.files = vec!["weights.gguf".to_string()];
+            let models_dir = LocalModelStore::models_dir();
+            std::fs::create_dir_all(&models_dir).unwrap();
+            std::fs::write(models_dir.join("weights.gguf"), b"stub").unwrap();
+            LocalModelStore::save_registry(&[model]).unwrap();
+            let preset = LocalRuntimeManager::write_models_preset(
+                &models_dir,
+                crate::local_ai::InferenceBackend::Cpu,
+                4,
+            )
+            .unwrap();
+            let ini = std::fs::read_to_string(preset).unwrap();
+            assert!(ini.contains("alias = local/qwen\njinja = true\n"));
+        });
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

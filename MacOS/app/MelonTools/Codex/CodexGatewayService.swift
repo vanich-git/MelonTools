@@ -80,13 +80,27 @@ final class CodexGatewayService: ObservableObject {
     /// restarting the gateway.
     private var appliedProxyURL = ""
 
+    /// Last YAML handed to the engine by this process. The engine rewrites
+    /// config.yaml itself after every reload (`persistConfigAsync` replaces the
+    /// plaintext management secret with its bcrypt hash), so comparing with the
+    /// bytes on disk would keep restoring the plaintext version and trigger a
+    /// reload storm. Compare the intent instead.
+    private var lastWrittenConfig: String?
+    private var configWriteWork: DispatchWorkItem?
+    private static let configWriteDebounce: TimeInterval = 0.35
+
     // MARK: - Settings (persisted)
 
     @Published var port: Int = UserDefaults.standard.object(forKey: "gatewayPort") as? Int ?? 18317 {
         didSet { UserDefaults.standard.set(port, forKey: "gatewayPort") }
     }
-    @Published var apiKey: String = CodexGatewayService.loadStoredApiKey() {
-        didSet { CodexGatewayService.saveStoredApiKey(apiKey) }
+    @Published var apiKey: String = AppRuntime.isTesting
+        ? "test-gateway-key-not-persisted"
+        : CodexGatewayService.loadStoredApiKey() {
+        didSet {
+            guard !AppRuntime.isTesting else { return }
+            CodexGatewayService.saveStoredApiKey(apiKey)
+        }
     }
 
     /// Credential selection strategy (`routing.strategy` in config.yaml) is
@@ -111,6 +125,10 @@ final class CodexGatewayService: ObservableObject {
     /// initial port explicitly. The key is persisted by its didSet-less init
     /// path via `saveStoredApiKey`.
     init() {
+        // XCTest uses this executable as its host, so merely building a view
+        // can construct this singleton. Tests must not rewrite the user's port,
+        // key or legacy defaults; they use explicit temp configs instead.
+        guard !AppRuntime.isTesting else { return }
         UserDefaults.standard.set(port, forKey: "gatewayPort")
         CodexGatewayService.saveStoredApiKey(apiKey)
         // Migrate away from the legacy UserDefaults location.
@@ -177,7 +195,7 @@ final class CodexGatewayService: ObservableObject {
         let previous = apiKey
         apiKey = Self.generateKey()
         do {
-            try writeConfig()
+            try flushConfigWrite(reason: "api key rotated")
             if codexRoute == .melon {
                 _ = enableCodexRoute()
             }
@@ -325,26 +343,33 @@ final class CodexGatewayService: ObservableObject {
 
     func applyStreamBootstrapTimeout() {
         guard isRunning else { return }
-        do {
-            try writeConfig()
-            auditLog("stream bootstrap timeout applied: \(Self.streamBootstrapTimeoutSeconds)s")
-        } catch {
-            lastError = L("Apply failed") + ": " + error.localizedDescription
-        }
+        scheduleConfigWrite(reason: "stream bootstrap timeout")
+        auditLog("stream bootstrap timeout scheduled: \(Self.streamBootstrapTimeoutSeconds)s")
     }
 
     func applyNetworkSettings() {
         NetworkProxy.invalidate()
         guard isRunning else { return }
-        do {
-            try writeConfig()
-            auditLog("network proxy settings applied")
-        } catch {
-            lastError = L("Apply failed") + ": \(error.localizedDescription)"
-        }
+        scheduleConfigWrite(reason: "network proxy settings")
+        auditLog("network proxy settings scheduled")
     }
 
-    func writeConfig() throws {
+    /// Rewrites config.yaml when the generated YAML differs from what this
+    /// process last wrote. `force` bypasses that idempotency for an explicit
+    /// local-AI publication, whose retry must replace the same generation.
+    /// `reason` lands in the audit log so a reload can be traced back to the
+    /// event that caused it.
+    func writeConfig(reason: String = "unspecified", force: Bool = false) throws {
+        // An unreadable model-sources store decodes to an empty provider list;
+        // writing then would strip every external provider from the config and
+        // the engine would reload an incomplete file.
+        if !ModelSourcesStore.shared.isLoaded {
+            // The store decodes once in `init`, so a file caught mid-rewrite by
+            // a sync agent would block every later write for the whole session.
+            // Retrying here heals that case; a genuinely broken file still
+            // refuses below.
+            ModelSourcesStore.shared.load()
+        }
         // api-key and paths are escaped: a key containing quotes/colons would
         // otherwise break the YAML and the gateway would never come up.
         var yaml = """
@@ -388,9 +413,100 @@ final class CodexGatewayService: ObservableObject {
         // External model sources (OpenRouter, OpenCode) ride in the same config;
         // the running service hot-reloads the file.
         yaml += ModelSourcesStore.shared.gatewayYAML()
-        let data = Data(yaml.utf8)
-        try SecureFile.write(data, to: URL(fileURLWithPath: configPath))
+        let wrote: Bool
+        do {
+            wrote = try Self.writeConfigFile(
+                yaml,
+                to: URL(fileURLWithPath: configPath),
+                lastWritten: lastWrittenConfig,
+                force: force,
+                loadedGuard: {
+                    // Refuse loudly: a rotated key or a gateway start must not
+                    // proceed against a config with the previous generation.
+                    guard ModelSourcesStore.shared.isLoaded else {
+                        throw Self.ConfigError.modelSourcesUnavailable
+                    }
+                }
+            )
+        } catch {
+            if let configError = error as? CodexGatewayService.ConfigError,
+               case .modelSourcesUnavailable = configError {
+                auditLog("config write refused (\(reason)): model sources store is not loaded")
+            }
+            throw error
+        }
+        guard wrote else {
+            auditLog("config write skipped (\(reason)): unchanged")
+            return
+        }
+        lastWrittenConfig = yaml
         appliedProxyURL = NetworkProxy.activeURL() ?? ""
+        auditLog("config written (\(reason))")
+    }
+
+    /// Errors surfaced by the config writer itself (as opposed to disk errors).
+    enum ConfigError: LocalizedError {
+        /// `model-sources.json` exists but decodes to neither known shape, so
+        /// the generated provider list would be empty.
+        case modelSourcesUnavailable
+
+        var errorDescription: String? {
+            L("Model sources could not be read — the gateway config was not written.")
+        }
+    }
+
+    /// Pure predicate behind the idempotent write: a missing file always needs
+    /// a write, otherwise only a changed generation counts.
+    nonisolated static func configNeedsWrite(proposed: String, lastWritten: String?, fileExists: Bool) -> Bool {
+        guard fileExists else { return true }
+        return proposed != lastWritten
+    }
+
+    /// The actual writer shared by production and the regression tests. The
+    /// caller supplies the loaded-store guard, and `force` replaces the file
+    /// even when the generated generation is unchanged.
+    @discardableResult
+    nonisolated static func writeConfigFile(
+        _ yaml: String,
+        to url: URL,
+        lastWritten: String?,
+        force: Bool,
+        loadedGuard: () throws -> Void
+    ) throws -> Bool {
+        try loadedGuard()
+        let needsWrite = force || configNeedsWrite(
+            proposed: yaml,
+            lastWritten: lastWritten,
+            fileExists: FileManager.default.fileExists(atPath: url.path)
+        )
+        guard needsWrite else { return false }
+        try SecureFile.write(Data(yaml.utf8), to: url)
+        return true
+    }
+
+    /// Coalesces a burst of config changes (start, routing, catalog, proxy)
+    /// into one engine reload instead of one per caller.
+    func scheduleConfigWrite(reason: String) {
+        configWriteWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            do {
+                try self.writeConfig(reason: reason)
+            } catch {
+                self.lastError = L("Config write failed") + ": " + error.localizedDescription
+                self.auditLog("config write failed (\(reason)): \(error.localizedDescription)")
+            }
+        }
+        configWriteWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.configWriteDebounce, execute: work)
+    }
+
+    /// Writes any pending config change immediately. Used before spawning the
+    /// engine and by actions that must surface an error synchronously.
+    func flushConfigWrite(reason: String, force: Bool = false) throws {
+        configWriteWork?.cancel()
+        configWriteWork = nil
+        try writeConfig(reason: reason, force: force)
     }
 
     /// The system proxy can change while the app is running (a VPN or proxy
@@ -400,12 +516,10 @@ final class CodexGatewayService: ObservableObject {
         guard NetworkProxy.isEnabled else { return }
         let current = NetworkProxy.activeURL() ?? ""
         guard current != appliedProxyURL else { return }
-        do {
-            try writeConfig()
-            auditLog("network proxy changed; gateway config updated")
-        } catch {
-            auditLog("network proxy update failed: \(error.localizedDescription)")
-        }
+        // Coalesced with the other writers: a burst of network notifications
+        // must still produce a single reload.
+        scheduleConfigWrite(reason: "proxy changed")
+        auditLog("network proxy changed; gateway config update scheduled")
     }
 
     /// The overlay carries the Antigravity ids the official catalog omits.
@@ -417,12 +531,8 @@ final class CodexGatewayService: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard await ModelCatalogOverlay.refreshIfNeeded(timeout: 45) else { return }
-            do {
-                try self.writeConfig()
-                self.auditLog("model catalog overlay refreshed")
-            } catch {
-                self.auditLog("model catalog overlay config write failed: \(error.localizedDescription)")
-            }
+            self.scheduleConfigWrite(reason: "catalog overlay refreshed")
+            self.auditLog("model catalog overlay refreshed; config update scheduled")
         }
     }
 
@@ -500,7 +610,7 @@ final class CodexGatewayService: ObservableObject {
             desired.append((
                 name: authFileName(for: account),
                 payload: payload,
-                preserveLegacyPause: account.quotaBlock == nil && !CodexRoutingPlanner.quotaIsFresh(account),
+                preserveLegacyPause: account.poolEnabled == nil && account.quotaBlock == nil && !CodexRoutingPlanner.quotaIsFresh(account),
                 knownLastRefresh: account.lastRefresh
             ))
         }
@@ -634,7 +744,7 @@ final class CodexGatewayService: ObservableObject {
             switch await probeHealth() {
             case .ok:
                 // Keep the adopted gateway aligned with the current vault and order.
-                try? writeConfig()
+                try? writeConfig(reason: "adopted running gateway")
                 try? syncAccounts(accounts: accounts, priorities: priorities, pruneOrphans: pruneOrphans)
                 adopted = true
                 if let adoptedPID = adoptedListenerPID() {
@@ -672,7 +782,7 @@ final class CodexGatewayService: ObservableObject {
             return
         }
         do {
-            try writeConfig()
+            try flushConfigWrite(reason: "start")
             try syncAccounts(accounts: accounts, priorities: priorities, pruneOrphans: pruneOrphans)
         } catch {
             finishWithFailure(L("Config write failed") + ": " + error.localizedDescription)
@@ -729,6 +839,9 @@ final class CodexGatewayService: ObservableObject {
         removePIDFile()
         adopted = false
         status = .stopped
+        // A change made inside the debounce window would be lost on exit; keep
+        // the last intent on disk for the next launch and the audit trail.
+        try? flushConfigWrite(reason: "app termination")
     }
 
     func restart(accounts: [CodexAccount], priorities: [String: Int] = [:]) async {
@@ -799,12 +912,9 @@ final class CodexGatewayService: ObservableObject {
     /// hot-syncs the auth files. A running gateway picks the change up without
     /// a restart.
     func applyRouting(accounts: [CodexAccount], priorities: [String: Int]) async {
-        do {
-            try writeConfig()
-        } catch {
-            lastError = L("Config write failed") + ": " + error.localizedDescription
-            return
-        }
+        // Pool edits arrive in bursts (drag, toggle, quota re-plan); coalesce
+        // the config writes and let the auth files below carry the order.
+        scheduleConfigWrite(reason: "routing order")
         if isRunning {
             syncAccountsLive(accounts, priorities: priorities)
         } else {
@@ -815,7 +925,12 @@ final class CodexGatewayService: ObservableObject {
                     pruneOrphans: mayPruneGatewayAuthFiles
                 )
             } catch {
-                lastError = L("Config write failed") + ": " + error.localizedDescription
+                // The auth files did not accept the new order: drop the pending
+                // config write so the file cannot advertise a routing state the
+                // engine never received.
+                configWriteWork?.cancel()
+                configWriteWork = nil
+                lastError = L("Routing failed") + ": " + error.localizedDescription
                 return
             }
         }
@@ -1162,6 +1277,16 @@ final class CodexGatewayService: ObservableObject {
 
     // MARK: - API check + launch
 
+    /// Sends one request and retries once when the gateway answers 401. A
+    /// config hot-reload rebuilds the auth clients for a moment, and a request
+    /// caught in that window must not be reported as an invalid key.
+    private func sendWithAuthRetry(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let first = try await NetworkProxy.directSession().data(for: request)
+        guard let http = first.1 as? HTTPURLResponse, http.statusCode == 401 else { return first }
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        return try await NetworkProxy.directSession().data(for: request)
+    }
+
     /// GET /v1/models plus a tiny chat completion — proves end-to-end request handling.
     func checkAPI() async {
         guard !isChecking else { return }
@@ -1178,7 +1303,7 @@ final class CodexGatewayService: ObservableObject {
             var listRequest = URLRequest(url: URL(string: "\(baseURL)/v1/models")!)
             listRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             listRequest.timeoutInterval = 8
-            let (listData, listResponse) = try await NetworkProxy.directSession().data(for: listRequest)
+            let (listData, listResponse) = try await sendWithAuthRetry(listRequest)
             guard let listHTTP = listResponse as? HTTPURLResponse, listHTTP.statusCode == 200 else {
                 let code = (listResponse as? HTTPURLResponse)?.statusCode ?? -1
                 checkResult = L("Check failed") + ": HTTP \(code)"
@@ -1212,7 +1337,7 @@ final class CodexGatewayService: ObservableObject {
                 "max_tokens": 8,
                 "stream": false,
             ])
-            let (chatData, chatResponse) = try await NetworkProxy.directSession().data(for: chatRequest)
+            let (chatData, chatResponse) = try await sendWithAuthRetry(chatRequest)
             let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
             guard let chatHTTP = chatResponse as? HTTPURLResponse, (200..<300).contains(chatHTTP.statusCode) else {
                 let code = (chatResponse as? HTTPURLResponse)?.statusCode ?? -1

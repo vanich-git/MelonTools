@@ -12,7 +12,8 @@ final class ProviderDiagnosticsTests: XCTestCase {
         models: [ProviderDiagnostics.ModelEntry] = [],
         keys: ProviderDiagnostics.Evidence.Keys = .init(),
         quotaUpdatedAt: [String: Date] = [:],
-        quotaErrors: [String: String] = [:]
+        quotaErrors: [String: String] = [:],
+        localAI: ProviderDiagnostics.Evidence.LocalAI = .init()
     ) -> ProviderDiagnostics.Evidence {
         ProviderDiagnostics.Evidence(
             gatewayStatusCode: gatewayStatusCode,
@@ -22,7 +23,8 @@ final class ProviderDiagnosticsTests: XCTestCase {
             models: models,
             keys: keys,
             quotaUpdatedAt: quotaUpdatedAt,
-            quotaErrors: quotaErrors
+            quotaErrors: quotaErrors,
+            localAI: localAI
         )
     }
 
@@ -70,22 +72,28 @@ final class ProviderDiagnosticsTests: XCTestCase {
         let date = Date(timeIntervalSince1970: 1_000_000)
         let rows = ProviderDiagnostics.rows(evidence(
             authFileNames: allAuthNames,
-            models: [ProviderDiagnostics.ModelEntry(id: "gpt-5.2", owner: "openai")],
+            models: [
+                ProviderDiagnostics.ModelEntry(id: "gpt-5.2", owner: "openai"),
+                ProviderDiagnostics.ModelEntry(id: "local/llama", owner: nil),
+            ],
             keys: .init(openRouter: true, openCode: true, deepInfra: true, vercel: true, zai: true, commandCode: true, claude: true),
-            quotaUpdatedAt: ["claude": date]
+            quotaUpdatedAt: ["claude": date],
+            localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
         XCTAssertEqual(rows.map(\.id), ProviderDiagnostics.ids)
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .ok, count: 9))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .ok, count: 10))
         XCTAssertEqual(rows.first { $0.id == "claude" }?.quotaUpdatedAt, date)
         XCTAssertEqual(rows.allSatisfy(\.authPresent), true)
         XCTAssertEqual(rows.first { $0.id == "codex" }?.modelCount, 1)
+        XCTAssertEqual(rows.first { $0.id == "localai" }?.modelCount, 1)
     }
 
     func testMissingCredentialsAreAWarning() {
         let rows = ProviderDiagnostics.rows(evidence())
 
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .warning, count: 9))
+        XCTAssertEqual(rows.filter { $0.id != "localai" }.map(\.status), Array(repeating: .warning, count: 9))
+        XCTAssertEqual(rows.first { $0.id == "localai" }?.status, .idle)
         XCTAssertTrue(rows.allSatisfy { !$0.authPresent })
     }
 
@@ -93,10 +101,11 @@ final class ProviderDiagnosticsTests: XCTestCase {
         let rows = ProviderDiagnostics.rows(evidence(
             gatewayStatusCode: nil,
             gatewayError: "Could not connect to the server.",
-            authFileNames: allAuthNames
+            authFileNames: allAuthNames,
+            localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .failed, count: 9))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .failed, count: 10))
         XCTAssertTrue(rows.allSatisfy { $0.error == "Could not connect to the server." })
         XCTAssertTrue(rows.allSatisfy { $0.modelCount == nil })
     }
@@ -111,17 +120,62 @@ final class ProviderDiagnosticsTests: XCTestCase {
         let claude = rows.first { $0.id == "claude" }
         XCTAssertEqual(claude?.status, .warning)
         XCTAssertEqual(claude?.error, "HTTP 429 Too Many Requests")
-        XCTAssertEqual(rows.filter { $0.id != "claude" }.map(\.status), Array(repeating: .ok, count: 8))
+        XCTAssertEqual(
+            rows.filter { $0.id != "claude" && $0.id != "localai" }.map(\.status),
+            Array(repeating: .ok, count: 8)
+        )
+        XCTAssertEqual(rows.first { $0.id == "localai" }?.status, .idle)
     }
 
     func testModelListDecodeFailureIsVisible() {
         let rows = ProviderDiagnostics.rows(evidence(
             modelsError: "The data could not be read.",
-            authFileNames: allAuthNames
+            authFileNames: allAuthNames,
+            localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .warning, count: 9))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .warning, count: 10))
         XCTAssertTrue(rows.allSatisfy { $0.error == "The data could not be read." })
         XCTAssertTrue(rows.allSatisfy { $0.modelCount == nil })
     }
+
+    func testLocalAIMissingAliasIsAFailedRow() {
+        let rows = ProviderDiagnostics.rows(evidence(
+            models: [ProviderDiagnostics.ModelEntry(id: "gpt-5.2", owner: "openai")],
+            localAI: .init(running: true, readyAliases: ["local/llama"])
+        ))
+
+        let local = rows.first { $0.id == "localai" }
+        XCTAssertEqual(local?.status, .failed)
+        XCTAssertEqual(local?.error, "Missing from the gateway API: local/llama")
+        XCTAssertEqual(local?.modelCount, 1, "one Ready model is advertised, even when the gateway lost it")
+    }
+
+    func testLocalAIPublicationErrorIsVisibleEvenWhenGatewayAnswers() {
+        let rows = ProviderDiagnostics.rows(evidence(
+            localAI: .init(
+                running: true,
+                readyAliases: ["local/llama"],
+                publicationError: "Local AI models are missing from the gateway API: local/llama"
+            )
+        ))
+
+        XCTAssertEqual(rows.first { $0.id == "localai" }?.status, .failed)
+        XCTAssertEqual(
+            rows.first { $0.id == "localai" }?.error,
+            "Local AI models are missing from the gateway API: local/llama"
+        )
+    }
+    func testLocalAIInstalledOnlyModelIsIdleAndReportsNoReadyModels() {
+        let rows = ProviderDiagnostics.rows(evidence(
+            // A stale route may still be listed, but no model is Ready.
+            models: [ProviderDiagnostics.ModelEntry(id: "local/installed", owner: "melon-local-ai")],
+            localAI: .init(running: true, readyAliases: [])
+        ))
+        let local = rows.first { $0.id == "localai" }
+        XCTAssertEqual(local?.status, .idle)
+        XCTAssertEqual(local?.modelCount, 0)
+        XCTAssertEqual(local?.hasKey, false)
+    }
+
 }

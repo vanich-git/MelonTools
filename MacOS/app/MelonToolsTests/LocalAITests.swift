@@ -1121,3 +1121,196 @@ private final class OneShotHTTPServer: @unchecked Sendable {
         return 0
     }
 }
+
+/// The publication contract is pure: it builds the source the gateway writes
+/// and the card state derived from it. It lives in its own suite so the relay
+/// fixtures below cannot swallow these methods.
+final class LocalAIPublicationTests: XCTestCase {
+    // MARK: - Local AI publication contract (R2)
+
+    private func localPublicationModel(
+        id: String = "qwen3",
+        status: ModelRuntimeStatus,
+        context: Int = 8192,
+        capabilities: [ModelCapability] = [.text]
+    ) -> LocalModel {
+        var model = LocalModel(
+            id: id,
+            displayName: "Qwen 3",
+            provider: "Local AI",
+            source: "import",
+            repoId: nil,
+            revision: nil,
+            files: ["qwen3.gguf"],
+            fileSize: 1,
+            quantization: "Q4_K_M",
+            format: "GGUF",
+            contextLength: context,
+            configuredContext: context,
+            backend: .metal,
+            gpuOffload: nil,
+            threads: nil,
+            runtimeStatus: status,
+            capabilities: capabilities,
+            installedAt: Date(timeIntervalSince1970: 1),
+            updatedAt: Date(timeIntervalSince1970: 1),
+            lastUsedAt: nil,
+            license: nil,
+            checksum: nil,
+            userSettings: .defaultSettings(forContext: context)
+        )
+        model.userSettings.contextLength = context
+        return model
+    }
+
+    /// Installed → Ready → Installed. Only the middle state may be advertised;
+    /// this is the exact regression that left dead `local/*` routes in
+    /// `/v1/models`.
+    func testLocalAISourceIsPresentOnlyWhileAModelIsReady() throws {
+        let installed = localPublicationModel(status: .installed)
+        let ready = localPublicationModel(status: .ready)
+
+        XCTAssertNil(ModelSourcesStore.localAISource(
+            models: [installed], port: 41000, token: "t", slots: 2
+        ))
+        let source = try XCTUnwrap(ModelSourcesStore.localAISource(
+            models: [installed, ready], port: 41000, token: "secret-token", slots: 2
+        ))
+        XCTAssertEqual(source.id, "melon-local-ai")
+        XCTAssertEqual(source.kind, .localAI)
+        XCTAssertEqual(source.title, "Local AI")
+        XCTAssertEqual(source.baseURL, "http://127.0.0.1:41000/v1")
+        XCTAssertEqual(source.apiKey, "secret-token")
+        XCTAssertEqual(source.models.count, 1)
+
+        let model = try XCTUnwrap(source.models.first)
+        XCTAssertEqual(model.id, "qwen3")
+        XCTAssertEqual(model.alias, "local/qwen3")
+        XCTAssertEqual(model.display, "Qwen 3")
+        XCTAssertEqual(model.contextLength, 4096, "per-slot context must reach the client")
+        XCTAssertEqual(model.enabled, true)
+        XCTAssertEqual(model.supportsImages, false)
+
+        XCTAssertNil(ModelSourcesStore.localAISource(
+            models: [installed], port: 41000, token: "t", slots: 2
+        ), "a stopped model must disappear again")
+    }
+
+    func testLocalAISourceKeepsCanonicalAliasAndVision() throws {
+        let ready = localPublicationModel(
+            id: "local/qwen3-vl", status: .ready, capabilities: [.text, .vision]
+        )
+        let source = try XCTUnwrap(ModelSourcesStore.localAISource(
+            models: [ready], port: 41001, token: "t", slots: 1
+        ))
+        let model = try XCTUnwrap(source.models.first)
+        XCTAssertEqual(model.alias, "local/qwen3-vl", "no double local/ prefix")
+        XCTAssertEqual(model.supportsImages, true)
+        XCTAssertEqual(model.contextLength, 8192)
+    }
+
+    func testEffectiveSourcesAppendsLocalOnlyWhenReady() throws {
+        let base = ModelSource(
+            id: "openrouter", kind: .openRouter, title: "OpenRouter",
+            baseURL: "https://openrouter.ai/api/v1", apiKey: "k",
+            enabled: true, models: []
+        )
+        let installed = localPublicationModel(status: .installed)
+        let ready = localPublicationModel(status: .ready)
+
+        XCTAssertEqual(ModelSourcesStore.effectiveSources(
+            base: [base], localModels: [installed], port: 41000, token: "t", slots: 1
+        ).map(\.id), ["openrouter"])
+        let sources = ModelSourcesStore.effectiveSources(
+            base: [base], localModels: [ready], port: 41000, token: "t", slots: 1
+        )
+        XCTAssertEqual(sources.map(\.id), ["openrouter", "melon-local-ai"])
+        XCTAssertEqual(sources.last?.models.first?.alias, "local/qwen3")
+    }
+
+    func testGatewayYAMLPublishesTheProductionLocalContract() throws {
+        let ready = localPublicationModel(status: .ready, context: 8192)
+        let source = try XCTUnwrap(ModelSourcesStore.localAISource(
+            models: [ready], port: 41234, token: "secret-token", slots: 2
+        ))
+        let yaml = ModelSourcesStore.gatewayYAML(sources: [source])
+        XCTAssertTrue(yaml.contains("name: \"melon-local-ai\""), yaml)
+        XCTAssertTrue(yaml.contains("base-url: \"http://127.0.0.1:41234/v1\""), yaml)
+        XCTAssertTrue(yaml.contains("api-key: \"secret-token\""), yaml)
+        XCTAssertTrue(yaml.contains("alias: \"local/qwen3\""), yaml)
+        XCTAssertTrue(yaml.contains("max-context-length: 4096"), yaml)
+        XCTAssertTrue(yaml.contains("proxy-url: \"direct\""), yaml)
+    }
+
+    /// A clean quit or crash cannot leave a durable Ready row: the next launch
+    /// must normalize it to Installed and stop advertising the route.
+    @MainActor
+    func testStaleReadyStateIsNormalizedAfterRelaunch() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("melon-relaunch-\(UUID().uuidString)", isDirectory: true)
+        let modelsDir = directory.appendingPathComponent("models", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("GGUF".utf8).write(to: modelsDir.appendingPathComponent("qwen3.gguf"))
+
+        let model = localPublicationModel(status: .ready)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([model]).write(to: directory.appendingPathComponent("registry.json"))
+
+        let store = LocalModelStore(directory: directory)
+        XCTAssertEqual(store.models.first?.runtimeStatus, .installed)
+        XCTAssertNil(ModelSourcesStore.localAISource(
+            models: store.models, port: 41000, token: "t", slots: 1
+        ))
+    }
+
+    func testLocalAICardCountsOnlyReadyModelsAsPublished() {
+        typealias Card = CodexProvidersView.LocalAICardState
+        let downloadedOnly = Card(
+            downloadedCount: 3, readyCount: 0, isRunning: true,
+            publicationError: nil, currentModelName: nil
+        )
+        XCTAssertEqual(downloadedOnly.mode, .runningNoReady)
+        XCTAssertEqual(downloadedOnly.pillStatus, .idle, "a running process alone is not success")
+
+        let stopped = Card(
+            downloadedCount: 3, readyCount: 0, isRunning: false,
+            publicationError: nil, currentModelName: nil
+        )
+        XCTAssertEqual(stopped.mode, .downloadedOnly)
+        XCTAssertEqual(stopped.pillStatus, .idle)
+
+        let ready = Card(
+            downloadedCount: 3, readyCount: 2, isRunning: true,
+            publicationError: nil, currentModelName: "Qwen 3"
+        )
+        XCTAssertEqual(ready.mode, .ready(running: true))
+        XCTAssertEqual(ready.pillStatus, .ok)
+
+        let failed = Card(
+            downloadedCount: 3, readyCount: 2, isRunning: true,
+            publicationError: "Local AI models are missing from the gateway API: local/qwen3",
+            currentModelName: "Qwen 3"
+        )
+        XCTAssertEqual(failed.mode, .publicationFailed)
+        XCTAssertEqual(failed.pillStatus, .error)
+        XCTAssertEqual(failed.readyCount, 2)
+
+        let empty = Card(
+            downloadedCount: 0, readyCount: 0, isRunning: false,
+            publicationError: nil, currentModelName: nil
+        )
+        XCTAssertEqual(empty.mode, .empty)
+    }
+
+    func testLocalAICardReadyButStoppedEngineIsAWarning() {
+        let state = CodexProvidersView.LocalAICardState(
+            downloadedCount: 1, readyCount: 1, isRunning: false,
+            publicationError: nil, currentModelName: nil
+        )
+        XCTAssertEqual(state.mode, .ready(running: false))
+        XCTAssertEqual(state.pillStatus, .warn)
+    }
+
+}

@@ -22,6 +22,38 @@ fn test_root() -> Option<PathBuf> {
     TEST_ROOT.with(|slot| slot.borrow().clone())
 }
 
+/// Minimal registry row for tests that need a model without touching disk.
+#[cfg(test)]
+pub(crate) fn test_model(id: &str, status: ModelRuntimeStatus) -> LocalModel {
+    LocalModel {
+        id: id.to_string(),
+        schema_version: None,
+        display_name: id.rsplit('/').next().unwrap_or(id).to_string(),
+        provider: "Local AI".to_string(),
+        source: "huggingface".to_string(),
+        repo_id: None,
+        revision: None,
+        files: vec![format!("{}.gguf", id)],
+        file_size: 4_000_000_000,
+        quantization: "Q4_K_M".to_string(),
+        format: "GGUF".to_string(),
+        context_length: 32768,
+        configured_context: 8192,
+        backend: InferenceBackend::Cpu,
+        architecture: None,
+        gpu_offload: None,
+        threads: None,
+        runtime_status: status,
+        capabilities: Vec::new(),
+        installed_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+        last_used_at: None,
+        license: None,
+        checksum: None,
+        user_settings: LocalModelSettings::default(),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
     TEST_ROOT.with(|slot| *slot.borrow_mut() = Some(root.to_path_buf()));
@@ -385,6 +417,11 @@ pub struct GgufInfo {
     pub head_count_kv: usize,
     /// `*.embedding_length` — hidden width, used to derive the head size.
     pub embedding_length: usize,
+    pub key_length: usize,
+    pub value_length: usize,
+    pub full_attention_interval: usize,
+    pub has_recurrent_state: bool,
+    pub kv_heads_by_layer: Vec<usize>,
     /// From `general.file_type`, falling back to the file name.
     pub quantization: String,
     pub chat_template: Option<String>,
@@ -404,7 +441,9 @@ impl GgufInfo {
     /// The geometry the KV-cache formula needs, when the header carries it.
     /// `None` means the caller has to fall back to a labelled heuristic.
     pub fn kv_geometry(&self) -> Option<super::hardware::KvGeometry> {
-        let head_dim = if self.embedding_length > 0 && self.head_count > 0 {
+        let head_dim = if self.key_length > 0 {
+            self.key_length
+        } else if self.embedding_length > 0 && self.head_count > 0 {
             self.embedding_length / self.head_count
         } else {
             0
@@ -418,6 +457,27 @@ impl GgufInfo {
             layers: self.block_count,
             kv_heads,
             head_dim,
+            value_dim: if self.value_length > 0 {
+                self.value_length
+            } else if self.embedding_length > 0 && self.head_count > 0 {
+                self.embedding_length / self.head_count
+            } else {
+                head_dim
+            },
+            total_kv_heads: if self.kv_heads_by_layer.len() == self.block_count {
+                Some(self.kv_heads_by_layer.iter().sum())
+            } else if self.has_recurrent_state && self.full_attention_interval > 1 {
+                Some(kv_heads * (self.block_count / self.full_attention_interval))
+            } else {
+                None
+            },
+            approximate: self.has_recurrent_state
+                || self.full_attention_interval > 1
+                || !self.kv_heads_by_layer.is_empty()
+                || self.architecture.contains("deepseek")
+                || self.architecture.contains("mamba")
+                || self.architecture.contains("qwen35")
+                || self.head_count_kv == 0,
         };
         geometry.is_complete().then_some(geometry)
     }
@@ -547,6 +607,11 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<GgufInfo, String> {
         head_count: usize,
         head_count_kv: usize,
         embedding_length: usize,
+        key_length: usize,
+        value_length: usize,
+        full_attention_interval: usize,
+        has_recurrent_state: bool,
+        kv_heads_by_layer: Vec<usize>,
         file_type: Option<u32>,
     }
 
@@ -561,6 +626,14 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<GgufInfo, String> {
             fields.head_count_kv = raw as usize;
         } else if key.ends_with(".attention.head_count") {
             fields.head_count = raw as usize;
+        } else if key.ends_with(".attention.key_length") {
+            fields.key_length = raw as usize;
+        } else if key.ends_with(".attention.value_length") {
+            fields.value_length = raw as usize;
+        } else if key.ends_with(".attention.full_attention_interval") {
+            fields.full_attention_interval = raw as usize;
+        } else if key.contains(".ssm.") {
+            fields.has_recurrent_state = true;
         } else if key.ends_with(".embedding_length") {
             fields.embedding_length = raw as usize;
         } else if key.ends_with(".context_length") {
@@ -596,6 +669,26 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<GgufInfo, String> {
             9 => {
                 let element_type = read_u32(&mut reader, &mut bytes_read)?;
                 let length = read_u64(&mut reader, &mut bytes_read)?;
+                if key.ends_with(".attention.head_count_kv")
+                    && matches!(element_type, 4 | 10)
+                    && length <= 4096
+                {
+                    let mut heads = Vec::with_capacity(length as usize);
+                    for _ in 0..length {
+                        let raw = if element_type == 4 {
+                            u64::from(read_u32(&mut reader, &mut bytes_read)?)
+                        } else {
+                            read_u64(&mut reader, &mut bytes_read)?
+                        };
+                        heads.push(
+                            usize::try_from(raw)
+                                .map_err(|_| "Invalid KV head count".to_string())?,
+                        );
+                    }
+                    numeric.head_count_kv = heads.iter().copied().max().unwrap_or(0);
+                    numeric.kv_heads_by_layer = heads;
+                    continue;
+                }
                 match element_type {
                     8 => {
                         for _ in 0..length {
@@ -617,12 +710,16 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<GgufInfo, String> {
             // UINT32 / INT32 / FLOAT32
             4..=6 => {
                 let raw = read_u32(&mut reader, &mut bytes_read)?;
-                apply_numeric(&mut numeric, &key, u64::from(raw));
+                if value_type != 6 {
+                    apply_numeric(&mut numeric, &key, u64::from(raw));
+                }
             }
             // UINT64 / INT64 / FLOAT64
             10..=12 => {
                 let raw = read_u64(&mut reader, &mut bytes_read)?;
-                apply_numeric(&mut numeric, &key, raw);
+                if value_type != 12 {
+                    apply_numeric(&mut numeric, &key, raw);
+                }
             }
             other => return Err(format!("Unsupported GGUF metadata value type: {}", other)),
         }
@@ -651,6 +748,11 @@ pub fn parse_gguf_metadata(path: &Path) -> Result<GgufInfo, String> {
         head_count: numeric.head_count,
         head_count_kv: numeric.head_count_kv,
         embedding_length: numeric.embedding_length,
+        key_length: numeric.key_length,
+        value_length: numeric.value_length,
+        full_attention_interval: numeric.full_attention_interval,
+        has_recurrent_state: numeric.has_recurrent_state,
+        kv_heads_by_layer: numeric.kv_heads_by_layer,
         quantization,
         chat_template,
         license,
@@ -1017,15 +1119,15 @@ impl LocalModelStore {
         Ok(updated)
     }
 
-    pub fn update_model_status(id: &str, status: ModelRuntimeStatus) {
+    pub fn update_model_status(id: &str, status: ModelRuntimeStatus) -> Result<(), String> {
         let _guard = registry_lock();
         let mut models = Self::load_registry();
         let Some(model) = models.iter_mut().find(|m| m.id == id) else {
-            return;
+            return Ok(());
         };
         model.runtime_status = status;
         model.updated_at = Utc::now().to_rfc3339();
-        let _ = Self::save_registry(&models);
+        Self::save_registry(&models)
     }
 
     /// Removes a model from the registry and deletes only files that live
@@ -1173,7 +1275,8 @@ impl LocalModelStore {
             context_length: metadata.context_length,
             configured_context: working_context,
             backend: hardware.recommended_backend,
-            architecture: (!metadata.architecture.is_empty()).then(|| metadata.architecture.clone()),
+            architecture: (!metadata.architecture.is_empty())
+                .then(|| metadata.architecture.clone()),
             gpu_offload: None,
             threads: None,
             runtime_status: ModelRuntimeStatus::Installed,
@@ -1683,6 +1786,9 @@ mod tests {
                 layers: 28,
                 kv_heads: 4,
                 head_dim: 128,
+                value_dim: 128,
+                total_kv_heads: None,
+                approximate: false,
             })
         );
 
@@ -1714,6 +1820,51 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn gguf_geometry_reads_asymmetric_lengths_and_layer_arrays() {
+        fn put_string(buf: &mut Vec<u8>, text: &str) {
+            buf.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            buf.extend_from_slice(text.as_bytes());
+        }
+        fn put_u32(buf: &mut Vec<u8>, value: u32) {
+            buf.extend_from_slice(&4u32.to_le_bytes());
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        let dir = std::env::temp_dir().join(format!("melon-gguf-shape-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shape.gguf");
+        write_gguf(&path);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[16..24].copy_from_slice(&10u64.to_le_bytes());
+        for (key, value) in [
+            ("qwen2.attention.key_length", 256u32),
+            ("qwen2.attention.value_length", 64),
+        ] {
+            put_string(&mut bytes, key);
+            put_u32(&mut bytes, value);
+        }
+        put_string(&mut bytes, "qwen2.attention.head_count_kv");
+        bytes.extend_from_slice(&9u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&28u64.to_le_bytes());
+        for i in 0..28 {
+            bytes.extend_from_slice(&(if i % 4 == 3 { 4u32 } else { 0 }).to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let info = parse_gguf_metadata(&path).unwrap();
+        assert_eq!(&info.kv_heads_by_layer[..4], &[0, 0, 0, 4]);
+        let shape = info.kv_geometry().unwrap();
+        assert_eq!(shape.head_dim, 256);
+        assert_eq!(shape.value_dim, 64);
+        assert_eq!(shape.total_kv_heads, Some(28));
+        assert!(shape.approximate);
+        assert_eq!(
+            crate::local_ai::hardware::estimate_kv_cache_bytes(8192, "f16", Some(shape)).0,
+            (256 + 64) * 28 * 8192 * 2
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -40,3 +40,6 @@ imagegen-output/
 Melon_Amber_*/
 Melon_Amber_macOS*.png
 Melon_Amber_macOS*.icns
+
+# Locally built release artifacts (uploaded to GitHub Releases, never committed)
+/delivery/

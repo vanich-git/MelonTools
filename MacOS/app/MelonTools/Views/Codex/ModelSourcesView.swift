@@ -208,6 +208,9 @@ struct CodexProvidersView: View {
     }
 
     private func authDetail(_ row: ProviderDiagnostics.Row) -> String {
+        if row.id == "localai" {
+            return row.hasKey ? L("Internal token") : L("No ready models")
+        }
         if row.authFileCount > 0 {
             return String(format: L("Auth files: %d"), row.authFileCount)
         }
@@ -287,7 +290,7 @@ struct CodexProvidersView: View {
 
     /// Pool-wide share of quota still available (mean over accounts with data).
     private func poolQuota(_ keyPath: KeyPath<CodexQuota, Double?>) -> Double? {
-        let values = store.accounts.compactMap { $0.quota?[keyPath: keyPath] }
+        let values = store.accounts.filter { $0.poolEnabled != false }.compactMap { $0.quota?[keyPath: keyPath] }
         guard !values.isEmpty else { return nil }
         return min(1, max(0, values.reduce(0, +) / Double(values.count) / 100))
     }
@@ -296,7 +299,9 @@ struct CodexProvidersView: View {
         let total = store.accounts.count
         let failed = store.accounts.filter { $0.quotaError != nil }.count
         let paused = store.accounts.filter { account in
-            guard let quota = account.quota, account.quotaError == nil else { return false }
+            guard account.quotaError == nil else { return false }
+            if account.poolEnabled == false { return true }
+            guard let quota = account.quota else { return false }
             return (quota.hourlyRemainingPercent ?? 1) <= 0 || (quota.weeklyRemainingPercent ?? 1) <= 0
         }.count
         return (max(0, total - failed - paused), failed, paused)
@@ -730,20 +735,74 @@ struct CodexProvidersView: View {
 
     // MARK: - Board: Antigravity
 
+    /// Presentation state for the Local AI card. Only `.ready` rows are
+    /// published routes; installed-only rows stay visible as downloads and
+    /// must never look like a working gateway.
+    struct LocalAICardState: Equatable {
+        enum Mode: Equatable {
+            case empty
+            case downloadedOnly
+            case runningNoReady
+            case ready(running: Bool)
+            case publicationFailed
+        }
+
+        let downloadedCount: Int
+        let readyCount: Int
+        let isRunning: Bool
+        let publicationError: String?
+        let currentModelName: String?
+
+        var mode: Mode {
+            if publicationError != nil { return .publicationFailed }
+            if readyCount > 0 { return .ready(running: isRunning) }
+            if isRunning { return .runningNoReady }
+            return downloadedCount > 0 ? .downloadedOnly : .empty
+        }
+
+        var pillStatus: MTStatus {
+            switch mode {
+            case .publicationFailed: return .error
+            case .ready(let running): return running ? .ok : .warn
+            case .runningNoReady, .downloadedOnly, .empty: return .idle
+            }
+        }
+
+        var pillText: String {
+            switch mode {
+            case .publicationFailed:
+                return L("Publication failed")
+            case .ready(let running):
+                if running, let currentModelName, !currentModelName.isEmpty {
+                    return "\(currentModelName) · \(readyCount) " + L("ready")
+                }
+                return "\(readyCount) " + L("ready") + " · " + L("engine stopped")
+            case .runningNoReady:
+                return L("Running · no ready models")
+            case .downloadedOnly:
+                return "\(downloadedCount) " + L("downloaded") + " · " + L("none ready")
+            case .empty:
+                return L("No models")
+            }
+        }
+    }
+
     private var localAICard: some View {
-        let readyModels = localStore.models.filter { $0.runtimeStatus == .installed || $0.runtimeStatus == .ready }
-        let isRunning = localRuntime.status.isRunning
+        let state = LocalAICardState(
+            downloadedCount: localStore.models.filter {
+                $0.runtimeStatus == .installed || $0.runtimeStatus == .ready
+            }.count,
+            readyCount: localStore.models.filter { $0.runtimeStatus == .ready }.count,
+            isRunning: localRuntime.status.isRunning,
+            publicationError: localRuntime.publicationError,
+            currentModelName: localRuntime.currentModel?.displayName
+        )
         return MTCard(title: "Local AI", systemImage: "cpu.fill", accent: MTTheme.emerald, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s3) {
                 HStack(spacing: MTTheme.s2) {
-                    MTStatusPill(
-                        text: isRunning
-                            ? (localRuntime.currentModel?.displayName ?? L("Running"))
-                            : (readyModels.isEmpty ? L("No models") : String(format: L("%d models ready"), readyModels.count)),
-                        status: isRunning ? .ok : (readyModels.isEmpty ? .idle : .warn)
-                    )
+                    MTStatusPill(text: state.pillText, status: state.pillStatus)
                     Spacer(minLength: MTTheme.s2)
-                    if isRunning {
+                    if state.isRunning {
                         Text("http://127.0.0.1:\(localRuntime.port)/v1")
                             .font(MTTheme.mono(9))
                             .foregroundStyle(MTTheme.emerald)
@@ -754,16 +813,23 @@ struct CodexProvidersView: View {
                     }
                 }
 
-                if readyModels.isEmpty {
+                if state.downloadedCount == 0 {
                     Text(L("Download GGUF models from Hugging Face or import local files."))
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
                 } else {
                     HStack(alignment: .top, spacing: MTTheme.s3) {
                         MTMetricTile(
-                            title: L("Installed"),
-                            value: "\(readyModels.count)",
+                            title: L("Downloaded"),
+                            value: "\(state.downloadedCount)",
                             caption: L("Models"),
+                            reservesMeterSpace: true
+                        )
+                        MTMetricTile(
+                            title: L("Ready"),
+                            value: "\(state.readyCount)",
+                            caption: L("Published"),
+                            valueColor: state.readyCount > 0 ? MTTheme.emerald : MTTheme.textSecondary,
                             reservesMeterSpace: true
                         )
                         MTMetricTile(
@@ -774,11 +840,22 @@ struct CodexProvidersView: View {
                         )
                         MTMetricTile(
                             title: L("Engine"),
-                            value: isRunning ? L("Active") : L("Standby"),
+                            value: state.isRunning ? L("Active") : L("Standby"),
                             caption: localRuntime.isBinaryAvailable ? "llama-server" : L("No binary"),
-                            valueColor: isRunning ? MTTheme.emerald : MTTheme.textSecondary,
+                            valueColor: state.isRunning ? MTTheme.emerald : MTTheme.textSecondary,
                             reservesMeterSpace: true
                         )
+                    }
+                }
+
+                if let error = state.publicationError {
+                    HStack(alignment: .top, spacing: MTTheme.s2) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(MTTheme.danger)
+                        Text(error)
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 

@@ -985,6 +985,29 @@ function codexPoolCard() {
   </div>`;
 }
 
+function localAiConnectionCard() {
+  const rt = S.localAi.runtime || {};
+  const models = S.localAi.models || [];
+  const served = (S.models || []).filter((model) => String(model.id || "").startsWith("local/"));
+  return `<div class="card">
+    <h2>Local AI ${localAiEngineBadge()}</h2>
+    <div class="provider-metrics">
+      ${providerMetric(t("localAiModels"), models.length)}
+      ${providerMetric(t("modelsAvailable"), served.length)}
+    </div>
+    <div class="footnote">${esc(t("localAiConnectionHint"))}</div>
+    ${rt.currentModel ? `<div class="mono hint">${esc(rt.currentModel.displayName || rt.currentModel.id)}</div>` : ""}
+    ${rt.error ? `<div class="footnote danger">${esc(rt.error)}</div>` : ""}
+    ${rt.publicationError ? `<div class="footnote danger">${esc(rt.publicationError)}</div>` : ""}
+    ${S.localAi.connectionCheck ? `<div class="footnote ${S.localAi.connectionCheck.ok ? "ok" : "danger"}">${esc(S.localAi.connectionCheck.text)}</div>` : ""}
+    <div class="row"><span class="spacer"></span>
+      <button class="ghost small" data-action="localAiConnectionsCheck" ${S.busy && S.busy.localAiCheck ? "disabled" : ""}>${esc(t("localAiCheck"))}</button>
+      <button class="ghost small" data-action="localAiConnectionsRefresh">${esc(t("refresh"))}</button>
+      <button class="btn small" data-action="localAiConnectionsOpen">${esc(t("localAiModels"))}</button>
+    </div>
+  </div>`;
+}
+
 function providersPage() {
   const settings = S.settings || {};
   const models = S.models || [];
@@ -1002,6 +1025,7 @@ function providersPage() {
   ${pageHead("codex", t("providers"), t("providersSub"))}
   ${poolPauseBanner()}
   ${codexPoolCard()}
+  ${localAiConnectionCard()}
   ${openRouterCard(settings)}
   ${openCodeCard(settings)}
   ${commandCodeCard(settings)}
@@ -1025,6 +1049,7 @@ function providersPage() {
         // claude-*/gemini-*/gpt-oss ids, so prefix alone would mislabel them.
         const provider = S.antigravityIds && S.antigravityIds.has(id)
           ? "Antigravity"
+          : id.startsWith("local/") || m.owned_by === "melon-local-ai" || m.owned_by === "local" ? "Local AI"
           : id.startsWith("opencode/") ? "OpenCode"
           : id.startsWith("openrouter/") ? "OpenRouter"
           : id.startsWith("deepinfra/") ? "DeepInfra"
@@ -1970,118 +1995,17 @@ function localAiCompatBadge(file) {
 }
 
 function localAiCatalogTab() {
-  const presets = ["Qwen2.5-Coder", "Llama-3.2", "DeepSeek-R1-Distill", "Mistral", "Gemma-2", "Phi-3.5"];
-  const results = S.localAi.catalogResults || [];
-  const selectedRepo = S.localAi.repoDetails;
-  const isSearching = S.localAi.catalogLoading;
-  const isDetailsLoading = S.localAi.repoDetailsLoading;
-  const query = S.localAi.catalogQuery || "";
-  const hasSearched = !!(S.localAi.catalogSearched || results.length > 0);
-
-  return `
-  <div class="local-ai-content">
-    <div class="local-ai-toolbar">
-      <div class="search-field" style="max-width:none;flex:1 1 auto">
-        ${localAiIcon("search", 13)}
-        <input type="text" placeholder="${esc(t("localAiHfSearchPlaceholder"))}" value="${esc(query)}" data-action="localAiHfSearchInput" data-on="input" aria-label="${esc(t("localAiHfSearchPlaceholder"))}">
-        ${isSearching ? `<span class="spinner-dot" style="margin:0"></span>` : ""}
-        <button class="search-clear" data-action="localAiHfClear" title="${esc(t("localAiClearSearch"))}" aria-label="${esc(t("localAiClearSearch"))}" ${query ? "" : "hidden"}>${localAiIcon("x", 12)}</button>
-      </div>
-      <button class="btn small" data-action="localAiHfSearch" ${isSearching ? "disabled" : ""}>${esc(t("localAiSearchAction"))}</button>
-      <button class="icon-btn" data-action="localAiHfTokenModal" title="${esc(t("localAiHfToken"))}" aria-label="${esc(t("localAiHfToken"))}">
-        ${localAiIcon("key", 15)}
-      </button>
-    </div>
-
-    <div class="preset-pills-row">
-      ${presets.map((p) => `
-        <button class="pill-btn ${query === p ? "active" : ""}" data-action="localAiHfPreset" data-query="${esc(p)}">
-          ${esc(p)}
-        </button>
-      `).join("")}
-    </div>
-
-    <div class="split-pane">
-      <div class="split-pane-left">
-        ${isSearching ? `
-          <div class="loading-state">${esc(t("loading"))}</div>
-        ` : results.length === 0 ? `
-          <div class="empty-state">
-            <div class="empty-icon">${localAiIcon("cube", 40)}</div>
-            <p class="muted">${esc(hasSearched ? t("localAiHfEmptyAfterSearch") : t("localAiHfEmptyTitle"))}</p>
-          </div>
-        ` : `
-          <div class="repo-list">
-            ${results.map((repo) => {
-              const isSelected = S.localAi.selectedRepoId === repo.id;
-              return `
-                <div class="repo-item ${isSelected ? "selected" : ""}" data-action="localAiSelectRepo" data-id="${esc(repo.id)}">
-                  <div class="repo-name">${esc(repo.displayName || repo.id)}</div>
-                  <div class="mono hint">${esc(repo.id)}</div>
-                  <div class="repo-stats">
-                    ${repo.downloads != null ? `<span>${localAiIcon("download", 11)}${repo.downloads.toLocaleString()}</span>` : ""}
-                    ${repo.likes != null ? `<span>${localAiIcon("heart", 11)}${repo.likes.toLocaleString()}</span>` : ""}
-                  </div>
-                </div>
-              `;
-            }).join("")}
-          </div>
-        `}
-      </div>
-
-      <div class="split-pane-right">
-        ${isDetailsLoading ? `
-          <div class="loading-state">${esc(t("localAiFilesLoading"))}</div>
-        ` : !selectedRepo ? `
-          <div class="empty-state">
-            <div class="empty-icon">${localAiIcon("sidebar", 40)}</div>
-            <p class="muted">${esc(t("localAiSelectRepo"))}</p>
-          </div>
-        ` : `
-          <div class="repo-details">
-            <div class="repo-details-header">
-              <div class="repo-details-title">
-                <h3>${esc(selectedRepo.displayName || selectedRepo.id)}</h3>
-                <div class="mono hint">${esc(selectedRepo.id)}</div>
-              </div>
-              <a href="${esc(selectedRepo.url || `https://huggingface.co/${selectedRepo.id}`)}" target="_blank" rel="noopener noreferrer" class="link-btn">
-                ${esc(t("localAiOpenHf"))} ↗
-              </a>
-            </div>
-
-            <div class="files-header">
-              <h4>${esc(t("localAiFiles"))}</h4>
-            </div>
-
-            <div class="gguf-files-list">
-              ${(selectedRepo.ggufFiles || []).length === 0 ? `
-                <div class="muted">${esc(t("localAiNoFiles"))}</div>
-              ` : (selectedRepo.ggufFiles || []).map((file) => {
-                const isDl = (S.localAi.downloads || []).some((d) => d.filename === file.name && isDownloadActive(d));
-                return `
-                  <div class="gguf-file-row">
-                    <div class="file-info">
-                      <div class="file-name mono">${esc(file.name)}</div>
-                      <div class="file-meta">
-                        <span class="meta-badge">${localAiIcon("archive", 11)}${esc(file.quantization || t("localAiUnknown"))}</span>
-                        <span class="hint">${formatBytes(file.size || 0)}</span>
-                        ${localAiCompatBadge(file)}
-                      </div>
-                    </div>
-                    <div class="file-action">
-                      <button class="btn small" data-action="localAiDownloadQuant" data-repo="${esc(selectedRepo.id)}" data-file="${esc(file.name)}" data-url="${esc(file.downloadUrl || "")}" data-size="${file.size || 0}" data-sha="${esc(file.sha256 || "")}" ${isDl ? "disabled" : ""}>
-                        ${isDl ? esc(t("localAiDownloading")) : esc(t("localAiDownload"))}
-                      </button>
-                    </div>
-                  </div>
-                `;
-              }).join("")}
-            </div>
-          </div>
-        `}
-      </div>
-    </div>
-  </div>`;
+  const state = S.localAi;
+  const sorts = [["trendingScore", "recommended"], ["likes", "likes"], ["downloads", "downloads"], ["lastModified", "updated"]];
+  return `<div class="hf-catalog">
+    <aside class="hf-sidebar"><div class="hf-searchbar"><div class="search-field">
+      ${localAiIcon("search", 13)}<input id="hf-search" type="search" placeholder="${esc(hfText("search"))}" aria-label="${esc(hfText("search"))}" value="${esc(state.catalogQuery || "")}" data-action="localAiHfSearchInput" data-on="input">
+      <button class="search-clear" data-action="localAiHfClear" aria-label="${esc(t("localAiClearSearch"))}" ${(state.catalogQuery || "") ? "" : "hidden"}>${localAiIcon("x", 12)}</button>
+    </div><button class="icon-btn" data-action="localAiHfTokenModal" title="${esc(t("localAiHfToken"))}" aria-label="${esc(t("localAiHfToken"))}">${localAiIcon("key", 14)}</button></div>
+    <div class="hf-list-toolbar"><span id="hf-search-summary">${esc(state.catalogLoading ? t("loading") : state.catalogQuery ? `${(state.catalogResults || []).length} ${hfText("matches")}` : hfText("popular"))}</span>
+    <select aria-label="${esc(hfText("recommended"))}" data-action="localAiHfSort" data-on="change">${sorts.map(([value, label]) => `<option value="${value}" ${(state.catalogSort || "trendingScore") === value ? "selected" : ""}>${esc(hfText(label))}</option>`).join("")}</select></div>
+    <div id="hf-results" class="hf-results">${hfCatalogResults()}</div></aside>
+    <div class="hf-detail" id="hf-detail">${hfCatalogDetail()}</div></div>`;
 }
 
 function localAiDownloadsTab() {
@@ -2576,9 +2500,13 @@ function localAiEstimateMarkup() {
       ${cell(t("localAiOsReserve"), est.osReserveBytes)}
       ${cell(t("localAiTotalRequired"), est.totalBytes, totalTint)}
       ${cell(t("localAiTotalRam"), est.availableBytes)}
+      ${cell("RAM · ~", est.ramRequiredBytes == null ? est.totalBytes : est.ramRequiredBytes)}
+      ${est.gpuRequiredBytes != null ? cell("GPU · ~", est.gpuRequiredBytes) : ""}
+      ${est.gpuAvailableBytes != null ? cell("GPU budget", est.gpuAvailableBytes) : ""}
     </div>
     ${est.warning ? `<div class="footnote warn-text" style="margin:8px 0 0">${esc(est.warning)}</div>` : ""}
     <div class="footnote" style="margin:8px 0 0">${esc(est.confidence === "heuristic" ? t("localAiEstimateHeuristic") : t("localAiEstimateMetadata"))}</div>
+    ${(est.assumptions || []).map((note) => `<div class="footnote">${esc(note)}</div>`).join("")}
   </div>`;
 }
 
@@ -2650,10 +2578,7 @@ function localAiSettingsModalMarkup() {
   // Applied to served requests by the relay between the gateway and the
   // engine, so it belongs above the engine knobs.
   const systemPrompt = s.systemPrompt || "";
-  // Context/KV/offload/threads are read from `models.ini` at launch, so a
-  // running model needs an explicit restart next to Save.
-  const rt = S.localAi.runtime;
-  const runningThis = !!(rt && rt.isRunning && rt.currentModel && rt.currentModel.id === model.id);
+  // Save applies engine settings by restarting this model only if it is active.
 
   return `
   <div class="modal-backdrop">
@@ -2663,7 +2588,7 @@ function localAiSettingsModalMarkup() {
           <h3>${esc(model.displayName || model.name || model.id)}</h3>
           <div class="mono hint">${esc(model.id)}</div>
         </div>
-        <button class="ghost small" data-action="localAiSettingsClose">✕</button>
+        <button class="ghost small" data-action="localAiSettingsClose" aria-label="${esc(t("localAiClose"))}" ${S.localAi.savingSettings ? "disabled" : ""}>✕</button>
       </div>
 
       <div class="stack" style="margin-top:16px">
@@ -2694,7 +2619,7 @@ function localAiSettingsModalMarkup() {
 
         <div class="grid2">
           <label class="field">${esc(t("localAiGpuLayers"))} (-ngl)
-            <input type="number" id="local-ai-setting-gpu-layers" value="${gpuLayers}" min="0" max="999">
+            <input type="number" id="local-ai-setting-gpu-layers" value="${gpuLayers}" min="0" max="999" data-action="localAiEstimateInput" data-on="input">
           </label>
           <label class="field">${esc(t("localAiThreads"))}
             <input type="number" id="local-ai-setting-threads" value="${cpuThreads}" min="1" max="128">
@@ -2718,7 +2643,7 @@ function localAiSettingsModalMarkup() {
             </select>
           </label>
           <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:20px">
-            <input type="checkbox" id="local-ai-setting-flash-attn" ${flashAttention ? "checked" : ""}>
+            <input type="checkbox" id="local-ai-setting-flash-attn" data-action="localAiEstimateInput" data-on="change" ${flashAttention ? "checked" : ""}>
             <span>${esc(t("localAiFlashAttn"))}</span>
           </label>
         </div>
@@ -2746,67 +2671,60 @@ function localAiSettingsModalMarkup() {
           <input type="text" id="local-ai-setting-chat-template" class="mono" value="${esc(chatTemplate)}" placeholder="auto">
         </label>
 
-        ${runningThis ? `<div class="footnote warn-text">${esc(t("localAiPendingHint"))}</div>` : ""}
-
         ${localAiEstimateMarkup()}
 
         <div class="row" style="justify-content:flex-end;margin-top:16px;gap:8px">
-          <button class="ghost" data-action="localAiSettingsClose">${esc(t("localAiClose"))}</button>
-          ${runningThis ? `<button class="btn" data-action="localAiSettingsSaveRestart">${esc(t("localAiSaveRestart"))}</button>` : ""}
-          <button class="btn" data-action="localAiSettingsSave">${esc(t("localAiSave"))}</button>
+          <button class="btn" data-action="localAiSettingsSave" ${S.localAi.savingSettings ? "disabled" : ""}>${esc(t("localAiSave"))}</button>
         </div>
       </div>
     </div>
   </div>`;
 }
 
+function localAiTestMetricsMarkup(m) {
+  const s = m.stats || {};
+  const metric = (label, value) => value == null ? "" : `<span class="pill">${esc(label)}: ${esc(value)}</span>`;
+  return metric(t("localAiPromptTokens"), s.promptTokens)
+    + metric(t("localAiGeneratedTokens"), s.completionTokens)
+    + metric("tok/s", s.tokensPerSec == null ? null : s.tokensPerSec.toFixed(1))
+    + metric(t("localAiPromptSpeed"), s.promptPerSec == null ? null : `${s.promptPerSec.toFixed(1)} tok/s`)
+    + metric(t("localAiPrefillTime"), s.promptMs == null ? null : `${(s.promptMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiGenerationTime"), s.generationMs == null ? null : `${(s.generationMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiFirstToken"), s.firstTokenMs == null ? null : `${(s.firstTokenMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiElapsed"), s.elapsed > 0 ? `${s.elapsed.toFixed(1)} s` : null);
+}
+
 function localAiTestModalMarkup() {
   const m = S.localAi.testModal;
   if (!m) return "";
-
-  return `
-  <div class="modal-backdrop">
-    <div class="modal-card wide">
-      <div class="card-header-row">
-        <div>
-          <h3>${esc(t("localAiTest"))}: ${esc(m.modelName || m.modelId)}</h3>
-          <div class="mono hint">${esc(m.modelId)}</div>
-        </div>
-        <button class="ghost small" data-action="localAiTestClose">✕</button>
-      </div>
-
-      <div class="stack" style="margin-top:16px">
-        <label class="field">${esc(t("localAiTestPrompt"))}
-          <textarea id="local-ai-test-prompt-input" rows="3" placeholder="Why is the sky blue?">${esc(m.prompt || "")}</textarea>
-        </label>
-        <div class="row" style="justify-content:flex-end;gap:8px;align-items:center">
-          ${m.generating ? `<span class="pill warn"><span class="spinner-dot"></span>${esc(t("localAiGenerating"))}</span>` : ""}
-          ${m.tokensPerSec ? `<span class="pill ok">${m.tokensPerSec.toFixed(1)} tok/s</span>` : ""}
-          <span class="spacer"></span>
-          <button class="btn small" data-action="localAiTestSend" ${m.generating ? "disabled" : ""}>
-            ${m.generating ? esc(t("localAiGenerating")) : esc(t("localAiSend"))}
-          </button>
-        </div>
-
-        <div class="field" style="margin-top:8px">
-          <div class="row">
-            <span class="muted">${esc(t("localAiResponse"))}</span>
-            <span class="spacer"></span>
-          </div>
-          <div class="terminal-logs mono" style="min-height:140px;max-height:280px;margin-top:6px;white-space:pre-wrap">${
-            m.response
-              ? renderMarkdown(m.response)
-              : `<span class="muted">${esc(m.generating ? t("localAiWaitingFirstToken") : t("localAiNoResponseYet"))}</span>`
-          }</div>
-          ${m.truncated ? `<div class="footnote" style="color:var(--warn);margin-top:6px">${esc(t("localAiTruncated"))}</div>` : ""}
-        </div>
-
-        <div class="row" style="justify-content:flex-end;margin-top:12px">
-          <button class="ghost" data-action="localAiTestClose">${esc(t("localAiClose"))}</button>
-        </div>
-      </div>
+  return `<div class="modal-backdrop"><div class="modal-card wide" role="dialog" aria-modal="true" aria-label="${esc(t("localAiTest"))}">
+    <div class="card-header-row">
+      <div><h3>${esc(t("localAiTest"))}: ${esc(m.modelName || m.modelId)}</h3><div class="mono hint">${esc(m.modelId)}</div></div>
+      <button class="ghost small" data-action="localAiTestClose" aria-label="${esc(t("localAiClose"))}">✕</button>
     </div>
-  </div>`;
+    <div class="stack" style="margin-top:16px">
+      <div class="row">
+        <button class="${m.mode !== "gateway" ? "btn" : "ghost"} small" data-action="localAiTestMode" data-id="engine" ${m.generating ? "disabled" : ""}>${esc(t("localAiEngineTest"))}</button>
+        <button class="${m.mode === "gateway" ? "btn" : "ghost"} small" data-action="localAiTestMode" data-id="gateway" ${m.generating ? "disabled" : ""}>${esc(t("localAiGatewayTest"))}</button>
+      </div>
+      <label class="field">${esc(t("localAiTestPrompt"))}
+        <textarea id="local-ai-test-prompt-input" rows="3" data-action="localAiTestPromptInput" data-on="input" ${m.generating ? "disabled" : ""}>${esc(m.prompt || "")}</textarea>
+      </label>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn small" data-action="localAiTestSend" ${m.generating ? "disabled" : ""}>${esc(t(m.generating ? "localAiGenerating" : "localAiSend"))}</button>
+        <button class="ghost small" data-action="localAiTestTool" title="${esc(t("localAiToolTestHint"))}" ${m.generating ? "disabled" : ""}>${esc(t("localAiToolTest"))}</button>
+        ${m.generating ? `<button class="ghost small" data-action="localAiTestCancel">${esc(t("localAiStop"))}</button>` : ""}
+      </div>
+      <div class="row" id="local-ai-test-metrics" style="gap:6px;flex-wrap:wrap">${localAiTestMetricsMarkup(m)}</div>
+      ${m.error ? `<div class="footnote" role="alert" style="color:var(--danger)">${esc(m.error)}</div>` : ""}
+      ${m.toolProbe ? `<div class="footnote" style="color:var(${m.toolProbe.ok ? "--ok" : "--danger"})">${esc(t(m.toolProbe.ok ? "localAiToolOk" : "localAiToolFailed"))}${m.toolProbe.ok ? `: ${esc(m.toolProbe.name)}<pre>${esc(m.toolProbe.arguments)}</pre>` : ""}</div>` : ""}
+      <div class="field" style="margin-top:8px"><span class="muted">${esc(t("localAiResponse"))}</span>
+        <div id="local-ai-test-response" class="terminal-logs markdown-body" style="min-height:140px;max-height:280px;margin-top:6px;white-space:normal">${m.response ? renderMarkdown(m.response) : `<span class="muted">${esc(t(m.generating ? "localAiWaitingFirstToken" : m.hadReasoning ? "localAiNoFinalAnswer" : "localAiNoResponseYet"))}</span>`}</div>
+        ${m.truncated ? `<div class="footnote" style="color:var(--warn)">${esc(t("localAiTruncated"))}</div>` : ""}
+      </div>
+      <div class="row" style="justify-content:flex-end"><button class="ghost" data-action="localAiTestClose">${esc(t("localAiClose"))}</button></div>
+    </div>
+  </div></div>`;
 }
 
 function localAiHfTokenModalMarkup() {

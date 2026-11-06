@@ -28,6 +28,8 @@ struct LocalModelSettingsSheet: View {
     @State private var systemPrompt: String
     @State private var profile: ModelConfigProfile
     @State private var reasoningEnabled: Bool
+    @State private var isSaving = false
+    @State private var saveError: String?
 
     private static let sheetWidth: CGFloat = 560
     private static let sheetHeight: CGFloat = 660
@@ -65,6 +67,14 @@ struct LocalModelSettingsSheet: View {
             minHeight: 480, idealHeight: Self.sheetHeight, maxHeight: 760
         )
         .background(MTTheme.background)
+        .interactiveDismissDisabled(isSaving)
+        .alert(L("Save Settings"), isPresented: Binding(
+            get: { saveError != nil }, set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK") { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
     }
 
     // MARK: - Header
@@ -100,6 +110,7 @@ struct LocalModelSettingsSheet: View {
             .buttonStyle(.plain)
             .help(L("Close"))
             .accessibilityLabel(L("Close"))
+            .disabled(isSaving)
         }
         .padding(.horizontal, MTTheme.s4)
         .padding(.vertical, MTTheme.s3)
@@ -459,6 +470,17 @@ struct LocalModelSettingsSheet: View {
                 }
             }
             .padding(.top, 2)
+            if let ram = estimate.ramRequired {
+                Text("RAM · ~\(LocalHardwareService.formatBytes(ram)) · GPU · ~\(LocalHardwareService.formatBytes(estimate.gpuRequired ?? 0))")
+                    .font(MTTheme.body(9.5))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+            ForEach(estimate.assumptions, id: \.self) { assumption in
+                Text(assumption)
+                    .font(MTTheme.body(9.5))
+                    .foregroundStyle(MTTheme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let warning = estimate.warning {
                 Text(warning)
                     .font(MTTheme.body(9.5))
@@ -474,12 +496,13 @@ struct LocalModelSettingsSheet: View {
             weightsSize: model.fileSize,
             contextLength: contextLength,
             kvCacheType: kvCacheType,
-            batchSize: 512,
+            batchSize: model.userSettings.batchSize,
             gpuLayers: gpuOffloadLayers,
             totalLayers: model.blockCount ?? 32,
             profile: model.memoryProfile,
             slots: LocalInferenceService.parallelRequests,
-            backend: model.backend
+            backend: model.backend,
+            flashAttention: flashAttention
         )
     }
 
@@ -506,13 +529,6 @@ struct LocalModelSettingsSheet: View {
 
             Spacer(minLength: MTTheme.s2)
 
-            Button(L("Cancel")) {
-                dismiss()
-            }
-            .buttonStyle(.bordered)
-            .keyboardShortcut(.cancelAction)
-            .controlSize(.regular)
-
             Button(L("Save Settings")) {
                 saveSettings()
             }
@@ -520,7 +536,7 @@ struct LocalModelSettingsSheet: View {
             .tint(MTTheme.emerald)
             .controlSize(.regular)
             .keyboardShortcut(.defaultAction)
-            .disabled(maxTokens > contextLength)
+            .disabled(isSaving || maxTokens > contextLength)
         }
         .padding(.horizontal, MTTheme.s4)
         .padding(.vertical, MTTheme.s3)
@@ -578,10 +594,10 @@ struct LocalModelSettingsSheet: View {
         reasoningEnabled = def.isReasoningOn
     }
 
-    /// Persists the edit and closes the sheet. Engine-level settings reach the
-    /// running process on the next start; the sheet is not a status panel, so a
-    /// successful save is silent and returns the user to the list.
+    /// Persistence and the conditional restart must both succeed before closing.
     private func saveSettings() {
+        guard !isSaving else { return }
+        var updated = model
         var s = model.userSettings
         s.contextLength = contextLength
         s.maxOutputTokens = maxTokens
@@ -599,13 +615,30 @@ struct LocalModelSettingsSheet: View {
         s.profile = effectiveProfile
         s.reasoningEnabled = reasoningEnabled
 
-        model.userSettings = s
-        model.configuredContext = contextLength
-        model.gpuOffload = gpuOffloadLayers
-        model.threads = cpuThreads
+        updated.userSettings = s
+        updated.configuredContext = contextLength
+        updated.gpuOffload = gpuOffloadLayers
+        updated.threads = cpuThreads
 
-        store.addOrUpdateModel(model)
-        dismiss()
+        guard store.addOrUpdateModel(updated) else {
+            saveError = L("Could not save model settings. Check storage access and try again.")
+            return
+        }
+        model = updated
+        isSaving = true
+        Task { @MainActor in
+            defer { isSaving = false }
+            let inference = LocalInferenceService.shared
+            // Editing an unloaded model must not start it or restart another model.
+            if (inference.currentModel?.id == updated.id || inference.routerStates[updated.id] == .loaded),
+               inference.status.isRunning || inference.status.isStarting {
+                if let error = await inference.applySettingsChange(modelId: updated.id) {
+                    saveError = error.localizedDescription
+                    return
+                }
+            }
+            dismiss()
+        }
     }
 
     // MARK: - Formatters

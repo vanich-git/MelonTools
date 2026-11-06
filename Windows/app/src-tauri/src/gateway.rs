@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -114,6 +115,28 @@ const OPENCODE_MODELS: &[(&str, &str)] = &[
 ];
 
 pub fn write_config(settings: &Settings) -> Result<(), String> {
+    write_config_with(settings, false)
+}
+
+/// Explicit local publication must reach the engine even when the YAML is
+/// byte-identical to the last generation: a lost fsnotify reload is exactly
+/// the failure a retry has to repair, and the idempotent path would suppress
+/// it as "nothing changed". Settings saves and catalogue refreshes keep the
+/// ordinary coalesced path.
+pub fn write_config_forced(settings: &Settings) -> Result<(), String> {
+    write_config_with(settings, true)
+}
+
+fn write_config_with(settings: &Settings, force: bool) -> Result<(), String> {
+    // An empty key or secret would produce a config the engine rejects, and a
+    // config without providers would reload an incomplete file into a running
+    // gateway. Both are worse than keeping the previous config on disk.
+    if settings.api_key.trim().is_empty() {
+        return Err("отказ записи config.yaml: пустой API-ключ шлюза".to_string());
+    }
+    if settings.management_secret.trim().is_empty() {
+        return Err("отказ записи config.yaml: пустой management secret".to_string());
+    }
     fs::create_dir_all(paths::gateway_dir()).map_err(|e| e.to_string())?;
     fs::create_dir_all(paths::auths_dir()).map_err(|e| e.to_string())?;
     let auth_dir = paths::yaml_path(&paths::auths_dir());
@@ -128,12 +151,119 @@ pub fn write_config(settings: &Settings) -> Result<(), String> {
     yaml.push_str(&crate::catalog::config_block());
     yaml.push_str(&api_keys_yaml(settings));
 
+    let path = paths::config_path();
+    if force {
+        write_config_if_changed_forced(&path, &yaml).map(|_| ())
+    } else {
+        write_config_if_changed(&path, &yaml).map(|_| ())
+    }
+}
+
+/// Last YAML this process wrote, per config path. The engine rewrites the file
+/// itself after every reload (`PersistConfig` hashes the management secret), so
+/// comparing with the bytes on disk would keep restoring the plaintext version
+/// and trigger a reload storm. Compare the intent instead.
+fn last_written_config() -> &'static Mutex<HashMap<PathBuf, String>> {
+    static LAST: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Pure predicate behind the idempotent write: a missing file always needs a
+/// write, otherwise only a changed generation counts.
+fn config_needs_write(proposed: &str, last_written: Option<&str>, file_exists: bool) -> bool {
+    if !file_exists {
+        return true;
+    }
+    last_written != Some(proposed)
+}
+
+/// Writes the config only when the generated YAML differs from what this
+/// process last handed to the engine. Returns whether the file was replaced.
+fn write_config_if_changed(path: &std::path::Path, contents: &str) -> Result<bool, String> {
+    write_config_if_changed_with(path, contents, false)
+}
+
+/// Same write, but a matching generation is not a reason to skip: the engine
+/// may have missed the previous notification. Returns `true` whenever the file
+/// was replaced.
+fn write_config_if_changed_forced(
+    path: &std::path::Path,
+    contents: &str,
+) -> Result<bool, String> {
+    write_config_if_changed_with(path, contents, true)
+}
+
+fn write_config_if_changed_with(
+    path: &std::path::Path,
+    contents: &str,
+    force: bool,
+) -> Result<bool, String> {
+    // The guard is held across the comparison and the replace: two writers that
+    // raced past the check would otherwise both replace the file and make the
+    // engine reload the same generation twice. A poisoned lock must not disable
+    // writes for the rest of the process: the map is only a cache of the last
+    // intent, and every path either inserts or returns without mutating it.
+    let mut written = last_written_config()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let exists = path.exists();
+    if !force && !config_needs_write(contents, written.get(path).map(String::as_str), exists) {
+        return Ok(false);
+    }
+
     // Atomic replace: a crash mid-write must not leave a broken config the
     // engine would refuse to start with.
-    let path = paths::config_path();
-    let tmp = paths::tmp_path(&path);
-    fs::write(&tmp, yaml).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    let tmp = paths::tmp_path(path);
+    fs::write(&tmp, contents)
+        .map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    let mut last_error = String::new();
+    let mut replaced = false;
+    for attempt in 0..3u64 {
+        match fs::rename(&tmp, path) {
+            Ok(()) => {
+                replaced = true;
+                break;
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+                }
+            }
+        }
+    }
+    if !replaced {
+        // Never truncate the live file in place: a partial write while the
+        // engine reads it is worse than a skipped reload, and the old config
+        // must survive a transient sharing violation. The explicit publication
+        // retry (forced write) replaces it once the handle is released.
+        let _ = fs::remove_file(&tmp);
+        return Err(format!(
+            "could not replace {}: {last_error}",
+            path.display()
+        ));
+    }
+    written.insert(path.to_path_buf(), contents.to_string());
+    drop(written);
+    eprintln!("[gateway] config.yaml written ({} bytes)", contents.len());
+    Ok(true)
+}
+
+/// Coalesces a burst of config changes (settings, catalogue refresh, local
+/// routes) into one engine reload instead of one per caller.
+pub fn schedule_write_config(settings: Settings) {
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        // A newer change superseded this one; it will write the latest state.
+        if GENERATION.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        if let Err(error) = write_config(&settings) {
+            eprintln!("[gateway] config write failed: {error}");
+        }
+    });
 }
 
 /// The fixed part of config.yaml. `secret` is the plaintext management secret:
@@ -228,6 +358,14 @@ pub fn servable_local_models() -> Vec<crate::local_ai::LocalModel> {
         .collect()
 }
 
+pub fn local_model_alias(id: &str) -> String {
+    if id.starts_with("local/") {
+        id.to_string()
+    } else {
+        format!("local/{id}")
+    }
+}
+
 pub fn api_keys_yaml_with_local(
     settings: &Settings,
     local_models: &[crate::local_ai::LocalModel],
@@ -277,14 +415,7 @@ pub fn api_keys_yaml_with_local(
 
     let mut yaml = String::from("api-keys:\n");
 
-    if opencode
-        || openrouter
-        || deepinfra
-        || vercel
-        || zai
-        || commandcode_openai
-        || local_ai
-    {
+    if opencode || openrouter || deepinfra || vercel || zai || commandcode_openai || local_ai {
         yaml.push_str("  openai-compatibility:\n");
         if local_ai {
             yaml.push_str("    - name: \"melon-local-ai\"\n");
@@ -301,11 +432,7 @@ pub fn api_keys_yaml_with_local(
             ));
             yaml.push_str("      models:\n");
             for m in local_models {
-                let alias = if m.id.starts_with("local/") {
-                    m.id.clone()
-                } else {
-                    format!("local/{}", m.id)
-                };
+                let alias = local_model_alias(&m.id);
                 yaml.push_str(&format!(
                     "        - name: \"{}\"\n          alias: \"{}\"\n",
                     yaml_escape(&m.id),
@@ -568,6 +695,9 @@ fn auth_payload(account: &Account, priority: usize, pool: &HashSet<String>) -> V
     if !excluded.is_empty() {
         payload["excluded_models"] = json!(excluded);
     }
+    if account.is_blocked() {
+        payload["disabled"] = json!(true);
+    }
     payload
 }
 
@@ -588,6 +718,9 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             ordered.push(account.clone());
         }
     }
+    // Keep excluded accounts registered for management/quota reads, but never
+    // as routing candidates. Their auth payload always carries disabled=true.
+    ordered.extend(accounts.iter().filter(|a| !a.pool_enabled()).cloned());
     // One pool snapshot per sync: every account is filtered against the same
     // visible set, so a quota-only sync does not read the cache twice.
     let pool = crate::codex_route::visible_pool_slugs();
@@ -605,14 +738,13 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             continue;
         }
 
-        let mut payload = auth_payload(account, priority_for(ordered.len(), index), &pool);
-        if account.is_blocked() {
-            payload["disabled"] = json!(true);
-        }
+        let payload = auth_payload(account, priority_for(ordered.len(), index), &pool);
         desired.push((
             dir.join(auth_file_name(account, index)),
             payload,
-            account.quota_block.is_none() && !crate::routing::quota_is_fresh(account),
+            account.pool_enabled.is_none()
+                && account.quota_block.is_none()
+                && !crate::routing::quota_is_fresh(account),
         ));
     }
 
@@ -1278,26 +1410,55 @@ pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    let response = response.error_for_status().map_err(|e| e.to_string())?;
     let value: Value = response.json().await.map_err(|e| e.to_string())?;
-    Ok(value.get("data").cloned().unwrap_or_else(|| json!([])))
+    value
+        .get("data")
+        .filter(|data| data.is_array())
+        .cloned()
+        .ok_or_else(|| "Gateway returned an invalid model catalogue".to_string())
 }
 
 // MARK: - End-to-end check
 
 pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
+    match check_api_once(port, api_key).await {
+        Ok(value) => Ok(value),
+        // A config hot-reload rebuilds the auth clients for a moment; a
+        // request caught in that window must not be reported as a bad key.
+        Err((401, _)) => {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            check_api_once(port, api_key)
+                .await
+                .map_err(|(code, text)| format!("{}: {}", code, text))
+        }
+        Err((code, text)) => Err(format!("{}: {}", code, text)),
+    }
+}
+
+/// One check attempt. Failures carry the HTTP status (0 for transport errors)
+/// so the caller can retry only the reload-window 401.
+async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String)> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(60))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| (0, e.to_string()))?;
     let models_response = client
         .get(format!("http://127.0.0.1:{}/v1/models", port))
         .header("Authorization", format!("Bearer {}", api_key))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
-    let models_text = models_response.text().await.map_err(|e| e.to_string())?;
-    let models: Value = serde_json::from_str(&models_text).map_err(|e| e.to_string())?;
+        .map_err(|e| (0, e.to_string()))?;
+    let models_status = models_response.status();
+    let models_text = models_response.text().await.map_err(|e| (0, e.to_string()))?;
+    if !models_status.is_success() {
+        return Err((
+            models_status.as_u16(),
+            models_text.chars().take(300).collect(),
+        ));
+    }
+    let models: Value = serde_json::from_str(&models_text).map_err(|e| (0, e.to_string()))?;
     let model = models
         .get("data")
         .and_then(|d| d.as_array())
@@ -1317,7 +1478,7 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
                         .next()
                 })
         })
-        .ok_or_else(|| "шлюз не вернул список моделей".to_string())?
+        .ok_or_else(|| (0, "шлюз не вернул список моделей".to_string()))?
         .to_string();
 
     let body = json!({
@@ -1331,26 +1492,25 @@ pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| (0, e.to_string()))?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
+    let text = response.text().await.map_err(|e| (0, e.to_string()))?;
     if status.is_success() {
         Ok(text.chars().take(400).collect())
     } else {
-        Err(format!(
-            "{}: {}",
-            status.as_u16(),
-            text.chars().take(300).collect::<String>()
-        ))
+        Err((status.as_u16(), text.chars().take(300).collect::<String>()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        api_keys_yaml_with_local, auth_file_name, auth_payload, base_config, image_matches_engine,
-        image_starts_with, parse_pid, parse_recent_call, parse_tasklist_image, parse_tasklist_pids,
-        priority_for, tail_bytes, yaml_escape, USER_AGENT,
+        api_keys_yaml, api_keys_yaml_with_local, auth_file_name, auth_payload, base_config,
+        config_needs_write, image_matches_engine, image_starts_with, last_written_config,
+        parse_pid, parse_recent_call,
+        parse_tasklist_image, parse_tasklist_pids, priority_for, servable_local_models, tail_bytes,
+        write_config, write_config_forced, write_config_if_changed,
+        write_config_if_changed_forced, yaml_escape, USER_AGENT,
     };
     use crate::settings::Settings;
     use crate::vault::Account;
@@ -1381,6 +1541,181 @@ mod tests {
     fn yaml_escape_keeps_the_config_valid() {
         assert_eq!(yaml_escape("sk-\"quoted\\path"), "sk-\\\"quoted\\\\path");
         assert_eq!(yaml_escape("sk-line\nbreak"), "sk-linebreak");
+    }
+
+    #[test]
+    fn config_write_is_skipped_for_an_unchanged_generation() {
+        assert!(!config_needs_write("a", Some("a"), true));
+        assert!(config_needs_write("b", Some("a"), true));
+        assert!(config_needs_write("a", None, true));
+        // A deleted config must be restored even when the generation matches.
+        assert!(config_needs_write("a", Some("a"), false));
+    }
+
+    #[test]
+    fn config_write_replaces_the_file_only_on_change() {
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.yaml");
+
+        assert!(write_config_if_changed(&path, "config-version: 8\n").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "config-version: 8\n"
+        );
+        // Same generation: no write, no reload.
+        assert!(!write_config_if_changed(&path, "config-version: 8\n").unwrap());
+        assert!(write_config_if_changed(&path, "config-version: 9\n").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "config-version: 9\n"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn forced_write_replaces_identical_config_for_local_add_and_remove() {
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-forced-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.yaml");
+        let with_model = "api-keys:\n  - name: \"melon-local-ai\"\n    models: [local/one]\n";
+        let removed = "api-keys:\n  - name: \"melon-local-ai\"\n    models: []\n";
+
+        // Add: the first write establishes the generation, then the engine
+        // persists its own hashed copy and loses the reload. The repeated
+        // identical forced write must still replace the file.
+        assert!(write_config_if_changed(&path, with_model).unwrap());
+        std::fs::write(&path, "engine: persisted\n").unwrap();
+        assert!(write_config_if_changed_forced(&path, with_model).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), with_model);
+        std::fs::write(&path, "engine: persisted\n").unwrap();
+        assert!(write_config_if_changed_forced(&path, with_model).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), with_model);
+        // The ordinary path stays idempotent in the same state.
+        assert!(!write_config_if_changed(&path, with_model).unwrap());
+
+        // Remove: a changed generation writes once, and a retry after another
+        // lost reload must replace the identical removal YAML too.
+        assert!(write_config_if_changed(&path, removed).unwrap());
+        std::fs::write(&path, "engine: persisted\n").unwrap();
+        assert!(write_config_if_changed_forced(&path, removed).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), removed);
+        std::fs::write(&path, "engine: persisted\n").unwrap();
+        assert!(write_config_if_changed_forced(&path, removed).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), removed);
+        assert!(!write_config_if_changed(&path, removed).unwrap());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_failed_replace_keeps_the_existing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-preserve-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Uncreatable temp file: any error before the replace must leave the
+        // previous config untouched instead of truncating it. Directory
+        // permissions are a Unix-only lever, so the whole scenario is gated;
+        // the rename-failure case below runs everywhere.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = root.join("config.yaml");
+            std::fs::write(&path, "old: config\n").unwrap();
+            let mut permissions = std::fs::metadata(&root).unwrap().permissions();
+            permissions.set_mode(0o555);
+            std::fs::set_permissions(&root, permissions).unwrap();
+            let error = write_config_if_changed_forced(&path, "new: config\n").unwrap_err();
+            assert!(error.contains("config.yaml"), "{error}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "old: config\n");
+            assert!(
+                last_written_config()
+                    .lock()
+                    .unwrap()
+                    .get(&path)
+                    .is_none(),
+                "a failed write must not record the generation"
+            );
+
+            let mut restore = std::fs::metadata(&root).unwrap().permissions();
+            restore.set_mode(0o755);
+            std::fs::set_permissions(&root, restore).unwrap();
+        }
+
+        // Actual rename failure: a directory occupies the destination, so
+        // `rename(tmp, path)` cannot land. Nothing inside it may be touched,
+        // and the generation cache must stay empty.
+        let occupied = root.join("occupied.yaml");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("inner"), "keep me\n").unwrap();
+        let error = write_config_if_changed_forced(&occupied, "new: config\n").unwrap_err();
+        assert!(error.contains("occupied.yaml"), "{error}");
+        assert!(occupied.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(occupied.join("inner")).unwrap(),
+            "keep me\n"
+        );
+        assert!(
+            last_written_config()
+                .lock()
+                .unwrap()
+                .get(&occupied)
+                .is_none(),
+            "a failed rename must not record the generation"
+        );
+        let leftover_tmp: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with(".occupied.yaml") && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftover_tmp.is_empty(), "temporary files left: {leftover_tmp:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_failed_forced_write_is_reported_and_not_marked_written() {
+        assert!(write_config_forced(&settings()).is_err());
+
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-forced-fail-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let path = root.join("missing/config.yaml");
+        let error = write_config_if_changed_forced(&path, "config-version: 8\n").unwrap_err();
+        assert!(!error.is_empty());
+
+        // The failure must not poison the generation: once the directory
+        // exists, the ordinary write still reaches the file.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(write_config_if_changed(&path, "config-version: 8\n").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "config-version: 8\n"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn write_config_refuses_an_empty_gateway_key() {
+        // Settings::default() ships an empty key and secret; stripping the
+        // config to an unusable state would break the running gateway.
+        assert!(write_config(&settings()).is_err());
     }
 
     #[test]
@@ -1435,6 +1770,127 @@ mod tests {
         assert!(yaml.contains("alias: \"local/qwen2.5-coder-7b\""));
         assert!(yaml.contains("display-name: \"Qwen 2.5 Coder 7B\""));
         assert!(yaml.contains("max-context-length: 16384"));
+    }
+
+    /// REVIEW gap: the published config must follow the *live* registry status,
+    /// not just the presence of a row. `Ready` is what the runtime writes after
+    /// `/health` answered; `Installed` means no engine is serving it, so it
+    /// must disappear from `/v1/models`.
+    ///
+    /// `api_keys_yaml` also reads the internal token, which lives outside the
+    /// thread-local test registry. Point `LOCALAPPDATA` at the temp root for
+    /// the duration and serialize that process-global override.
+    #[test]
+    fn api_keys_yaml_advertises_only_runtime_ready_models() {
+        use crate::local_ai::local_models::{self, with_test_root, LocalModelStore};
+        use crate::local_ai::ModelRuntimeStatus;
+
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _env = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("melon-gateway-status-{}", uuid::Uuid::new_v4()));
+        let previous = std::env::var_os("LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", &root);
+
+        with_test_root(&root, || {
+            LocalModelStore::save_registry(&[local_models::test_model(
+                "local/ready",
+                ModelRuntimeStatus::Ready,
+            )])
+            .unwrap();
+            assert_eq!(servable_local_models().len(), 1);
+            let yaml = api_keys_yaml(&settings());
+            assert!(yaml.contains("name: \"melon-local-ai\""), "{yaml}");
+            assert!(yaml.contains("local/ready"), "{yaml}");
+
+            LocalModelStore::save_registry(&[local_models::test_model(
+                "local/installed",
+                ModelRuntimeStatus::Installed,
+            )])
+            .unwrap();
+            assert!(servable_local_models().is_empty());
+            let yaml = api_keys_yaml(&settings());
+            assert!(!yaml.contains("melon-local-ai"), "{yaml}");
+            assert!(!yaml.contains("local/installed"), "{yaml}");
+        });
+
+        match previous {
+            Some(value) => std::env::set_var("LOCALAPPDATA", value),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Writes the shared native fixture consumed by
+    /// `scripts/test_local_ai_gateway.py`. Ignored by default: it writes a file
+    /// outside the test temp dir, so CI keeps it opt-in:
+    ///
+    /// ```text
+    /// MELON_LOCAL_AI_FIXTURE=/tmp/melon-local-ai-windows.yaml \
+    ///   cargo test write_engine_api_keys_fixture -- --ignored
+    /// ```
+    /// One Ready local model with placeholder values, so the generated config
+    /// and the tracked fixture differ only in what the parent script replaces.
+    fn engine_fixture_model() -> crate::local_ai::LocalModel {
+        crate::local_ai::LocalModel {
+            id: "local/__MODEL_ID__".to_string(),
+            schema_version: None,
+            display_name: String::new(),
+            provider: "Local AI".to_string(),
+            source: "huggingface".to_string(),
+            repo_id: None,
+            revision: None,
+            files: Vec::new(),
+            file_size: 0,
+            quantization: String::new(),
+            format: "GGUF".to_string(),
+            context_length: 0,
+            configured_context: 0,
+            backend: crate::local_ai::InferenceBackend::Cpu,
+            gpu_offload: None,
+            threads: None,
+            runtime_status: crate::local_ai::ModelRuntimeStatus::Ready,
+            capabilities: vec![crate::local_ai::ModelCapability::Text],
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            last_used_at: None,
+            license: None,
+            checksum: None,
+            architecture: None,
+            user_settings: crate::local_ai::LocalModelSettings::default(),
+        }
+    }
+
+    /// The tracked fixture must be byte-for-byte what the app generates, so the
+    /// real-engine E2E tests a native config instead of a hand-written schema.
+    #[test]
+    fn generated_gateway_config_matches_the_tracked_engine_fixture() {
+        let yaml = super::api_keys_yaml_with_local(
+            &settings(),
+            &[engine_fixture_model()],
+            59999,
+            "__LOCAL_TOKEN__",
+        );
+        let tracked = include_str!("../../tools/fixtures/local-ai-gateway.yaml");
+        assert_eq!(yaml.trim_end(), tracked.trim_end());
+    }
+
+    /// Regenerates the fixture when the generator changes on purpose:
+    /// `MELON_LOCAL_AI_FIXTURE=… cargo test write_engine_api_keys_fixture -- --ignored`.
+    #[test]
+    #[ignore = "writes the shared gateway fixture for the real-engine E2E"]
+    fn write_engine_api_keys_fixture() {
+        let yaml = super::api_keys_yaml_with_local(
+            &settings(),
+            &[engine_fixture_model()],
+            59999,
+            "__LOCAL_TOKEN__",
+        );
+        let path = std::env::var_os("MELON_LOCAL_AI_FIXTURE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("melon-local-ai-windows.yaml"));
+        std::fs::write(&path, &yaml).expect("write fixture");
+        eprintln!("wrote gateway fixture: {}", path.display());
     }
 
     #[test]
@@ -1552,10 +2008,10 @@ mod tests {
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         // OpenAI-compatible models ride one upstream, Claude models the other.
         assert!(yaml.contains("    - name: \"commandcode\"\n"));
+        assert!(yaml.contains("      base-url: \"https://api.commandcode.ai/provider/v1\"\n"));
         assert!(yaml.contains(
-            "      base-url: \"https://api.commandcode.ai/provider/v1\"\n"
+            "        - name: \"gpt-6-astra\"\n          alias: \"commandcode/gpt-6-astra\"\n"
         ));
-        assert!(yaml.contains("        - name: \"gpt-6-astra\"\n          alias: \"commandcode/gpt-6-astra\"\n"));
         let split = yaml.find("  claude:\n").expect("claude section");
         let (openai_part, claude_part) = yaml.split_at(split);
         // Claude ids stay out of the OpenAI-compatible upstream.
@@ -1577,7 +2033,9 @@ mod tests {
         }];
         let yaml = api_keys_yaml_test(&s);
         assert!(yaml.contains("    - name: \"opencode-go\"\n"));
-        assert!(yaml.contains("        - name: \"claude-fable-5\"\n          alias: \"opencode/claude-fable-5\"\n"));
+        assert!(yaml.contains(
+            "        - name: \"claude-fable-5\"\n          alias: \"opencode/claude-fable-5\"\n"
+        ));
         // The built-in fallback list stays out once a catalogue was fetched.
         assert!(!yaml.contains("alias: \"opencode/kimi-k3\""));
     }
@@ -1632,6 +2090,20 @@ mod tests {
             selected_models: selection,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn excluded_account_keeps_full_credentials_but_cannot_route() {
+        let mut account = pool_account(None);
+        account.pool_enabled = Some(false);
+        let payload = auth_payload(&account, 0, &pool(&["gpt-6-sol"]));
+        assert_eq!(payload["disabled"], true);
+        assert_eq!(payload["access_token"], "access-token");
+        assert_eq!(payload["type"], "codex");
+        account.pool_enabled = Some(true);
+        assert!(auth_payload(&account, 1, &pool(&[]))
+            .get("disabled")
+            .is_none());
     }
 
     #[test]

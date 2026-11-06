@@ -223,8 +223,7 @@ async fn reconcile_and_apply(
             };
             // A legacy disabled auth file remains disabled until a fresh
             // reading confirms recovery. Do not let stale cache lift it.
-            let desired = account.is_blocked()
-                || (file.disabled && account.quota_block.is_none() && !is_fresh(account, now_ref));
+            let desired = auth_should_be_disabled(account, file.disabled, now_ref);
             if desired == file.disabled {
                 continue;
             }
@@ -237,6 +236,14 @@ async fn reconcile_and_apply(
         let _ = gateway::sync_accounts(settings);
     }
     (accounts, updates, block_updates)
+}
+
+fn auth_should_be_disabled(account: &Account, disabled: bool, now_ref: f64) -> bool {
+    account.is_blocked()
+        || (account.pool_enabled.is_none()
+            && disabled
+            && account.quota_block.is_none()
+            && !is_fresh(account, now_ref))
 }
 
 fn merge_reading(account: &mut Account, reading: &Quota, observed_at: f64) {
@@ -458,6 +465,30 @@ fn record_probe_result(id: &str, ok: bool) {
 mod tests {
     use super::{block_resets_soon, cause, reconcile_block, recovered};
     use crate::vault::{Account, Quota, QuotaBlock};
+
+    #[test]
+    fn manual_exclusion_survives_recovery_and_requires_explicit_enable() {
+        let now = crate::vault::now_ref();
+        let mut account = Account {
+            pool_enabled: Some(false),
+            quota_updated_at: Some(now),
+            quota: Some(Quota { hourly_remaining_percent: Some(100.0), ..Default::default() }),
+            ..Default::default()
+        };
+        assert!(super::auth_should_be_disabled(&account, false, now));
+        super::merge_reading(&mut account, &Quota { weekly_remaining_percent: Some(80.0), ..Default::default() }, now);
+        account.quota_block = reconcile_block(&account, now, crate::vault::unix_now());
+        assert!(super::auth_should_be_disabled(&account, true, now));
+        assert_eq!(account.pool_enabled, Some(false));
+        account.quota_updated_at = None;
+        account.pool_enabled = Some(true);
+        assert!(!super::auth_should_be_disabled(&account, true, now), "manual enable clears stale manual auth flag");
+        account.pool_enabled = None;
+        assert!(super::auth_should_be_disabled(&account, true, now), "legacy stale quota pause stays protected");
+        account.pool_enabled = Some(true);
+        account.quota_block = Some(QuotaBlock { code: "hourly_exhausted".into(), ..Default::default() });
+        assert!(super::auth_should_be_disabled(&account, false, now), "manual enable cannot bypass quota");
+    }
 
     #[test]
     fn exact_reserve_threshold_blocks_without_margin() {

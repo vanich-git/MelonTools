@@ -118,9 +118,20 @@ final class LocalInferenceService: ObservableObject {
     @Published private(set) var routerStates: [String: RouterModelStatus] = [:]
     /// Last error from an explicit engine restart (settings change, crash).
     @Published private(set) var engineError: String?
+    /// Set when the gateway did not confirm the local routes in `/v1/models`.
+    /// Kept separate from `engineError`: the engine can be healthy while the
+    /// gateway never picked the routes up.
+    @Published private(set) var publicationError: String?
+    private var gatewayObservation: AnyCancellable?
+    private var publicationTask: Task<Void, Never>?
     @Published var customBinaryPath: String? = UserDefaults.standard.string(forKey: "melon_custom_llama_server_path") {
         didSet {
-            UserDefaults.standard.set(customBinaryPath, forKey: "melon_custom_llama_server_path")
+            // Tests point at a throwaway binary; persisting that path would
+            // outlive the run and overwrite the user's choice. The test host is
+            // a separate process, so in-memory state is enough.
+            if !AppRuntime.isTesting {
+                UserDefaults.standard.set(customBinaryPath, forKey: "melon_custom_llama_server_path")
+            }
             objectWillChange.send()
         }
     }
@@ -152,6 +163,267 @@ final class LocalInferenceService: ObservableObject {
         }
         logLines = logSink.snapshot()
         appliedPresetDigest = Self.readAppliedPresetDigest()
+        // Constructing `CodexGatewayService.shared` reads/writes the user's
+        // gateway key and port. Tests drive publication through explicit hooks
+        // instead, so they must not create that singleton at all.
+        if !AppRuntime.isTesting {
+            gatewayObservation = CodexGatewayService.shared.$status
+                .removeDuplicates()
+                .sink { [weak self] status in
+                    guard case .running = status else { return }
+                    Task { @MainActor in self?.publishLocalRoutesIfNeeded() }
+                }
+        }
+    }
+
+    /// Clears the banner after the user acknowledged it.
+    func clearVisibleError() {
+        publicationError = nil
+        engineError = nil
+    }
+
+    // MARK: - Gateway publication
+
+    /// Test seam for the publication loop.
+    ///
+    /// Production always uses `.live`. Tests replace the hooks to run the real
+    /// retry/verification/cancellation code against an isolated fixture instead
+    /// of a live gateway.
+    struct PublicationHooks {
+        var writeConfig: @MainActor () throws -> Void
+        var refreshCatalog: @MainActor () throws -> Void
+        var gatewayIsRunning: @MainActor () -> Bool
+        var servedModelIDs: @MainActor () async throws -> Set<String>
+        var readyAliases: @MainActor () -> [String]
+        /// Sleep between retries; tests replace it with a no-op.
+        var wait: @MainActor (UInt64) async -> Void = {
+            try? await Task.sleep(nanoseconds: $0)
+        }
+
+        @MainActor static let live = PublicationHooks(
+            writeConfig: {
+                try CodexGatewayService.shared.flushConfigWrite(
+                    reason: "local ai routes",
+                    force: true
+                )
+            },
+            refreshCatalog: {
+                _ = try CodexModelCatalog.sync(
+                    sources: ModelSourcesStore.shared.effectiveSources,
+                    updateConfig: CodexGatewayService.shared.codexRoute == .melon,
+                    selectedPoolSlugs: ModelSourcesStore.currentPoolUnion()
+                )
+            },
+            gatewayIsRunning: {
+                CodexGatewayService.shared.isRunning
+            },
+            servedModelIDs: {
+                try await LocalInferenceService.fetchGatewayModelIDs()
+            },
+            readyAliases: {
+                LocalInferenceService.readyAliases(in: LocalModelStore.shared.models)
+            }
+        )
+    }
+
+#if DEBUG
+    var publicationHooks = PublicationHooks.live
+#else
+    private let publicationHooks = PublicationHooks.live
+#endif
+
+    /// Writes the generated routes and proves the gateway actually serves them.
+    ///
+    /// Writing `config.yaml` is not publication: the engine starts answering
+    /// HTTP before its config watcher is ready, so a write that lands too early
+    /// can be silently lost. Retry with a fresh atomic write until `/v1/models`
+    /// lists every ready local alias.
+    func publishLocalRoutes(verify: Bool = true, expectingAbsent: [String] = []) {
+        publicationTask?.cancel()
+        publicationTask = Task { [weak self] in
+            await self?.performPublication(verify: verify, expectingAbsent: expectingAbsent)
+        }
+    }
+
+    func publishLocalRoutesIfNeeded() {
+        guard LocalModelStore.shared.models.contains(where: { $0.runtimeStatus == .ready }) else {
+            publicationError = nil
+            return
+        }
+        publishLocalRoutes()
+    }
+
+#if DEBUG
+    /// Lets a test await the publication it triggered.
+    func waitForPublication() async {
+        await publicationTask?.value
+    }
+
+    /// Cancels the queued task without replacing its hooks, so a test can
+    /// prove that a task cancelled before its first suspension cannot write.
+    func cancelPendingPublicationForTesting() {
+        publicationTask?.cancel()
+    }
+
+    func resetPublicationForTesting() {
+        publicationTask?.cancel()
+        publicationTask = nil
+        publicationError = nil
+        publicationHooks = .live
+    }
+    /// Stops publication from touching the real gateway during test teardown,
+    /// where the engine is stopped after the assertions have finished.
+    func suspendPublicationForTesting() {
+        publicationTask?.cancel()
+        publicationTask = nil
+        publicationError = nil
+        publicationHooks = PublicationHooks(
+            writeConfig: {},
+            refreshCatalog: {},
+            gatewayIsRunning: { false },
+            servedModelIDs: { [] },
+            readyAliases: { [] }
+        )
+    }
+#endif
+
+    /// Every alias that is currently served by a ready model.
+    nonisolated static func readyAliases(in models: [LocalModel]) -> [String] {
+        models
+            .filter { $0.runtimeStatus == .ready }
+            .map { $0.id.hasPrefix("local/") ? $0.id : "local/\($0.id)" }
+    }
+
+    private func performPublication(verify: Bool, expectingAbsent: [String]) async {
+        // The task may have been cancelled by a newer publication before the
+        // main actor ever ran it. Capturing hooks/writing first would let that
+        // stale task publish through hooks that teardown has already restored.
+        guard !Task.isCancelled else { return }
+        let hooks = publicationHooks
+
+        do {
+            try hooks.writeConfig()
+        } catch {
+            finishPublication(
+                String(format: L("Local AI routes were not written: %@"), error.localizedDescription)
+            )
+            return
+        }
+
+        // Catalog and config failures are independent facts. A later successful
+        // verification must never clear a catalog error that the user has to fix.
+        do {
+            try hooks.refreshCatalog()
+        } catch {
+            finishPublication(
+                String(format: L("Local AI model catalog was not updated: %@"), error.localizedDescription)
+            )
+            return
+        }
+
+        guard verify else {
+            finishPublication(nil)
+            return
+        }
+        guard hooks.gatewayIsRunning() else {
+            // Nothing is serving the stale routes; a later gateway start will
+            // publish the current list from `writeConfig()`.
+            finishPublication(nil)
+            return
+        }
+
+        let ready = hooks.readyAliases()
+        let expected = expectingAbsent.isEmpty ? ready : expectingAbsent
+        guard !expected.isEmpty else {
+            finishPublication(nil)
+            return
+        }
+
+        // Startup race: the HTTP endpoint answers before the watcher is ready.
+        // Each retry writes the config again, and the later attempts land after
+        // the watcher exists. Present needs the full ~15 s budget; removal
+        // after Stop/delete is checked on a shorter budget.
+        let waits: [UInt64] = expectingAbsent.isEmpty
+            ? [0, 500_000_000, 1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000]
+            : [0, 300_000_000, 700_000_000, 1_000_000_000, 1_500_000_000]
+
+        var unresolved = expected
+        for (index, wait) in waits.enumerated() {
+            if Task.isCancelled { return }
+            if wait > 0 { await hooks.wait(wait) }
+            if Task.isCancelled { return }
+            if index > 0 {
+                // A fresh write also covers a watcher that missed the first event.
+                do {
+                    try hooks.writeConfig()
+                } catch {
+                    // Never let a swallowed rewrite failure fall through to a
+                    // matching catalogue: that would clear a real error.
+                    finishPublication(
+                        String(
+                            format: L("Local AI gateway config could not be rewritten: %@"),
+                            error.localizedDescription
+                        )
+                    )
+                    return
+                }
+            }
+            guard let served = try? await hooks.servedModelIDs() else { continue }
+            // The task may have been cancelled while the HTTP request was in
+            // flight; a late answer belongs to the previous lifecycle.
+            if Task.isCancelled { return }
+            unresolved = expectingAbsent.isEmpty
+                ? ready.filter { !served.contains($0) }
+                : expectingAbsent.filter { served.contains($0) }
+            if unresolved.isEmpty {
+                finishPublication(nil)
+                return
+            }
+        }
+
+        if Task.isCancelled { return }
+        if expectingAbsent.isEmpty {
+            let message = String(
+                format: L("Local AI models are missing from the gateway API: %@"),
+                unresolved.sorted().joined(separator: ", ")
+            )
+            publicationError = message
+            CodexGatewayService.shared.auditLog("local AI publication unverified: \(unresolved.sorted().joined(separator: ", "))")
+        } else {
+            let message = String(
+                format: L("Local AI models are still served after stop: %@"),
+                unresolved.sorted().joined(separator: ", ")
+            )
+            publicationError = message
+            CodexGatewayService.shared.auditLog("local AI routes still served after stop: \(unresolved.sorted().joined(separator: ", "))")
+        }
+    }
+
+    /// Assigns the publication result unless a newer publication already
+    /// cancelled this one while it was suspended.
+    private func finishPublication(_ error: String?) {
+        guard !Task.isCancelled else { return }
+        publicationError = error
+    }
+
+    /// `/v1/models` as served by the running gateway.
+    private static func fetchGatewayModelIDs() async throws -> Set<String> {
+        let gateway = CodexGatewayService.shared
+        guard let base = URL(string: gateway.baseURL) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: base.appendingPathComponent("v1/models"))
+        request.timeoutInterval = 3
+        request.setValue("Bearer \(gateway.apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await NetworkProxy.directSession().data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        struct Payload: Decodable {
+            struct Entry: Decodable { let id: String }
+            let data: [Entry]
+        }
+        return Set(try JSONDecoder().decode(Payload.self, from: data).data.map(\.id))
     }
 
     // MARK: - Binary Discovery
@@ -271,6 +543,7 @@ final class LocalInferenceService: ObservableObject {
 
     /// Stops the engine and every pending launch.
     func stop() async {
+        let previouslyPublished = Self.readyAliases(in: LocalModelStore.shared.models)
         generation += 1
         startTask?.cancel()
         startTask = nil
@@ -286,7 +559,7 @@ final class LocalInferenceService: ObservableObject {
         routerStates = [:]
         LocalModelStore.shared.normalizeRuntimeStates()
         status = .stopped
-        try? CodexGatewayService.shared.writeConfig()
+        publishLocalRoutes(expectingAbsent: previouslyPublished)
     }
 
     /// Synchronous shutdown for the app termination handler, where awaiting a
@@ -474,7 +747,7 @@ final class LocalInferenceService: ObservableObject {
             LocalModelStore.shared.updateModelStatus(id: model.id, status: .ready)
             startMetricsPolling(modelId: model.id)
             startMonitoring(generation: operation)
-            try? CodexGatewayService.shared.writeConfig()
+            publishLocalRoutes()
         } catch {
             await stopWithoutBumpingGeneration()
             if generation == operation {
@@ -491,6 +764,7 @@ final class LocalInferenceService: ObservableObject {
     /// Stop without invalidating the caller's generation. Used inside a launch
     /// that is already owned by a generation.
     private func stopWithoutBumpingGeneration() async {
+        let previouslyPublished = Self.readyAliases(in: LocalModelStore.shared.models)
         stopMetricsPolling()
         if status.isRunning || status.isStarting {
             status = .stopping
@@ -500,7 +774,7 @@ final class LocalInferenceService: ObservableObject {
         LocalModelStore.shared.normalizeRuntimeStates()
         currentModel = nil
         status = .stopped
-        try? CodexGatewayService.shared.writeConfig()
+        publishLocalRoutes(expectingAbsent: previouslyPublished)
     }
 
     private func terminateProcess() async {
@@ -531,13 +805,14 @@ final class LocalInferenceService: ObservableObject {
         stopMonitoring()
         stopMetricsPolling()
         closeLogSink()
+        let previouslyPublished = Self.readyAliases(in: LocalModelStore.shared.models)
         routerStates = [:]
         LocalModelStore.shared.normalizeRuntimeStates()
         currentModel = nil
         let message = String(format: L("The engine exited unexpectedly (status %d)."), exitCode)
         status = .failed(message)
         engineError = message
-        try? CodexGatewayService.shared.writeConfig()
+        publishLocalRoutes(expectingAbsent: previouslyPublished)
     }
 
     // MARK: - Router operations
@@ -749,7 +1024,7 @@ final class LocalInferenceService: ObservableObject {
                 changed = true
             }
         }
-        if changed { try? CodexGatewayService.shared.writeConfig() }
+        if changed { publishLocalRoutes() }
     }
 
     // MARK: - Health of processes left behind
@@ -842,14 +1117,27 @@ final class LocalInferenceService: ObservableObject {
     /// Restarts the engine so a settings change takes effect. Returns the error
     /// instead of swallowing it, so the sheet can show why nothing changed.
     @discardableResult
-    func applySettingsChange() async -> Error? {
+    func applySettingsChange(modelId: String? = nil) async -> Error? {
         engineError = nil
-        let model = currentModel
+        // A settings sheet names its target; global runtime settings keep the
+        // current-model fallback. Never substitute the first installed model
+        // for an explicit per-model edit.
+        let selected = modelId.flatMap { id in
+            LocalModelStore.shared.models.first(where: { $0.id == id })
+        }
+        if modelId != nil && selected == nil {
+            return EngineFailure.modelFileMissing(modelId ?? "")
+        }
+        let model = selected ?? currentModel.flatMap { current in
+            LocalModelStore.shared.models.first(where: { $0.id == current.id })
+        }
             ?? LocalModelStore.shared.models.first(where: { $0.runtimeStatus == .ready })
             ?? LocalModelStore.shared.models.first
         guard let model else { return nil }
 
-        guard status.isRunning || status.isStarting else {
+        let targetIsActive = modelId == nil || currentModel?.id == modelId
+            || modelId.map { routerStates[$0] == .loaded } == true
+        guard (status.isRunning || status.isStarting) && targetIsActive else {
             // Nothing to restart: the next start reads the new preset anyway.
             // A failing preset write is reported now instead of surfacing as a
             // mysterious start failure later.

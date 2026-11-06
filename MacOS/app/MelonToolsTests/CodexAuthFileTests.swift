@@ -145,6 +145,48 @@ final class CodexAuthFileTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path))
     }
 
+    func testManualPoolDisableSurvivesSyncAndReturnsOnlyWhenEnabled() throws {
+        let dir = try temporaryAuthDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var account = CodexAccount(tokens: CodexTokens(access_token: "at-test", refresh_token: "rt-test"))
+        account.poolEnabled = false
+        let url = dir.appendingPathComponent(CodexGatewayService.authFileName(for: account))
+
+        func syncAndRead() throws -> [String: Any] {
+            let resolution = CodexRoutingPlanner.resolve(accounts: [account], strategy: .auto, manualOrder: [])
+            try CodexGatewayService.syncAccounts(
+                [account], priorities: CodexRoutingPlanner.priorities(from: resolution.orderedIds),
+                authDir: dir, poolSlugs: []
+            )
+            return try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        }
+
+        XCTAssertEqual(try syncAndRead()["disabled"] as? Bool, true)
+        var quota = CodexQuota()
+        quota.hourlyRemainingPercent = 100
+        quota.weeklyRemainingPercent = 100
+        account.quota = quota
+        account.quotaUpdatedAt = Date()
+        let recovered = try syncAndRead()
+        XCTAssertEqual(recovered["disabled"] as? Bool, true)
+        XCTAssertEqual(recovered["access_token"] as? String, "at-test")
+        XCTAssertNil(recovered["priority"])
+
+        // Re-enable must work even after the cached quota has become stale;
+        // this is a user-owned pause, not a legacy unknown quota pause.
+        account.quotaUpdatedAt = .distantPast
+        account.poolEnabled = true
+        let enabled = try syncAndRead()
+        XCTAssertNotEqual(enabled["disabled"] as? Bool, true)
+        XCTAssertEqual(enabled["priority"] as? Int, 1)
+
+        // The manual switch must not bypass a still-active quota reserve.
+        account.hourlyReservePercent = 10
+        account.quota?.hourlyRemainingPercent = 5
+        account.quotaUpdatedAt = Date()
+        XCTAssertEqual(try syncAndRead()["disabled"] as? Bool, true)
+    }
+
     func testOnlyASuccessfullyLoadedVaultAllowsDestructiveMirroring() {
         XCTAssertTrue(CodexStore.VaultLoadState.loaded.allowsDestructiveGatewaySync)
         XCTAssertFalse(CodexStore.VaultLoadState.failed.allowsDestructiveGatewaySync)

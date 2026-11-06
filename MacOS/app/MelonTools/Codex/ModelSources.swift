@@ -191,7 +191,18 @@ final class ModelSourcesStore: ObservableObject {
 
     // MARK: - Persistence
 
+    /// True once the store was read successfully, or when no store exists yet.
+    /// A file that exists but decodes to neither known shape leaves this false:
+    /// writing the gateway config from an empty in-memory list would strip
+    /// every external provider.
+    private(set) var isLoaded = false
+
     func load() {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            // First run: an empty provider list is legitimate.
+            isLoaded = true
+            return
+        }
         guard let data = try? Data(contentsOf: storeURL) else { return }
         if let persisted = try? JSONDecoder().decode(Persisted.self, from: data) {
             openRouterKey = persisted.openRouterKey ?? ""
@@ -202,6 +213,7 @@ final class ModelSourcesStore: ObservableObject {
             zaiKey = persisted.zaiKey ?? persisted.sources?.first { $0.kind == .zai }?.apiKey ?? ""
             claudeKey = persisted.claudeKey ?? persisted.sources?.first { $0.kind == .claude }?.apiKey ?? ""
             sources = persisted.sources ?? []
+            isLoaded = true
             // Backfill known capabilities once for stores written before the
             // flag existed; the catalog reads the saved file at startup.
             let backfilled = backfillImageCapabilities()
@@ -217,6 +229,7 @@ final class ModelSourcesStore: ObservableObject {
             vercelKey = keys.vercelKey ?? ""
             zaiKey = keys.zaiKey ?? ""
             claudeKey = keys.claudeKey ?? ""
+            isLoaded = true
         }
     }
 
@@ -355,44 +368,71 @@ final class ModelSourcesStore: ObservableObject {
 
     var antigravitySource: ModelSource? { sources.first { $0.id == "antigravity" } }
 
-    @MainActor
-    var effectiveSources: [ModelSource] {
-        var result = sources
+    /// The local AI source as it appears to the gateway. Pure so the Ready
+    /// filter, canonical alias, relay URL, per-slot context and token can be
+    /// regression-tested without touching the user's registry.
+    nonisolated static func localAISource(
+        models: [LocalModel],
+        port: Int,
+        token: String,
+        slots: Int
+    ) -> ModelSource? {
         // Only a model that is actually served right now may be advertised:
         // `/v1/models` listed installed-but-stopped models, and every request to
         // one of them failed with a raw connection error (§14.2).
-        let localModels = LocalModelStore.shared.models.filter { $0.runtimeStatus == .ready }
-        if !localModels.isEmpty {
-            // The relay, not the router: it forwards every call and merges the
-            // model's system prompt into the request body on the way through.
-            let port = LocalInferenceService.shared.publishedPort
-            let token = LocalInferenceService.shared.internalToken
-            let slots = LocalInferenceService.parallelRequests
-            let sourceModels = localModels.map { m in
-                let alias = m.id.hasPrefix("local/") ? m.id : "local/\(m.id)"
-                // Per-slot context: `--parallel` splits the window, and clients
-                // that size their prompts from this number must see the truth.
-                return SourceModel(
-                    id: m.id,
-                    display: m.displayName,
-                    contextLength: m.effectiveContext(parallelSlots: slots),
-                    enabled: true,
-                    alias: alias,
-                    supportsImages: m.capabilities.contains(.vision)
-                )
-            }
-            let localSource = ModelSource(
-                id: "melon-local-ai",
-                kind: .localAI,
-                title: "Local AI",
-                baseURL: "http://127.0.0.1:\(port)/v1",
-                apiKey: token,
+        let ready = models.filter { $0.runtimeStatus == .ready }
+        guard !ready.isEmpty else { return nil }
+        // The relay, not the router: it forwards every call and merges the
+        // model's system prompt into the request body on the way through.
+        let sourceModels = ready.map { model in
+            let alias = model.id.hasPrefix("local/") ? model.id : "local/\(model.id)"
+            // Per-slot context: `--parallel` splits the window, and clients that
+            // size their prompts from this number must see the truth.
+            return SourceModel(
+                id: model.id,
+                display: model.displayName,
+                contextLength: model.effectiveContext(parallelSlots: slots),
                 enabled: true,
-                models: sourceModels
+                alias: alias,
+                supportsImages: model.capabilities.contains(.vision)
             )
-            result.append(localSource)
+        }
+        return ModelSource(
+            id: "melon-local-ai",
+            kind: .localAI,
+            title: "Local AI",
+            baseURL: "http://127.0.0.1:\(port)/v1",
+            apiKey: token,
+            enabled: true,
+            models: sourceModels
+        )
+    }
+
+    /// Appends the local source to a base list. `effectiveSources` is only the
+    /// live wrapper; tests call this with an isolated model list.
+    nonisolated static func effectiveSources(
+        base: [ModelSource],
+        localModels: [LocalModel],
+        port: Int,
+        token: String,
+        slots: Int
+    ) -> [ModelSource] {
+        var result = base
+        if let local = localAISource(models: localModels, port: port, token: token, slots: slots) {
+            result.append(local)
         }
         return result
+    }
+
+    @MainActor
+    var effectiveSources: [ModelSource] {
+        Self.effectiveSources(
+            base: sources,
+            localModels: LocalModelStore.shared.models,
+            port: LocalInferenceService.shared.publishedPort,
+            token: LocalInferenceService.shared.internalToken,
+            slots: LocalInferenceService.parallelRequests
+        )
     }
 
 
@@ -1634,7 +1674,7 @@ final class ModelSourcesStore: ObservableObject {
         save()
         let gateway = CodexGatewayService.shared
         do {
-            try gateway.writeConfig()
+            try gateway.flushConfigWrite(reason: "model sources applied")
             gateway.auditLog("model sources applied (\(selectedCount) model(s) selected)")
             let count = try CodexModelCatalog.sync(
                 sources: effectiveSources,

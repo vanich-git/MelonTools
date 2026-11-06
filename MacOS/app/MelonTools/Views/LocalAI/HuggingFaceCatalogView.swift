@@ -22,460 +22,154 @@ struct HFSearchRequest: Equatable {
 }
 
 struct HuggingFaceCatalogView: View {
-    @ObservedObject var downloads = LocalDownloadManager.shared
-    @ObservedObject var store = LocalModelStore.shared
-    /// False while another Local AI tab is on screen. Kept as a stored
-    /// property so the screen can stay mounted and keep its `@State`.
+    @ObservedObject private var downloads = LocalDownloadManager.shared
     var isActive: Bool = true
-
     @State private var searchQuery = ""
     @FocusState private var searchFocused: Bool
-    @State private var isSearching = false
+    @State private var sortOrder: HuggingFaceService.SortOrder = .trendingScore
     @State private var searchResults: [HFModelSearchResult] = []
-    @State private var sortOrder: HuggingFaceService.SortOrder = .downloads
-    @State private var isLoadingMore = false
-    /// A pasted link or repo id, resolved before a free-text search runs.
-    @State private var pastedLink = ""
     @State private var selectedRepo: HFModelSearchResult?
     @State private var repoDetails: HFModelDetails?
-    @State private var isLoadingDetails = false
-    /// Two inline errors: the list owns search/pagination failures, the detail
-    /// pane owns repository failures. A search error used to be written into a
-    /// shared message that the right pane only renders when a repo is selected,
-    /// so it was invisible exactly when it mattered.
     @State private var searchError: String?
     @State private var detailsError: String?
-    @State private var hasSearched = false
-    /// Incremented for every search so a slow, older response cannot overwrite
-    /// the results of the query the user typed last.
+    @State private var isSearching = false
+    @State private var isLoadingMore = false
+    @State private var isLoadingDetails = false
+    @State private var hasMore = true
+    @State private var nextOffset = 0
     @State private var searchGeneration = 0
-    /// Identity of the results currently on screen. `Load more` and every
-    /// completion use it instead of the live search field.
     @State private var activeRequest: HFSearchRequest?
     @State private var searchTask: Task<Void, Never>?
     @State private var detailsTask: Task<Void, Never>?
     @State private var showTokenSheet = false
     @State private var hfToken = LocalKeychainHelper.loadHuggingFaceToken() ?? ""
 
-    private let presetSearches = [
-        "Qwen2.5-Coder", "Llama-3.2", "DeepSeek-R1-Distill", "Mistral", "Gemma-2", "Phi-3.5"
-    ]
-
     var body: some View {
         HSplitView {
-            // Left pane: search and repo list
             VStack(spacing: 0) {
-                // Search bar
-                HStack(spacing: MTTheme.s2) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(MTTheme.textTertiary)
-                    TextField(L("Search Hugging Face (e.g. Qwen2.5, Llama-3)..."), text: $searchQuery)
-                        .textFieldStyle(.plain)
-                        .font(MTTheme.body(12))
-                        .focused($searchFocused)
-                        .onSubmit { performSearch() }
-                        .onExitCommand {
-                            if !searchQuery.isEmpty {
-                                clearSearch()
-                            } else {
-                                searchFocused = false
-                            }
-                        }
-
-                    if isSearching {
-                        ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
-                    } else if !searchQuery.isEmpty {
-                        Button(action: { clearSearch() }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(MTTheme.textTertiary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(L("Clear search"))
-                    }
-
-                    Button(L("Search")) {
-                        performSearch()
-                    }
-                    .buttonStyle(.bordered)
-                    .font(MTTheme.body(11, weight: .medium))
-                    .disabled(isSearching)
-
-                    Button(action: { showTokenSheet = true }) {
-                        Image(systemName: "key")
-                    }
-                    .buttonStyle(.bordered)
-                    .help(L("Hugging Face API Token"))
-                    .accessibilityLabel(L("Hugging Face API Token"))
-                }
-                .padding(.horizontal, MTTheme.s4)
-                .padding(.vertical, MTTheme.s3)
-                .background(Color.primary.opacity(0.02))
-                .background {
-                    // Cmd-F belongs to the screen the user is looking at: a
-                    // mounted-but-hidden tab must not steal the shortcut.
-                    if isActive {
-                        Button("") { searchFocused = true }
-                            .keyboardShortcut("f", modifiers: .command)
-                            .opacity(0)
-                            .accessibilityHidden(true)
-                    }
-                }
-
-                // Quick preset pills
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(presetSearches, id: \.self) { preset in
-                            Button(preset) {
-                                searchQuery = preset
-                                performSearch()
-                            }
-                            .buttonStyle(.plain)
-                            .font(MTTheme.body(10.5))
-                            .foregroundStyle(MTTheme.cyan)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(MTTheme.cyan.opacity(0.1))
-                            .cornerRadius(12)
+                searchBar
+                HStack {
+                    Text(searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && sortOrder == .trendingScore ? L("Trending on Hugging Face") : L("Hugging Face results"))
+                        .font(MTTheme.body(10)).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Picker(L("Sort by"), selection: $sortOrder) {
+                        ForEach([HuggingFaceService.SortOrder.trendingScore, .likes, .downloads, .lastModified]) { order in
+                            Text(L(order.title)).tag(order)
                         }
                     }
-                    .padding(.horizontal, MTTheme.s4)
-                    .padding(.vertical, 6)
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    .controlSize(.small)
+                    .help(L("Recommended uses Hugging Face trending, not staff picks."))
                 }
-                .background(Color.primary.opacity(0.01))
-
-                Divider().background(Color.primary.opacity(0.06))
-
-                // Search/pagination failures stay in the list pane, where the
-                // user is looking, instead of a shared banner the detail pane
-                // only renders once a repository is selected.
+                .padding(.horizontal, 12).padding(.bottom, 8)
                 if let searchError {
                     HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .padding(.top, 1)
-                        Text(searchError)
-                            .font(MTTheme.body(11))
-                            .fixedSize(horizontal: false, vertical: true)
+                        Label(searchError, systemImage: "exclamationmark.triangle")
                         Spacer(minLength: 0)
                         Button(L("Retry")) { performSearch() }
-                            .buttonStyle(.plain)
-                            .font(MTTheme.body(10.5, weight: .semibold))
-                            .foregroundStyle(MTTheme.cyan)
                     }
+                    .font(MTTheme.body(11))
                     .foregroundStyle(MTTheme.danger)
-                    .padding(.horizontal, MTTheme.s4)
-                    .padding(.vertical, 6)
-                    .background(MTTheme.danger.opacity(0.09))
+                    .padding(10)
+                    .background(MTTheme.danger.opacity(0.08))
                 }
-
-                // Search Results
-                if searchResults.isEmpty && !isSearching && searchError == nil {
-                    VStack(spacing: MTTheme.s3) {
-                        Spacer()
-                        Image(systemName: "cube.transparent")
-                            .font(.system(size: 36))
-                            .foregroundStyle(MTTheme.cyan.opacity(0.5))
-                        Text(hasSearched
-                             ? L("No models found. Try another query.")
-                             : L("Search Hugging Face for GGUF models"))
-                            .font(MTTheme.body(13, weight: .medium))
-                            .foregroundStyle(MTTheme.textSecondary)
+                if searchResults.isEmpty {
+                    if isSearching {
+                        ProgressView(L("Loading..."))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if searchError == nil {
+                        ContentUnavailableView(L("No models found. Try another query."), systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
                         Spacer()
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(searchResults, selection: $selectedRepo) { repo in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(repo.displayName)
-                                .font(MTTheme.body(12, weight: .semibold))
-                                .foregroundStyle(MTTheme.textPrimary)
-                            Text(repo.id)
-                                .font(MTTheme.body(10))
-                                .foregroundStyle(MTTheme.textTertiary)
-                                .lineLimit(1)
-                            HStack(spacing: MTTheme.s3) {
-                                if let dl = repo.downloads {
-                                    Label("\(dl)", systemImage: "arrow.down")
-                                }
-                                if let lk = repo.likes {
-                                    Label("\(lk)", systemImage: "heart")
-                                }
-                            }
-                            .font(MTTheme.body(10))
-                            .foregroundStyle(MTTheme.textTertiary)
-                        }
-                        .padding(.vertical, 4)
-                        .tag(repo)
+                        HFRepositoryRow(repo: repo).tag(repo)
                     }
-                    .listStyle(.inset)
-
-                    // Pagination: Hugging Face returns pages, so the user asks
-                    // for more instead of the app loading the whole index.
-                    if !searchResults.isEmpty {
-                        Button {
-                            loadMore()
-                        } label: {
-                            HStack(spacing: MTTheme.s2) {
-                                if isLoadingMore {
-                                    ProgressView().scaleEffect(0.55).frame(width: 12, height: 12)
-                                }
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+                    if hasMore {
+                        Button(action: loadMore) {
+                            HStack(spacing: 6) {
+                                if isLoadingMore { ProgressView().controlSize(.mini) }
                                 Text(isLoadingMore ? L("Loading...") : L("Load more"))
-                                    .font(MTTheme.body(11, weight: .medium))
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
+                            .font(MTTheme.body(11))
+                            .frame(maxWidth: .infinity).padding(.vertical, 8)
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(MTTheme.cyan)
-                        .disabled(isLoadingMore)
+                        .disabled(isLoadingMore || isSearching)
                     }
                 }
             }
-            .frame(minWidth: 280, idealWidth: 320)
-
-            // Right pane: repo details and downloadable files
-            VStack(spacing: 0) {
+            .frame(minWidth: 285, idealWidth: 320, maxWidth: 420)
+            Group {
                 if let repo = selectedRepo {
-                    repoDetailsView(repo)
+                    HFModelDetailView(repo: repo, details: repoDetails, isLoading: isLoadingDetails,
+                                      error: detailsError, retry: { loadRepoDetails(repo.id) },
+                                      download: { startDownload($0, repoId: repo.id) })
+                        .id(repo.id)
                 } else {
-                    VStack(spacing: MTTheme.s2) {
-                        Spacer()
-                        Image(systemName: "sidebar.right")
-                            .font(.system(size: 36))
-                            .foregroundStyle(MTTheme.textTertiary)
-                        Text(L("Select a model repository from the list"))
-                            .font(MTTheme.body(13))
-                            .foregroundStyle(MTTheme.textSecondary)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ContentUnavailableView(L("Select a model repository from the list"), systemImage: "sidebar.right")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(minWidth: 380)
         }
-        .onChange(of: selectedRepo) { _, newRepo in
-            if let repo = newRepo {
-                loadRepoDetails(repo.id)
-            } else {
-                detailsTask?.cancel()
-                detailsTask = nil
-                repoDetails = nil
-                detailsError = nil
-                isLoadingDetails = false
-            }
+        .onChange(of: searchQuery) { _, _ in performSearch(debounce: true) }
+        .onChange(of: sortOrder) { _, _ in performSearch() }
+        .onChange(of: selectedRepo) { _, repo in
+            if let repo { loadRepoDetails(repo.id) }
+            else { clearDetails() }
         }
-        .sheet(isPresented: $showTokenSheet) {
-            tokenSheetView
+        .onAppear {
+            if activeRequest == nil || isSearching { performSearch() }
+            else if isLoadingDetails, let selectedRepo { loadRepoDetails(selectedRepo.id) }
         }
+        .sheet(isPresented: $showTokenSheet) { tokenSheetView }
         .onDisappear {
             searchTask?.cancel()
             detailsTask?.cancel()
+            isLoadingMore = false
         }
     }
 
-    /// Short, locale-aware date for the catalog header.
-    private static func shortDate(_ iso: String) -> String? {
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = parser.date(from: iso)
-        if date == nil {
-            parser.formatOptions = [.withInternetDateTime]
-            date = parser.date(from: iso)
-        }
-        guard let date else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
-    }
-
-    private func repoDetailsView(_ repo: HFModelSearchResult) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(alignment: .top, spacing: MTTheme.s3) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(repo.displayName)
-                        .font(MTTheme.body(14, weight: .semibold))
-                        .foregroundStyle(MTTheme.textPrimary)
-                    Text(repo.id)
-                        .font(MTTheme.body(11))
-                        .foregroundStyle(MTTheme.textTertiary)
-                    HStack(spacing: MTTheme.s3) {
-                        if let dl = repo.downloads {
-                            Text("\(dl) " + L("downloads"))
-                        }
-                        if let lk = repo.likes {
-                            Text("\(lk) " + L("likes"))
-                        }
-                        // Missing values stay hidden: the spec forbids inventing
-                        // data that Hugging Face did not return (§7.3).
-                        if let updated = repo.lastModified, let short = Self.shortDate(updated) {
-                            Text(L("Updated") + " " + short)
-                        }
-                        if repo.privateRepo == true || repo.gated == true {
-                            Label(L("Gated"), systemImage: "lock.fill")
-                                .foregroundStyle(MTTheme.amber)
-                        }
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField(L("Search Hugging Face..."), text: $searchQuery)
+                    .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                    .onSubmit { performSearch() }
+                    .onExitCommand {
+                        if !searchQuery.isEmpty { searchQuery = "" }
+                        else { searchFocused = false }
                     }
-                    .font(MTTheme.body(11))
-                    .foregroundStyle(MTTheme.textSecondary)
-                }
-                Spacer()
-                Button(action: {
-                    if let url = URL(string: "https://huggingface.co/\(repo.id)") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.right.square")
-                        Text(L("Open on HF"))
-                    }
-                    .font(MTTheme.body(11))
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(MTTheme.s4)
-            .background(Color.primary.opacity(0.02))
-
-            Divider().background(Color.primary.opacity(0.06))
-
-            // Files list
-            if isLoadingDetails {
-                VStack(spacing: MTTheme.s3) {
-                    Spacer()
-                    ProgressView()
-                    Text(L("Fetching GGUF files and hardware estimation..."))
-                        .font(MTTheme.body(12))
-                        .foregroundStyle(MTTheme.textSecondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let err = detailsError {
-                VStack(spacing: MTTheme.s3) {
-                    Spacer()
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.title2)
-                        .foregroundStyle(MTTheme.danger)
-                    Text(err)
-                        .font(MTTheme.body(12))
-                        .foregroundStyle(MTTheme.danger)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let details = repoDetails {
-                if details.ggufFiles.isEmpty {
-                    VStack(spacing: MTTheme.s3) {
-                        Spacer()
-                        Text(L("No GGUF files found in this repository."))
-                            .font(MTTheme.body(12))
-                            .foregroundStyle(MTTheme.textSecondary)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: MTTheme.s3) {
-                            ForEach(details.ggufFiles) { file in
-                                fileCard(file, repoId: details.id)
-                            }
-                        }
-                        .padding(MTTheme.s4)
-                    }
+                if !searchQuery.isEmpty {
+                    Button(L("Clear search"), systemImage: "xmark.circle.fill") { searchQuery = "" }
+                        .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
                 }
             }
+            .font(MTTheme.body(12))
+            .padding(8)
+            .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 7))
+            Button(L("Hugging Face API Token"), systemImage: "key") { showTokenSheet = true }
+                .labelStyle(.iconOnly).buttonStyle(.plain)
+                .help(L("Hugging Face API Token"))
         }
-    }
-
-    private func fileCard(_ file: HFGGUFFile, repoId: String) -> some View {
-        let isDownloading = downloads.items.contains { item in
-            item.repoId == repoId && item.rfilename == file.rfilename &&
-            (item.state == .downloading || item.state == .queued || item.state == .paused)
-        }
-        // Stored files live in a per-model namespace now, so the comparison is
-        // by file name, not by the whole relative path.
-        let baseName = (file.rfilename as NSString).lastPathComponent
-        let isInstalled = store.models.contains { model in
-            model.repoId == repoId && model.files.contains {
-                ($0 as NSString).lastPathComponent == baseName
+        .padding(12)
+        .background {
+            if isActive {
+                Button("") { searchFocused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .opacity(0).accessibilityHidden(true)
             }
         }
-
-        return MTCard {
-            VStack(alignment: .leading, spacing: MTTheme.s3) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(file.rfilename)
-                            .font(MTTheme.body(12.5, weight: .semibold))
-                            .foregroundStyle(MTTheme.textPrimary)
-                            .lineLimit(1)
-                        HStack(spacing: MTTheme.s3) {
-                            Text(file.formattedSize)
-                            Text(file.quantization)
-                        }
-                        .font(MTTheme.body(11))
-                        .foregroundStyle(MTTheme.textSecondary)
-                    }
-
-                    Spacer()
-
-                    // Compatibility badge
-                    compatibilityBadge(file.estimation.recommendation)
-
-                    // Download / Installed action
-                    if isInstalled {
-                        Text(L("Installed"))
-                            .font(MTTheme.body(11, weight: .semibold))
-                            .foregroundStyle(MTTheme.emerald)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(MTTheme.emerald.opacity(0.12))
-                            .cornerRadius(4)
-                    } else if isDownloading {
-                        Text(L("Downloading..."))
-                            .font(MTTheme.body(11, weight: .semibold))
-                            .foregroundStyle(MTTheme.cyan)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(MTTheme.cyan.opacity(0.12))
-                            .cornerRadius(4)
-                    } else {
-                        Button(action: { startDownload(file, repoId: repoId) }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                Text(L("Download"))
-                            }
-                            .font(MTTheme.body(11, weight: .medium))
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(MTTheme.emerald)
-                    }
-                }
-            }
-        }
-    }
-
-    private func compatibilityBadge(_ rec: CompatibilityRecommendation) -> some View {
-        let (color, text): (Color, String) = {
-            switch rec {
-            case .recommended: return (MTTheme.emerald, L("Recommended"))
-            case .fitsWithLimitations: return (MTTheme.gold, L("Fits with limits"))
-            case .highMemoryUsage: return (MTTheme.amber, L("High RAM"))
-            case .insufficientMemory: return (MTTheme.danger, L("Low Memory"))
-            case .unsupportedArchitecture: return (MTTheme.danger, L("Unsupported"))
-            case .unknown: return (MTTheme.textTertiary, L("Unknown"))
-            }
-        }()
-
-        return HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(text)
-                .font(MTTheme.body(10.5, weight: .medium))
-                .foregroundStyle(color)
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(color.opacity(0.12))
-        .cornerRadius(4)
     }
 
     private var tokenSheetView: some View {
@@ -490,6 +184,7 @@ struct HuggingFaceCatalogView: View {
                         .foregroundStyle(MTTheme.textTertiary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(L("Close"))
             }
 
             Text(L("An API token is required to download gated or private models (such as Llama 3, Gemma). It is securely stored in your macOS Keychain."))
@@ -535,114 +230,74 @@ struct HuggingFaceCatalogView: View {
         .background(MTTheme.background)
     }
 
-    private func performSearch() {
-        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return }
-
+    private func performSearch(debounce: Bool = false) {
         searchTask?.cancel()
-        detailsTask?.cancel()
-
+        clearDetails()
         searchGeneration += 1
-        let request = HFSearchRequest(
-            query: q,
-            sort: sortOrder,
-            offset: 0,
-            generation: searchGeneration
-        )
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let request = HFSearchRequest(query: query, sort: sortOrder, offset: 0, generation: searchGeneration)
         activeRequest = request
         isSearching = true
         isLoadingMore = false
-        hasSearched = true
         searchError = nil
-        detailsError = nil
-        selectedRepo = nil
-        repoDetails = nil
-        isLoadingDetails = false
         searchResults = []
-
+        selectedRepo = nil
+        nextOffset = 0
+        hasMore = true
         let token = LocalKeychainHelper.loadHuggingFaceToken()
         searchTask = Task { @MainActor in
             do {
-                let results = try await HuggingFaceService.searchModels(
-                    query: request.query,
-                    sort: request.sort,
-                    offset: request.offset,
-                    token: token
-                )
-                guard self.isCurrent(request) else { return }
-                self.searchResults = results
-                self.isSearching = false
+                if debounce { try await Task.sleep(for: .milliseconds(350)) }
+                try Task.checkCancellation()
+                if let id = HuggingFaceService.repositoryID(from: query) {
+                    let repo = HFModelSearchResult(id: id, author: id.split(separator: "/").first.map(String.init),
+                        description: nil, downloads: nil, likes: nil, lastModified: nil, tags: nil, privateRepo: nil)
+                    guard isCurrent(request) else { return }
+                    searchResults = [repo]
+                    selectedRepo = repo
+                    hasMore = false
+                    isSearching = false
+                    return
+                }
+                let page = try await HuggingFaceService.searchModels(query: request.query, sort: request.sort, token: token)
+                guard isCurrent(request) else { return }
+                var known = Set<String>()
+                searchResults = page.filter { known.insert($0.id).inserted }
+                nextOffset = page.count
+                hasMore = page.count == 30
+                isSearching = false
+                selectedRepo = searchResults.first
             } catch {
-                guard self.isCurrent(request) else { return }
-                self.searchError = Self.message(for: error)
-                self.isSearching = false
+                guard isCurrent(request) else { return }
+                searchError = Self.message(for: error)
+                isSearching = false
             }
         }
     }
 
-    /// Drops the query, invalidates every in-flight page and cancels the
-    /// requests. Without the generation bump a late response could repopulate
-    /// the list after the user cleared it.
-    private func clearSearch() {
-        searchTask?.cancel()
-        searchTask = nil
-        detailsTask?.cancel()
-        detailsTask = nil
-
-        searchGeneration += 1
-        activeRequest = nil
-        searchResults = []
-        searchQuery = ""
-        hasSearched = false
-        isSearching = false
-        isLoadingMore = false
-        searchError = nil
-        detailsError = nil
-        selectedRepo = nil
-        repoDetails = nil
-        isLoadingDetails = false
-    }
-
-    /// Loads the next page and appends it, keeping the current list usable.
-    ///
-    /// The page identity comes from `activeRequest`, not from the search field:
-    /// typing a new query without submitting must not change what "Load more"
-    /// continues.
     private func loadMore() {
-        guard let active = activeRequest, !isSearching, !isLoadingMore else { return }
-        let request = HFSearchRequest(
-            query: active.query,
-            sort: active.sort,
-            offset: searchResults.count,
-            generation: active.generation
-        )
+        guard let active = activeRequest, !isSearching, !isLoadingMore, hasMore else { return }
+        let request = HFSearchRequest(query: active.query, sort: active.sort, offset: nextOffset, generation: active.generation)
         isLoadingMore = true
         searchError = nil
         let token = LocalKeychainHelper.loadHuggingFaceToken()
-
         searchTask = Task { @MainActor in
             do {
-                let page = try await HuggingFaceService.searchModels(
-                    query: request.query,
-                    sort: request.sort,
-                    offset: request.offset,
-                    token: token
-                )
-                guard self.isCurrent(request) else { return }
-                // The API can repeat an entry across pages; keep the list unique.
-                let known = Set(self.searchResults.map(\.id))
-                self.searchResults += page.filter { !known.contains($0.id) }
-                self.isLoadingMore = false
+                let page = try await HuggingFaceService.searchModels(query: request.query, sort: request.sort, offset: request.offset, token: token)
+                guard isCurrent(request) else { return }
+                var known = Set(searchResults.map(\.id))
+                searchResults += page.filter { known.insert($0.id).inserted }
+                nextOffset += page.count
+                hasMore = page.count == 30
+                isLoadingMore = false
             } catch {
-                guard self.isCurrent(request) else { return }
-                self.searchError = Self.message(for: error)
-                self.isLoadingMore = false
+                guard isCurrent(request) else { return }
+                searchError = Self.message(for: error)
+                isLoadingMore = false
             }
         }
     }
 
-    /// A completion is applied only when it still belongs to the request the
-    /// list shows — success and failure alike.
     private func isCurrent(_ request: HFSearchRequest) -> Bool {
         !Task.isCancelled && request.belongs(to: activeRequest)
     }
@@ -652,41 +307,27 @@ struct HuggingFaceCatalogView: View {
         return text.isEmpty ? L("The request failed.") : text
     }
 
-    /// Opens a repository by `owner/repo`, so a pasted link works without a search.
-    private func openRepository(id: String) {
-        let placeholder = HFModelSearchResult(
-            id: id,
-            author: id.split(separator: "/").first.map(String.init),
-            description: nil,
-            downloads: nil,
-            likes: nil,
-            lastModified: nil,
-            tags: nil,
-            privateRepo: nil
-        )
-        selectedRepo = placeholder
-        loadRepoDetails(id)
+    private func clearDetails() {
+        detailsTask?.cancel()
+        repoDetails = nil
+        detailsError = nil
+        isLoadingDetails = false
     }
 
     private func loadRepoDetails(_ repoId: String) {
-        detailsTask?.cancel()
+        clearDetails()
         isLoadingDetails = true
-        detailsError = nil
-        repoDetails = nil
-
         let token = LocalKeychainHelper.loadHuggingFaceToken()
         detailsTask = Task { @MainActor in
             do {
                 let details = try await HuggingFaceService.fetchModelDetails(repoId: repoId, token: token)
-                // The selection may have moved to another repo while this
-                // request was in flight; never show the previous model's files.
-                guard !Task.isCancelled, self.selectedRepo?.id == repoId else { return }
-                self.repoDetails = details
-                self.isLoadingDetails = false
+                guard !Task.isCancelled, selectedRepo?.id == repoId else { return }
+                repoDetails = details
+                isLoadingDetails = false
             } catch {
-                guard !Task.isCancelled, self.selectedRepo?.id == repoId else { return }
-                self.detailsError = Self.message(for: error)
-                self.isLoadingDetails = false
+                guard !Task.isCancelled, selectedRepo?.id == repoId else { return }
+                detailsError = Self.message(for: error)
+                isLoadingDetails = false
             }
         }
     }

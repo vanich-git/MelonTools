@@ -1,6 +1,6 @@
 [package]
 name = "melontools"
-version = "6.0.0-rc.2"
+version = "6.0.0-rc.4"
 description = "Melon Tools for Windows — Codex account pool and local API gateway"
 edition = "2021"
 rust-version = "1.90"
@@ -35,6 +35,9 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_System_JobObjects",
