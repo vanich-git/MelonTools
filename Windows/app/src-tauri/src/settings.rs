@@ -822,8 +822,10 @@ mod tests {
                 alias: "acme/gpt-5".to_string(),
             }],
         };
-        let mut settings = Settings::default();
-        settings.custom_providers = vec![provider];
+        let settings = Settings {
+            custom_providers: vec![provider],
+            ..Settings::default()
+        };
         let encoded = serde_json::to_value(&settings).unwrap();
         assert_eq!(
             encoded["customProviders"][0]["baseUrl"],

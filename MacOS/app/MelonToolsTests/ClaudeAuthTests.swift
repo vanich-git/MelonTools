@@ -4,6 +4,7 @@ import XCTest
 /// Claude provider: engine auth-file parsing, the usage endpoint (both
 /// documented-by-experiment shapes), the auth-dir cleanup guard, and the
 /// gateway config merge (`api-keys.claude` inside the single root).
+@MainActor
 final class ClaudeAuthTests: XCTestCase {
 
     // MARK: - Auth files

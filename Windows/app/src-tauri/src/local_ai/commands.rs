@@ -599,9 +599,7 @@ impl PublicationGate {
     /// supervisor ticks cannot both spend the probe.
     fn auth_block(&self, fingerprint: u64) -> Option<String> {
         let mut block = self.auth_block.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(current) = block.as_mut() else {
-            return None;
-        };
+        let current = block.as_mut()?;
         if current.fingerprint != fingerprint {
             return None;
         }

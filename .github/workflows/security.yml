@@ -97,6 +97,13 @@ jobs:
       - name: Install pinned XcodeGen
         run: ./.github/scripts/install-xcodegen.sh
 
+      # REL-01: app/Resources/runtime is gitignored and project.yml declares it
+      # as a folder source, so XcodeGen rejects the spec on a clean checkout.
+      # CodeQL only needs the Swift sources: the pinned llama.cpp runtime is
+      # fetched by ci.yml and release.yml for packaging, not here.
+      - name: Create the gitignored runtime folder
+        run: mkdir -p MacOS/app/Resources/runtime
+
       - name: Generate the Xcode project
         working-directory: MacOS/app
         run: xcodegen generate

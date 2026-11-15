@@ -595,10 +595,8 @@ fn parse_commandcode_models(value: &Value) -> Vec<ProviderModel> {
                 .and_then(Value::as_array)
                 .map(|items| items.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            let anthropic_only = endpoints.iter().any(|endpoint| *endpoint == "/messages")
-                && !endpoints
-                    .iter()
-                    .any(|endpoint| *endpoint == "/chat/completions");
+            let anthropic_only =
+                endpoints.contains(&"/messages") && !endpoints.contains(&"/chat/completions");
             Some(ProviderModel {
                 id,
                 display,

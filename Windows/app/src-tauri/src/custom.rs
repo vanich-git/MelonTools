@@ -40,25 +40,6 @@ impl Protocol {
             other => Err(format!("неизвестный протокол: {other}")),
         }
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAIChat => "openai-chat",
-            Self::OpenAIResponses => "openai-responses",
-            Self::Anthropic => "anthropic",
-            Self::Gemini => "gemini",
-        }
-    }
-
-    /// Path appended by the gateway to the stored base URL.
-    pub fn gateway_path(self) -> &'static str {
-        match self {
-            Self::OpenAIChat => "/chat/completions",
-            Self::OpenAIResponses => "/responses",
-            Self::Anthropic => "/v1/messages",
-            Self::Gemini => "/v1beta/models",
-        }
-    }
 }
 
 pub fn valid_identifier(value: &str) -> Result<(), String> {
