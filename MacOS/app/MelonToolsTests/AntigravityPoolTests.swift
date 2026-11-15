@@ -141,8 +141,9 @@ final class AntigravityPoolTests: XCTestCase {
     func testTermsOfServiceBanIsFinalAndExplained() {
         let body = #"{"error":{"code":403,"message":"This account was suspended for a violation of Terms of Service.","status":"PERMISSION_DENIED"}}"#
         let reason = AntigravityPoolStore.finalReason(status: 403, body: body)
-        XCTAssertNotNil(reason)
-        XCTAssertTrue(reason!.contains("Terms of Service"))
+        // Compare against the localised ban text: matching a raw English
+        // substring made the assertion depend on the runner language.
+        XCTAssertEqual(reason, L("Blocked by Google for a Terms of Service violation - the account cannot be used."))
     }
 
     /// A 401 is the stale-token case, so it must stay retryable rather than
