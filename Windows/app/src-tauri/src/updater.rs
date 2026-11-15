@@ -325,7 +325,11 @@ async fn fetch_following(
 async fn head_following(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
     let mut current = url.to_string();
     for _ in 0..4 {
-        let response = client.head(&current).send().await.map_err(|e| e.to_string())?;
+        let response = client
+            .head(&current)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -396,7 +400,10 @@ async fn download_part(
     out.flush().map_err(|e| e.to_string())?;
     let expected = end - start + 1;
     if written != expected {
-        return Err(format!("часть {}: получено {} из {}", start, written, expected));
+        return Err(format!(
+            "часть {}: получено {} из {}",
+            start, written, expected
+        ));
     }
     Ok(())
 }
