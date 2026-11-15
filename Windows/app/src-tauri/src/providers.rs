@@ -835,8 +835,8 @@ pub fn antigravity_metrics(
 mod tests {
     use super::{
         antigravity_metrics, claude_metrics, parse_commandcode_models, parse_deepinfra_models,
-        parse_opencode_models, parse_openrouter_models, parse_vercel_models, parse_zai_models, vercel_metrics,
-        zai_models_fallback, zai_supports_images,
+        parse_opencode_models, parse_openrouter_models, parse_vercel_models, parse_zai_models,
+        vercel_metrics, zai_models_fallback, zai_supports_images,
     };
     use crate::claude::UsageSnapshot;
     use serde_json::json;

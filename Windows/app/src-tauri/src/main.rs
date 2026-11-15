@@ -6,6 +6,7 @@
 
 mod account_import;
 mod antigravity;
+mod antigravity_identity;
 mod backup;
 mod bridge;
 mod catalog;
@@ -17,7 +18,6 @@ mod device_login;
 mod dpapi;
 mod engine;
 mod engine_job;
-mod antigravity_identity;
 mod gateway;
 mod history;
 mod instances;

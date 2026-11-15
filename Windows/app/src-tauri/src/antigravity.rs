@@ -1136,11 +1136,7 @@ async fn send_warmup_request(
     }
 }
 
-pub async fn warmup_account(
-    settings: &Settings,
-    name: &str,
-    model: Option<&str>,
-) -> bool {
+pub async fn warmup_account(settings: &Settings, name: &str, model: Option<&str>) -> bool {
     let files = auth_files_in(&paths::auths_dir());
     let Some(file) = files.into_iter().find(|f| f.name == name) else {
         return false;
@@ -1209,7 +1205,8 @@ pub async fn warmup_account(
             {
                 if let Some(new_token) = refreshed.access_token.filter(|t| !t.trim().is_empty()) {
                     let new_project = refreshed.project_id.unwrap_or(project);
-                    let retry_outcome = send_warmup_request(&client, &new_token, &new_project, &chosen_model).await;
+                    let retry_outcome =
+                        send_warmup_request(&client, &new_token, &new_project, &chosen_model).await;
                     return matches!(retry_outcome, WarmupOutcome::Ok);
                 }
             }
@@ -1219,10 +1216,7 @@ pub async fn warmup_account(
     }
 }
 
-pub async fn warmup_all(
-    settings: &Settings,
-    model: Option<&str>,
-) -> Vec<(String, bool)> {
+pub async fn warmup_all(settings: &Settings, model: Option<&str>) -> Vec<(String, bool)> {
     let files = auth_files_in(&paths::auths_dir());
     let mut results = Vec::new();
     for file in files {
