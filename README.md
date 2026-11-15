@@ -78,13 +78,19 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 5.5.8 (latest published)
+## What's new in 6.0.0 (latest published)
 
-> **6.0.0 is in development and is not published yet.** The download links
-> above, the Homebrew Cask and the winget manifests still point at the
-> published 5.5.8 artifacts. 6.0.0 adds Local AI, custom API providers and a
-> usage view; its notes live in [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md)
-> and are promoted only after the release build has been staged and verified.
+> **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
+> block the first launch, so check the SHA-256 before opening the file. No GGUF
+> model is bundled: Local AI downloads models on demand. The full notes are in
+> [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **Local AI on both platforms.** A bundled `llama-server` runs GGUF models and publishes them through the loopback gateway at `127.0.0.1:18318`, so Codex and other clients use the same OpenAI-compatible endpoint as the cloud providers.
+- **User-defined API providers.** Any relay that speaks OpenAI Chat, OpenAI Responses, Anthropic or Gemini is added in the app; the identifier doubles as the model prefix, and the form shows which path the gateway will append.
+- **Usage you can see.** The API page reports the last request with its model, provider, account, status and token counts, plus a short history, instead of leaving it to logs.
+- **Hardened release builds.** A clean checkout fetches and verifies the pinned llama.cpp runtime before XcodeGen runs, and a signed build re-signs the nested binaries and refreshes the runtime digest before the bundle is sealed.
+
+## Earlier: 5.5.8
 
 - **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved.
 - **CSS state collision fixed.** The old `.expanded` rule also matched `<body>`, so the whole panel document painted nothing. The body state is now `island-open` and the hide rule is scoped to `.island > .expanded`.
