@@ -804,6 +804,23 @@ details:not(.advanced) > summary { color: var(--text2); }
 .modal-card h2 { margin: 0 0 var(--s2); font-size: 18px; font-weight: 600; letter-spacing: -0.2px; }
 .modal-card .modal-sub { color: var(--text2); font-size: 12px; line-height: 1.55; }
 
+/* Update download progress. */
+.update-progress {
+  height: 6px;
+  margin-top: 10px;
+  border-radius: 999px;
+  background: var(--soft);
+  overflow: hidden;
+}
+.update-progress[hidden] { display: none; }
+.update-progress > div {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--gold);
+  transition: width 0.2s linear;
+}
+
 /* Codex launch / path chooser. */
 .codex-modal-card { width: min(600px, 94vw); }
 .codex-modal-card .app-mark {

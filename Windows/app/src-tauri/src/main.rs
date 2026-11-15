@@ -1611,7 +1611,7 @@ async fn update_apply(
         })?;
     updater::validate_cached(&info)?;
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
-    let new_exe = updater::fetch_update(&info.url, Some(&info.digest)).await?;
+    let new_exe = updater::fetch_update(Some(&app), &info.url, Some(&info.digest)).await?;
     // Stop both engines before the exe is replaced: a running gateway or
     // llama-server would keep the old binary locked and outlive the app.
     let _ = gateway::stop(&state.gw);

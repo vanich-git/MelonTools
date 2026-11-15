@@ -3750,12 +3750,38 @@ const A = {
     const sub = document.getElementById("update-sub");
     const apply = document.getElementById("update-apply");
     const cancel = document.getElementById("update-cancel");
+    const box = document.getElementById("update-progress");
+    const bar = document.getElementById("update-progress-bar");
     // Cancel disappears as soon as applying starts; it comes back only if
     // the swap fails and the window stays.
     A._updateApplying = true;
     if (cancel) cancel.disabled = true;
     apply.style.display = "none";
     sub.textContent = t("updateDownloading");
+
+    // The backend emits one event per ~200 ms while the ranges download.
+    let unsubscribe = null;
+    if (window.melon && typeof window.melon.listen === "function") {
+      try {
+        unsubscribe = await window.melon.listen("update-progress", (payload) => {
+          const total = Number(payload && payload.total) || 0;
+          const received = Math.min(Number(payload && payload.received) || 0, total);
+          if (!total) return;
+          const pct = Math.min(100, Math.floor((received / total) * 100));
+          if (box) box.hidden = false;
+          if (bar) bar.style.width = pct + "%";
+          sub.textContent = t("updateProgress")
+            .replace("{pct}", String(pct))
+            .replace("{done}", formatBytes(received))
+            .replace("{total}", formatBytes(total))
+            .replace("{speed}", formatBytes(Number(payload && payload.bytesPerSecond) || 0));
+        });
+      } catch (error) {
+        // Progress is optional: the modal still shows the plain status text.
+        unsubscribe = null;
+      }
+    }
+
     try {
       await inv("update_apply", { url: S.update.assetURL, digest: S.update.digest });
       sub.textContent = t("updateInstalling");
@@ -3764,8 +3790,13 @@ const A = {
       A._updateApplying = false;
       if (cancel) cancel.disabled = false;
       apply.style.display = "";
+    } finally {
+      if (unsubscribe) unsubscribe();
+      if (box) box.hidden = true;
+      if (bar) bar.style.width = "0%";
     }
   },
+
 };
 
 window.A = A;

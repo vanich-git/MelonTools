@@ -8,9 +8,12 @@
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::time::Duration;
+use tauri::Emitter;
 
 const RELEASE_API: &str = "https://api.github.com/repos/vanich-git/MelonTools/releases/latest";
 const ALLOWED_HOSTS: [&str; 4] = [
@@ -268,6 +271,260 @@ async fn get_following_allowed(url: &str, timeout: Duration) -> Result<reqwest::
     Err("слишком много редиректов".to_string())
 }
 
+/// Client for the direct route: no proxy at all, redirects handled by hand so
+/// every hop still passes the allowlist.
+fn direct_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Client for the fallback route through the configured app proxy.
+fn proxy_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    crate::proxy::apply(reqwest::Client::builder())
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// GET with optional byte range, following allowlisted redirects by hand.
+async fn fetch_following(
+    client: &reqwest::Client,
+    url: &str,
+    range: Option<(u64, u64)>,
+) -> Result<reqwest::Response, String> {
+    let mut current = url.to_string();
+    for _ in 0..4 {
+        let mut request = client.get(&current);
+        if let Some((start, end)) = range {
+            request = request.header(reqwest::header::RANGE, format!("bytes={}-{}", start, end));
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "редирект без адреса".to_string())?;
+            if !allowed(location) {
+                return Err("редирект на недопустимый адрес отклонён".to_string());
+            }
+            current = location.to_string();
+            continue;
+        }
+        return Ok(response);
+    }
+    Err("слишком много редиректов".to_string())
+}
+
+/// HEAD that follows allowlisted redirects the same way `fetch_following` does.
+async fn head_following(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
+    let mut current = url.to_string();
+    for _ in 0..4 {
+        let response = client
+            .head(&current)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| "редирект без адреса".to_string())?;
+            if !allowed(location) {
+                return Err("редирект на недопустимый адрес отклонён".to_string());
+            }
+            current = location.to_string();
+            continue;
+        }
+        return Ok(response);
+    }
+    Err("слишком много редиректов".to_string())
+}
+
+/// Total size of the asset: HEAD when the CDN reports it, otherwise the
+/// `Content-Range` of a one-byte request.
+async fn probe_asset(client: &reqwest::Client, url: &str) -> Result<u64, String> {
+    let response = head_following(client, url).await?;
+    if response.status().is_success() {
+        if let Some(length) = response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            if length > 0 {
+                return Ok(length);
+            }
+        }
+    }
+    let response = fetch_following(client, url, Some((0, 0))).await?;
+    if response.status().as_u16() != 206 {
+        return Err(format!("размер: HTTP {}", response.status().as_u16()));
+    }
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit_once('/'))
+        .and_then(|(_, total)| total.trim().parse::<u64>().ok())
+        .filter(|total| *total > 0)
+        .ok_or_else(|| "некорректный Content-Range".to_string())
+}
+
+/// Downloads one byte range, counting bytes into the shared progress counter.
+async fn download_part(
+    client: &reqwest::Client,
+    asset_url: &str,
+    start: u64,
+    end: u64,
+    path: &Path,
+    counter: &AtomicU64,
+) -> Result<(), String> {
+    let mut response = fetch_following(client, asset_url, Some((start, end))).await?;
+    if response.status().as_u16() != 206 {
+        return Err(format!("часть: HTTP {}", response.status().as_u16()));
+    }
+    let mut out = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut written = 0u64;
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        out.write_all(&chunk).map_err(|e| e.to_string())?;
+        written += chunk.len() as u64;
+        counter.fetch_add(chunk.len() as u64, AtomicOrdering::Relaxed);
+    }
+    out.flush().map_err(|e| e.to_string())?;
+    let expected = end - start + 1;
+    if written != expected {
+        return Err(format!(
+            "часть {}: получено {} из {}",
+            start, written, expected
+        ));
+    }
+    Ok(())
+}
+
+/// Concatenates the range files and checks the final size.
+fn assemble_parts(dir: &Path, count: u64, total: u64, destination: &Path) -> Result<(), String> {
+    let mut out = std::fs::File::create(destination).map_err(|e| e.to_string())?;
+    let mut written = 0u64;
+    for index in 0..count {
+        let mut input =
+            std::fs::File::open(dir.join(format!("part-{}", index))).map_err(|e| e.to_string())?;
+        written += std::io::copy(&mut input, &mut out).map_err(|e| e.to_string())?;
+    }
+    out.flush().map_err(|e| e.to_string())?;
+    if written != total {
+        let _ = std::fs::remove_file(destination);
+        return Err(format!("собрано {} из {}", written, total));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// One full download attempt over one route: probe, four ranges, assemble.
+async fn download_via_client(
+    app: Option<&tauri::AppHandle>,
+    client: &reqwest::Client,
+    asset_url: &str,
+    file: &Path,
+) -> Result<(), String> {
+    let total = probe_asset(client, asset_url).await?;
+    let parts_dir = std::env::temp_dir().join(format!("melontools-parts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parts_dir);
+    std::fs::create_dir_all(&parts_dir).map_err(|e| e.to_string())?;
+
+    let counter = Arc::new(AtomicU64::new(0));
+    let finished = Arc::new(AtomicBool::new(false));
+    let count: u64 = if total >= 8 * 1024 * 1024 { 4 } else { 1 };
+    let part_size = total / count;
+    let mut tasks = Vec::new();
+    for index in 0..count {
+        let start = index * part_size;
+        let end = if index + 1 == count {
+            total - 1
+        } else {
+            start + part_size - 1
+        };
+        let path = parts_dir.join(format!("part-{}", index));
+        let client = client.clone();
+        let url = asset_url.to_string();
+        let counter = counter.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            download_part(&client, &url, start, end, &path, &counter).await
+        }));
+    }
+
+    let monitor = app.map(|app| {
+        let app = app.clone();
+        let counter = counter.clone();
+        let finished = finished.clone();
+        tauri::async_runtime::spawn(async move {
+            let started = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let received = counter.load(AtomicOrdering::Relaxed).min(total);
+                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                let _ = app.emit(
+                    "update-progress",
+                    json!({
+                        "received": received,
+                        "total": total,
+                        "bytesPerSecond": (received as f64 / elapsed) as u64,
+                    }),
+                );
+                if finished.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
+            }
+        })
+    });
+
+    let mut first_error: Option<String> = None;
+    for task in tasks {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+    finished.store(true, AtomicOrdering::Relaxed);
+    if let Some(monitor) = monitor {
+        let _ = monitor.await;
+    }
+    let result = match first_error {
+        Some(error) => Err(error),
+        None => assemble_parts(&parts_dir, count, total, file),
+    };
+    let _ = std::fs::remove_dir_all(&parts_dir);
+    result
+}
+
 /// Latest-release lookup. `force=false` skips when the last check is younger
 /// than one hour (returns `{"skipped": true}`).
 pub async fn check(force: bool, current: &str, last_check: Option<i64>) -> Result<Value, String> {
@@ -371,7 +628,13 @@ async fn expected_digest(asset_url: &str, digest: Option<&str>) -> Option<String
 }
 
 /// Downloads and verifies the update; returns the local path of the new exe.
-pub async fn fetch_update(asset_url: &str, digest: Option<&str>) -> Result<PathBuf, String> {
+/// Tries the direct route first (the CDN is faster without the SOCKS proxy),
+/// then repeats the whole download through the app proxy on failure.
+pub async fn fetch_update(
+    app: Option<&tauri::AppHandle>,
+    asset_url: &str,
+    digest: Option<&str>,
+) -> Result<PathBuf, String> {
     if !allowed(asset_url) {
         return Err("недопустимый адрес обновления".to_string());
     }
@@ -380,21 +643,17 @@ pub async fn fetch_update(asset_url: &str, digest: Option<&str>) -> Result<PathB
     let file = dir.join("MelonTools-update.exe");
     let _ = std::fs::remove_file(&file);
 
-    let mut response = get_following_allowed(asset_url, Duration::from_secs(600)).await?;
-    if !response.status().is_success() {
-        return Err(format!("загрузка: HTTP {}", response.status().as_u16()));
+    let direct = direct_client(Duration::from_secs(600))?;
+    if let Err(error) = download_via_client(app, &direct, asset_url, &file).await {
+        if crate::proxy::active_url().is_none() {
+            return Err(error);
+        }
+        let proxy = proxy_client(Duration::from_secs(600))?;
+        download_via_client(app, &proxy, asset_url, &file).await?;
     }
-    let mut hasher = Sha256::new();
-    let mut out = std::fs::File::create(&file).map_err(|e| e.to_string())?;
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        hasher.update(&chunk);
-        out.write_all(&chunk).map_err(|e| e.to_string())?;
-    }
-    out.flush().map_err(|e| e.to_string())?;
-    drop(out);
 
     let expected = expected_digest(asset_url, digest).await;
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = sha256_file(&file)?;
     match expected {
         Some(expected) if actual.eq_ignore_ascii_case(&expected) => Ok(file),
         Some(_) => {
@@ -604,5 +863,33 @@ mod tests {
         let mut payload = check_payload();
         payload["newer"] = json!(false);
         assert!(cached_from_check(&payload).is_none());
+    }
+
+    #[test]
+    fn parts_assemble_in_order_and_reject_short_files() {
+        let dir = std::env::temp_dir().join(format!("melontools-parts-test-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("part-0"), b"alpha").unwrap();
+        std::fs::write(dir.join("part-1"), b"beta").unwrap();
+        let joined = dir.join("joined.bin");
+
+        assemble_parts(&dir, 2, 9, &joined).unwrap();
+        assert_eq!(std::fs::read(&joined).unwrap(), b"alphabeta");
+
+        let short = dir.join("short.bin");
+        assert!(assemble_parts(&dir, 2, 99, &short).is_err());
+        assert!(!short.exists(), "a rejected assembly must leave no file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sha256_of_a_known_file() {
+        let path = std::env::temp_dir().join(format!("melontools-sha-test-{}", uuid_like()));
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

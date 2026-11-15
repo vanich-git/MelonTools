@@ -3,6 +3,19 @@ import CryptoKit
 import Foundation
 import os
 
+/// Bytes already received for the update, so the sheet can show a real
+/// progress bar instead of an indeterminate spinner.
+struct UpdateDownloadProgress: Equatable {
+    var received: Int64
+    var total: Int64
+    var bytesPerSecond: Double
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, Double(received) / Double(total))
+    }
+}
+
 /// GitHub-based self-update: checks the latest release, downloads the macOS
 /// DMG, verifies SHA256 and hands the swap to a detached script that runs
 /// after the app quits.
@@ -44,11 +57,13 @@ final class UpdaterStore: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+    @Published private(set) var download: UpdateDownloadProgress?
     @Published var sheetPresented = false
 
     private var assetURL: URL?
     private var assetDigest: String?
     private var busy = false
+    private var lastProgressAt: Date?
 
     /// How often the running app wakes up to ask for updates. The throttle
     /// below still owns the real cadence: a non-manual check within one hour
@@ -220,32 +235,19 @@ final class UpdaterStore: ObservableObject {
     // MARK: - Installing
 
     func install() async {
-        guard !busy, let assetURL else { return }
+        guard !busy, assetURL != nil else { return }
         busy = true
-        defer { busy = false }
+        defer {
+            busy = false
+            download = nil
+            lastProgressAt = nil
+        }
         do {
             guard Bundle.main.bundlePath.hasPrefix("/Applications/") else {
                 throw UpdaterError.message(L("Updating works only from the Applications folder."))
             }
             phase = .working(L("Downloading the update…"))
-            let (temp, response) = try await NetworkProxy.session().download(from: assetURL)
-            guard let finalURL = response.url, Self.isAllowed(finalURL) else {
-                throw UpdaterError.message(L("The download was redirected to a disallowed host."))
-            }
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw UpdaterError.message(L("The update download failed."))
-            }
-            let dmgURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("MelonTools-update-\(UUID().uuidString).dmg")
-            try? FileManager.default.removeItem(at: dmgURL)
-            try FileManager.default.moveItem(at: temp, to: dmgURL)
-
-            let expected = await expectedDigest()
-            let actual = try Self.sha256Hex(of: dmgURL)
-            guard let expected, actual.caseInsensitiveCompare(expected) == .orderedSame else {
-                try? FileManager.default.removeItem(at: dmgURL)
-                throw UpdaterError.message(L("SHA256 check failed — the download was refused."))
-            }
+            let dmgURL = try await downloadVerified()
 
             Self.logger.info("installing update")
             phase = .working(L("Installing the update…"))
@@ -267,6 +269,66 @@ final class UpdaterStore: ObservableObject {
         }
     }
 
+    /// Downloads the DMG into a temporary file and verifies its SHA256.
+    private func downloadVerified() async throws -> URL {
+        let dmgURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MelonTools-update-\(UUID().uuidString).dmg")
+        do {
+            try await downloadTo(dmgURL)
+            let expected = await expectedDigest()
+            let actual = try Self.sha256Hex(of: dmgURL)
+            guard let expected, actual.caseInsensitiveCompare(expected) == .orderedSame else {
+                throw UpdaterError.message(L("SHA256 check failed - the download was refused."))
+            }
+            return dmgURL
+        } catch {
+            try? FileManager.default.removeItem(at: dmgURL)
+            throw error
+        }
+    }
+
+    /// Direct route first, proxy only when the CDN is unreachable that way.
+    private func downloadTo(_ destination: URL) async throws {
+        guard let assetURL else {
+            throw UpdaterError.message(L("The update download failed."))
+        }
+        if let route = try? await Self.probe(assetURL, configuration: NetworkProxy.directConfiguration()) {
+            do {
+                try await Self.fetch(route, to: destination, progress: progressSink())
+                return
+            } catch {
+                Self.logger.error("direct update download failed: \(error.localizedDescription, privacy: .public)")
+                guard NetworkProxy.activeURL() != nil else { throw error }
+            }
+        }
+        let route = try await Self.probe(assetURL, configuration: NetworkProxy.externalConfiguration())
+        try await Self.fetch(route, to: destination, progress: progressSink())
+    }
+
+    /// Publishes download progress on the main actor, throttled to five
+    /// updates per second so hundreds of delegate callbacks stay cheap.
+    private func progressSink() -> @Sendable (Int64, Int64) -> Void {
+        let started = Date()
+        return { [weak self] received, total in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let now = Date()
+                if let last = self.lastProgressAt,
+                   now.timeIntervalSince(last) < 0.2,
+                   received < total {
+                    return
+                }
+                self.lastProgressAt = now
+                let elapsed = max(0.001, now.timeIntervalSince(started))
+                self.download = UpdateDownloadProgress(
+                    received: received,
+                    total: total,
+                    bytesPerSecond: Double(received) / elapsed
+                )
+            }
+        }
+    }
+
     /// Release digest, or the first token of the asset's `.sha256` sibling.
     private func expectedDigest() async -> String? {
         if let assetDigest { return assetDigest }
@@ -276,6 +338,126 @@ final class UpdaterStore: ObservableObject {
         guard let (data, response) = try? await NetworkProxy.session().data(from: shaURL),
               let finalURL = response.url, Self.isAllowed(finalURL) else { return nil }
         return Self.parseSha256File(String(data: data, encoding: .utf8) ?? "")
+    }
+
+    // MARK: - Chunked download
+
+    /// One route to the asset: its size and the session configuration that
+    /// reached it.
+    struct Route {
+        let url: URL
+        let total: Int64
+        let configuration: URLSessionConfiguration
+    }
+
+    /// Asks the asset for its size. HEAD is enough on GitHub; the one-byte
+    /// range is a fallback for CDNs that omit `Content-Length` on HEAD.
+    nonisolated static func probe(_ assetURL: URL, configuration: URLSessionConfiguration) async throws -> Route {
+        var head = URLRequest(url: assetURL)
+        head.httpMethod = "HEAD"
+        head.timeoutInterval = 30
+        let (_, headResponse) = try await URLSession(configuration: configuration).data(for: head)
+        if let http = headResponse as? HTTPURLResponse,
+           http.statusCode == 200,
+           let finalURL = headResponse.url,
+           isAllowed(finalURL),
+           let length = http.value(forHTTPHeaderField: "Content-Length").flatMap({ Int64($0) }),
+           length > 0 {
+            return Route(url: assetURL, total: length, configuration: configuration)
+        }
+
+        var range = URLRequest(url: assetURL)
+        range.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        range.timeoutInterval = 30
+        let (_, rangeResponse) = try await URLSession(configuration: configuration).data(for: range)
+        guard let http = rangeResponse as? HTTPURLResponse,
+              http.statusCode == 206,
+              let finalURL = rangeResponse.url,
+              isAllowed(finalURL),
+              let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
+              let total = contentRange.split(separator: "/").last.flatMap({ Int64($0) }),
+              total > 0 else {
+            throw UpdaterError.message(L("The update download failed."))
+        }
+        return Route(url: assetURL, total: total, configuration: configuration)
+    }
+
+    /// Downloads the asset in four parallel ranges. GitHub throttles a single
+    /// connection, so four ranges are about three times faster in practice.
+    nonisolated static func fetch(
+        _ route: Route,
+        to destination: URL,
+        progress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws {
+        let partsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MelonTools-parts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: partsDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: partsDirectory) }
+
+        let meter = ProgressMeter(total: route.total, emit: progress)
+        let count = route.total >= 8 * 1024 * 1024 ? 4 : 1
+        let partSize = route.total / Int64(count)
+        var parts: [URL] = []
+        for index in 0..<count {
+            parts.append(partsDirectory.appendingPathComponent("part-\(index)"))
+        }
+
+        if count == 1 {
+            try await downloadRange(route: route, start: 0, end: route.total - 1, to: parts[0], meter: meter)
+        } else {
+            let last = count - 1
+            async let first: Void = downloadRange(route: route, start: 0, end: partSize - 1, to: parts[0], meter: meter)
+            async let second: Void = downloadRange(route: route, start: partSize, end: partSize * 2 - 1, to: parts[1], meter: meter)
+            async let third: Void = downloadRange(route: route, start: partSize * 2, end: partSize * 3 - 1, to: parts[2], meter: meter)
+            async let fourth: Void = downloadRange(route: route, start: partSize * 3, end: route.total - 1, to: parts[last], meter: meter)
+            _ = try await (first, second, third, fourth)
+        }
+
+        try assemble(parts, total: route.total, into: destination)
+    }
+
+    nonisolated static func downloadRange(
+        route: Route,
+        start: Int64,
+        end: Int64,
+        to destination: URL,
+        meter: ProgressMeter
+    ) async throws {
+        var request = URLRequest(url: route.url)
+        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+        request.timeoutInterval = 60
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let download = RangeDownload(
+                destination: destination,
+                expectedBytes: end - start + 1,
+                onBytes: { meter.add($0) },
+                onDone: { continuation.resume(with: $0) }
+            )
+            download.start(request, configuration: route.configuration)
+        }
+    }
+
+    /// Joins the range files in order and checks the final size.
+    nonisolated static func assemble(_ parts: [URL], total: Int64, into destination: URL) throws {
+        try? FileManager.default.removeItem(at: destination)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw UpdaterError.message(L("The update download failed."))
+        }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        var written: Int64 = 0
+        for part in parts {
+            let input = try FileHandle(forReadingFrom: part)
+            defer { try? input.close() }
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try output.write(contentsOf: chunk)
+                written += Int64(chunk.count)
+            }
+        }
+        guard written == total else {
+            try? FileManager.default.removeItem(at: destination)
+            throw UpdaterError.message(L("The update download failed."))
+        }
     }
 
     private static func launchInstaller(dmg: URL) throws {
@@ -363,5 +545,123 @@ final class UpdaterStore: ObservableObject {
         rm -rf "$APP.melon-old" "$MNT" "$DMG"
         rm -- "$0"
         """
+    }
+}
+
+/// Downloads one byte range into `destination` and reports the bytes written.
+/// Each range owns its session so four ranges run independently; the delegate
+/// callback that finishes the continuation is guarded against double resume.
+private final class RangeDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let expectedBytes: Int64
+    private let onBytes: @Sendable (Int64) -> Void
+    private let onDone: @Sendable (Result<Void, Error>) -> Void
+
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var finished = false
+
+    init(
+        destination: URL,
+        expectedBytes: Int64,
+        onBytes: @escaping @Sendable (Int64) -> Void,
+        onDone: @escaping @Sendable (Result<Void, Error>) -> Void
+    ) {
+        self.destination = destination
+        self.expectedBytes = expectedBytes
+        self.onBytes = onBytes
+        self.onDone = onDone
+    }
+
+    func start(_ request: URLRequest, configuration: URLSessionConfiguration) {
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        self.session = session
+        session.downloadTask(with: request).resume()
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        lock.unlock()
+        session?.invalidateAndCancel()
+        if case .failure = result {
+            try? FileManager.default.removeItem(at: destination)
+        }
+        onDone(result)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onBytes(totalBytesWritten)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard let http = downloadTask.response as? HTTPURLResponse,
+              http.statusCode == 206,
+              let finalURL = http.url,
+              UpdaterStore.isAllowed(finalURL) else {
+            finish(.failure(UpdaterStore.UpdaterError.message(L("The update download failed."))))
+            return
+        }
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: location, to: destination)
+            let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+            guard size == expectedBytes else {
+                throw UpdaterStore.UpdaterError.message(L("The update download failed."))
+            }
+            finish(.success(()))
+        } catch {
+            finish(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            finish(.failure(error))
+        }
+    }
+}
+
+/// Sums bytes from all ranges and forwards at most five samples per second.
+final class ProgressMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let total: Int64
+    private let emit: @Sendable (Int64, Int64) -> Void
+    private var received: Int64 = 0
+    private var lastEmit = Date.distantPast
+
+    init(total: Int64, emit: @escaping @Sendable (Int64, Int64) -> Void) {
+        self.total = total
+        self.emit = emit
+    }
+
+    func add(_ bytes: Int64) {
+        lock.lock()
+        received += bytes
+        let value = min(received, total)
+        let now = Date()
+        let shouldEmit = now.timeIntervalSince(lastEmit) >= 0.2 || value >= total
+        if shouldEmit {
+            lastEmit = now
+        }
+        lock.unlock()
+        if shouldEmit {
+            emit(value, total)
+        }
     }
 }

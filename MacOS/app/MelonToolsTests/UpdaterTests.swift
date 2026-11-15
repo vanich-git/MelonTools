@@ -114,6 +114,65 @@ final class UpdaterTests: XCTestCase {
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)
     }
+
+    // MARK: - Chunked download
+
+    func testProgressFractionIsClampedToTheDownload() {
+        XCTAssertEqual(UpdateDownloadProgress(received: 50, total: 100, bytesPerSecond: 0).fraction, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(UpdateDownloadProgress(received: 150, total: 100, bytesPerSecond: 0).fraction, 1)
+        XCTAssertEqual(UpdateDownloadProgress(received: 10, total: 0, bytesPerSecond: 0).fraction, 0)
+    }
+
+    func testAssembleJoinsPartsInOrder() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-assemble-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parts = (0..<3).map { directory.appendingPathComponent("part-\($0)") }
+        try Data("alpha".utf8).write(to: parts[0])
+        try Data("beta".utf8).write(to: parts[1])
+        try Data("gamma".utf8).write(to: parts[2])
+        let output = directory.appendingPathComponent("joined.bin")
+
+        try UpdaterStore.assemble(parts, total: 14, into: output)
+
+        XCTAssertEqual(try Data(contentsOf: output), Data("alphabetagamma".utf8))
+    }
+
+    func testAssembleRejectsAShortFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-assemble-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let part = directory.appendingPathComponent("part-0")
+        try Data("short".utf8).write(to: part)
+        let output = directory.appendingPathComponent("joined.bin")
+
+        XCTAssertThrowsError(try UpdaterStore.assemble([part], total: 99, into: output))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    /// Opt-in network test: downloads the published 6.0.0 DMG through the real
+    /// four-range path and checks its digest. Off by default so CI stays fast;
+    /// run with `MT_UPDATE_NETWORK_TEST=1 xcodebuild test ...`.
+    func testChunkedDownloadOfPublishedAsset() async throws {
+        guard ProcessInfo.processInfo.environment["MT_UPDATE_NETWORK_TEST"] == "1" else {
+            throw XCTSkip("set MT_UPDATE_NETWORK_TEST=1 to download the release asset")
+        }
+        let url = URL(string: "https://github.com/vanich-git/MelonTools/releases/download/v6.0.0/MelonTools-6.0.0.dmg")!
+        let route = try await UpdaterStore.probe(url, configuration: NetworkProxy.directConfiguration())
+        XCTAssertEqual(route.total, 105_559_658)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mt-update-\(UUID().uuidString).dmg")
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        try await UpdaterStore.fetch(route, to: destination) { _, _ in }
+
+        XCTAssertEqual(
+            try UpdaterStore.sha256Hex(of: destination),
+            "956f2105e974302383e66246dd67a8e57a004f1b8d49354a5733a61961d6dd77"
+        )
+    }
 }
 
 /// The secrets writer must never leave a half-written or world-readable file:

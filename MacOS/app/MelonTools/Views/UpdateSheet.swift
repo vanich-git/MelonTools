@@ -47,6 +47,8 @@ struct UpdateSheet: View {
             return String(format: L("You are up to date (%@)"), version)
         case .failed:
             return L("Could not check for updates")
+        case .working:
+            return L("Melon Tools update")
         default:
             return L("Checking for updates…")
         }
@@ -77,11 +79,30 @@ struct UpdateSheet: View {
                 .foregroundStyle(MTTheme.danger)
                 .fixedSize(horizontal: false, vertical: true)
         case .working(let text):
-            HStack(spacing: MTTheme.s2) {
-                ProgressView().controlSize(.small)
-                Text(text)
+            if let progress = updater.download, progress.total > 0 {
+                VStack(alignment: .leading, spacing: MTTheme.s2) {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                        .tint(MTTheme.gold)
+                    Text(
+                        String(
+                            format: L("%@ of %@ · %@/s"),
+                            Self.bytes(progress.received),
+                            Self.bytes(progress.total),
+                            Self.bytes(Int64(max(0, progress.bytesPerSecond)))
+                        )
+                    )
                     .font(MTTheme.body(12))
                     .foregroundStyle(MTTheme.textSecondary)
+                    .monospacedDigit()
+                }
+            } else {
+                HStack(spacing: MTTheme.s2) {
+                    ProgressView().controlSize(.small)
+                    Text(text)
+                        .font(MTTheme.body(12))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
             }
         case .idle, .checking:
             HStack(spacing: MTTheme.s2) {
@@ -91,5 +112,9 @@ struct UpdateSheet: View {
                     .foregroundStyle(MTTheme.textSecondary)
             }
         }
+    }
+
+    private static func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, value), countStyle: .file)
     }
 }

@@ -67,6 +67,15 @@ enum NetworkProxy {
         return configuration
     }
 
+    /// Configuration for a request that must not use the app proxy. The updater
+    /// tries this route first: the CDN is reachable directly and faster than a
+    /// SOCKS proxy, and falls back to `externalConfiguration()` on failure.
+    static func directConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        return configuration
+    }
+
     /// Session for loopback management/health calls: never use a proxy.
     static func directSession() -> URLSession {
         lock.lock()
