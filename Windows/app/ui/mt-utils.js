@@ -287,3 +287,68 @@ function renderMarkdown(source) {
   closeList();
   return html.join("");
 }
+
+/// Model cards are Markdown with raw HTML mixed in: `<p align="center">`,
+/// `<img>`, `<a>`, `<details>` and whole `<table>`s. The renderer escapes HTML
+/// on purpose, which turned every such card into a wall of tags glued to the
+/// prose, so the common constructs are rewritten into Markdown before parsing.
+/// Unknown tags are dropped and their text kept; fenced code is left untouched.
+function htmlToMarkdown(source) {
+  const decode = (value) => String(value)
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&(?:apos|#0*39);/gi, "'")
+    .replace(/&#x0*([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#0*(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&amp;/gi, "&");
+  const stripTags = (value) => decode(String(value).replace(/<[^>]*>/g, " ")).replace(/[ \t]+/g, " ").trim();
+  const attribute = (tag, name) => {
+    const match = new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(tag);
+    return match ? match[1] : "";
+  };
+  const table = (html) => {
+    const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((row) =>
+      [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((cell) => stripTags(cell[1]).replace(/\|/g, "\\|"))
+    ).filter((cells) => cells.length);
+    if (!rows.length) return "";
+    const width = Math.max(...rows.map((cells) => cells.length));
+    const line = (cells) => `| ${Array.from({ length: width }, (_, index) => cells[index] || "").join(" | ")} |`;
+    return `\n\n${line(rows[0])}\n|${" --- |".repeat(width)}\n${rows.slice(1).map(line).join("\n")}\n\n`;
+  };
+
+  const codeBlocks = [];
+  let text = String(source == null ? "" : source)
+    .replace(/```[\s\S]*?```/g, (block) => `\u0001CODE${codeBlocks.push(block) - 1}\u0001`);
+  // Model cards carry Hugging Face metadata as HTML comments; a browser hides
+  // them, so they must not reach the card as text.
+  text = text.replace(/<!--[\s\S]*?-->/g, "");
+  text = text.replace(/<table[\s\S]*?<\/table>/gi, table);
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/(p|div|section|article|details|summary|h[1-6]|ul|ol|tr)>/gi, "\n\n");
+  text = text.replace(/<h([1-6])[^>]*>/gi, (_, level) => `\n\n${"#".repeat(Number(level))} `);
+  text = text.replace(/<li[^>]*>/gi, "- ").replace(/<\/li>/gi, "\n");
+  text = text.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");
+  text = text.replace(/<\/?(strong|b)>/gi, "**").replace(/<\/?(em|i)>/gi, "*").replace(/<\/?code>/gi, "`");
+  // A link wrapped around a bare image is a badge: keep the caption, drop the artwork.
+  text = text.replace(/<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>\s*(<img\s[^>]*>)\s*<\/a>/gi, (_, href, tag) => {
+    if (!/^https?:\/\//i.test(href)) return "";
+    const alt = attribute(tag, "alt");
+    return alt ? `[${alt}](${href})` : "";
+  });
+  text = text.replace(/<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
+    const text = stripTags(label);
+    return /^https?:\/\//i.test(href) ? `[${text || href}](${href})` : text;
+  });
+  text = text.replace(/<img\s[^>]*>/gi, (tag) => {
+    const src = attribute(tag, "src");
+    if (!/^https?:\/\//i.test(src)) return "";
+    return `[${attribute(tag, "alt") || "image"}](${src})`;
+  });
+  // Neither renderer draws remote images: keep the caption so badges read as links.
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
+  text = text.replace(/<\/?[a-z][^>]*>/gi, "");
+  text = decode(text).replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
+  return text.replace(/\u0001CODE(\d+)\u0001/g, (_, index) => codeBlocks[Number(index)] || "");
+}

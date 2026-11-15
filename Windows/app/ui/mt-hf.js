@@ -22,10 +22,89 @@ function hfRepositoryID(input) {
   return match && !match[1].split("/").some(part => part === "." || part === "..") ? match[1] : null;
 }
 function hfName(repo) { return repo.displayName || String(repo.id || "").split("/").pop(); }
+
+// Publisher avatars. The Hub exposes one avatar URL per owner, and a page of
+// thirty rows usually contains a dozen distinct publishers, so the whole page
+// is resolved in one backend call and the result is cached for a week. The
+// initials tile stays as the placeholder until the image has loaded; a failed
+// image falls back to it instead of showing a broken icon.
+const HF_AVATAR_STORAGE = "melontools.hfAvatars";
+const HF_AVATAR_TTL = 7 * 24 * 60 * 60 * 1000;
+let hfAvatarEntries = null;
+let hfAvatarPending = null;
+
+function hfAvatarStore() {
+  if (hfAvatarEntries) return hfAvatarEntries;
+  hfAvatarEntries = {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(HF_AVATAR_STORAGE) || "{}") || {};
+    const now = Date.now();
+    Object.keys(raw).forEach((owner) => {
+      const entry = raw[owner];
+      if (entry && typeof entry.url === "string" && now - Number(entry.at || 0) < HF_AVATAR_TTL) hfAvatarEntries[owner] = entry;
+    });
+  } catch (_) {
+    hfAvatarEntries = {};
+  }
+  return hfAvatarEntries;
+}
+
+function hfAvatarSave() {
+  try { localStorage.setItem(HF_AVATAR_STORAGE, JSON.stringify(hfAvatarEntries || {})); } catch (_) { /* storage full or disabled */ }
+}
+
 function hfAvatar(repo, large = false) {
   const author = repo.author || String(repo.id || "").split("/")[0];
   const hue = Array.from(author).reduce((sum, c) => sum + c.charCodeAt(0), 0) % 360;
-  return `<span class="hf-avatar ${large ? "large" : ""}" style="--avatar-hue:${hue}" aria-hidden="true">${esc(author.slice(0, 2).toUpperCase())}</span>`;
+  const entry = hfAvatarStore()[author];
+  if (entry) {
+    return `<img class="hf-avatar image${large ? " large" : ""}" src="${esc(entry.url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="--avatar-hue:${hue}">`;
+  }
+  return `<span class="hf-avatar${large ? " large" : ""}" data-hf-avatar="${esc(author)}" style="--avatar-hue:${hue}" aria-hidden="true">${esc(author.slice(0, 2).toUpperCase())}</span>`;
+}
+
+/// Swaps the initials tiles of a rendered list for the resolved images without
+/// a full re-render, so scroll position and focus survive.
+function hfApplyAvatars(root) {
+  const store = hfAvatarStore();
+  root.querySelectorAll("[data-hf-avatar]").forEach((el) => {
+    const entry = store[el.dataset.hfAvatar];
+    if (!entry) return;
+    const image = document.createElement("img");
+    image.className = `${el.className} image`;
+    image.src = entry.url;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    const hue = el.style.getPropertyValue("--avatar-hue");
+    if (hue) image.style.setProperty("--avatar-hue", hue);
+    image.addEventListener("error", () => { image.replaceWith(el); });
+    el.replaceWith(image);
+  });
+}
+
+function hfLoadAvatars(root) {
+  if (!root || root.querySelectorAll("[data-hf-avatar]").length === 0 || !IS_TAURI) return;
+  const store = hfAvatarStore();
+  const owners = Array.from(new Set(Array.from(root.querySelectorAll("[data-hf-avatar]")).map((el) => el.dataset.hfAvatar).filter((owner) => owner && !store[owner])));
+  if (!owners.length) return;
+  if (hfAvatarPending) {
+    hfAvatarPending.then(() => { if (root.isConnected) hfLoadAvatars(root); }).catch(() => {});
+    return;
+  }
+  hfAvatarPending = inv("local_ai_hf_avatars", { owners })
+    .then((map) => {
+      const now = Date.now();
+      owners.forEach((owner) => {
+        const url = map && map[owner];
+        if (url) store[owner] = { url, at: now };
+      });
+      hfAvatarSave();
+      hfApplyAvatars(root);
+    })
+    .catch(() => { /* offline: keep the initials */ })
+    .then(() => { hfAvatarPending = null; });
 }
 function hfDate(value) {
   const date = new Date(value);
@@ -74,11 +153,17 @@ function hfCatalogDetail() {
     <div class="hf-detail-meta"><div class="repo-stats">${hfStats(repo)}</div><a class="link-btn" href="https://huggingface.co/${esc(repo.id)}" target="_blank" rel="noopener noreferrer">${esc(t("localAiOpenHf"))} ↗</a></div>
     <section class="hf-section"><div class="hf-section-heading"><h3>${esc(hfText("options"))}</h3><span class="hint">${esc(hfText("device"))}</span></div><div class="hf-surface">
       <label class="hf-fit-filter"><input type="checkbox" data-action="localAiHfCompatible" data-on="change" ${state.hfCompatibleOnly ? "checked" : ""}>${esc(hfText("compatible"))}</label>
-      ${file ? `<label class="sr-only" for="hf-quant">${esc(hfText("variant"))}</label><select class="hf-quant mono" id="hf-quant" data-action="localAiHfVariant" data-on="change">${files.map(item => `<option value="${esc(item.name)}" ${item.name === file.name ? "selected" : ""}>${esc(item.quantization)} · ${item.size ? formatBytes(item.size) : hfText("unavailable")}${recommended && item.name === recommended.name ? ` · ${hfText("recommended")}` : ""} — ${esc(item.name)}</option>`).join("")}</select>
+      ${file ? `<details class="hf-select hf-select-wide"><summary aria-label="${esc(hfText("variant"))}">
+        <span class="hf-select-main"><strong class="mono">${esc(file.quantization || file.name)}</strong><span class="hf-select-size">${file.size ? formatBytes(file.size) : hfText("unavailable")}</span></span>
+        ${recommended && recommended.name === file.name ? `<span class="hf-mini-badge">${esc(hfText("recommended"))}</span>` : ""}${localAiIcon("chevron", 11)}
+      </summary><div class="local-ai-menu-panel hf-select-panel hf-variant-panel">${files.map(item => `<button class="local-ai-menu-item hf-variant-item ${item.name === file.name ? "selected" : ""}" value="${esc(item.name)}" data-action="localAiHfVariant">
+        <span class="hf-variant-copy"><span class="hf-variant-quant mono">${esc(item.quantization || item.name)}</span><span class="hf-variant-file">${esc(item.name)}</span></span>
+        <span class="hf-variant-meta">${item.size ? formatBytes(item.size) : hfText("unavailable")}${recommended && item.name === recommended.name ? `<span class="hf-mini-badge">${esc(hfText("recommended"))}</span>` : ""}${item.name === file.name ? localAiIcon("check", 12) : ""}</span>
+      </button>`).join("")}</div></details>
       <div class="hf-file-name mono">${esc(file.name)}</div><div class="hf-download-row">${issue ? `<span class="hint">${esc(t("localAiUnknown"))}</span>` : localAiCompatBadge(file)}<button class="btn small" data-action="localAiDownloadQuant" data-repo="${esc(repo.id)}" data-file="${esc(file.name)}" data-url="${esc(file.downloadUrl || "")}" data-size="${Number(file.size) || 0}" data-sha="${esc(file.sha256 || "")}" ${active || issue ? "disabled" : ""}>${localAiIcon("download", 13)} ${esc(active ? t("localAiDownloading") : t("localAiDownload"))}${file.size ? ` · ${formatBytes(file.size)}` : ""}</button></div>${issue ? `<p class="hf-note">${esc(issue)}</p>` : ""}`
       : `<p class="muted">${esc((repo.ggufFiles || []).length ? hfText("noCompatible") : t("localAiNoFiles"))}</p>`}<p class="hf-note">${esc(hfText("estimate"))}</p>
     </div></section><section class="hf-section"><h3>${esc(hfText("details"))}</h3><div class="hf-surface">${repo.description ? `<p class="hf-description">${esc(repo.description)}</p>` : ""}<dl class="hf-metadata">${meta.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>${(repo.tags || []).length ? `<div class="hf-tags">${repo.tags.filter(tag => !tag.includes(":" )).slice(0, 10).map(tag => `<span>${esc(tag)}</span>`).join("")}</div>` : ""}</div></section>
-    <section class="hf-section"><h3>README</h3><div class="hf-surface hf-readme markdown-body">${repo.readme ? renderMarkdown(repo.readme.replace(/^---\s*\n[\s\S]*?\n---\s*\n/, "")) : `<p class="muted">${esc(hfText("readmeMissing"))}</p>`}</div></section></div>`;
+    <section class="hf-section"><h3>README</h3><div class="hf-surface hf-readme markdown-body">${repo.readme ? renderMarkdown(htmlToMarkdown(repo.readme.replace(/^---\s*\n[\s\S]*?\n---\s*\n/, ""))) : `<p class="muted">${esc(hfText("readmeMissing"))}</p>`}</div></section></div>`;
 }
 function hfRefreshCatalog() {
   const results = document.getElementById("hf-results"), detail = document.getElementById("hf-detail"), summary = document.getElementById("hf-search-summary");
@@ -87,4 +172,6 @@ function hfRefreshCatalog() {
   results.innerHTML = hfCatalogResults(); detail.innerHTML = hfCatalogDetail();
   results.scrollTop = top; detail.scrollTop = detailTop;
   if (summary) summary.textContent = S.localAi.catalogLoading ? t("loading") : (S.localAi.catalogQuery ? `${(S.localAi.catalogResults || []).length} ${hfText("matches")}` : hfText("popular"));
+  hfLoadAvatars(results);
+  hfLoadAvatars(detail);
 }

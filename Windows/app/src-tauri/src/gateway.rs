@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use crate::paths;
@@ -16,13 +16,44 @@ use crate::vault::{self, Account};
 
 pub struct Gateway {
     pub child: Mutex<Option<Child>>,
+    /// Incremented only when `start` spawns a fresh engine. Adopting an
+    /// already-running process keeps it unchanged, which lets the publication
+    /// gate distinguish a real restart from a resumed one.
+    started_generation: Arc<AtomicU64>,
+    /// Set once `stop` has swept the engine. `RunEvent::Exit`, the tray quit
+    /// and the updater all stop the gateway, and the second call must not run
+    /// the image-name `taskkill /IM` sweep again (§2.2, W9).
+    stopped: Mutex<bool>,
 }
 
 impl Gateway {
     pub fn new() -> Self {
         Self {
             child: Mutex::new(None),
+            started_generation: Arc::new(AtomicU64::new(0)),
+            stopped: Mutex::new(false),
         }
+    }
+
+    /// Records that an engine may be running again. Called when `start` adopts
+    /// a live engine or stores a freshly spawned child, so a later `stop` does
+    /// not mistake it for the repeat call described above.
+    fn mark_running(&self) {
+        if let Ok(mut stopped) = self.stopped.lock() {
+            *stopped = false;
+        }
+    }
+
+    /// Handle to the count of fresh engine processes this process has spawned.
+    /// The count advances before the health poll, so a started-but-unhealthy
+    /// child is still a new process for the publication gate.
+    pub(crate) fn started_generation_handle(&self) -> Arc<AtomicU64> {
+        self.started_generation.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_started_for_test(&self) {
+        self.started_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     /// True when a child process we spawned is still alive. Adopted engines
@@ -115,19 +146,138 @@ const OPENCODE_MODELS: &[(&str, &str)] = &[
 ];
 
 pub fn write_config(settings: &Settings) -> Result<(), String> {
-    write_config_with(settings, false)
+    write_config_from(|| settings.clone(), false).map(|_| ())
+}
+
+/// Reads the live settings while holding the config write lock, so the snapshot
+/// that is rendered is the snapshot that is written. Passing an already cloned
+/// `Settings` leaves a window where a concurrent save replaces the file with
+/// newer values and this call then overwrites it with the older clone.
+pub fn write_config_current<F>(load: F) -> Result<(), String>
+where
+    F: FnOnce() -> Settings,
+{
+    write_config_from(load, false).map(|_| ())
+}
+
+/// One config generation: the exact YAML handed to the engine, the endpoint
+/// that YAML was rendered for, and the local aliases it declares. Callers must
+/// never re-derive any of these from a second snapshot — the gateway then
+/// waits for a catalogue, or authenticates against a port, that does not match
+/// the file it wrote.
+pub struct ConfigPublication {
+    pub yaml: String,
+    pub local_models: Vec<String>,
+    pub port: u16,
+    pub management_secret: String,
+    /// Monotonic generation of the bytes this call left current. A forced
+    /// write always advances it; the ordinary coalesced path can skip the
+    /// replacement and then reports the newest generation, which may describe
+    /// another writer's bytes. Any later config write — including one that
+    /// lands while the management reload is in flight — makes the process-wide
+    /// counter differ, so a caller that did replace the file can tell that its
+    /// snapshot is no longer the newest one.
+    pub generation: u64,
+}
+
+/// Incremented under [`CONFIG_GENERATION_LOCK`] every time `config.yaml` is
+/// actually replaced. It is not a revision of the engine's view: it only orders
+/// local writes, which is what a publication needs to detect a competing save.
+static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Serialises a generation check with the file replacement that invalidates it.
+/// A publisher holds this guard across "is this generation still current?" and
+/// the acknowledgement; a writer holds it from the rename until the counter
+/// bump. Without it a save can replace the file between the check and the
+/// acknowledgement, and the revision is marked synced for bytes that are
+/// already gone.
+static CONFIG_GENERATION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Held while a publication checks its generation and records the revision as
+/// synced, or while a config writer replaces the file and bumps the counter.
+///
+/// Lock order: a config writer takes `last_written_config`, any settings lock
+/// needed to render the document, and only then this guard. A publisher takes
+/// this guard alone and must not acquire a settings or lifecycle lock while
+/// holding it; `mark_synced` is an atomic and is safe. Never start or join a
+/// config writer while holding it: that writer needs `last_written_config`
+/// first, and the reverse order deadlocks.
+pub struct ConfigGenerationGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+/// Blocks until no config writer is between the file replacement and the
+/// generation bump, and until no publisher is acknowledging a generation.
+pub fn lock_config_generation() -> ConfigGenerationGuard<'static> {
+    ConfigGenerationGuard {
+        _guard: CONFIG_GENERATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    }
+}
+
+impl ConfigGenerationGuard<'_> {
+    /// True when no local writer has replaced the file since `generation` was
+    /// observed. Writes performed by another process (the engine normalizing the
+    /// body it was sent, a manual edit) do not bump the counter and are not
+    /// covered by this answer.
+    pub fn is_current(&self, generation: u64) -> bool {
+        config_generation() == generation
+    }
+}
+
+/// The newest locally written config generation. A publication records the
+/// exact generation its own write produced and checks it again around the
+/// management reload: equality proves that no other local writer replaced the
+/// file in that window, inequality means its snapshot is stale. External
+/// writes do not participate; see [`ConfigGenerationGuard`].
+pub fn config_generation() -> u64 {
+    CONFIG_GENERATION.load(Ordering::Acquire)
 }
 
 /// Explicit local publication must reach the engine even when the YAML is
-/// byte-identical to the last generation: a lost fsnotify reload is exactly
-/// the failure a retry has to repair, and the idempotent path would suppress
-/// it as "nothing changed". Settings saves and catalogue refreshes keep the
-/// ordinary coalesced path.
-pub fn write_config_forced(settings: &Settings) -> Result<(), String> {
-    write_config_with(settings, true)
+/// byte-identical to the last generation: a reload the engine did not
+/// acknowledge is exactly the failure a retry has to repair, and the
+/// idempotent path would suppress it as "nothing changed". Settings saves and
+/// catalogue refreshes keep the ordinary coalesced path.
+pub fn write_config_forced(settings: &Settings) -> Result<ConfigPublication, String> {
+    write_config_from(|| settings.clone(), true)
 }
 
-fn write_config_with(settings: &Settings, force: bool) -> Result<(), String> {
+/// Forced counterpart of [`write_config_current`]: the bytes are replaced even
+/// when they match the previous generation, and the returned publication
+/// describes exactly the snapshot that was rendered and saved.
+pub fn write_config_current_forced<F>(load: F) -> Result<ConfigPublication, String>
+where
+    F: FnOnce() -> Settings,
+{
+    write_config_from(load, true)
+}
+
+fn write_config_from<F>(load: F, force: bool) -> Result<ConfigPublication, String>
+where
+    F: FnOnce() -> Settings,
+{
+    // The lock covers loading the settings, rendering the YAML and replacing
+    // the file. Any narrower section lets two writers read the same old state
+    // and the later one silently restore it after an earlier save.
+    let mut written = last_written_config()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let settings = load();
+    let mut publication = render_publication(&settings)?;
+    let path = paths::config_path();
+    let written_generation =
+        write_config_if_changed_locked(&path, &publication.yaml, force, &mut written)?;
+    // The generation must describe the bytes this call replaced, not whatever
+    // is newest by the time the guard is released. Reading the counter after
+    // the call would let a later writer race in and lend its generation to the
+    // older document, defeating the publication's stale-snapshot check.
+    publication.generation = written_generation.unwrap_or_else(config_generation);
+    Ok(publication)
+}
+
+fn render_publication(settings: &Settings) -> Result<ConfigPublication, String> {
     // An empty key or secret would produce a config the engine rejects, and a
     // config without providers would reload an incomplete file into a running
     // gateway. Both are worse than keeping the previous config on disk.
@@ -149,20 +299,22 @@ fn write_config_with(settings: &Settings, force: bool) -> Result<(), String> {
         settings.stream_bootstrap_timeout_seconds,
     );
     yaml.push_str(&crate::catalog::config_block());
-    yaml.push_str(&api_keys_yaml(settings));
+    let (local_block, local_models) = local_api_keys_yaml(settings);
+    yaml.push_str(&local_block);
 
-    let path = paths::config_path();
-    if force {
-        write_config_if_changed_forced(&path, &yaml).map(|_| ())
-    } else {
-        write_config_if_changed(&path, &yaml).map(|_| ())
-    }
+    Ok(ConfigPublication {
+        yaml,
+        local_models,
+        port: settings.port,
+        management_secret: settings.management_secret.clone(),
+        generation: 0,
+    })
 }
 
-/// Last YAML this process wrote, per config path. The engine rewrites the file
-/// itself after every reload (`PersistConfig` hashes the management secret), so
-/// comparing with the bytes on disk would keep restoring the plaintext version
-/// and trigger a reload storm. Compare the intent instead.
+/// Last YAML this process wrote, per config path. The engine normalizes the
+/// management secret and rewrites the file itself after a reload, so comparing
+/// with the bytes on disk would keep restoring the plaintext version and
+/// trigger a reload storm. Compare the intent instead.
 fn last_written_config() -> &'static Mutex<HashMap<PathBuf, String>> {
     static LAST: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
     LAST.get_or_init(|| Mutex::new(HashMap::new()))
@@ -186,10 +338,7 @@ fn write_config_if_changed(path: &std::path::Path, contents: &str) -> Result<boo
 /// Same write, but a matching generation is not a reason to skip: the engine
 /// may have missed the previous notification. Returns `true` whenever the file
 /// was replaced.
-fn write_config_if_changed_forced(
-    path: &std::path::Path,
-    contents: &str,
-) -> Result<bool, String> {
+fn write_config_if_changed_forced(path: &std::path::Path, contents: &str) -> Result<bool, String> {
     write_config_if_changed_with(path, contents, true)
 }
 
@@ -198,33 +347,45 @@ fn write_config_if_changed_with(
     contents: &str,
     force: bool,
 ) -> Result<bool, String> {
-    // The guard is held across the comparison and the replace: two writers that
-    // raced past the check would otherwise both replace the file and make the
-    // engine reload the same generation twice. A poisoned lock must not disable
-    // writes for the rest of the process: the map is only a cache of the last
-    // intent, and every path either inserts or returns without mutating it.
     let mut written = last_written_config()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    write_config_if_changed_locked(path, contents, force, &mut written)
+        .map(|generation| generation.is_some())
+}
+
+/// Caller already holds the write lock, so loading settings and replacing the
+/// file cannot interleave with another config writer.
+fn write_config_if_changed_locked(
+    path: &std::path::Path,
+    contents: &str,
+    force: bool,
+    written: &mut HashMap<PathBuf, String>,
+) -> Result<Option<u64>, String> {
     let exists = path.exists();
     if !force && !config_needs_write(contents, written.get(path).map(String::as_str), exists) {
-        return Ok(false);
+        return Ok(None);
     }
 
     // Atomic replace: a crash mid-write must not leave a broken config the
     // engine would refuse to start with.
     let tmp = paths::tmp_path(path);
-    fs::write(&tmp, contents)
-        .map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    fs::write(&tmp, contents).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
     let mut last_error = String::new();
-    let mut replaced = false;
+    let mut written_generation = None;
     for attempt in 0..3u64 {
+        // The rename and the counter bump are one critical section. A
+        // publisher holds the same guard while it checks its generation and
+        // calls `mark_synced`; without this, the file can be replaced in that
+        // window and the publication acknowledges bytes that are already gone.
+        let generation = lock_config_generation();
         match fs::rename(&tmp, path) {
             Ok(()) => {
-                replaced = true;
+                written_generation = Some(CONFIG_GENERATION.fetch_add(1, Ordering::AcqRel) + 1);
                 break;
             }
             Err(error) => {
+                drop(generation);
                 last_error = error.to_string();
                 if attempt < 2 {
                     std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
@@ -232,7 +393,7 @@ fn write_config_if_changed_with(
             }
         }
     }
-    if !replaced {
+    let Some(written_generation) = written_generation else {
         // Never truncate the live file in place: a partial write while the
         // engine reads it is worse than a skipped reload, and the old config
         // must survive a transient sharing violation. The explicit publication
@@ -242,25 +403,43 @@ fn write_config_if_changed_with(
             "could not replace {}: {last_error}",
             path.display()
         ));
-    }
+    };
     written.insert(path.to_path_buf(), contents.to_string());
-    drop(written);
     eprintln!("[gateway] config.yaml written ({} bytes)", contents.len());
-    Ok(true)
+    Ok(Some(written_generation))
+}
+
+/// Test-only access to the production replacement primitive without touching
+/// the user's config path. The returned generation names the bytes this call
+/// actually put on disk.
+#[cfg(test)]
+pub(crate) fn write_config_for_test(
+    path: &std::path::Path,
+    contents: &str,
+    force: bool,
+) -> Result<Option<u64>, String> {
+    let mut written = HashMap::new();
+    write_config_if_changed_locked(path, contents, force, &mut written)
 }
 
 /// Coalesces a burst of config changes (settings, catalogue refresh, local
 /// routes) into one engine reload instead of one per caller.
-pub fn schedule_write_config(settings: Settings) {
+pub fn schedule_write_config<F>(load: F)
+where
+    F: FnOnce() -> Settings + Send + 'static,
+{
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(350)).await;
-        // A newer change superseded this one; it will write the latest state.
+        // A newer change superseded this one; it will read and write the latest
+        // state itself. The callback deliberately loads the settings only after
+        // the delay: an eagerly captured snapshot would restore values that a
+        // save performed during the sleep already replaced.
         if GENERATION.load(Ordering::Relaxed) != generation {
             return;
         }
-        if let Err(error) = write_config(&settings) {
+        if let Err(error) = write_config_current(load) {
             eprintln!("[gateway] config write failed: {error}");
         }
     });
@@ -274,11 +453,19 @@ fn base_config(
     api_key: &str,
     auth_dir: &str,
     secret: &str,
-    stream_bootstrap_timeout: i64,
+    stream_bootstrap_timeout_seconds: i64,
 ) -> String {
+    // Canonical v8 layout. `PUT /v0/management/config.yaml` accepted the legacy
+    // spelling and silently rewrote it, while `PUT /v8/management/config.yaml`
+    // rejects every legacy root, so the file the engine stores and the file we
+    // send back on reload have to use the same names.
     format!(
         r#"# Melon Tools — Codex API gateway config (CLIProxyAPI)
 config-version: 8
+# Read by the QoS patch (MacOS/patches/0001): first-token failover for
+# streaming Antigravity requests. v8 accepts it because the same patch adds it
+# to the v8 root allowlist.
+stream-bootstrap-timeout-seconds: {stream_bootstrap_timeout_seconds}
 server:
   host: "127.0.0.1"
   port: {port}
@@ -287,18 +474,30 @@ access:
     - "{api_key}"
 oauth:
   auth-dir: "{auth_dir}"
-remote-management:
+management:
   allow-remote: false
   secret-key: "{secret}"
   disable-control-panel: true
   disable-auto-update-panel: true
 routing:
-  strategy: "fill-first"
-# Fail over to another account while the leader is cooling down.
-request-retry: 3
-max-retry-interval: 45
-transient-error-cooldown-seconds: 20
-stream-bootstrap-timeout-seconds: {stream_bootstrap_timeout}
+  strategy: "weighted-round-robin"
+  # Keep one conversation on one account. Without it every turn may land on a
+  # different credential, which splits the upstream cache and makes a single
+  # conversation look like many unrelated clients.
+  session-affinity: true
+  session-affinity-ttl: "2h"
+  session-affinity-subagents: true
+  # Quota and auth failures must move the session; a transient stream error
+  # should not, or a long conversation gets reshuffled on a hiccup.
+  session-affinity-rebind-on: "quota"
+# These three are root-level fields in the engine config; nesting them under
+# `routing:` makes them unreadable and silently drops the tuning. The v8 loader
+# decodes with KnownFields(true), so a wrong shape is not ignored politely.
+# One retry only: every extra attempt is another request on an account that may
+# already be flagged, and a 403 never becomes a 200 by retrying it.
+request-retry: 1
+max-retry-interval: 30
+transient-error-cooldown-seconds: 60
 requests:
   proxy-url: "{proxy}"
 "#,
@@ -307,7 +506,7 @@ requests:
         auth_dir = auth_dir,
         secret = yaml_escape(secret),
         proxy = yaml_escape(&crate::proxy::engine_url()),
-        stream_bootstrap_timeout = stream_bootstrap_timeout.max(0),
+        stream_bootstrap_timeout_seconds = stream_bootstrap_timeout_seconds.max(0),
     )
 }
 
@@ -330,6 +529,13 @@ pub(crate) const USER_AGENT: &str = concat!("MelonTools/", env!("CARGO_PKG_VERSI
 /// Every section is emitted from this one builder — a second root would break
 /// the engine config. Returns an empty string when nothing is configured.
 pub fn api_keys_yaml(settings: &Settings) -> String {
+    local_api_keys_yaml(settings).0
+}
+
+/// Same builder, but the local alias list comes from the very snapshot the
+/// YAML was rendered from. A publication that promises a different set than
+/// the file declares can never converge.
+fn local_api_keys_yaml(settings: &Settings) -> (String, Vec<String>) {
     let local_models = servable_local_models();
     // The relay, not the router: it forwards every call and merges the model's
     // system prompt into the request body on the way through. Only started when
@@ -341,7 +547,14 @@ pub fn api_keys_yaml(settings: &Settings) -> String {
         crate::local_ai::published_local_port()
     };
     let local_token = crate::local_ai::get_or_create_internal_token();
-    api_keys_yaml_with_local(settings, &local_models, local_port, &local_token)
+    let aliases = local_models
+        .iter()
+        .map(|model| local_model_alias(&model.id))
+        .collect();
+    (
+        api_keys_yaml_with_local(settings, &local_models, local_port, &local_token),
+        aliases,
+    )
 }
 
 /// Models the local engine is serving right now.
@@ -377,6 +590,9 @@ pub fn api_keys_yaml_with_local(
     let deepinfra = settings.deepinfra_enabled
         && !settings.deepinfra_key.trim().is_empty()
         && !settings.deepinfra_models.is_empty();
+    let nvidia = settings.nvidia_enabled
+        && !settings.nvidia_key.trim().is_empty()
+        && !settings.nvidia_models.is_empty();
     let vercel = settings.vercel_enabled
         && !settings.vercel_key.trim().is_empty()
         && !settings.vercel_models.is_empty();
@@ -400,22 +616,73 @@ pub fn api_keys_yaml_with_local(
     let commandcode_anthropic = commandcode && !commandcode_anthropic.is_empty();
     let claude = settings.claude_enabled && !settings.claude_api_key.trim().is_empty();
     let local_ai = !local_models.is_empty();
+
+    // Custom providers are grouped by the protocol that decides which gateway
+    // section they belong to. Invalid or disabled entries are skipped here as
+    // well as in the UI, so a hand-edited settings file cannot break the YAML.
+    let mut custom_chat: Vec<(&crate::settings::CustomProvider, String)> = Vec::new();
+    let mut custom_responses: Vec<(&crate::settings::CustomProvider, String)> = Vec::new();
+    let mut custom_anthropic: Vec<(&crate::settings::CustomProvider, String)> = Vec::new();
+    let mut custom_gemini: Vec<(&crate::settings::CustomProvider, String)> = Vec::new();
+    for provider in &settings.custom_providers {
+        if !provider.enabled || provider.api_key.trim().is_empty() {
+            continue;
+        }
+        if crate::custom::valid_identifier(&provider.id).is_err() {
+            continue;
+        }
+        if !provider
+            .models
+            .iter()
+            .any(|model| model.enabled && !model.id.trim().is_empty())
+        {
+            continue;
+        }
+        let Ok(protocol) = crate::custom::Protocol::parse(&provider.protocol) else {
+            continue;
+        };
+        let Ok(base_url) = crate::custom::normalize_base_url(&provider.base_url, protocol) else {
+            continue;
+        };
+        match protocol {
+            crate::custom::Protocol::OpenAIChat => custom_chat.push((provider, base_url)),
+            crate::custom::Protocol::OpenAIResponses => custom_responses.push((provider, base_url)),
+            crate::custom::Protocol::Anthropic => custom_anthropic.push((provider, base_url)),
+            crate::custom::Protocol::Gemini => custom_gemini.push((provider, base_url)),
+        }
+    }
+    let has_custom = !custom_chat.is_empty()
+        || !custom_responses.is_empty()
+        || !custom_anthropic.is_empty()
+        || !custom_gemini.is_empty();
+
     if !opencode
         && !openrouter
         && !deepinfra
+        && !nvidia
         && !vercel
         && !zai
         && !commandcode_openai
         && !claude
         && !commandcode_anthropic
         && !local_ai
+        && !has_custom
     {
         return String::new();
     }
 
     let mut yaml = String::from("api-keys:\n");
 
-    if opencode || openrouter || deepinfra || vercel || zai || commandcode_openai || local_ai {
+    if opencode
+        || openrouter
+        || deepinfra
+        || nvidia
+        || vercel
+        || zai
+        || commandcode_openai
+        || local_ai
+        || !custom_chat.is_empty()
+    {
         yaml.push_str("  openai-compatibility:\n");
         if local_ai {
             yaml.push_str("    - name: \"melon-local-ai\"\n");
@@ -480,6 +747,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.openrouter_key)
             ));
+            push_openrouter_models(&mut yaml, settings);
         }
         if deepinfra {
             yaml.push_str("    - name: \"deepinfra\"\n");
@@ -489,6 +757,15 @@ pub fn api_keys_yaml_with_local(
                 yaml_escape(&settings.deepinfra_key)
             ));
             push_cached_models(&mut yaml, "deepinfra", &settings.deepinfra_models);
+        }
+        if nvidia {
+            yaml.push_str("    - name: \"nvidia\"\n");
+            yaml.push_str("      base-url: \"https://integrate.api.nvidia.com/v1\"\n");
+            yaml.push_str(&format!(
+                "      keys:\n        - api-key: \"{}\"\n",
+                yaml_escape(&settings.nvidia_key)
+            ));
+            push_cached_models(&mut yaml, "nvidia", &settings.nvidia_models);
         }
         if vercel {
             yaml.push_str("    - name: \"vercel\"\n");
@@ -529,9 +806,19 @@ pub fn api_keys_yaml_with_local(
                 .collect();
             push_cached_models(&mut yaml, "commandcode", &models);
         }
+        for (provider, base_url) in &custom_chat {
+            push_custom_provider(&mut yaml, provider, base_url);
+        }
     }
 
-    if claude || commandcode_anthropic {
+    if !custom_responses.is_empty() {
+        yaml.push_str("  codex:\n");
+        for (provider, base_url) in &custom_responses {
+            push_custom_provider(&mut yaml, provider, base_url);
+        }
+    }
+
+    if claude || commandcode_anthropic || !custom_anthropic.is_empty() {
         yaml.push_str("  claude:\n");
         if claude {
             yaml.push_str("    - name: \"claude\"\n");
@@ -565,13 +852,130 @@ pub fn api_keys_yaml_with_local(
                 .collect();
             push_cached_models(&mut yaml, "commandcode", &models);
         }
+        for (provider, base_url) in &custom_anthropic {
+            push_custom_provider(&mut yaml, provider, base_url);
+        }
+    }
+
+    if !custom_gemini.is_empty() {
+        yaml.push_str("  gemini:\n");
+        for (provider, base_url) in &custom_gemini {
+            push_custom_provider(&mut yaml, provider, base_url);
+        }
+    }
+
+    if openrouter {
+        append_openrouter_payload(&mut yaml, settings);
     }
 
     yaml
 }
 
+fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
+    let config = &settings.openrouter_config;
+    let has_models = settings.openrouter_models.iter().any(|model| !model.id.trim().is_empty());
+    if !has_models {
+        return;
+    }
+    yaml.push_str("\npayload:\n  default-raw:\n");
+    for model in settings.openrouter_models.iter().filter(|model| !model.id.trim().is_empty()) {
+        let strategy = config.models.get(&model.id).map(String::as_str).unwrap_or(config.default_strategy.as_str());
+        let model_config = config.model_providers.get(&model.id);
+        let sort = match strategy {
+            "throughput" | "nitro" => "throughput",
+            "latency" => "latency",
+            _ => "price",
+        };
+        let mut provider = serde_json::Map::new();
+        provider.insert("sort".to_string(), json!(sort));
+        provider.insert("data_collection".to_string(), json!(config.data_collection));
+        provider.insert("require_parameters".to_string(), json!(config.require_parameters));
+        provider.insert(
+            "allow_fallbacks".to_string(),
+            json!(model_config.and_then(|value| value.allow_fallbacks).unwrap_or(config.allow_fallbacks)),
+        );
+        for (key, values) in [
+            ("order", model_config.map(|value| &value.order).filter(|values| !values.is_empty()).unwrap_or(&config.order)),
+            ("only", model_config.map(|value| &value.only).filter(|values| !values.is_empty()).unwrap_or(&config.only)),
+            ("ignore", model_config.map(|value| &value.ignore).filter(|values| !values.is_empty()).unwrap_or(&config.ignore)),
+        ] {
+            if !values.is_empty() {
+                provider.insert(key.to_string(), json!(values));
+            }
+        }
+        if !config.quantizations.is_empty() {
+            provider.insert("quantizations".to_string(), json!(config.quantizations));
+        }
+        let provider_json = serde_json::to_string(&Value::Object(provider)).unwrap_or_else(|_| "{}".to_string());
+        let escaped = provider_json.replace('\\', "\\\\").replace('"', "\\\"");
+        yaml.push_str(&format!(
+            "    - models:\n        - name: \"{}\"\n          protocol: \"openai\"\n      params:\n        provider: \"{}\"\n",
+            yaml_escape(&format!("openrouter/{}", model.id)), escaped
+        ));
+    }
+}
+
+fn push_openrouter_models(yaml: &mut String, settings: &Settings) {
+    if settings.openrouter_models.is_empty() {
+        return;
+    }
+    yaml.push_str("      models:\n");
+    for model in &settings.openrouter_models {
+        let strategy = settings.openrouter_config.models.get(&model.id).map(String::as_str)
+            .unwrap_or(settings.openrouter_config.default_strategy.as_str());
+        let upstream = match strategy {
+            "floor" | "nitro" if !model.id.ends_with(&format!(":{}", strategy)) => format!("{}:{}", model.id, strategy),
+            _ => model.id.clone(),
+        };
+        yaml.push_str(&format!(
+            "        - name: \"{}\"\n          alias: \"openrouter/{}\"\n",
+            yaml_escape(&upstream), yaml_escape(&model.id)
+        ));
+        if !model.display.trim().is_empty() {
+            yaml.push_str(&format!("          display-name: \"{}\"\n", yaml_escape(&model.display)));
+        }
+        if let Some(context) = model.context_window.filter(|value| *value > 0) {
+            yaml.push_str(&format!("          max-context-length: {}\n", context));
+        }
+    }
+}
+
 /// Explicit model list for a cached provider. The gateway must never discover
 /// unfiltered upstream models when a key is configured.
+/// One custom provider entry. The alias is recomputed from the provider id so
+/// renaming a provider cannot leave stale aliases in the config.
+fn push_custom_provider(
+    yaml: &mut String,
+    provider: &crate::settings::CustomProvider,
+    base_url: &str,
+) {
+    yaml.push_str(&format!(
+        "    - name: \"{}\"\n      base-url: \"{}\"\n      keys:\n        - api-key: \"{}\"\n",
+        yaml_escape(&provider.id),
+        yaml_escape(base_url),
+        yaml_escape(provider.api_key.trim()),
+    ));
+    yaml.push_str("      models:\n");
+    for model in provider.models.iter().filter(|model| model.enabled) {
+        let id = model.id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        yaml.push_str(&format!(
+            "        - name: \"{}\"\n          alias: \"{}\"\n",
+            yaml_escape(id),
+            yaml_escape(&crate::custom::model_alias(&provider.id, id)),
+        ));
+        let display = model.display.trim();
+        if !display.is_empty() && display != id {
+            yaml.push_str(&format!("          display-name: \"{}\"\n", yaml_escape(display)));
+        }
+        if let Some(context) = model.context_window.filter(|value| *value > 0) {
+            yaml.push_str(&format!("          max-context-length: {context}\n"));
+        }
+    }
+}
+
 fn push_cached_models(
     yaml: &mut String,
     provider: &str,
@@ -654,11 +1058,44 @@ pub fn auth_file_name(account: &Account, index: usize) -> String {
     }
 }
 
-/// CLIProxyAPI `fill-first` selects the highest priority value first. The
-/// routing planner returns the best account first, so the first account must
-/// get the highest number. This mirrors the macOS sync contract.
-fn priority_for(total: usize, index: usize) -> usize {
-    total.saturating_sub(index)
+/// Gateway priority encodes the pool *tier*, not the position inside it: the
+/// engine always serves the highest ready tier first and only then balances
+/// inside that tier, so equal values are what let the load rotate. Regular
+/// accounts share the top tier, backups the one below. This mirrors the macOS
+/// sync contract.
+fn priority_for(tier: usize) -> usize {
+    match tier {
+        PRIORITY_TIER_BACKUP => 1,
+        _ => 2,
+    }
+}
+
+/// Tier constants shared with the macOS planner (`backupPriority` /
+/// `regularPriority`).
+const PRIORITY_TIER_BACKUP: usize = 1;
+
+/// Smooth-weighted-round-robin share for one account, derived from the quota
+/// it has left. The engine reads `weight` verbatim, so keeping this a pure
+/// function of the cached reading is enough: every quota refresh re-runs the
+/// sync and rewrites the auth file.
+///
+/// `remaining / 10` floors a full account to 10 and a nearly empty one to 0,
+/// and the `max(1, …)` floor keeps the last percent routable — an exhausted
+/// window is excluded by `disabled`, not by a zero weight, which would
+/// silently drop the account out of the picker.
+fn quota_weight(account: &Account) -> u64 {
+    let hourly = account
+        .quota
+        .as_ref()
+        .and_then(|q| q.hourly_remaining_percent)
+        .unwrap_or(100.0);
+    let weekly = account
+        .quota
+        .as_ref()
+        .and_then(|q| q.weekly_remaining_percent)
+        .unwrap_or(100.0);
+    let remaining = hourly.min(weekly).clamp(0.0, 100.0);
+    std::cmp::max(1, (remaining / 10.0) as u64)
 }
 
 /// Auth-file payload for one account: credentials, routing priority and the
@@ -688,6 +1125,11 @@ fn auth_payload(account: &Account, priority: usize, pool: &HashSet<String>) -> V
         "expired": expired,
         "plan_type": account.plan_type.clone().unwrap_or_else(|| "free".to_string()),
         "priority": priority,
+        // Explicit weight so the weighted strategy has a share to read from
+        // the auth file instead of relying on the engine default. The share
+        // follows the quota left, so an account with 90% left drains ten times
+        // faster than one with 9% left instead of both taking equal traffic.
+        "weight": quota_weight(account),
     });
     // The engine routes a pool model only to accounts that allow it. An empty
     // exclusion list is omitted, not written as `[]`.
@@ -738,7 +1180,12 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             continue;
         }
 
-        let payload = auth_payload(account, priority_for(ordered.len(), index), &pool);
+        let tier = if account.is_backup.unwrap_or(false) {
+            PRIORITY_TIER_BACKUP
+        } else {
+            0
+        };
+        let payload = auth_payload(account, priority_for(tier), &pool);
         desired.push((
             dir.join(auth_file_name(account, index)),
             payload,
@@ -968,22 +1415,80 @@ pub async fn health(port: u16, api_key: &str) -> bool {
     }
 }
 
-pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, String> {
+/// Whether something accepts TCP connections on the gateway's loopback port.
+///
+/// A publication checks this before replacing `config.yaml`: a stopped gateway
+/// must not cause a stream of forced writes. This is deliberately only a
+/// transport probe. Querying an authenticated HTTP route would turn an API-key
+/// mismatch into repeated credential failures (the engine bans the loopback
+/// address after five), and a key change must still be publishable. A port held
+/// by an unrelated process is indistinguishable here; the reload that follows
+/// reports that case. The connect is bounded at 200 ms so a supervisor tick
+/// cannot stall on a port that drops packets instead of refusing them.
+pub fn is_listening_blocking(port: u16) -> bool {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
+}
+
+/// Async form of [`is_listening_blocking`] for the publication task.
+pub async fn is_listening(port: u16) -> bool {
+    tokio::task::spawn_blocking(move || is_listening_blocking(port))
+        .await
+        .unwrap_or(false)
+}
+
+/// Whether an adopted process still has the identity now on disk. `answers` is
+/// a fresh health check performed with the current identity; it only matters
+/// when the port or key changed. A changed management secret is not observable
+/// through health, so it always forces a restart.
+fn adopt_matches(probed: &Settings, current: &Settings, answers: bool) -> bool {
+    current.management_secret == probed.management_secret
+        && ((current.port == probed.port && current.api_key == probed.api_key) || answers)
+}
+
+pub async fn start<F>(gateway: &Gateway, load: F) -> Result<String, String>
+where
+    F: Fn() -> Settings,
+{
     rotate_log(&paths::log_path());
     // Complete the engine catalog before the config points at it: the engine
     // refuses a `models.catalog` path it cannot read. Bounded so an
     // unreachable host never holds the gateway down.
+    //
+    // The refresh can take seconds, and settings saves are allowed meanwhile.
+    // Every use after the await loads the live settings again: writing the
+    // snapshot taken before the refresh would put the old port/key/provider
+    // set back on disk and the engine would start from it.
     let _ = crate::catalog::refresh_for_start().await;
+    let settings = load();
     if health(settings.port, &settings.api_key).await {
-        write_config(settings)?;
-        sync_accounts(settings)?;
-        #[cfg(windows)]
-        adopt_recorded_engine()?;
-        return Ok("adopted".to_string());
+        write_config_current(|| load())?;
+        let current = load();
+        // The probe above used the snapshot from before the write. A save can
+        // change the port, key or management secret while it runs; adopting
+        // then would keep a process the new config cannot authenticate
+        // against. Re-probe the new identity; a changed secret cannot be
+        // proven over the public health endpoint, so it forces a restart.
+        let identity_changed = current.port != settings.port
+            || current.api_key != settings.api_key
+            || current.management_secret != settings.management_secret;
+        let answers = if identity_changed {
+            health(current.port, &current.api_key).await
+        } else {
+            true
+        };
+        if adopt_matches(&settings, &current, answers) {
+            sync_accounts(&current)?;
+            #[cfg(windows)]
+            adopt_recorded_engine()?;
+            gateway.mark_running();
+            return Ok("adopted".to_string());
+        }
     }
 
-    write_config(settings)?;
-    sync_accounts(settings)?;
+    write_config_current(|| load())?;
+    let current = load();
+    sync_accounts(&current)?;
 
     // A wedged child (alive but not answering health) would hold the port:
     // terminate it before spawning a fresh engine, otherwise the retry path
@@ -1036,11 +1541,18 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
     if let Ok(mut guard) = gateway.child.lock() {
         *guard = Some(child);
     }
+    gateway.mark_running();
     let _ = fs::write(paths::pid_path(), pid.to_string());
+    // Count the new process now, not after the health poll: a slow engine that
+    // is adopted by a later `start` is still a different process from the one
+    // whose credential the ban describes. Adoption of a pre-existing engine
+    // returns above and never reaches this line.
+    gateway.started_generation.fetch_add(1, Ordering::AcqRel);
 
     for _ in 0..30 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if health(settings.port, &settings.api_key).await {
+        let probe = load();
+        if health(probe.port, &probe.api_key).await {
             return Ok("started".to_string());
         }
     }
@@ -1048,6 +1560,17 @@ pub async fn start(gateway: &Gateway, settings: &Settings) -> Result<String, Str
 }
 
 pub fn stop(gateway: &Gateway) -> Result<String, String> {
+    // `RunEvent::Exit`, the tray quit and the updater all arrive here, often
+    // twice in the same exit. The lock serialises them and the flag turns the
+    // repeat into a no-op: a second `taskkill /IM` sweep would only probe for
+    // engines that are already gone (§2.2, W9).
+    let mut stopped = gateway
+        .stopped
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *stopped {
+        return Ok("already stopped".to_string());
+    }
     if let Ok(mut guard) = gateway.child.lock() {
         if let Some(mut child) = guard.take() {
             let _ = child.kill();
@@ -1075,6 +1598,7 @@ pub fn stop(gateway: &Gateway) -> Result<String, String> {
         }
     }
     let _ = fs::remove_file(paths::pid_path());
+    *stopped = true;
     Ok("stopped".to_string())
 }
 
@@ -1397,6 +1921,65 @@ pub fn recent_calls(limit: usize) -> Value {
     Value::Array(calls)
 }
 
+/// Parse one engine telemetry usage log line.
+pub fn parse_usage_record(line: &str) -> Option<Value> {
+    if !line.contains("[usage]") {
+        return None;
+    }
+    let value = |key: &str| -> Option<i64> {
+        let marker = format!("{key}=");
+        let start = line.find(&marker)? + marker.len();
+        let digits: String = line[start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect();
+        digits.parse().ok()
+    };
+    let text_value = |key: &str| -> Option<String> {
+        let marker = format!("{key}=");
+        let start = line.find(&marker)? + marker.len();
+        let token: String = line[start..]
+            .chars()
+            .take_while(|ch| !ch.is_whitespace() && *ch != '"')
+            .collect();
+        (!token.is_empty()).then_some(token)
+    };
+    let timestamp = text_value("timestamp").unwrap_or_default();
+    let model = text_value("model").unwrap_or_else(|| "-".to_string());
+    let provider = text_value("provider").unwrap_or_else(|| "-".to_string());
+    let auth = text_value("auth").unwrap_or_else(|| "-".to_string());
+    let input = value("input").unwrap_or(0);
+    let output = value("output").unwrap_or(0);
+    let mode = text_value("mode").unwrap_or_else(|| "chat".to_string());
+    let status = value("status").unwrap_or(200);
+
+    Some(json!({
+        "timestamp": timestamp,
+        "model": model,
+        "provider": provider,
+        "auth": auth,
+        "input": input,
+        "output": output,
+        "mode": mode,
+        "status": status,
+    }))
+}
+
+/// The newest usage records parsed from `[usage]` telemetry lines.
+pub fn recent_usage(limit: usize) -> Value {
+    let text = log_tail(512 * 1024);
+    let mut usage: Vec<Value> = Vec::new();
+    for line in text.lines().rev() {
+        if let Some(record) = parse_usage_record(line) {
+            usage.push(record);
+            if usage.len() >= limit {
+                break;
+            }
+        }
+    }
+    Value::Array(usage)
+}
+
 /// The gateway's live model list (id + owner) for the providers page.
 pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
     let client = reqwest::Client::builder()
@@ -1419,25 +2002,251 @@ pub async fn models(port: u16, api_key: &str) -> Result<Value, String> {
         .ok_or_else(|| "Gateway returned an invalid model catalogue".to_string())
 }
 
-// MARK: - End-to-end check
+/// Why `PUT /v8/management/config.yaml` did not confirm the reload.
+///
+/// The distinction matters outside the HTTP layer: a rejected credential is
+/// counted by the engine's brute-force guard, while a refused body or an
+/// unreachable port is not. Only the first one must stop the retry loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReloadFailure {
+    /// 401/403 from the management API.
+    Auth(String),
+    /// Any other transport error, non-2xx answer or missing acknowledgement.
+    Refused(String),
+}
 
-pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
-    match check_api_once(port, api_key).await {
-        Ok(value) => Ok(value),
-        // A config hot-reload rebuilds the auth clients for a moment; a
-        // request caught in that window must not be reported as a bad key.
-        Err((401, _)) => {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-            check_api_once(port, api_key)
-                .await
-                .map_err(|(code, text)| format!("{}: {}", code, text))
+impl ReloadFailure {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Auth(message) | Self::Refused(message) => message,
         }
-        Err((code, text)) => Err(format!("{}: {}", code, text)),
+    }
+
+    pub fn is_auth(&self) -> bool {
+        matches!(self, Self::Auth(_))
     }
 }
 
-/// One check attempt. Failures carry the HTTP status (0 for transport errors)
-/// so the caller can retry only the reload-window 401.
+impl std::fmt::Display for ReloadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+/// The v8 handler's acknowledgement, kept separate from the HTTP call so the
+/// accepted and refused bodies are testable without an engine.
+///
+/// `PUT /v8/management/config.yaml` answers `{"status":"ok","config-version":8}`.
+/// The deprecated v0 route answered `{"changed":["config"],"ok":true}`; that
+/// shape is deliberately not accepted here.
+fn reload_acknowledged(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        })
+        .is_some_and(|status| status == "ok")
+}
+
+/// The digest of the document the engine saved for this request.
+///
+/// The v8 handler hashes the bytes it wrote and reports that digest in the PUT
+/// answer; `/v8/management/reload-status` reports the digest of the document the
+/// runtime hook proved it applied. Equal digests prove that identical bytes were
+/// applied at some point, not that this request completed: the same document may
+/// already have been applied before the PUT, and a later save can move the
+/// generation forward without applying these bytes. Generations also advance for
+/// plugin reloads, so equality is evidence about content, not completion of this
+/// request.
+fn reload_digest(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("reload-digest")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .filter(|digest| !digest.is_empty())
+}
+
+/// The digest the runtime proved applied. An empty string is a valid answer
+/// (nothing applied yet) and is kept distinct from a missing field, which means
+/// the engine does not speak this contract at all.
+fn applied_reload_digest(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("applied-digest")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+}
+
+const RELOAD_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+const RELOAD_STATUS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Wait until the runtime hook has applied the exact document the save wrote.
+///
+/// The PUT 200 is written before `reloadConfigAfterManagementSave` runs, so
+/// only this comparison says the configuration reached the service. The loop is
+/// bounded: an engine that never completes the hook must fail the publication
+/// instead of leaving the caller to guess from `/v1/models`, which cannot tell
+/// two documents with identical aliases apart.
+async fn wait_reload_applied(
+    client: &reqwest::Client,
+    port: u16,
+    management_secret: &str,
+    digest: &str,
+) -> Result<(), ReloadFailure> {
+    let deadline = tokio::time::Instant::now() + RELOAD_STATUS_TIMEOUT;
+    loop {
+        let response = client
+            .get(format!(
+                "http://127.0.0.1:{}/v8/management/reload-status",
+                port
+            ))
+            .header("Authorization", format!("Bearer {}", management_secret))
+            .send()
+            .await
+            .map_err(|e| {
+                ReloadFailure::Refused(format!("the reload status could not be read: {e}"))
+            })?;
+        let status = response.status();
+        let code = status.as_u16();
+        let text = response.text().await.unwrap_or_default();
+        if code == 401 || code == 403 {
+            return Err(ReloadFailure::Auth(format!(
+                "HTTP {} while reading the reload status: {}",
+                code,
+                text.chars().take(300).collect::<String>()
+            )));
+        }
+        if !status.is_success() {
+            return Err(ReloadFailure::Refused(format!(
+                "the engine does not report reload completion (HTTP {}): {}",
+                code,
+                text.chars().take(300).collect::<String>()
+            )));
+        }
+        let applied = applied_reload_digest(&text).ok_or_else(|| {
+            ReloadFailure::Refused(format!(
+                "the engine returned an unreadable reload status: {}",
+                text.chars().take(300).collect::<String>()
+            ))
+        })?;
+        if applied == digest {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ReloadFailure::Refused(format!(
+                "the engine saved config.yaml with digest {} but did not prove it applied within {} s (applied digest: {})",
+                digest,
+                RELOAD_STATUS_TIMEOUT.as_secs(),
+                if applied.is_empty() { "none" } else { applied.as_str() }
+            )));
+        }
+        tokio::time::sleep(RELOAD_STATUS_INTERVAL).await;
+    }
+}
+
+/// Ask the running engine to adopt exactly the config generation we wrote.
+///
+/// The deprecated `PUT /v0/management/config.yaml` only validates the body and
+/// rewrites the file: it never calls the reload hook, so the client catalogue
+/// still changes only when the filesystem watcher happens to fire. The v8
+/// endpoint (`PUT /v8/management/config.yaml`) saves the same tree and then
+/// calls `reloadConfigAfterManagementSaveAsync`, which applies that exact saved
+/// snapshot through the runtime result hook — no fsnotify event involved.
+///
+/// The bytes are passed in instead of being read back from disk: a settings
+/// save can replace the file between our write and this request, and the
+/// engine must adopt the generation the caller is publishing, not a newer one.
+///
+/// The engine's own rejection text is passed through: an invalid YAML keeps the
+/// previous config and the old catalogue, and the reload error is the only
+/// evidence of why the new model never appeared.
+pub async fn reload_config(
+    port: u16,
+    management_secret: &str,
+    yaml: &str,
+) -> Result<(), ReloadFailure> {
+    if management_secret.trim().is_empty() {
+        return Err(ReloadFailure::Refused(
+            "the management secret is empty".to_string(),
+        ));
+    }
+    let Some(client) = gateway_client() else {
+        return Err(ReloadFailure::Refused(
+            "the gateway HTTP client could not be built".to_string(),
+        ));
+    };
+    let response = client
+        .put(format!(
+            "http://127.0.0.1:{}/v8/management/config.yaml",
+            port
+        ))
+        .header("Authorization", format!("Bearer {}", management_secret))
+        .header("Content-Type", "application/yaml")
+        .body(yaml.to_string())
+        .send()
+        .await
+        .map_err(|e| ReloadFailure::Refused(e.to_string()))?;
+    let status = response.status();
+    let code = status.as_u16();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let message = format!(
+            "HTTP {}: {}",
+            code,
+            text.chars().take(300).collect::<String>()
+        );
+        // 401/403 is the engine rejecting the credential, not a transient
+        // transport failure. Repeating it reaches the engine's brute-force
+        // guard (five failures from one IP -> 30 minute ban), so the caller
+        // has to stop and wait for a different secret instead of retrying.
+        return Err(if code == 401 || code == 403 {
+            ReloadFailure::Auth(message)
+        } else {
+            ReloadFailure::Refused(message)
+        });
+    }
+    // A 2xx is not proof by itself: the v8 handler answers with an explicit
+    // status document, and anything else means the file was stored but the
+    // reload was not acknowledged.
+    if !reload_acknowledged(&text) {
+        return Err(ReloadFailure::Refused(format!(
+            "the engine stored config.yaml without acknowledging the reload: {}",
+            text.chars().take(300).collect::<String>()
+        )));
+    }
+    let digest = reload_digest(&text).ok_or_else(|| {
+        ReloadFailure::Refused(format!(
+            "the engine did not report the digest of the config it saved: {}",
+            text.chars().take(300).collect::<String>()
+        ))
+    })?;
+    wait_reload_applied(&client, port, management_secret, &digest).await
+}
+
+// MARK: - End-to-end check
+
+pub async fn check_api(port: u16, api_key: &str) -> Result<String, String> {
+    // A 401 used to be retried once "because a config hot-reload rebuilds the
+    // auth clients for a moment". The engine treats repeated bad credentials as
+    // brute force: five 401s ban the loopback address for 30 minutes, so one
+    // failed check cost two strikes and three clicks locked the user out even
+    // with the correct key. The single attempt reports the real verdict.
+    check_api_once(port, api_key)
+        .await
+        .map_err(|(code, text)| format!("{}: {}", code, text))
+}
+
+/// One check attempt. Failures carry the HTTP status (0 for transport errors).
 async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String)> {
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -1451,7 +2260,10 @@ async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String
         .await
         .map_err(|e| (0, e.to_string()))?;
     let models_status = models_response.status();
-    let models_text = models_response.text().await.map_err(|e| (0, e.to_string()))?;
+    let models_text = models_response
+        .text()
+        .await
+        .map_err(|e| (0, e.to_string()))?;
     if !models_status.is_success() {
         return Err((
             models_status.as_u16(),
@@ -1469,6 +2281,7 @@ async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String
                     !id.starts_with("opencode/")
                         && !id.starts_with("openrouter/")
                         && !id.starts_with("deepinfra/")
+                        && !id.starts_with("nvidia/")
                         && !id.starts_with("vercel/")
                         && !id.starts_with("zai/")
                 })
@@ -1478,7 +2291,15 @@ async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String
                         .next()
                 })
         })
-        .ok_or_else(|| (0, "шлюз не вернул список моделей".to_string()))?
+        .ok_or_else(|| {
+            // Status 0 means "no answer" to the caller, but here the engine
+            // answered 200 with an empty `data` array. Say so instead of
+            // blaming the transport.
+            (
+                0,
+                "the engine returned an empty model list from /v1/models".to_string(),
+            )
+        })?
         .to_string();
 
     let body = json!({
@@ -1505,17 +2326,24 @@ async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String
 #[cfg(test)]
 mod tests {
     use super::{
-        api_keys_yaml, api_keys_yaml_with_local, auth_file_name, auth_payload, base_config,
-        config_needs_write, image_matches_engine, image_starts_with, last_written_config,
-        parse_pid, parse_recent_call,
-        parse_tasklist_image, parse_tasklist_pids, priority_for, servable_local_models, tail_bytes,
-        write_config, write_config_forced, write_config_if_changed,
-        write_config_if_changed_forced, yaml_escape, USER_AGENT,
+        adopt_matches, api_keys_yaml, api_keys_yaml_with_local, applied_reload_digest,
+        auth_file_name, auth_payload, base_config, config_generation, config_needs_write,
+        image_matches_engine, image_starts_with, is_listening, is_listening_blocking,
+        last_written_config, local_api_keys_yaml, lock_config_generation, parse_pid,
+        PRIORITY_TIER_BACKUP,
+        parse_recent_call, parse_usage_record, parse_tasklist_image, parse_tasklist_pids, priority_for,
+        quota_weight,
+        reload_acknowledged, reload_digest, servable_local_models, tail_bytes, write_config,
+        write_config_forced, write_config_if_changed, write_config_if_changed_forced,
+        write_config_if_changed_locked, yaml_escape, USER_AGENT,
     };
     use crate::settings::Settings;
     use crate::vault::Account;
     use serde_json::json;
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// Tests must not depend on what the developer has downloaded: the real
     /// `api_keys_yaml` reads the on-disk model registry, so a single installed
@@ -1529,12 +2357,103 @@ mod tests {
     }
 
     #[test]
+    fn adopt_requires_the_identity_now_on_disk() {
+        let probed = settings();
+        let mut current = probed.clone();
+        // Unchanged identity: the successful probe is still valid.
+        assert!(adopt_matches(&probed, &current, false));
+
+        current.api_key = "new-key".into();
+        assert!(!adopt_matches(&probed, &current, false));
+        assert!(adopt_matches(&probed, &current, true));
+
+        // The health endpoint cannot prove a rotated management secret.
+        current.management_secret = "new-secret".into();
+        assert!(!adopt_matches(&probed, &current, true));
+    }
+
+    #[test]
+    fn reload_acknowledgement_requires_the_v8_status_document() {
+        assert!(reload_acknowledged(r#"{"status":"ok","config-version":8}"#));
+        // The deprecated v0 route answered a different document; a 2xx of that
+        // shape must not be read as an applied reload.
+        assert!(!reload_acknowledged(r#"{"changed":["config"],"ok":true}"#));
+        assert!(!reload_acknowledged(r#"{"status":"error"}"#));
+        assert!(!reload_acknowledged(""));
+        assert!(!reload_acknowledged("<html>gateway error</html>"));
+    }
+
+    #[test]
+    fn reload_digest_is_read_only_from_a_v8_acknowledgement() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            reload_digest(&format!(
+                r#"{{"status":"ok","config-version":8,"reload-digest":"{digest}"}}"#
+            )),
+            Some(digest.clone())
+        );
+        // A v0 answer has no digest; the caller must not invent one.
+        assert_eq!(reload_digest(r#"{"changed":["config"],"ok":true}"#), None);
+        assert_eq!(reload_digest(r#"{"status":"ok","config-version":8}"#), None);
+        assert_eq!(reload_digest(r#"{"reload-digest":7}"#), None);
+        // An empty digest is not an identity and must not match anything.
+        assert_eq!(reload_digest(r#"{"reload-digest":""}"#), None);
+    }
+
+    #[test]
+    fn applied_digest_comes_from_the_status_document() {
+        let digest = "b".repeat(64);
+        assert_eq!(
+            applied_reload_digest(&format!(
+                r#"{{"saved-digest":"{digest}","applied-digest":"{digest}","pending":false}}"#
+            )),
+            Some(digest)
+        );
+        // A pending status without an applied digest is not a match, but an
+        // empty digest is a readable answer and must not be mistaken for an
+        // engine that lacks the contract.
+        assert_eq!(applied_reload_digest(r#"{"pending":true}"#), None);
+        assert_eq!(
+            applied_reload_digest(r#"{"applied-digest":""}"#),
+            Some(String::new())
+        );
+        assert_eq!(applied_reload_digest("<html>error</html>"), None);
+    }
+
+    #[test]
     fn base_config_carries_the_plaintext_management_secret() {
-        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "melon-mgmt-1234", 60);
+        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "melon-mgmt-1234", 120);
         assert!(yaml.contains("secret-key: \"melon-mgmt-1234\""));
         // The old hard-coded bcrypt hash must be gone.
         assert!(!yaml.contains("$2a$"));
         assert!(yaml.contains("auth-dir: \"/tmp/auths\""));
+        // Canonical v8 layout: `/v8/management/config.yaml` rejects every legacy
+        // root, so the file we render must already use the names the engine
+        // stores.
+        assert!(
+            yaml.contains("management:\n  allow-remote: false"),
+            "{yaml}"
+        );
+        assert!(!yaml.contains("remote-management:"), "{yaml}");
+        // Root-level, not nested under `routing:`: the engine reads these
+        // from the config root and a nested copy is never applied.
+        assert!(yaml.contains("\nrequest-retry: 1\n"), "{yaml}");
+        assert!(yaml.contains("\nmax-retry-interval: 30\n"), "{yaml}");
+        assert!(
+            yaml.contains("\ntransient-error-cooldown-seconds: 60\n"),
+            "{yaml}"
+        );
+        // Session affinity lives under `routing:` (it is a selection policy),
+        // and only there: the retry knobs below it are root-level instead.
+        assert!(yaml.contains("  session-affinity: true\n"), "{yaml}");
+        assert!(yaml.contains("  session-affinity-rebind-on: \"quota\"\n"), "{yaml}");
+        // The embedded engine carries MacOS/patches/0001, which reads this
+        // root field and (after the same patch) accepts it in v8. Dropping it
+        // from the file silently disabled the user's first-token watchdog.
+        assert!(
+            yaml.contains("stream-bootstrap-timeout-seconds: 120"),
+            "{yaml}"
+        );
     }
 
     #[test]
@@ -1554,11 +2473,8 @@ mod tests {
 
     #[test]
     fn config_write_replaces_the_file_only_on_change() {
-        let root = std::env::temp_dir().join(format!(
-            "melon-config-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("melon-config-{}-{}", std::process::id(), line!()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("config.yaml");
 
@@ -1574,6 +2490,133 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "config-version: 9\n"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_config_write_cannot_land_between_the_generation_check_and_the_acknowledgement() {
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-generation-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.yaml");
+        let mut written = std::collections::HashMap::new();
+        assert!(
+            write_config_if_changed_locked(&path, "config-version: 8\n", false, &mut written)
+                .unwrap()
+                .is_some()
+        );
+
+        // The publisher has checked this generation and is about to acknowledge
+        // it. The writer below has a newer body and must not replace the file
+        // until that acknowledgement is recorded.
+        let guard = lock_config_generation();
+        let generation = config_generation();
+        let writer_done = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let path = path.clone();
+            let writer_done = Arc::clone(&writer_done);
+            std::thread::spawn(move || {
+                // Use the production critical section with a local write map,
+                // so this test does not contend with unrelated tests over the
+                // process-wide last-written cache.
+                let mut written = std::collections::HashMap::new();
+                write_config_if_changed_locked(&path, "config-version: 9\n", false, &mut written)
+                    .unwrap()
+                    .expect("the replacement must report its generation");
+                writer_done.store(true, Ordering::SeqCst);
+            })
+        };
+
+        // The ordinary write stages its temporary file before it takes the
+        // generation lock. Waiting for that file proves the writer has reached
+        // the replacement; it cannot finish while the publisher holds the lock.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                !writer_done.load(Ordering::SeqCst),
+                "the writer replaced config.yaml while the generation guard was held"
+            );
+            let staged = std::fs::read_dir(&root).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            });
+            if staged {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the writer never staged a replacement"
+            );
+            std::thread::yield_now();
+        }
+
+        // The writer is parked between staging and the rename. Give an
+        // uncovered writer enough time to finish: a rename and a counter bump
+        // take microseconds, while a covered one cannot finish at all until the
+        // guard is dropped. The bounded wait makes a missing guard fail here
+        // instead of racing the assertions below.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !writer_done.load(Ordering::SeqCst),
+            "the writer replaced config.yaml while the generation guard was held"
+        );
+
+        // This is the acknowledgement the publication loop performs under the
+        // same guard: the checked generation is still the newest one, and the
+        // newer bytes are still only staged.
+        assert!(guard.is_current(generation));
+        assert_eq!(config_generation(), generation);
+        drop(guard);
+
+        writer.join().unwrap();
+        assert!(writer_done.load(Ordering::SeqCst));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "config-version: 9\n"
+        );
+
+        let guard = lock_config_generation();
+        assert!(config_generation() > generation);
+        assert!(
+            !guard.is_current(generation),
+            "a replaced generation must not be acknowledged"
+        );
+        drop(guard);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn restore_replaces_older_engine_bytes_even_when_last_written_matches() {
+        let root = std::env::temp_dir().join(format!(
+            "melon-config-restore-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.yaml");
+        let newest = "config-version: 8\napi-keys:\n  - name: local\n    models: [local/two]\n";
+        let older = "config-version: 8\napi-keys:\n  - name: local\n    models: [local/one]\n";
+
+        // The newest generation was written and recorded; a delayed engine
+        // reload then persisted the older body it had received.
+        assert!(write_config_if_changed(&path, newest).unwrap());
+        std::fs::write(&path, older).unwrap();
+
+        // The ordinary path trusts the in-memory generation and skips.
+        assert!(!write_config_if_changed(&path, newest).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), older);
+
+        // A restore must replace the mismatching disk bytes.
+        assert!(write_config_if_changed_forced(&path, newest).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newest);
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1642,11 +2685,7 @@ mod tests {
             assert!(error.contains("config.yaml"), "{error}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "old: config\n");
             assert!(
-                last_written_config()
-                    .lock()
-                    .unwrap()
-                    .get(&path)
-                    .is_none(),
+                last_written_config().lock().unwrap().get(&path).is_none(),
                 "a failed write must not record the generation"
             );
 
@@ -1682,7 +2721,10 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.starts_with(".occupied.yaml") && name.ends_with(".tmp"))
             .collect();
-        assert!(leftover_tmp.is_empty(), "temporary files left: {leftover_tmp:?}");
+        assert!(
+            leftover_tmp.is_empty(),
+            "temporary files left: {leftover_tmp:?}"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -1802,6 +2844,15 @@ mod tests {
             let yaml = api_keys_yaml(&settings());
             assert!(yaml.contains("name: \"melon-local-ai\""), "{yaml}");
             assert!(yaml.contains("local/ready"), "{yaml}");
+            // The publication promises exactly the aliases this YAML declares;
+            // a second snapshot is what made the poll wait for a model the
+            // file no longer listed.
+            let (rendered, aliases) = local_api_keys_yaml(&settings());
+            assert_eq!(aliases, vec!["local/ready".to_string()]);
+            assert_eq!(rendered, yaml);
+            for alias in &aliases {
+                assert!(rendered.contains(alias), "{alias} missing from {rendered}");
+            }
 
             LocalModelStore::save_registry(&[local_models::test_model(
                 "local/installed",
@@ -1955,6 +3006,22 @@ mod tests {
     }
 
     #[test]
+    fn api_keys_yaml_carries_nvidia_models() {
+        let mut s = settings();
+        s.nvidia_key = "test-key".to_string();
+        s.nvidia_enabled = true;
+        s.nvidia_models = vec![crate::settings::ProviderModel {
+            id: "vendor/model".to_string(),
+            ..Default::default()
+        }];
+        let yaml = api_keys_yaml_test(&s);
+        assert!(yaml.contains("base-url: \"https://integrate.api.nvidia.com/v1\""));
+        assert!(yaml.contains("alias: \"nvidia/vendor/model\""));
+        s.nvidia_enabled = false;
+        assert!(!api_keys_yaml_test(&s).contains("name: \"nvidia\""));
+    }
+
+    #[test]
     fn api_keys_yaml_carries_zai_coding_models() {
         let mut s = settings();
         s.zai_key = "id.secret".to_string();
@@ -2068,12 +3135,83 @@ mod tests {
         assert_eq!(api_keys_yaml_test(&s), "");
     }
 
+    fn custom_provider(
+        id: &str,
+        protocol: &str,
+        base_url: &str,
+        models: Vec<crate::settings::CustomProviderModel>,
+    ) -> crate::settings::CustomProvider {
+        crate::settings::CustomProvider {
+            id: id.to_string(),
+            name: id.to_string(),
+            base_url: base_url.to_string(),
+            protocol: protocol.to_string(),
+            api_key: format!("sk-{id}"),
+            enabled: true,
+            models,
+        }
+    }
+
+    fn custom_model(id: &str, enabled: bool) -> crate::settings::CustomProviderModel {
+        crate::settings::CustomProviderModel {
+            id: id.to_string(),
+            display: id.to_string(),
+            context_window: Some(64_000),
+            enabled,
+            alias: String::new(),
+        }
+    }
+
     #[test]
-    fn planner_order_maps_to_descending_gateway_priority() {
-        assert_eq!(priority_for(3, 0), 3);
-        assert_eq!(priority_for(3, 1), 2);
-        assert_eq!(priority_for(3, 2), 1);
-        assert_eq!(priority_for(0, 0), 0);
+    fn api_keys_yaml_routes_custom_providers_into_protocol_sections() {
+        let mut s = settings();
+        s.custom_providers = vec![
+            custom_provider("acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true), custom_model("hidden", false)]),
+            custom_provider("acme-responses", "openai-responses", "https://responses.example/v1", vec![custom_model("gpt-5-pro", true)]),
+            custom_provider("acme-claude", "anthropic", "https://messages.example/v1", vec![custom_model("claude-sonnet", true)]),
+            custom_provider("acme-gemini", "gemini", "https://gemini.example/v1beta", vec![custom_model("gemini-pro", true)]),
+        ];
+
+        let yaml = api_keys_yaml_test(&s);
+
+        assert_eq!(yaml.matches("api-keys:").count(), 1, "{yaml}");
+        assert!(yaml.contains("  openai-compatibility:\n"), "{yaml}");
+        assert!(yaml.contains("  codex:\n"), "{yaml}");
+        assert!(yaml.contains("  claude:\n"), "{yaml}");
+        assert!(yaml.contains("  gemini:\n"), "{yaml}");
+        assert!(yaml.contains("    - name: \"acme\"\n      base-url: \"https://relay.example/v1\""), "{yaml}");
+        assert!(yaml.contains("alias: \"acme/gpt-5\""), "{yaml}");
+        assert!(!yaml.contains("hidden"), "{yaml}");
+        assert!(yaml.contains("base-url: \"https://messages.example\""), "{yaml}");
+        assert!(!yaml.contains("messages.example/v1\""), "{yaml}");
+        assert!(yaml.contains("base-url: \"https://gemini.example\""), "{yaml}");
+        assert!(!yaml.contains("gemini.example/v1beta\""), "{yaml}");
+        assert!(yaml.contains("alias: \"acme-gemini/gemini-pro\""), "{yaml}");
+    }
+
+    #[test]
+    fn api_keys_yaml_skips_disabled_invalid_and_empty_custom_providers() {
+        let mut s = settings();
+        let mut disabled = custom_provider("acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
+        disabled.enabled = false;
+        let invalid_id = custom_provider("Acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
+        let no_models = custom_provider("empty", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", false)]);
+        let no_key = {
+            let mut provider = custom_provider("keyless", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
+            provider.api_key = "   ".to_string();
+            provider
+        };
+        s.custom_providers = vec![disabled, invalid_id, no_models, no_key];
+        assert_eq!(api_keys_yaml_test(&s), "");
+    }
+
+    #[test]
+    fn pool_tiers_map_to_gateway_priority() {
+        // Regular accounts share the top tier, backups the one below: equal
+        // values are what let the engine rotate inside a tier.
+        assert_eq!(priority_for(0), 2);
+        assert_eq!(priority_for(PRIORITY_TIER_BACKUP), 1);
+        assert!(priority_for(0) > priority_for(PRIORITY_TIER_BACKUP));
     }
 
     fn pool(slugs: &[&str]) -> HashSet<String> {
@@ -2104,6 +3242,34 @@ mod tests {
         assert!(auth_payload(&account, 1, &pool(&[]))
             .get("disabled")
             .is_none());
+    }
+
+    /// The share must track the quota left, not sit at a constant: that is the
+    /// whole point of writing the weight from the cached reading.
+    #[test]
+    fn quota_weight_scales_with_remaining_quota() {
+        fn weight(hourly: Option<f64>, weekly: Option<f64>) -> u64 {
+            let mut account = pool_account(None);
+            account.quota = Some(crate::vault::Quota {
+                hourly_remaining_percent: hourly,
+                weekly_remaining_percent: weekly,
+                ..Default::default()
+            });
+            quota_weight(&account)
+        }
+        // A fresh account has the widest share; the scale tops out at 10.
+        assert_eq!(weight(Some(100.0), Some(100.0)), 10);
+        assert_eq!(weight(Some(95.0), Some(95.0)), 9);
+        assert_eq!(weight(Some(12.0), Some(12.0)), 1);
+        // The tighter of the two windows decides, so a drained weekly window
+        // cannot be masked by a healthy 5-hour one.
+        assert_eq!(weight(Some(90.0), Some(12.0)), 1);
+        // The last percent stays routable; excluding an account is the job of
+        // `disabled`, and a zero weight would drop it out of the picker.
+        assert_eq!(weight(Some(0.0), Some(0.0)), 1);
+        // An account with no reading yet must not be starved.
+        let unknown = pool_account(None);
+        assert_eq!(quota_weight(&unknown), 10);
     }
 
     #[test]
@@ -2223,6 +3389,21 @@ mod tests {
     }
 
     #[test]
+    fn usage_record_parser_matches_the_engine_log_format() {
+        let line = "[2026-11-10 18:00:00] [12345678] [info ] [telemetry_logger.go:75] [usage] timestamp=2026-11-10T18:00:00Z model=claude-3-7-sonnet provider=anthravity auth=test-account-1 input=150 output=320 mode=stream status=200";
+        let record = parse_usage_record(line).expect("usage record");
+        assert_eq!(record["timestamp"], "2026-11-10T18:00:00Z");
+        assert_eq!(record["model"], "claude-3-7-sonnet");
+        assert_eq!(record["provider"], "anthravity");
+        assert_eq!(record["auth"], "test-account-1");
+        assert_eq!(record["input"], 150);
+        assert_eq!(record["output"], 320);
+        assert_eq!(record["mode"], "stream");
+        assert_eq!(record["status"], 200);
+        assert!(parse_usage_record("not a usage line").is_none());
+    }
+
+    #[test]
     fn bounded_tail_drops_the_partial_first_line() {
         let data = b"partial line\nfull line one\nfull line two\n";
         assert_eq!(
@@ -2234,18 +3415,91 @@ mod tests {
         assert_eq!(tail_bytes(b"one huge line", true), b"one huge line");
     }
 
+    #[tokio::test]
+    async fn only_an_open_port_counts_as_a_listening_gateway() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(
+            is_listening_blocking(port),
+            "the synchronous supervisor probe must see a bound port"
+        );
+        assert!(
+            is_listening(port).await,
+            "a bound loopback port must count as available"
+        );
+        drop(listener);
+        assert!(
+            !is_listening_blocking(port),
+            "a closed port must not schedule a publication"
+        );
+        assert!(
+            !is_listening(port).await,
+            "the async probe must agree with the synchronous one"
+        );
+    }
+
     #[test]
     fn shared_routing_priority_fixture() {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../../../../shared/fixtures/routing.json")).unwrap();
         let ids = fixture["orderedIds"].as_array().unwrap();
         let expected = fixture["priorities"].as_object().unwrap();
-        for (index, id) in ids.iter().enumerate() {
+        let backups = fixture["backupIds"].as_array().unwrap();
+        for id in ids.iter() {
             let id = id.as_str().unwrap();
+            let tier = if backups.iter().any(|b| b.as_str() == Some(id)) {
+                PRIORITY_TIER_BACKUP
+            } else {
+                0
+            };
             assert_eq!(
-                priority_for(ids.len(), index),
-                expected[id].as_u64().unwrap() as usize
+                priority_for(tier),
+                expected[id].as_u64().unwrap() as usize,
+                "{id}"
             );
         }
+    }
+
+    #[test]
+    fn openrouter_provider_settings_inherit_per_field() {
+        let mut settings = settings();
+        settings.openrouter_key = "test-key".into();
+        settings.openrouter_models = vec![crate::settings::ProviderModel {
+            id: "example/model".into(), ..Default::default()
+        }];
+        settings.openrouter_config.order = vec!["global-order".into()];
+        settings.openrouter_config.only = vec!["global-only".into()];
+        settings.openrouter_config.ignore = vec!["global-ignore".into()];
+        settings.openrouter_config.allow_fallbacks = false;
+        let override_config = serde_json::from_str(r#"{"order":["specific"]}"#).unwrap();
+        settings.openrouter_config.model_providers.insert("example/model".into(), override_config);
+        let yaml = api_keys_yaml_test(&settings);
+        assert!(yaml.contains("\\\"order\\\":[\\\"specific\\\"]"));
+        assert!(yaml.contains("\\\"only\\\":[\\\"global-only\\\"]"));
+        assert!(yaml.contains("\\\"ignore\\\":[\\\"global-ignore\\\"]"));
+        assert!(yaml.contains("\\\"allow_fallbacks\\\":false"));
+    }
+
+    #[test]
+    fn openrouter_payload_structure() {
+        let mut settings = settings();
+        settings.openrouter_key = "test-key".into();
+        settings.claude_enabled = true;
+        settings.claude_api_key = "test-claude".into();
+        settings.openrouter_config.default_strategy = "price".to_string();
+        settings.openrouter_models = vec![crate::settings::ProviderModel {
+            id: "openai/gpt-4o".to_string(),
+            display: "GPT-4o".to_string(),
+            ..Default::default()
+        }];
+        settings.openrouter_config.models.insert("openai/gpt-4o".to_string(), "nitro".to_string());
+
+        let yaml = api_keys_yaml_test(&settings);
+
+        assert!(yaml.contains("\npayload:\n  default-raw:\n"), "Payload root missing or nested incorrectly");
+        assert!(yaml.contains("    - models:\n        - name: \"openrouter/openai/gpt-4o\"\n"), "Model name pattern incorrect");
+        assert!(yaml.contains("\\\"sort\\\":\\\"throughput\\\""), "Sort strategy incorrect");
+        assert!(yaml.contains("        - name: \"openai/gpt-4o:nitro\"\n          alias: \"openrouter/openai/gpt-4o\"\n"), "Model mapping missing or incorrect");
+        assert!(yaml.find("\n  claude:\n").unwrap() < yaml.find("\npayload:\n").unwrap(), "Claude block should appear before payload");
     }
 }

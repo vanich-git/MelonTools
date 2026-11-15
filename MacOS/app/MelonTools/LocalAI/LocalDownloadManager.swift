@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CryptoKit
+import os
 
 /// State of an active or finished download task.
 enum DownloadTaskState: String, Codable {
@@ -304,6 +305,8 @@ private struct DownloadJournalFile: Codable {
 final class LocalDownloadManager: NSObject, ObservableObject {
     static let shared = LocalDownloadManager()
 
+    private static let logger = Logger(subsystem: "dev.melontools.app", category: "LocalDownloads")
+
     @Published private(set) var items: [DownloadItem] = []
     /// Last durable-queue failure. Identity and state changes are refused
     /// rather than reported as saved while this is non-nil.
@@ -469,8 +472,14 @@ final class LocalDownloadManager: NSObject, ObservableObject {
             $0.downloadedBytes = 0
         }
         // Other parts of the same job keep running; the directory goes once
-        // nothing in it is live.
-        if !items.contains(where: { $0.jobID == item.jobID && !$0.isTerminal }) {
+        // nothing in it is live. A finished part still needs its bytes: the
+        // user can resume the rest later, and deleting its file here would
+        // throw away gigabytes that are already verified.
+        let hasFinishedPart = items.contains {
+            $0.jobID == item.jobID && $0.state == .completed
+        }
+        if !items.contains(where: { $0.jobID == item.jobID && !$0.isTerminal }),
+           !hasFinishedPart {
             jobs.removeValue(forKey: item.jobID)
             tokens.removeValue(forKey: item.jobID)
             try? FileManager.default.removeItem(at: jobDirectory(item.jobID))
@@ -581,10 +590,35 @@ final class LocalDownloadManager: NSObject, ObservableObject {
     }
 
     private func readJournal() -> DownloadJournal? {
-        guard let data = try? Data(contentsOf: roots.journal) else { return nil }
+        // A first launch has no journal: that is not an error. A journal that
+        // exists but cannot be read or decoded must not disappear silently,
+        // because the queue it describes is still on disk.
+        guard FileManager.default.fileExists(atPath: roots.journal.path) else { return nil }
+        let data: Data
+        do {
+            data = try Data(contentsOf: roots.journal)
+        } catch {
+            reportJournalReadFailure(error)
+            return nil
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(DownloadJournal.self, from: data)
+        do {
+            return try decoder.decode(DownloadJournal.self, from: data)
+        } catch {
+            reportJournalReadFailure(error)
+            return nil
+        }
+    }
+
+    /// Keeps a broken durable queue visible to the user instead of starting
+    /// from an empty list and overwriting the evidence on the next write.
+    private func reportJournalReadFailure(_ error: Error) {
+        Self.logger.error("Could not read the download journal: \(error.localizedDescription, privacy: .public)")
+        journalError = String(
+            format: L("Could not read the download queue: %@"),
+            error.localizedDescription
+        )
     }
 
     /// Writes the queue, throttled while bytes stream in. Never contains a token.
@@ -939,8 +973,17 @@ final class LocalDownloadManager: NSObject, ObservableObject {
     private func saveSidecar(_ sidecar: PartSidecar, to url: URL) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(sidecar) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            let data = try encoder.encode(sidecar)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            // The sidecar is the resume decision. Losing it silently would
+            // restart a multi-gigabyte part from byte zero on the next launch.
+            Self.logger.error("Could not save the download sidecar: \(error.localizedDescription, privacy: .public)")
+            journalError = String(
+                format: L("Could not save the download resume state: %@"),
+                error.localizedDescription
+            )
         }
     }
 
@@ -1079,7 +1122,29 @@ final class LocalDownloadManager: NSObject, ObservableObject {
         }
     }
 
+    /// TLS and a real host are the only transport this manager starts. The URL
+    /// can arrive from an edited journal, and `file:` would make URLSession
+    /// read a local file into the download folder.
+    nonisolated static func isSecureDownloadURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https" else { return false }
+        return !(url.host ?? "").isEmpty
+    }
+
+    /// Tests inject an in-process `URLProtocol` transport that never leaves the
+    /// machine, so their `http://stub…` URLs are the only non-TLS requests that
+    /// may start. A production session has no injected protocol classes.
+    private var allowsInjectedTestTransport: Bool {
+        configuration?.protocolClasses?.isEmpty == false
+    }
+
     private func startTransfer(for item: DownloadItem, token: String?, from offset: UInt64) {
+        guard Self.isSecureDownloadURL(item.downloadURL) || allowsInjectedTestTransport else {
+            failItem(
+                id: item.id,
+                message: L("The download address is not a secure https URL. Nothing was requested.")
+            )
+            return
+        }
         let epoch = bumpEpoch(item.id)
         var request = URLRequest(url: item.downloadURL)
         request.httpMethod = "GET"
@@ -1137,6 +1202,19 @@ final class LocalDownloadManager: NSObject, ObservableObject {
             return .cancel
         }
         let strong = Self.strongValidator(validator)
+
+        // Any other 4xx/5xx body used to be written into the `.part` file and
+        // then reported as "GGUF mismatch", hiding the real cause (auth, quota,
+        // missing revision). Refuse before the first byte reaches the disk.
+        // 416 is excluded on purpose: it is a range verdict about an existing
+        // part, handled just below, not a failed request.
+        if let status, !(200...299).contains(status), status != 416 {
+            failItem(id: id, message: String(
+                format: L("The server answered with HTTP %d. The download was stopped."),
+                status
+            ))
+            return .cancel
+        }
 
         if status == 416 {
             // The server says the range is unsatisfiable: the part is usually

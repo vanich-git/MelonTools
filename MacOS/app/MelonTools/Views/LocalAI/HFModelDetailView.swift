@@ -103,7 +103,7 @@ struct HFModelDetailView: View {
                 Spacer(minLength: 0)
                 if let url = URL(string: "https://huggingface.co/\(repo.id)") {
                     Link(destination: url) { Label(L("Open on HF"), systemImage: "arrow.up.right.square") }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(MTGlassButtonStyle(size: .small))
                 }
             }
             .font(MTTheme.body(10.5))
@@ -129,42 +129,17 @@ struct HFModelDetailView: View {
                         Text(L("No variants fit the current memory estimate."))
                             .foregroundStyle(.secondary)
                     } else {
-                        Menu {
-                            ForEach(visibleVariants) { variant in
-                                Button {
-                                    selectedVariantID = variant.id
-                                } label: {
-                                    Label(optionTitle(variant), systemImage: variant.id == selectedVariantID ? "checkmark" : "circle")
-                                }
-                                .disabled(!variant.isComplete)
+                        MTSelect(
+                            selection: Binding(
+                                get: { selectedVariantID ?? visibleVariants.first?.id ?? "" },
+                                set: { selectedVariantID = $0 }
+                            ),
+                            options: visibleVariants.map { ($0.id, variantLabel($0)) },
+                            width: 268,
+                            detail: { id in
+                                visibleVariants.first { $0.id == id }.map(variantDetail) ?? ""
                             }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text("GGUF").font(MTTheme.body(9, weight: .medium)).foregroundStyle(.secondary)
-                                if let selected {
-                                    Text(selected.file.quantization).font(MTTheme.body(11, weight: .semibold))
-                                    Text(selected.hasKnownSize ? LocalHardwareService.formatBytes(selected.size) : L("Size unknown"))
-                                        .foregroundStyle(.secondary)
-                                    if selected.id == recommended?.id {
-                                        Text(L("Recommended"))
-                                            .font(MTTheme.body(9))
-                                            .padding(.horizontal, 5).padding(.vertical, 2)
-                                            .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 4))
-                                    }
-                                } else {
-                                    Text(L("Select a variant"))
-                                }
-                                Spacer(minLength: 0)
-                                Image(systemName: "chevron.up.chevron.down").foregroundStyle(.secondary)
-                            }
-                            .font(MTTheme.body(11))
-                            .padding(9)
-                            .background(Color.primary.opacity(0.035), in: .rect(cornerRadius: 6))
-                            .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.08)) }
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .accessibilityLabel(L("Select a variant"))
+                        )
                     }
                     if let selected {
                         Text(selected.name).font(MTTheme.body(10)).foregroundStyle(.secondary).textSelection(.enabled)
@@ -219,8 +194,7 @@ struct HFModelDetailView: View {
             Button { download(variant.file) } label: {
                 Label(L("Download") + (variant.hasKnownSize ? " " + LocalHardwareService.formatBytes(variant.size) : ""), systemImage: "arrow.down.to.line")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.accentColor)
+            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.emerald, prominent: true, size: .regular))
             .disabled(!variant.isComplete)
         }
     }
@@ -231,14 +205,24 @@ struct HFModelDetailView: View {
         }
     }
 
-    private func optionTitle(_ variant: HFDownloadVariant) -> String {
-        var title = variant.file.quantization + " · " + variant.name
-        title += " · " + (variant.hasKnownSize ? LocalHardwareService.formatBytes(variant.size) : L("Size unknown"))
-        if variant.id == recommended?.id { title += " · " + L("Recommended") }
-        if !variant.isComplete { title += " · " + L("Incomplete split model") }
-        else if variant.hasKnownSize { title += " · " + L(variant.file.estimation.recommendation.rawValue) }
-        return title
+    /// Trigger label: the two facts a pick is made on, quantization and size.
+    private func variantLabel(_ variant: HFDownloadVariant) -> String {
+        let size = variant.hasKnownSize ? LocalHardwareService.formatBytes(variant.size) : L("Size unknown")
+        let quant = variant.file.quantization.isEmpty ? variant.name : variant.file.quantization
+        return variant.id == recommended?.id ? "\(quant) · \(size) · \(L("Recommended"))" : "\(quant) · \(size)"
     }
+
+    /// Second line in the dropdown: the file itself plus its verdicts.
+    private func variantDetail(_ variant: HFDownloadVariant) -> String {
+        var parts = [variant.name]
+        if !variant.isComplete {
+            parts.append(L("Incomplete split model"))
+        } else if variant.hasKnownSize {
+            parts.append(L(variant.file.estimation.recommendation.rawValue))
+        }
+        return parts.joined(separator: " · ")
+    }
+
 
     private func isDownloading(_ variant: HFDownloadVariant) -> Bool {
         downloads.items.contains { item in

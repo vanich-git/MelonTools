@@ -15,7 +15,7 @@ struct SettingsView: View {
     @AppStorage("networkProxyBypass") private var networkProxyBypass = "127.0.0.1,localhost"
     @State private var proxyURLDraft = ""
     @State private var proxyURLSaved = false
-    @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = 60
+    @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = CodexGatewayService.defaultStreamBootstrapTimeoutSeconds
     @AppStorage("quotaRefreshInterval") private var quotaRefreshInterval = 300
     @AppStorage("quotaNotifications") private var quotaNotifications = false
     @AppStorage(NotchHUDController.enabledDefaultsKey) private var notchHUDEnabled = true
@@ -99,6 +99,7 @@ struct SettingsView: View {
                                 .frame(width: 130, alignment: .leading)
                             Toggle(L("Show a compact island at the top of the screen"), isOn: $notchHUDEnabled)
                                 .toggleStyle(.switch)
+                                .tint(MTTheme.amber)
                                 .font(MTTheme.body(12))
                                 .onChange(of: notchHUDEnabled) { _, enabled in
                                     NotchHUDController.shared.setEnabled(enabled)
@@ -127,6 +128,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Toggle(L("Use proxy for OpenAI and providers"), isOn: $networkProxyEnabled)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Proxy URL"))
@@ -135,7 +137,7 @@ struct SettingsView: View {
                                 .frame(width: 130, alignment: .leading)
                             HStack(spacing: MTTheme.s2) {
                                 TextField("socks5h://127.0.0.1:1080", text: $proxyURLDraft)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .font(MTTheme.mono(11))
                                     .frame(width: 300)
                                     .onSubmit { saveProxyURL() }
@@ -164,7 +166,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             TextField("127.0.0.1,localhost", text: $networkProxyBypass)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 300)
                         }
@@ -199,11 +201,12 @@ struct SettingsView: View {
                         Toggle(L("Switch Antigravity accounts when the first token is slow"), isOn: Binding(
                             get: { streamBootstrapTimeoutSeconds > 0 },
                             set: { enabled in
-                                streamBootstrapTimeoutSeconds = enabled ? 60 : 0
+                                streamBootstrapTimeoutSeconds = enabled ? CodexGatewayService.defaultStreamBootstrapTimeoutSeconds : 0
                                 CodexGatewayService.shared.applyStreamBootstrapTimeout()
                             }
                         ))
                         .toggleStyle(.switch)
+                        .tint(MTTheme.amber)
                         .font(MTTheme.body(12))
 
                         HStack(spacing: MTTheme.s3) {
@@ -221,7 +224,7 @@ struct SettingsView: View {
                             }
                             .disabled(streamBootstrapTimeoutSeconds == 0)
                         }
-                        Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. The slow account cools down for 60 s, then 5 min, 30 min and 2 h on repeated failures."))
+                        Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. Empty heartbeat frames extend the window while the model is still thinking (up to 3x the timeout). The first strike only fails over; repeated strikes cool the account down for 60 s, 5 min and 30 min."))
                             .font(MTTheme.mono(10))
                             .foregroundStyle(MTTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -232,15 +235,19 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Show pool health"), isOn: $showPoolHealth)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Show Antigravity pool health"), isOn: $showAntigravityPool)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Show spend & top providers"), isOn: $showSpend)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Show scheduler summary"), isOn: $showScheduler)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                     }
                 }
@@ -271,9 +278,11 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Start the service at app launch"), isOn: $gatewayAutoStart)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Stop the service on quit"), isOn: $gatewayStopOnQuit)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Text(L("When “stop on quit” is off, the service keeps running in the background and the app adopts it on the next launch."))
                             .font(MTTheme.mono(10))
@@ -306,12 +315,15 @@ struct SettingsView: View {
                         }
                         Toggle(L("Notifications when quota is low"), isOn: $quotaNotifications)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                         Toggle(L("Notifications after scheduled runs"), isOn: $taskNotifications)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                         Toggle(L("Launch at login"), isOn: $launchAtLogin)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                             .onChange(of: launchAtLogin) { setLaunchAtLogin(launchAtLogin) }
                     }
@@ -328,7 +340,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             SecureField(L("Password"), text: $backupPassword)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 240)
                                 .disabled(backupBusy)

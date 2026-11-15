@@ -75,24 +75,26 @@ final class ProviderDiagnosticsTests: XCTestCase {
             models: [
                 ProviderDiagnostics.ModelEntry(id: "gpt-5.2", owner: "openai"),
                 ProviderDiagnostics.ModelEntry(id: "local/llama", owner: nil),
+                ProviderDiagnostics.ModelEntry(id: "nvidia/vendor/model", owner: "nvidia"),
             ],
-            keys: .init(openRouter: true, openCode: true, deepInfra: true, vercel: true, zai: true, commandCode: true, claude: true),
+            keys: .init(openRouter: true, openCode: true, deepInfra: true, nvidia: true, vercel: true, zai: true, commandCode: true, claude: true),
             quotaUpdatedAt: ["claude": date],
             localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
         XCTAssertEqual(rows.map(\.id), ProviderDiagnostics.ids)
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .ok, count: 10))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .ok, count: 11))
         XCTAssertEqual(rows.first { $0.id == "claude" }?.quotaUpdatedAt, date)
         XCTAssertEqual(rows.allSatisfy(\.authPresent), true)
         XCTAssertEqual(rows.first { $0.id == "codex" }?.modelCount, 1)
         XCTAssertEqual(rows.first { $0.id == "localai" }?.modelCount, 1)
+        XCTAssertEqual(rows.first { $0.id == "nvidia" }?.modelCount, 1)
     }
 
     func testMissingCredentialsAreAWarning() {
         let rows = ProviderDiagnostics.rows(evidence())
 
-        XCTAssertEqual(rows.filter { $0.id != "localai" }.map(\.status), Array(repeating: .warning, count: 9))
+        XCTAssertEqual(rows.filter { $0.id != "localai" }.map(\.status), Array(repeating: .warning, count: 10))
         XCTAssertEqual(rows.first { $0.id == "localai" }?.status, .idle)
         XCTAssertTrue(rows.allSatisfy { !$0.authPresent })
     }
@@ -105,7 +107,7 @@ final class ProviderDiagnosticsTests: XCTestCase {
             localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .failed, count: 10))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .failed, count: 11))
         XCTAssertTrue(rows.allSatisfy { $0.error == "Could not connect to the server." })
         XCTAssertTrue(rows.allSatisfy { $0.modelCount == nil })
     }
@@ -113,7 +115,7 @@ final class ProviderDiagnosticsTests: XCTestCase {
     func testQuotaErrorsStayVerbatim() {
         let rows = ProviderDiagnostics.rows(evidence(
             authFileNames: allAuthNames,
-            keys: .init(openRouter: true, openCode: true, deepInfra: true, vercel: true, zai: true, commandCode: true, claude: true),
+            keys: .init(openRouter: true, openCode: true, deepInfra: true, nvidia: true, vercel: true, zai: true, commandCode: true, claude: true),
             quotaErrors: ["claude": "HTTP 429 Too Many Requests"]
         ))
 
@@ -122,7 +124,7 @@ final class ProviderDiagnosticsTests: XCTestCase {
         XCTAssertEqual(claude?.error, "HTTP 429 Too Many Requests")
         XCTAssertEqual(
             rows.filter { $0.id != "claude" && $0.id != "localai" }.map(\.status),
-            Array(repeating: .ok, count: 8)
+            Array(repeating: .ok, count: 9)
         )
         XCTAssertEqual(rows.first { $0.id == "localai" }?.status, .idle)
     }
@@ -134,7 +136,7 @@ final class ProviderDiagnosticsTests: XCTestCase {
             localAI: .init(running: true, readyAliases: ["local/llama"])
         ))
 
-        XCTAssertEqual(rows.map(\.status), Array(repeating: .warning, count: 10))
+        XCTAssertEqual(rows.map(\.status), Array(repeating: .warning, count: 11))
         XCTAssertTrue(rows.allSatisfy { $0.error == "The data could not be read." })
         XCTAssertTrue(rows.allSatisfy { $0.modelCount == nil })
     }

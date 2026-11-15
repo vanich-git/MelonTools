@@ -1,7 +1,7 @@
 //! Hardware capability detection and memory estimation for Local AI inference.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -639,6 +639,28 @@ pub fn detect_hardware(models_dir: Option<&Path>) -> HardwareInfo {
         recommended_backend,
         models_disk_free_space: disk_free,
         models_disk_total_space: disk_total,
+    }
+}
+
+/// Async wrapper for callers on the Tokio runtime.
+///
+/// `detect_hardware` shells out to the vendor tools (`nvidia-smi`, PowerShell
+/// with an 8 s budget), so awaiting it directly parks an async worker for the
+/// whole probe. A caller that holds the runtime lifecycle lock then keeps
+/// `stop` waiting behind the probe, and the exit path stalls with it (§5, W10).
+/// `spawn_blocking` moves the probe to the blocking pool; the caller must still
+/// re-check the generation before publishing the result.
+pub async fn detect_hardware_async(models_dir: Option<PathBuf>) -> HardwareInfo {
+    let probe_dir = models_dir.clone();
+    match tokio::task::spawn_blocking(move || detect_hardware(probe_dir.as_deref())).await {
+        Ok(info) => info,
+        // A JoinError means the blocking task panicked. The probe is not
+        // expected to panic, so retry once on this thread rather than invent a
+        // CPU-only profile that could pick the wrong backend.
+        Err(error) => {
+            eprintln!("local ai: hardware detection task failed: {error}");
+            detect_hardware(models_dir.as_deref())
+        }
     }
 }
 

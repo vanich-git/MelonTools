@@ -59,6 +59,9 @@ pub struct AuthFile {
     pub email: Option<String>,
     pub project_id: Option<String>,
     pub access_token: Option<String>,
+    /// Per-account egress proxy from the auth file; `None` means the global
+    /// `requests.proxy-url` applies.
+    pub proxy_url: Option<String>,
     /// Last modification time: the newest file is the account that was just
     /// connected.
     pub modified: Option<std::time::SystemTime>,
@@ -87,6 +90,12 @@ pub fn decode_auth_file(name: &str, path: &Path, data: &str) -> Option<AuthFile>
         access_token: root
             .get("access_token")
             .and_then(|v| v.as_str())
+            .map(String::from),
+        proxy_url: root
+            .get("proxy_url")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .map(String::from),
         modified: None,
     })
@@ -557,6 +566,7 @@ mod tests {
             email: Some("old@example.com".to_string()),
             project_id: None,
             access_token: None,
+            proxy_url: None,
             modified: Some(base),
         };
         let newer = AuthFile {
@@ -565,6 +575,7 @@ mod tests {
             email: Some("new@example.com".to_string()),
             project_id: Some("project-new".to_string()),
             access_token: None,
+            proxy_url: None,
             modified: Some(base + Duration::from_secs(60)),
         };
         let picked = newest_of(&[older.clone(), newer.clone()]).unwrap();
@@ -821,6 +832,24 @@ impl Management {
         )
     }
 
+    /// Bind one account to one egress proxy.
+    ///
+    /// The engine already reads `proxy_url` from the auth file and prefers it
+    /// over the global `requests.proxy-url`, so writing the field is the whole
+    /// feature - no engine change and no restart. An empty string removes the
+    /// binding and puts the account back on the global proxy.
+    pub async fn set_proxy(&self, name: &str, proxy_url: &str) -> bool {
+        matches!(
+            self.call(
+                reqwest::Method::PATCH,
+                "/v0/management/auth-files/fields",
+                Some(json!({ "name": name, "proxy_url": proxy_url.trim() }))
+            )
+            .await,
+            Ok((status, _)) if (200..300).contains(&status)
+        )
+    }
+
     pub async fn clear_bootstrap_cooldown(&self, auth_index: &str, model: &str) -> bool {
         if model.is_empty() {
             return false;
@@ -873,14 +902,15 @@ pub async fn probe_account(
     else {
         return false;
     };
-    if request_quota(
+    let probe = request_quota(
         &client,
         token,
         file.project_id.as_deref().unwrap_or_default(),
     )
-    .await
-    .is_none()
-    {
+    .await;
+    // Only a readable quota proves the credential is healthy; a ban or a
+    // transient failure both leave the cooldown in place.
+    if !matches!(probe, QuotaProbe::Ok(_)) {
         return false;
     }
     let Ok(manager) = Management::new(settings) else {
@@ -951,60 +981,255 @@ async fn fetch_quota(settings: &Settings, file: &AuthFile) -> Value {
         Err(error) => return json!({ "error": error.to_string() }),
     };
     let project = file.project_id.clone().unwrap_or_default();
-    let quota = request_quota(&client, &token, &project).await;
-    match quota {
-        Some(value) => value,
-        None => {
-            // A stale access token is the common failure. Refresh through the
-            // engine and retry once with the token it wrote back.
-            if let Ok(management) = Management::new(settings) {
-                let _ = management.refresh(Some(&file.name)).await;
-            }
-            if let Some(refreshed) = auth_files_in(&paths::auths_dir())
-                .into_iter()
-                .find(|candidate| candidate.name == file.name)
+    match request_quota(&client, &token, &project).await {
+        QuotaProbe::Ok(value) => return value,
+        QuotaProbe::Fatal(reason) => return json!({ "error": reason }),
+        QuotaProbe::Retryable => {}
+    }
+    // A stale access token is the common failure. Refresh through the engine
+    // and retry once with the token it wrote back.
+    if let Ok(management) = Management::new(settings) {
+        let _ = management.refresh(Some(&file.name)).await;
+    }
+    if let Some(refreshed) = auth_files_in(&paths::auths_dir())
+        .into_iter()
+        .find(|candidate| candidate.name == file.name)
+    {
+        if refreshed.access_token.as_deref() != Some(token.as_str()) {
+            match request_quota(
+                &client,
+                refreshed.access_token.as_deref().unwrap_or_default(),
+                refreshed.project_id.as_deref().unwrap_or_default(),
+            )
+            .await
             {
-                if refreshed.access_token.as_deref() != Some(token.as_str()) {
-                    if let Some(value) = request_quota(
-                        &client,
-                        refreshed.access_token.as_deref().unwrap_or_default(),
-                        refreshed.project_id.as_deref().unwrap_or_default(),
-                    )
-                    .await
-                    {
-                        return value;
-                    }
-                }
+                QuotaProbe::Ok(value) => return value,
+                QuotaProbe::Fatal(reason) => return json!({ "error": reason }),
+                QuotaProbe::Retryable => {}
             }
-            json!({ "error": "Квота сейчас недоступна." })
         }
+    }
+    json!({ "error": "Квота сейчас недоступна." })
+}
+
+/// Outcome of one quota probe. A `Retryable` failure is worth repeating with a
+/// refreshed token; a `Fatal` one (ban, denied access) is not, and its message
+/// explains why to the user.
+enum QuotaProbe {
+    Ok(Value),
+    Retryable,
+    Fatal(String),
+}
+
+/// User-facing words for an Antigravity error response, or `None` when the
+/// failure is worth one retry with a fresh token (401, 5xx, network blip).
+///
+/// A Terms-of-Service ban is final and says so in the body - before this
+/// existed, every non-2xx collapsed into "Квота сейчас недоступна.", which
+/// reads as a passing glitch for an account that is gone for good.
+fn final_reason(status: u16, body: &str) -> Option<String> {
+    let detail = body.to_lowercase();
+    if detail.contains("terms of service") || detail.contains("violation") {
+        return Some(
+            "Заблокирован Google за нарушение условий использования - аккаунт нельзя использовать."
+                .to_string(),
+        );
+    }
+    match status {
+        401 => None,
+        403 => Some("Google запретил доступ (403) - аккаунт не может прочитать квоту.".to_string()),
+        429 => Some("Google ограничил частоту - попробуйте позже.".to_string()),
+        _ => None,
     }
 }
 
-async fn request_quota(client: &reqwest::Client, token: &str, project: &str) -> Option<Value> {
-    let response = client
+async fn request_quota(client: &reqwest::Client, token: &str, project: &str) -> QuotaProbe {
+    let response = match client
         .post("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels")
         .bearer_auth(token)
         .header("Content-Type", "application/json")
-        .header(
-            "User-Agent",
-            "antigravity/hub/2.24.0 (aidev_client; os_type=windows; arch=amd64)",
-        )
+        .header("User-Agent", crate::antigravity_identity::user_agent())
         .json(&json!({ "project": project }))
         .send()
         .await
-        .ok()?;
+    {
+        Ok(response) => response,
+        Err(_) => return QuotaProbe::Retryable,
+    };
     if !response.status().is_success() {
-        return None;
+        // The body carries the real reason - a Terms-of-Service ban says so in
+        // plain text. Dropping it here is what turned a ban into "unavailable".
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return match final_reason(status, &body) {
+            Some(reason) => QuotaProbe::Fatal(reason),
+            None => QuotaProbe::Retryable,
+        };
     }
-    let body: Value = response.json().await.ok()?;
-    let models = body.get("models")?.as_object()?;
+    let body: Value = match response.json().await {
+        Ok(body) => body,
+        Err(_) => return QuotaProbe::Retryable,
+    };
+    let Some(models) = body.get("models").and_then(|m| m.as_object()) else {
+        return QuotaProbe::Retryable;
+    };
     let gemini = quota_window(models, true);
     let claude = quota_window(models, false);
     if gemini.is_none() && claude.is_none() {
-        return None;
+        return QuotaProbe::Retryable;
     }
-    Some(json!({ "gemini": gemini, "claude": claude }))
+    QuotaProbe::Ok(json!({ "gemini": gemini, "claude": claude }))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WarmupOutcome {
+    Ok,
+    Unauthorized,
+    Failed,
+}
+
+async fn send_warmup_request(
+    client: &reqwest::Client,
+    token: &str,
+    project: &str,
+    model: &str,
+) -> WarmupOutcome {
+    let payload = json!({
+        "project": project,
+        "model": model,
+        "request": {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "hi" }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": 1
+            }
+        }
+    });
+
+    let resp = match client
+        .post("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse")
+        .bearer_auth(token)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", crate::antigravity_identity::user_agent())
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return WarmupOutcome::Failed,
+    };
+
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        WarmupOutcome::Ok
+    } else if status == 401 {
+        WarmupOutcome::Unauthorized
+    } else {
+        WarmupOutcome::Failed
+    }
+}
+
+pub async fn warmup_account(
+    settings: &Settings,
+    name: &str,
+    model: Option<&str>,
+) -> bool {
+    let files = auth_files_in(&paths::auths_dir());
+    let Some(file) = files.into_iter().find(|f| f.name == name) else {
+        return false;
+    };
+
+    let client = match crate::proxy::apply(reqwest::Client::builder())
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let mut token = file.access_token.clone();
+    let mut project = file.project_id.clone().unwrap_or_default();
+
+    if token.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if let Ok(manager) = Management::new(settings) {
+            let _ = manager.refresh(Some(name)).await;
+        }
+        if let Some(refreshed) = auth_files_in(&paths::auths_dir())
+            .into_iter()
+            .find(|f| f.name == name)
+        {
+            token = refreshed.access_token;
+            if let Some(p) = refreshed.project_id {
+                project = p;
+            }
+        }
+    }
+
+    let Some(valid_token) = token.filter(|t| !t.trim().is_empty()) else {
+        return false;
+    };
+
+    let chosen_model = match model.filter(|m| !m.trim().is_empty()) {
+        Some(m) => m.to_string(),
+        None => {
+            let models = if let Ok(manager) = Management::new(settings) {
+                manager.auth_models(name).await
+            } else {
+                Vec::new()
+            };
+            if models.iter().any(|m| m == "gemini-2.5-pro") {
+                "gemini-2.5-pro".to_string()
+            } else if models.iter().any(|m| m == "gemini-2.5-flash") {
+                "gemini-2.5-flash".to_string()
+            } else if let Some(first) = models.into_iter().next() {
+                first
+            } else {
+                "gemini-2.5-pro".to_string()
+            }
+        }
+    };
+
+    let outcome = send_warmup_request(&client, &valid_token, &project, &chosen_model).await;
+    match outcome {
+        WarmupOutcome::Ok => true,
+        WarmupOutcome::Unauthorized => {
+            if let Ok(manager) = Management::new(settings) {
+                let _ = manager.refresh(Some(name)).await;
+            }
+            if let Some(refreshed) = auth_files_in(&paths::auths_dir())
+                .into_iter()
+                .find(|f| f.name == name)
+            {
+                if let Some(new_token) = refreshed.access_token.filter(|t| !t.trim().is_empty()) {
+                    let new_project = refreshed.project_id.unwrap_or(project);
+                    let retry_outcome = send_warmup_request(&client, &new_token, &new_project, &chosen_model).await;
+                    return matches!(retry_outcome, WarmupOutcome::Ok);
+                }
+            }
+            false
+        }
+        WarmupOutcome::Failed => false,
+    }
+}
+
+pub async fn warmup_all(
+    settings: &Settings,
+    model: Option<&str>,
+) -> Vec<(String, bool)> {
+    let files = auth_files_in(&paths::auths_dir());
+    let mut results = Vec::new();
+    for file in files {
+        let success = warmup_account(settings, &file.name, model).await;
+        results.push((file.name, success));
+    }
+    results
 }
 
 /// Catalog entries the connected accounts cannot use. The catalog file is the
@@ -1064,11 +1289,23 @@ pub async fn account_views(settings: &Settings) -> Value {
         let entry = entries.iter().find(|item| {
             item.get("name").and_then(|value| value.as_str()) == Some(file.name.as_str())
         });
+        let disabled = entry
+            .and_then(|item| item.get("disabled"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        // A disabled account is disabled on purpose: blocked upstream, paused by
+        // the operator, or awaiting re-authentication. Probing it still spends a
+        // request on a credential Google already refuses, so render the stored
+        // management state and touch no upstream endpoint for it.
         let mut models = match &management {
-            Some(manager) => manager.auth_models(&file.name).await,
-            None => Vec::new(),
+            Some(manager) if !disabled => manager.auth_models(&file.name).await,
+            _ => Vec::new(),
         };
-        let quota = fetch_quota(settings, file).await;
+        let quota = if disabled {
+            Value::Null
+        } else {
+            fetch_quota(settings, file).await
+        };
         // The per-auth models endpoint can be empty for a moment while the
         // engine registers a freshly loaded account. The quota response carries
         // the same ids, so use it as a fallback instead of showing zero models.
@@ -1096,7 +1333,8 @@ pub async fn account_views(settings: &Settings) -> Value {
             "projectId": file.project_id,
             "authIndex": entry.and_then(|item| item.get("auth_index")).and_then(|value| value.as_str()),
             "priority": entry.and_then(|item| item.get("priority")).and_then(|value| value.as_i64()).unwrap_or(0),
-            "disabled": entry.and_then(|item| item.get("disabled")).and_then(|value| value.as_bool()).unwrap_or(false),
+            "disabled": disabled,
+            "proxyUrl": file.proxy_url,
             "status": entry.and_then(|item| item.get("status")).and_then(|value| value.as_str()),
             "statusMessage": entry.and_then(|item| item.get("status_message")).and_then(|value| value.as_str()),
             "unavailable": entry.and_then(|item| item.get("unavailable")).and_then(|value| value.as_bool()).unwrap_or(false),
@@ -1139,5 +1377,44 @@ mod pool_tests {
     fn quota_window_without_quota_info_is_none() {
         let raw = json!({"m": {"modelProvider": "MODEL_PROVIDER_GOOGLE"}});
         assert!(quota_window(raw.as_object().unwrap(), true).is_none());
+    }
+
+    /// A banned account must say so instead of "quota unavailable": the ban is
+    /// permanent, and a passing glitch is exactly the wrong message.
+    #[test]
+    fn terms_of_service_ban_is_final_and_explained() {
+        let body = r#"{"error":{"code":403,"message":"This account was suspended for a violation of Terms of Service.","status":"PERMISSION_DENIED"}}"#;
+        let reason = final_reason(403, body).expect("ban must be reported");
+        assert!(reason.contains("условий использования"), "{reason}");
+    }
+
+    /// A 401 is the stale-token case, so it must stay retryable rather than
+    /// telling the user the account is blocked.
+    #[test]
+    fn unauthorized_stays_retryable() {
+        assert!(final_reason(401, "").is_none());
+    }
+
+    /// Transient upstream trouble is retried silently.
+    #[test]
+    fn server_errors_stay_retryable() {
+        assert!(final_reason(500, "internal error").is_none());
+        assert!(final_reason(503, "").is_none());
+    }
+
+    /// A plain 403 without a ban reason still explains the denial instead of
+    /// falling back to the generic "unavailable".
+    #[test]
+    fn forbidden_without_ban_reason_is_explained() {
+        let body = r#"{"error":{"status":"PERMISSION_DENIED"}}"#;
+        let reason = final_reason(403, body).expect("403 must be explained");
+        assert!(!reason.is_empty());
+    }
+
+    #[test]
+    fn warmup_outcome_variants() {
+        assert_eq!(WarmupOutcome::Ok, WarmupOutcome::Ok);
+        assert_ne!(WarmupOutcome::Ok, WarmupOutcome::Unauthorized);
+        assert_ne!(WarmupOutcome::Ok, WarmupOutcome::Failed);
     }
 }

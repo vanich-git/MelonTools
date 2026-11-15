@@ -30,6 +30,40 @@ final class ZaiProviderTests: XCTestCase {
         XCTAssertTrue(yaml.contains("        - name: \"glm-5.3\"\n          alias: \"zai/glm-5.3\"\n"))
     }
 
+    func testGatewayYAMLEmitsNvidiaEndpointAndOnlyEnabledModels() {
+        let selected = SourceModel(
+            id: "vendor/model",
+            display: "Model",
+            contextLength: 16_384,
+            enabled: true,
+            alias: "nvidia/vendor/model"
+        )
+        let hidden = SourceModel(
+            id: "vendor/hidden",
+            display: "Hidden",
+            contextLength: nil,
+            enabled: false,
+            alias: "nvidia/vendor/hidden"
+        )
+        var source = ModelSource(
+            id: "nvidia",
+            kind: .nvidia,
+            title: "NVIDIA",
+            baseURL: ModelSourcesStore.nvidiaBaseURL,
+            apiKey: "test-key",
+            enabled: true,
+            models: [selected, hidden]
+        )
+        let yaml = ModelSourcesStore.gatewayYAML(sources: [source])
+        XCTAssertTrue(yaml.contains("    - name: \"nvidia\"\n"))
+        XCTAssertTrue(yaml.contains("      base-url: \"https://integrate.api.nvidia.com/v1\"\n"))
+        XCTAssertTrue(yaml.contains("        - api-key: \"test-key\"\n"))
+        XCTAssertTrue(yaml.contains("        - name: \"vendor/model\"\n          alias: \"nvidia/vendor/model\"\n"))
+        XCTAssertFalse(yaml.contains("vendor/hidden"))
+        source.enabled = false
+        XCTAssertFalse(ModelSourcesStore.gatewayYAML(sources: [source]).contains("name: \"nvidia\""))
+    }
+
     func testAliasIsNamespacedAndIdempotent() {
         XCTAssertEqual(ModelSourcesStore.zaiAlias("glm-5.3"), "zai/glm-5.3")
         XCTAssertEqual(ModelSourcesStore.zaiAlias("zai/glm-5.3"), "zai/glm-5.3")

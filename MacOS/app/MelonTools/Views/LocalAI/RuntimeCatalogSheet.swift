@@ -143,15 +143,13 @@ struct RuntimeCatalogSheet: View {
                     .background(MTTheme.emerald.opacity(0.12), in: Capsule())
             } else if installing {
                 ProgressView().controlSize(.small)
-                Button(L("Cancel")) { runtimeStore.cancelInstall() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                MTGlassButton(title: L("Cancel"), size: .small, tint: MTTheme.textSecondary) {
+                    runtimeStore.cancelInstall()
+                }
             } else {
-                Button(L("Install")) {
+                MTGlassButton(title: L("Install"), size: .small, tint: MTTheme.emerald, prominent: true) {
                     runtimeStore.install(catalog: release)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
                 .disabled(runtimeStore.isInstalling)
             }
         }

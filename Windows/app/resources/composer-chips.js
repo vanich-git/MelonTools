@@ -196,7 +196,7 @@
     pointer-events: none;
     -webkit-app-region: no-drag;
     user-select: none; -webkit-user-select: none;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   /* The palette lives on two scopes: the chips render inside the composer,
      the popover is appended to <body> — custom properties are inherited, and
@@ -306,7 +306,7 @@
     border: 0.5px solid var(--melon-pop-border);
     box-shadow: var(--melon-pop-shadow);
     color: var(--melon-fg);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     -webkit-app-region: no-drag;
     user-select: none; -webkit-user-select: none;
   }

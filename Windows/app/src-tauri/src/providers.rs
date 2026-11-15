@@ -34,6 +34,94 @@ async fn http_json(client: &reqwest::Client, url: &str, key: &str) -> Result<Val
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+pub async fn openrouter_models(key: &str) -> Result<Vec<ProviderModel>, String> {
+    if key.trim().is_empty() {
+        return Err("ключ OpenRouter не задан".to_string());
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let value = http_json(&client, "https://openrouter.ai/api/v1/models", key).await?;
+    let models = parse_openrouter_models(&value);
+    if models.is_empty() {
+        return Err("OpenRouter: пустой список моделей".to_string());
+    }
+    Ok(models)
+}
+
+fn parse_openrouter_models(value: &Value) -> Vec<ProviderModel> {
+    let Some(entries) = value.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut models: Vec<ProviderModel> = entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let display = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::codex_route::prettify(&id));
+
+            let context_window = entry.get("context_length").and_then(Value::as_u64);
+            let prompt_per_token = number(entry.pointer("/pricing/prompt"));
+            let completion_per_token = number(entry.pointer("/pricing/completion"));
+            let cache_read_per_token = number(entry.pointer("/pricing/input_cache_read"));
+
+            let supports_images = entry
+                .pointer("/architecture/input_modalities")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|value| value.eq_ignore_ascii_case("image"))
+                });
+            Some(ProviderModel {
+                id,
+                display,
+                context_window,
+                prompt_per_token,
+                completion_per_token,
+                cache_read_per_token,
+                supports_images,
+                ..Default::default()
+            })
+        })
+        .collect();
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models
+}
+
+pub async fn nvidia_models(key: &str) -> Result<Vec<ProviderModel>, String> {
+    if key.trim().is_empty() {
+        return Err("ключ NVIDIA не задан".to_string());
+    }
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get("https://integrate.api.nvidia.com/v1/models")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let value: Value = response.json().await.map_err(|e| e.to_string())?;
+    let models = parse_openrouter_models(&value);
+    if models.is_empty() {
+        return Err("NVIDIA: пустой список моделей".to_string());
+    }
+    Ok(models)
+}
+
 pub async fn openrouter(key: &str) -> Result<Value, String> {
     if key.trim().is_empty() {
         return Err("ключ OpenRouter не задан".to_string());
@@ -138,6 +226,7 @@ fn parse_deepinfra_models(value: &Value) -> Vec<ProviderModel> {
                     .map(|value| value / 1_000_000.0),
                 supports_images,
                 anthropic_only: None,
+                routing_strategy: "price".to_string(),
                 id,
             })
         })
@@ -235,6 +324,7 @@ fn parse_vercel_models(value: &Value) -> Vec<ProviderModel> {
                 cache_read_per_token: number(pricing.and_then(|p| p.get("input_cache_read"))),
                 supports_images,
                 anthropic_only: None,
+                routing_strategy: "price".to_string(),
             })
         })
         .collect();
@@ -450,6 +540,7 @@ fn parse_opencode_models(value: &Value) -> Vec<ProviderModel> {
                 cache_read_per_token: per_million("/cost/text/input/cache/read"),
                 supports_images,
                 anthropic_only: None,
+                routing_strategy: "price".to_string(),
             })
         })
         .collect();
@@ -504,9 +595,7 @@ fn parse_commandcode_models(value: &Value) -> Vec<ProviderModel> {
                 .and_then(Value::as_array)
                 .map(|items| items.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            let anthropic_only = endpoints
-                .iter()
-                .any(|endpoint| *endpoint == "/messages")
+            let anthropic_only = endpoints.iter().any(|endpoint| *endpoint == "/messages")
                 && !endpoints
                     .iter()
                     .any(|endpoint| *endpoint == "/chat/completions");
@@ -520,6 +609,105 @@ fn parse_commandcode_models(value: &Value) -> Vec<ProviderModel> {
         })
         .collect();
     models.sort_by_key(|model| model.id.to_lowercase());
+    models
+}
+
+/// Fetches the model list from a user-defined endpoint. The request shape
+/// follows the selected protocol because relays and gateways authenticate
+/// differently: Bearer for OpenAI, `x-api-key` for Anthropic and
+/// `x-goog-api-key` for Gemini.
+pub async fn custom_provider_models(
+    protocol: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<ProviderModel>, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("ключ API не задан".to_string());
+    }
+    let protocol = crate::custom::Protocol::parse(protocol)?;
+    let url = crate::custom::models_url(base_url, protocol)?;
+    let client = crate::proxy::apply(reqwest::Client::builder())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client.get(&url);
+    request = match protocol {
+        crate::custom::Protocol::Anthropic => request
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        crate::custom::Protocol::Gemini => request.header("x-goog-api-key", key),
+        crate::custom::Protocol::OpenAIChat | crate::custom::Protocol::OpenAIResponses => {
+            request.header("Authorization", format!("Bearer {key}"))
+        }
+    };
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "{}: {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "поставщик вернул список моделей в неизвестном формате".to_string())?;
+    let models = parse_custom_models(&value);
+    if models.is_empty() {
+        return Err("поставщик вернул пустой список моделей".to_string());
+    }
+    Ok(models)
+}
+
+fn parse_custom_models(value: &Value) -> Vec<ProviderModel> {
+    let entries = value
+        .get("data")
+        .or_else(|| value.get("models"))
+        .and_then(Value::as_array);
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    let mut models: Vec<ProviderModel> = entries
+        .iter()
+        .filter_map(|entry| {
+            let raw_id = entry
+                .get("id")
+                .or_else(|| entry.get("name"))
+                .and_then(Value::as_str)?
+                .trim();
+            let id = raw_id.strip_prefix("models/").unwrap_or(raw_id).to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let display = ["display_name", "displayName", "display", "name"]
+                .iter()
+                .find_map(|key| entry.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && *name != raw_id)
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::codex_route::prettify(&id));
+            let context_window = [
+                "context_length",
+                "context_window",
+                "inputTokenLimit",
+                "input_token_limit",
+                "max_context_length",
+            ]
+            .iter()
+            .find_map(|key| entry.get(*key).and_then(Value::as_u64))
+            .filter(|value| *value > 0);
+            Some(ProviderModel {
+                id,
+                display,
+                context_window,
+                ..Default::default()
+            })
+        })
+        .collect();
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models.dedup_by(|left, right| left.id == right.id);
+    models.truncate(1000);
     models
 }
 
@@ -647,11 +835,28 @@ pub fn antigravity_metrics(
 mod tests {
     use super::{
         antigravity_metrics, claude_metrics, parse_commandcode_models, parse_deepinfra_models,
-        parse_opencode_models, parse_vercel_models, parse_zai_models, vercel_metrics,
+        parse_opencode_models, parse_openrouter_models, parse_vercel_models, parse_zai_models, vercel_metrics,
         zai_models_fallback, zai_supports_images,
     };
     use crate::claude::UsageSnapshot;
     use serde_json::json;
+
+    #[test]
+    fn openrouter_catalog_keeps_free_models_and_unknown_prices() {
+        let value = json!({"data": [
+            {"id": "example/free:free", "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "example/unknown"},
+            {"id": "example/paid", "pricing": {"prompt": "0.1", "completion": "0.2"}}
+        ]});
+        let models = parse_openrouter_models(&value);
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "example/free:free");
+        assert_eq!(models[0].prompt_per_token, Some(0.0));
+        assert_eq!(models[0].completion_per_token, Some(0.0));
+        assert_eq!(models[2].id, "example/unknown");
+        assert_eq!(models[2].prompt_per_token, None);
+        assert_eq!(models[2].completion_per_token, None);
+    }
 
     // Shapes below are copied from live answers, so the parsers are pinned to
     // what the upstreams actually return.

@@ -129,7 +129,7 @@ struct LocalRuntimeView: View {
                             }
                             .font(MTTheme.body(11, weight: .medium))
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(MTGlassButtonStyle(tint: MTTheme.danger, prominent: false, size: .small))
                     }
                 }
                 .padding(MTTheme.s4)

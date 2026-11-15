@@ -178,13 +178,41 @@ final class CodexAuthFileTests: XCTestCase {
         account.poolEnabled = true
         let enabled = try syncAndRead()
         XCTAssertNotEqual(enabled["disabled"] as? Bool, true)
-        XCTAssertEqual(enabled["priority"] as? Int, 1)
+        XCTAssertEqual(enabled["priority"] as? Int, CodexRoutingPlanner.regularPriority)
+        // A full quota earns the widest share the scale allows.
+        XCTAssertEqual(enabled["weight"] as? Int, 10)
 
         // The manual switch must not bypass a still-active quota reserve.
         account.hourlyReservePercent = 10
         account.quota?.hourlyRemainingPercent = 5
         account.quotaUpdatedAt = Date()
         XCTAssertEqual(try syncAndRead()["disabled"] as? Bool, true)
+    }
+
+    /// The share must track the quota left, not sit at a constant: that is the
+    /// whole point of writing the weight from the cached reading.
+    func testQuotaWeightScalesWithRemainingQuota() {
+        func weight(hourly: Double, weekly: Double) -> Int {
+            var quota = CodexQuota()
+            quota.hourlyRemainingPercent = hourly
+            quota.weeklyRemainingPercent = weekly
+            var account = CodexAccount(tokens: CodexTokens(access_token: "at"))
+            account.quota = quota
+            return CodexGatewayService.quotaWeight(account)
+        }
+        // A fresh account has the widest share; the scale tops out at 10.
+        XCTAssertEqual(weight(hourly: 100, weekly: 100), 10)
+        XCTAssertEqual(weight(hourly: 95, weekly: 95), 9)
+        XCTAssertEqual(weight(hourly: 12, weekly: 12), 1)
+        // The tighter of the two windows decides, so a drained weekly window
+        // cannot be masked by a healthy 5-hour one.
+        XCTAssertEqual(weight(hourly: 90, weekly: 12), 1)
+        // The last percent stays routable; excluding an account is the job of
+        // `disabled`, and a zero weight would drop it out of the picker.
+        XCTAssertEqual(weight(hourly: 0, weekly: 0), 1)
+        // An account with no reading yet must not be starved.
+        let unknown = CodexAccount(tokens: CodexTokens(access_token: "at"))
+        XCTAssertEqual(CodexGatewayService.quotaWeight(unknown), 10)
     }
 
     func testOnlyASuccessfullyLoadedVaultAllowsDestructiveMirroring() {

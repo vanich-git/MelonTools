@@ -498,15 +498,12 @@ struct LocalModelTestSheet: View {
                             .font(MTTheme.body(11.5, weight: .medium))
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(MTTheme.emerald)
-                .controlSize(.regular)
+                .buttonStyle(MTGlassButtonStyle(tint: MTTheme.emerald, prominent: true, size: .regular))
                 .disabled(isBusy || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 if isBusy {
                     Button(L("Stop")) { cancelRun() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
+                        .buttonStyle(MTGlassButtonStyle(tint: MTTheme.danger, size: .regular))
                 }
 
                 // Structured tool call is a separate protocol check: a model can
@@ -526,8 +523,7 @@ struct LocalModelTestSheet: View {
                             .font(MTTheme.body(11.5, weight: .medium))
                     }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
+                .buttonStyle(MTGlassButtonStyle(tint: MTTheme.violet, size: .regular))
                 .disabled(isBusy)
 
                 metricsRow
@@ -595,15 +591,12 @@ struct LocalModelTestSheet: View {
                             .font(MTTheme.body(11.5, weight: .medium))
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(MTTheme.cyan)
-                .controlSize(.regular)
+                .buttonStyle(MTGlassButtonStyle(tint: MTTheme.cyan, prominent: true, size: .regular))
                 .disabled(isBusy)
 
                 if isRunningGateway {
                     Button(L("Stop")) { cancelRun() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.regular)
+                        .buttonStyle(MTGlassButtonStyle(tint: MTTheme.danger, size: .regular))
                 }
 
                 if elapsed > 0 {

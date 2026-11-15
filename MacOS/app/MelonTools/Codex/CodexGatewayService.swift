@@ -43,6 +43,18 @@ final class CodexGatewayService: ObservableObject {
         let timedOut: Bool
     }
 
+    struct UsageRecord: Identifiable, Equatable {
+        let id = UUID()
+        let time: Date
+        let model: String
+        let provider: String
+        let auth: String
+        let inputTokens: Int
+        let outputTokens: Int
+        let mode: String
+        let status: Int
+    }
+
     struct GatewayRequest: Identifiable {
         let id = UUID()
         let time: Date
@@ -62,6 +74,8 @@ final class CodexGatewayService: ObservableObject {
     @Published private(set) var adopted = false
     @Published private(set) var lastQoS: QoSMetric?
     @Published private(set) var qosHistory: [QoSMetric] = []
+    @Published private(set) var lastUsage: UsageRecord?
+    @Published private(set) var usageHistory: [UsageRecord] = []
     @Published private(set) var isStarting = false
     @Published private(set) var checkResult: String?
     @Published private(set) var checkPassed = false
@@ -104,10 +118,12 @@ final class CodexGatewayService: ObservableObject {
     }
 
     /// Credential selection strategy (`routing.strategy` in config.yaml) is
-    /// fixed to “fill-first”: the account order comes from the auth-file
-    /// priorities that the pool planner computes (first account is used
-    /// first, the next one takes over automatically).
-    static let gatewayRoutingStrategy = "fill-first"
+    /// fixed to “weighted-round-robin”: the engine rotates inside the highest
+    /// ready priority tier and weights the picks, so the load spreads across
+    /// the whole pool instead of draining one account at a time. Tier
+    /// membership and the weight per account come from the auth files that the
+    /// pool planner writes (`priority` = tier, `weight` = share).
+    static let gatewayRoutingStrategy = "weighted-round-robin"
 
     /// Auth-file collision guard: two accounts whose display names sanitize to
     /// the same string would silently overwrite each other's gateway file and
@@ -133,6 +149,7 @@ final class CodexGatewayService: ObservableObject {
         CodexGatewayService.saveStoredApiKey(apiKey)
         // Migrate away from the legacy UserDefaults location.
         UserDefaults.standard.removeObject(forKey: "gatewayApiKey")
+        Self.migrateStreamBootstrapTimeout()
     }
 
     /// Stored in a dedicated 0600 file (not UserDefaults / not the world-
@@ -336,9 +353,28 @@ final class CodexGatewayService: ObservableObject {
     /// restart.
     /// 0 disables the first-token watchdog. The engine watches config.yaml, so
     /// a running gateway picks the new threshold up without a restart.
+    /// 180 s covers a thinking model that stays silent before its first visible
+    /// delta; the old 60 s default cut those requests off.
+    static let defaultStreamBootstrapTimeoutSeconds = 180
+
     static var streamBootstrapTimeoutSeconds: Int {
         let stored = UserDefaults.standard.object(forKey: "streamBootstrapTimeoutSeconds") as? Int
-        return min(300, max(0, stored ?? 60))
+        return min(300, max(0, stored ?? Self.defaultStreamBootstrapTimeoutSeconds))
+    }
+
+    /// One-shot bump of the stored default. Users who never touched the switch
+    /// still carry 60 in UserDefaults, so changing the fallback alone would not
+    /// reach their live config. A deliberate 0 (watchdog off) or a custom value
+    /// is preserved.
+    static func migrateStreamBootstrapTimeout() {
+        let defaults = UserDefaults.standard
+        let marker = "streamBootstrapTimeoutMigratedTo180"
+        guard !defaults.bool(forKey: marker) else { return }
+        defaults.set(true, forKey: marker)
+        if let stored = defaults.object(forKey: "streamBootstrapTimeoutSeconds") as? Int,
+           stored == 60 {
+            defaults.set(defaultStreamBootstrapTimeoutSeconds, forKey: "streamBootstrapTimeoutSeconds")
+        }
     }
 
     func applyStreamBootstrapTimeout() {
@@ -395,11 +431,21 @@ final class CodexGatewayService: ObservableObject {
 
         routing:
           strategy: "\(Self.gatewayRoutingStrategy)"
+          # Keep one conversation on one account. Without this every turn may land on
+          # a different credential, which splits the upstream cache and makes a single
+          # conversation look like many unrelated clients.
+          session-affinity: true
+          session-affinity-ttl: "2h"
+          session-affinity-subagents: true
+          # Quota and auth failures must move the session; transient stream errors
+          # should not, or a long conversation would be reshuffled on a hiccup.
+          session-affinity-rebind-on: "quota"
 
-        # Fail over to another account while the leader is cooling down.
-        request-retry: 3
-        max-retry-interval: 45
-        transient-error-cooldown-seconds: 20
+        # One retry only. Every extra attempt is another request on an account that
+        # may already be flagged, and a 403 never becomes a 200 by retrying it.
+        request-retry: 1
+        max-retry-interval: 30
+        transient-error-cooldown-seconds: 60
 
         # Fail over before the client commits when the first token is slow.
         stream-bootstrap-timeout-seconds: \(Self.streamBootstrapTimeoutSeconds)
@@ -544,6 +590,22 @@ final class CodexGatewayService: ObservableObject {
         names.filter { $0.hasPrefix("codex-") && $0.hasSuffix(".json") }
     }
 
+    /// Smooth-weighted-round-robin share for one account, derived from the
+    /// quota it has left. The engine reads `weight` verbatim, so keeping this
+    /// a pure function of the cached reading is enough: every quota refresh
+    /// re-runs the sync and rewrites the file.
+    ///
+    /// `remaining / 10` floors a full account to 10 and a nearly empty one to
+    /// 0, and the `max(1, …)` floor keeps the last percent routable - an
+    /// exhausted window is excluded by `disabled`, not by a zero weight, which
+    /// would silently drop the account out of the picker.
+    nonisolated static func quotaWeight(_ account: CodexAccount) -> Int {
+        let hourly = account.quota?.hourlyRemainingPercent ?? 100
+        let weekly = account.quota?.weeklyRemainingPercent ?? 100
+        let remaining = min(max(hourly, 0.0), max(weekly, 0.0), 100.0)
+        return max(1, Int(remaining / 10))
+    }
+
     /// Write each vault account as a CLIProxyAPI codex auth file.
     /// `priorities` maps account ids to a routing priority (higher = used sooner).
     /// `poolSlugs` is the visible pool; the payload lists the models the
@@ -594,6 +656,13 @@ final class CodexGatewayService: ObservableObject {
             ]
             if let priority = priorities[account.id], priority > 0 {
                 payload["priority"] = priority
+                // Explicit weight: the weighted strategy reads it from the
+                // auth file, so point-of-need tuning stays a value change here
+                // instead of a schema change. The share follows the quota left
+                // so an account with 90% left drains ten times faster than one
+                // with 9% left, instead of both taking equal traffic until the
+                // weaker one hits its window.
+                payload["weight"] = quotaWeight(account)
             }
             // The engine routes a pool model only to accounts that allow it.
             // An empty exclusion list is omitted, not written as `[]`.
@@ -907,10 +976,10 @@ final class CodexGatewayService: ObservableObject {
 
     // MARK: - Routing settings
 
-    /// Applies the pool order: rewrites config.yaml (the strategy itself is
-    /// fixed to “fill-first”; the order lives in the auth-file priorities) and
-    /// hot-syncs the auth files. A running gateway picks the change up without
-    /// a restart.
+    /// Applies the pool tiering: rewrites config.yaml (the strategy itself is
+    /// fixed to “weighted-round-robin”; the tiers live in the auth-file
+    /// priorities and weights) and hot-syncs the auth files. A running gateway
+    /// picks the change up without a restart.
     func applyRouting(accounts: [CodexAccount], priorities: [String: Int]) async {
         // Pool edits arrive in bursts (drag, toggle, quota re-plan); coalesce
         // the config writes and let the auth files below carry the order.
@@ -1399,6 +1468,11 @@ final class CodexGatewayService: ObservableObject {
         var parsed: [GatewayRequest] = []
         for line in newLines {
             if let request = Self.parseRequestLine(line) { parsed.append(request) }
+            if let usage = Self.parseUsageLine(line) {
+                usageHistory.insert(usage, at: 0)
+                if usageHistory.count > 30 { usageHistory.removeLast(usageHistory.count - 30) }
+                lastUsage = usage
+            }
             if let metric = Self.parseQoSLine(line) {
                 qosHistory.insert(metric, at: 0)
                 if qosHistory.count > 30 { qosHistory.removeLast(qosHistory.count - 30) }
@@ -1471,6 +1545,39 @@ final class CodexGatewayService: ObservableObject {
             return 0
         }
         return size
+    }
+
+    /// Parses the engine's `[usage]` telemetry lines.
+    nonisolated static func parseUsageLine(_ line: String) -> UsageRecord? {
+        guard line.contains("[usage]") else { return nil }
+        func value(_ key: String) -> Int? {
+            guard let range = line.range(of: key + "=") else { return nil }
+            let rest = line[range.upperBound...]
+            let digits = rest.prefix { $0.isNumber }
+            return Int(digits)
+        }
+        func text(_ key: String) -> String? {
+            guard let range = line.range(of: key + "=") else { return nil }
+            let rest = line[range.upperBound...]
+            let token = rest.prefix { !$0.isWhitespace && $0 != "\"" }
+            return token.isEmpty ? nil : String(token)
+        }
+        let time: Date
+        if let ts = text("timestamp"), let parsed = ISO8601DateFormatter().date(from: ts) {
+            time = parsed
+        } else {
+            time = Date()
+        }
+        return UsageRecord(
+            time: time,
+            model: text("model") ?? "-",
+            provider: text("provider") ?? "-",
+            auth: text("auth") ?? "-",
+            inputTokens: value("input") ?? 0,
+            outputTokens: value("output") ?? 0,
+            mode: text("mode") ?? "chat",
+            status: value("status") ?? 200
+        )
     }
 
     /// Parses the engine's `[qos]` telemetry lines emitted by the first-token

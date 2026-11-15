@@ -1,0 +1,1169 @@
+diff --git a/internal/auth/antigravity/auth.go b/internal/auth/antigravity/auth.go
+index e4450ea..eb43703 100644
+--- a/internal/auth/antigravity/auth.go
++++ b/internal/auth/antigravity/auth.go
+@@ -76,9 +76,15 @@ func (o *AntigravityAuth) nodeUserAgent() string {
+ 	return misc.AntigravityOnboardUserUserAgent("")
+ }
+ 
++// antigravityLoadCodeAssistMetadata returns the client identity reported when a
++// project is resolved. Only these keys are accepted: the endpoint rejects
++// deviceId, machineId, osType and deviceModel with HTTP 400 INVALID_ARGUMENT.
+ func antigravityLoadCodeAssistMetadata() map[string]string {
++	version := misc.AntigravityLatestVersion()
+ 	return map[string]string{
+-		"ideType": "ANTIGRAVITY",
++		"ideType":       "ANTIGRAVITY",
++		"ideVersion":    version,
++		"pluginVersion": version,
+ 	}
+ }
+ 
+diff --git a/internal/misc/antigravity_version.go b/internal/misc/antigravity_version.go
+index 1e77c2d..f57f653 100644
+--- a/internal/misc/antigravity_version.go
++++ b/internal/misc/antigravity_version.go
+@@ -16,10 +16,9 @@ import (
+ )
+ 
+ const (
+-	// antigravityFallbackVersion is the client version reported when the hub
+-	// manifest has not been fetched yet or cannot be reached. Cloud Code rejects
+-	// newer models for clients below 2.23.0, so this floor must stay at or above
+-	// that version.
++	// antigravityFallbackVersion is the client version reported when no
++	// calibrated release is configured. Cloud Code rejects newer models for
++	// clients below 2.23.0, so this floor must stay at or above that version.
+ 	antigravityFallbackVersion = "2.24.0"
+ 	antigravityHubPlatform     = "os_type=darwin; arch=arm64"
+ 	antigravityVersionCacheTTL = 6 * time.Hour
+@@ -39,8 +38,18 @@ var (
+ var antigravityHubChangelists = map[string]string{
+ 	"2.23.0": "998057262",
+ 	"2.24.0": "1000335682",
++	// Calibrated against the official 2.28.0 darwin-arm Hub archive.
++	"2.28.0": "1008300195",
+ }
+ 
++// antigravityCalibratedVersion is the release the outbound fingerprint is
++// pinned to. A version and its changelist are a single calibration pair: the CL
++// is not published anywhere resolvable at runtime, so bumping the version
++// alone produces a UA that no real client ever emits — a version paired with a
++// missing or borrowed CL. The official client never upgrades mid-run either, so
++// tracking the live manifest is itself a tell.
++const antigravityCalibratedVersion = "2.28.0"
++
+ type antigravityHubUpdaterManifest struct {
+ 	Version string `yaml:"version"`
+ }
+@@ -49,6 +58,7 @@ var (
+ 	cachedAntigravityVersion = antigravityFallbackVersion
+ 	antigravityVersionMu     sync.RWMutex
+ 	antigravityVersionExpiry time.Time
++	antigravityVersionErr    error
+ 	antigravityUpdaterOnce   sync.Once
+ )
+ 
+@@ -89,11 +99,17 @@ func refreshAntigravityVersion(ctx context.Context) {
+ 	defer antigravityVersionMu.Unlock()
+ 
+ 	now := time.Now()
++	antigravityVersionErr = errFetch
+ 
+ 	if errFetch == nil {
+ 		cachedAntigravityVersion = version
+ 		antigravityVersionExpiry = now.Add(antigravityVersionCacheTTL)
+-		log.WithField("version", version).Info("fetched latest antigravity version")
++		pinned := antigravityCalibratedVersion
++		if version != pinned {
++			log.WithField("pinned", pinned).WithField("upstream", version).
++				Warn("antigravity hub release differs from the pinned egress fingerprint; recalibrate the version and CL pair before changing egress")
++		}
++		log.WithField("version", version).Debug("fetched latest antigravity version")
+ 		return
+ 	}
+ 
+@@ -107,18 +123,17 @@ func refreshAntigravityVersion(ctx context.Context) {
+ 	log.WithError(errFetch).Debug("failed to refresh antigravity version, keeping cached value")
+ }
+ 
+-// AntigravityLatestVersion returns the cached antigravity version refreshed by StartAntigravityVersionUpdater.
+-// It falls back to antigravityFallbackVersion if the cache is empty or stale.
++// AntigravityLatestVersion returns the outbound fingerprint version.
++//
++// The value is pinned to antigravityCalibratedVersion rather than to the live
++// Hub manifest. A version and its changelist are one calibration pair, and the
++// CL cannot be resolved at runtime; pairing a freshly fetched version with a
++// stale or absent CL yields a UA no real client emits. The official client also
++// does not upgrade mid-session, so a UA that tracks releases day by day is
++// itself anomalous. The updater still runs to record what the Hub ships, which
++// is what the calibration is reviewed against.
+ func AntigravityLatestVersion() string {
+-	antigravityVersionMu.RLock()
+-	if cachedAntigravityVersion != "" && time.Now().Before(antigravityVersionExpiry) {
+-		v := cachedAntigravityVersion
+-		antigravityVersionMu.RUnlock()
+-		return v
+-	}
+-	antigravityVersionMu.RUnlock()
+-
+-	return antigravityFallbackVersion
++	return antigravityCalibratedVersion
+ }
+ 
+ // AntigravityUserAgent returns the User-Agent string used by the Antigravity Hub family.
+@@ -131,6 +146,30 @@ func AntigravityUserAgent() string {
+ 	return fmt.Sprintf("antigravity/hub/%s (%s)", version, metadata)
+ }
+ 
++// AntigravityEgressVersion reports the pinned fingerprint version together with
++// the latest version the Hub manifest advertised, so callers and tests can see
++// when the calibration has gone stale without letting the manifest drive egress.
++func AntigravityEgressVersion() (pinned, latest string) {
++	antigravityVersionMu.RLock()
++	cached := cachedAntigravityVersion
++	antigravityVersionMu.RUnlock()
++
++	if cached == "" {
++		cached = antigravityFallbackVersion
++	}
++	if errFetch := antigravityLastFetchError(); errFetch != nil {
++		cached = ""
++	}
++	return antigravityCalibratedVersion, cached
++}
++
++// antigravityLastFetchError reports why the manifest read failed, if it did.
++func antigravityLastFetchError() error {
++	antigravityVersionMu.RLock()
++	defer antigravityVersionMu.RUnlock()
++	return antigravityVersionErr
++}
++
+ func isAntigravityFamilyUserAgent(lower string) bool {
+ 	return strings.HasPrefix(lower, "antigravity/hub/") || strings.HasPrefix(lower, "antigravity/")
+ }
+diff --git a/internal/misc/antigravity_version_test.go b/internal/misc/antigravity_version_test.go
+index fc0d884..aae4050 100644
+--- a/internal/misc/antigravity_version_test.go
++++ b/internal/misc/antigravity_version_test.go
+@@ -38,13 +38,23 @@ func overrideAntigravityVersionCacheForTest(t *testing.T, version string, expiry
+ 	}
+ }
+ 
+-func TestAntigravityLatestVersionUsesCurrentHubFallback(t *testing.T) {
+-	restore := overrideAntigravityVersionCacheForTest(t, "", time.Time{})
+-	defer restore()
++// The outbound fingerprint is pinned: a freshly fetched Hub release must not
++// change it, because the CL half of the pair cannot be resolved at runtime.
++func TestAntigravityLatestVersionIsPinned(t *testing.T) {
++	for _, cached := range []string{"", "2.2.1", "9.9.9"} {
++		restore := overrideAntigravityVersionCacheForTest(t, cached, time.Now().Add(time.Hour))
++		version := AntigravityLatestVersion()
++		restore()
++		if version != antigravityCalibratedVersion {
++			t.Fatalf("AntigravityLatestVersion() with cached %q = %q, want %q", cached, version, antigravityCalibratedVersion)
++		}
++	}
++}
+ 
+-	version := AntigravityLatestVersion()
+-	if version != antigravityFallbackVersion {
+-		t.Fatalf("AntigravityLatestVersion() = %q, want %q", version, antigravityFallbackVersion)
++// A pinned version without a changelist would emit a UA no real client sends.
++func TestAntigravityCalibratedVersionHasChangelist(t *testing.T) {
++	if antigravityHubChangelists[antigravityCalibratedVersion] == "" {
++		t.Fatalf("calibrated version %q has no changelist entry", antigravityCalibratedVersion)
+ 	}
+ }
+ 
+@@ -63,21 +73,14 @@ func TestAntigravityFallbackVersionMeetsBackendFloor(t *testing.T) {
+ }
+ 
+ func TestAntigravityUserAgentUsesHubFamily(t *testing.T) {
+-	for _, tc := range []struct {
+-		version string
+-		want    string
+-	}{
+-		{"2.23.0", "antigravity/hub/2.23.0 (aidev_client; os_type=darwin; arch=arm64; cl=998057262)"},
+-		{"2.24.0", "antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64; cl=1000335682)"},
+-		{"2.25.0", "antigravity/hub/2.25.0 (aidev_client; os_type=darwin; arch=arm64)"},
+-	} {
+-		t.Run(tc.version, func(t *testing.T) {
+-			restore := overrideAntigravityVersionCacheForTest(t, tc.version, time.Now().Add(time.Hour))
+-			defer restore()
+-			if got := AntigravityUserAgent(); got != tc.want {
+-				t.Fatalf("AntigravityUserAgent() = %q, want %q", got, tc.want)
+-			}
+-		})
++	want := "antigravity/hub/2.28.0 (aidev_client; os_type=darwin; arch=arm64; cl=1008300195)"
++	for _, cached := range []string{"", "2.25.0", "2.29.0"} {
++		restore := overrideAntigravityVersionCacheForTest(t, cached, time.Now().Add(time.Hour))
++		got := AntigravityUserAgent()
++		restore()
++		if got != want {
++			t.Fatalf("AntigravityUserAgent() with cached %q = %q, want %q", cached, got, want)
++		}
+ 	}
+ }
+ 
+@@ -109,7 +112,7 @@ func TestAntigravityLoadCodeAssistUserAgentUsesShortUA(t *testing.T) {
+ 	restore := overrideAntigravityVersionCacheForTest(t, "2.2.1", time.Now().Add(time.Hour))
+ 	defer restore()
+ 
+-	want := "antigravity/hub/2.2.1 (aidev_client; os_type=darwin; arch=arm64)"
++	want := "antigravity/hub/2.28.0 (aidev_client; os_type=darwin; arch=arm64; cl=1008300195)"
+ 	if got := AntigravityLoadCodeAssistUserAgent(""); got != want {
+ 		t.Fatalf("AntigravityLoadCodeAssistUserAgent() = %q, want %q", got, want)
+ 	}
+@@ -122,7 +125,7 @@ func TestAntigravityOnboardUserUserAgentUsesLongUA(t *testing.T) {
+ 	restore := overrideAntigravityVersionCacheForTest(t, "2.2.1", time.Now().Add(time.Hour))
+ 	defer restore()
+ 
+-	want := "antigravity/hub/2.2.1 (aidev_client; os_type=darwin; arch=arm64) google-api-nodejs-client/10.3.0"
++	want := "antigravity/hub/2.28.0 (aidev_client; os_type=darwin; arch=arm64; cl=1008300195) google-api-nodejs-client/10.3.0"
+ 	if got := AntigravityOnboardUserUserAgent(""); got != want {
+ 		t.Fatalf("AntigravityOnboardUserUserAgent() = %q, want %q", got, want)
+ 	}
+diff --git a/internal/runtime/executor/antigravity_executor.go b/internal/runtime/executor/antigravity_executor.go
+index 25118cf..16440d3 100644
+--- a/internal/runtime/executor/antigravity_executor.go
++++ b/internal/runtime/executor/antigravity_executor.go
+@@ -73,7 +73,7 @@ func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
+ 	return helps.ObfuscateSensitiveWordsInSystemInstruction(payload, matcher)
+ }
+ 
+-// Each Antigravity credential gets its own HTTP/1.1 connection pool. Sessions routed
++// Each Antigravity credential gets its own connection pool. Sessions routed
+ // to the same auth reuse that pool, while different OAuth identities never share a
+ // TCP/TLS connection, matching the native client's one-credential process model.
+ // The cache is bounded so pools cannot accumulate when keys churn.
+@@ -239,23 +239,25 @@ func defaultAntigravityBaseTransport() *http.Transport {
+ 	return &http.Transport{}
+ }
+ 
+-func cloneTransportWithHTTP11(base *http.Transport, cfgs ...*config.Config) *http.Transport {
++func cloneAntigravityTransport(base *http.Transport, cfgs ...*config.Config) *http.Transport {
+ 	if base == nil {
+ 		return nil
+ 	}
+ 
+ 	clone := base.Clone()
+-	clone.ForceAttemptHTTP2 = false
+-	// Wipe TLSNextProto to prevent implicit HTTP/2 upgrade.
+-	clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
++	// The official client is a Go binary that outfits its transport with
++	// golang.org/x/net/http2 (http2.ConfigureTransports is linked in, and the
++	// Cloud Code frontend negotiates h2), so a connection that advertises no ALPN
++	// and settles on HTTP/1.1 is a deviation from the real client, not a match
++	// for it. HTTP/2 stays enabled with the standard ALPN offer.
++	clone.ForceAttemptHTTP2 = true
++	clone.TLSNextProto = nil
+ 	if clone.TLSClientConfig == nil {
+ 		clone.TLSClientConfig = &tls.Config{}
+ 	} else {
+ 		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+ 	}
+-	// Native Antigravity sends no ALPN extension. With HTTP/2 disabled above,
+-	// an empty NextProtos keeps the wire shape aligned while using HTTP/1.1.
+-	clone.TLSClientConfig.NextProtos = nil
++	clone.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
+ 	applyAntigravityPoolLimits(clone, cfgs...)
+ 	return clone
+ }
+@@ -315,10 +317,10 @@ func applyAntigravityPoolLimits(transport *http.Transport, cfgs ...*config.Confi
+ 	}
+ }
+ 
+-// antigravityHTTP11Transport returns the HTTP/1.1 pool shared by every request that
+-// uses the same credential and the same base transport. The base is either the
++// antigravitySharedTransport returns the connection pool shared by every request
++// that uses the same credential and the same base transport. The base is either the
+ // process default or a transport provided through the request context.
+-func antigravityHTTP11Transport(auth *cliproxyauth.Auth, base *http.Transport, cfgs ...*config.Config) *http.Transport {
++func antigravitySharedTransport(auth *cliproxyauth.Auth, base *http.Transport, cfgs ...*config.Config) *http.Transport {
+ 	if base == nil {
+ 		return nil
+ 	}
+@@ -335,23 +337,23 @@ func antigravityHTTP11Transport(auth *cliproxyauth.Auth, base *http.Transport, c
+ 		maxIdleConnsPerHost: settings.maxIdleConnsPerHost,
+ 	}
+ 	transport, errGet := antigravityTransports.Get(key, func() (*http.Transport, error) {
+-		return cloneTransportWithHTTP11(base, cfgs...), nil
++		return cloneAntigravityTransport(base, cfgs...), nil
+ 	})
+ 	if errGet != nil {
+-		// Defensive only: the builder above cannot fail. Never return nil here, because a
+-		// nil Transport makes http.Client fall back to http.DefaultTransport, which
+-		// advertises h2 over ALPN and would break the Antigravity wire fingerprint.
+-		log.Debugf("antigravity executor: cache HTTP/1.1 transport failed: %v", errGet)
+-		return cloneTransportWithHTTP11(base, cfgs...)
++		// Defensive only: the builder above cannot fail. Never return nil here, so the
++		// caller always gets the pool-scoped transport instead of silently falling back
++		// to http.DefaultTransport and its unpaced connection reuse.
++		log.Debugf("antigravity executor: cache transport failed: %v", errGet)
++		return cloneAntigravityTransport(base, cfgs...)
+ 	}
+ 	return transport
+ }
+ 
+-// antigravityProxiedHTTP11Transport returns the credential-scoped HTTP/1.1 pool for
+-// one proxy setting, or nil when the proxy setting cannot be turned into a
++// antigravityProxiedTransport returns the credential-scoped pool for one proxy
++// setting, or nil when the proxy setting cannot be turned into a
+ // transport. Keying on the normalized proxy string rather than on a prebuilt
+ // transport keeps one pool per credential and proxy instead of one per request.
+-func antigravityProxiedHTTP11Transport(auth *cliproxyauth.Auth, proxyURL string, cfgs ...*config.Config) *http.Transport {
++func antigravityProxiedTransport(auth *cliproxyauth.Auth, proxyURL string, cfgs ...*config.Config) *http.Transport {
+ 	proxyURL = strings.TrimSpace(proxyURL)
+ 	if proxyURL == "" {
+ 		return nil
+@@ -376,7 +378,7 @@ func antigravityProxiedHTTP11Transport(auth *cliproxyauth.Auth, proxyURL string,
+ 		if base == nil {
+ 			return nil, fmt.Errorf("antigravity executor: proxy setting produced no transport")
+ 		}
+-		return cloneTransportWithHTTP11(base, cfgs...), nil
++		return cloneAntigravityTransport(base, cfgs...), nil
+ 	})
+ 	if errGet != nil {
+ 		// The caller falls back to NewProxyAwareHTTPClient, which reports the failure
+@@ -432,18 +434,20 @@ func antigravityCredentialScope(prefix, secret string) string {
+ 	return prefix + hex.EncodeToString(digest[:8])
+ }
+ 
+-// newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
+-// enforcing HTTP/1.1 by disabling HTTP/2 to match the native Antigravity client, which
+-// negotiates TLS 1.3 without advertising an ALPN protocol and therefore never uses h2.
+-// The underlying Transport is always shared so keep-alive connections survive across
+-// requests instead of forcing a fresh TCP + TLS handshake every time.
++// newAntigravityHTTPClient creates an HTTP client specifically for Antigravity.
++// The official client is a Go binary that configures golang.org/x/net/http2 and
++// negotiates h2 with the Cloud Code frontend, so HTTP/2 is offered here as well;
++// forcing HTTP/1.1 with no ALPN would make the gateway look unlike the client it
++// claims to be. The underlying Transport is always shared so keep-alive
++// connections survive across requests instead of forcing a fresh TCP + TLS
++// handshake every time.
+ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) (clientOut *http.Client) {
+ 	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
+ 	// Native Antigravity reuses one transport across requests. Opt into a
+ 	// credential-scoped proxy transport only here so other providers keep their
+ 	// existing lifecycle and different OAuth identities remain isolated.
+ 	if proxyURL := antigravityProxyURL(ctx, cfg, auth); proxyURL != "" {
+-		if transport := antigravityProxiedHTTP11Transport(auth, proxyURL, cfg); transport != nil {
++		if transport := antigravityProxiedTransport(auth, proxyURL, cfg); transport != nil {
+ 			return &http.Client{Transport: transport, Timeout: timeout}
+ 		}
+ 		// Fall through so NewProxyAwareHTTPClient reports the failure and applies the
+@@ -451,13 +455,14 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
+ 	}
+ 
+ 	client := helps.NewProxyAwareHTTPClient(httptransport.WithoutDecorator(ctx), cfg, auth, timeout)
+-	// Direct requests share an HTTP/1.1 pool only within the selected credential.
++	// Direct requests share a pool only within the selected credential.
+ 	if client.Transport == nil {
+-		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport, cfg)
++		client.Transport = antigravitySharedTransport(auth, antigravityBaseTransport, cfg)
+ 		return client
+ 	}
+ 
+-	// Preserve a context-provided transport while forcing HTTP/1.1. The cache key
++	// Preserve a context-provided transport while applying the Antigravity wire
++	// settings. The cache key
+ 	// includes credential identity, so sharing the base does not share TLS pools.
+ 	transport, ok := client.Transport.(*http.Transport)
+ 	if !ok {
+@@ -467,11 +472,11 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
+ 	if transport == nil {
+ 		// A typed-nil *http.Transport still satisfies the interface nil check in
+ 		// NewProxyAwareHTTPClient. Leaving it in place would make http.Client fall back
+-		// to http.DefaultTransport, which advertises h2 over ALPN and breaks the
+-		// Antigravity fingerprint, so substitute the process base transport.
++		// to http.DefaultTransport, which ignores the Antigravity pool limits, so
++		// substitute the process base transport.
+ 		transport = antigravityBaseTransport
+ 	}
+-	client.Transport = antigravityHTTP11Transport(auth, transport, cfg)
++	client.Transport = antigravitySharedTransport(auth, transport, cfg)
+ 	return client
+ }
+ 
+diff --git a/internal/runtime/executor/antigravity_executor_credits.go b/internal/runtime/executor/antigravity_executor_credits.go
+index 193f4e1..3d35bc8 100644
+--- a/internal/runtime/executor/antigravity_executor_credits.go
++++ b/internal/runtime/executor/antigravity_executor_credits.go
+@@ -15,6 +15,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	log "github.com/sirupsen/logrus"
+@@ -523,9 +524,17 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalanceForTask(ctx context
+ 	}
+ 
+ 	userAgent := resolveLoadCodeAssistUserAgent(auth)
++	// The client identity sent here is limited to the fields Cloud Code
++	// accepts. ideType, ideVersion and pluginVersion are the only members of
++	// `metadata` the endpoint parses; deviceId, machineId, osType and
++	// deviceModel are rejected with HTTP 400 INVALID_ARGUMENT. The values must
++	// agree with the User-Agent above, which reports the same release.
++	clientVersion := misc.AntigravityLatestVersion()
+ 	loadReqBody, errMarshal := json.Marshal(map[string]any{
+ 		"metadata": map[string]string{
+-			"ideType": "ANTIGRAVITY",
++			"ideType":       "ANTIGRAVITY",
++			"ideVersion":    clientVersion,
++			"pluginVersion": clientVersion,
+ 		},
+ 	})
+ 	if errMarshal != nil {
+diff --git a/internal/runtime/executor/antigravity_executor_credits_test.go b/internal/runtime/executor/antigravity_executor_credits_test.go
+index 98c45a1..d892cfd 100644
+--- a/internal/runtime/executor/antigravity_executor_credits_test.go
++++ b/internal/runtime/executor/antigravity_executor_credits_test.go
+@@ -16,6 +16,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+@@ -974,8 +975,12 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
+ 		}
+ 		body, _ := io.ReadAll(req.Body)
+ 		_ = req.Body.Close()
+-		if string(body) != `{"metadata":{"ideType":"ANTIGRAVITY"}}` {
+-			t.Fatalf("loadCodeAssist body = %s", string(body))
++		// The identity is limited to the fields Cloud Code parses. ideVersion and
++		// pluginVersion must match the version the User-Agent above reports;
++		// deviceId, machineId and osType are rejected by the endpoint with 400.
++		wantBody := `{"metadata":{"ideType":"ANTIGRAVITY","ideVersion":"` + misc.AntigravityLatestVersion() + `","pluginVersion":"` + misc.AntigravityLatestVersion() + `"}}`
++		if string(body) != wantBody {
++			t.Fatalf("loadCodeAssist body = %s, want %s", string(body), wantBody)
+ 		}
+ 		return &http.Response{
+ 			StatusCode: http.StatusOK,
+diff --git a/internal/runtime/executor/antigravity_executor_request.go b/internal/runtime/executor/antigravity_executor_request.go
+index bdb56aa..469b213 100644
+--- a/internal/runtime/executor/antigravity_executor_request.go
++++ b/internal/runtime/executor/antigravity_executor_request.go
+@@ -5,12 +5,14 @@ import (
+ 	"context"
+ 	"crypto/sha256"
+ 	"encoding/binary"
++	"encoding/hex"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+ 	"net/url"
+ 	"strconv"
+ 	"strings"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/google/uuid"
+@@ -675,7 +677,6 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
+ 	if isImageModel {
+ 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
+ 	} else if reqType != "web_search" {
+-		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
+ 		sessionID := strings.TrimSpace(gjson.GetBytes(template, "request.sessionId").String())
+ 		if sessionID == "" && len(derivedSessionIDs) > 0 {
+ 			sessionID = strings.TrimSpace(derivedSessionIDs[0])
+@@ -684,6 +685,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
+ 			sessionID = generateStableSessionID(payload)
+ 		}
+ 		template, _ = sjson.SetBytes(template, "request.sessionId", sessionID)
++		template, _ = sjson.SetBytes(template, "requestId", generateRequestID(sessionID, nextAntigravityStep()))
+ 	}
+ 
+ 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
+@@ -694,10 +696,42 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
+ 	return template
+ }
+ 
+-func generateRequestID() string {
+-	return "agent-" + uuid.NewString()
++// generateRequestID builds the outbound request id in the shape the official
++// client emits. The binary bundled with Antigravity constructs it as
++// "agent/jetski/%s/%d": a conversation token, then a numeric step. The previous
++// "agent-<uuid>" form appears nowhere in any Google client, so it is a direct
++// tell that the call did not come from Antigravity.
++//
++// The conversation segment is derived from the session so one conversation
++// keeps one id segment across turns, and each request adds a fresh final step so
++// retries stay distinguishable. The raw session id is never sent upstream: it is
++// hashed first, which keeps the upstream value opaque while preserving
++// per-conversation stability.
++func generateRequestID(sessionID string, step int64) string {
++	conversation := antigravityConversationSegment(sessionID)
++	return fmt.Sprintf("agent/jetski/%s/%d", conversation, step)
++}
++
++// antigravityConversationSegment maps a session id onto the 16-hex token the
++// official client uses for the conversation part of a request id.
++func antigravityConversationSegment(sessionID string) string {
++	sessionID = strings.TrimSpace(sessionID)
++	if sessionID == "" {
++		return strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
++	}
++	sum := sha256.Sum256([]byte(sessionID))
++	return hex.EncodeToString(sum[:8])
+ }
+ 
++// nextAntigravityStep returns a monotonically increasing per-process step so
++// consecutive requests from one conversation stay ordered, as they are in the
++// official client where the step counts turns of a conversation.
++func nextAntigravityStep() int64 {
++	return atomic.AddInt64(&antigravityRequestStep, 1)
++}
++
++var antigravityRequestStep int64
++
+ func generateImageGenRequestID() string {
+ 	return fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), uuid.NewString())
+ }
+diff --git a/internal/runtime/executor/antigravity_executor_transport_test.go b/internal/runtime/executor/antigravity_executor_transport_test.go
+index 3cee647..9b3e649 100644
+--- a/internal/runtime/executor/antigravity_executor_transport_test.go
++++ b/internal/runtime/executor/antigravity_executor_transport_test.go
+@@ -85,17 +85,17 @@ func TestNewAntigravityHTTPClientSharesTransport(t *testing.T) {
+ 			if !ok {
+ 				t.Fatalf("expected *http.Transport, got %T", first.Transport)
+ 			}
+-			if transport.ForceAttemptHTTP2 {
+-				t.Fatal("Antigravity transport must not attempt HTTP/2")
++			if !transport.ForceAttemptHTTP2 {
++				t.Fatal("Antigravity transport must attempt HTTP/2 like the official Go client")
+ 			}
+ 			if len(transport.TLSNextProto) != 0 {
+-				t.Fatal("Antigravity transport must not allow an implicit HTTP/2 upgrade")
++				t.Fatal("Antigravity transport must let net/http install the h2 handler")
+ 			}
+ 			if transport.TLSClientConfig == nil {
+ 				t.Fatal("Antigravity transport must carry an explicit TLS config")
+ 			}
+-			if len(transport.TLSClientConfig.NextProtos) != 0 {
+-				t.Fatalf("Antigravity must omit ALPN like the native client, got %v", transport.TLSClientConfig.NextProtos)
++			if got := transport.TLSClientConfig.NextProtos; len(got) != 2 || got[0] != "h2" || got[1] != "http/1.1" {
++				t.Fatalf("Antigravity ALPN = %v, want [h2 http/1.1]", got)
+ 			}
+ 			// Native Antigravity uses DefaultMaxIdleConnsPerHost of 2.
+ 			if transport.MaxIdleConnsPerHost < antigravityDefaultMaxIdleConnsPerHost {
+@@ -194,11 +194,11 @@ func TestNewAntigravityHTTPClientRejectsTypedNilContextTransport(t *testing.T) {
+ 	if !ok || transport == nil {
+ 		t.Fatalf("expected a usable *http.Transport, got %#v", client.Transport)
+ 	}
+-	if transport.ForceAttemptHTTP2 {
+-		t.Fatal("fallback transport must not attempt HTTP/2")
++	if !transport.ForceAttemptHTTP2 {
++		t.Fatal("fallback transport must attempt HTTP/2")
+ 	}
+-	if len(transport.TLSClientConfig.NextProtos) != 0 {
+-		t.Fatalf("fallback transport must omit ALPN, got %v", transport.TLSClientConfig.NextProtos)
++	if got := transport.TLSClientConfig.NextProtos; len(got) != 2 || got[0] != "h2" {
++		t.Fatalf("fallback transport ALPN = %v, want [h2 http/1.1]", got)
+ 	}
+ }
+ 
+@@ -240,7 +240,7 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
+ 			},
+ 		},
+ 	}
+-	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
++	client := &http.Client{Transport: antigravitySharedTransport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
+ 
+ 	const (
+ 		waves      = 3
+@@ -312,7 +312,7 @@ func TestAntigravityConcurrentRequestsDefaultPoolLimitsToTwo(t *testing.T) {
+ 			},
+ 		},
+ 	}
+-	client := &http.Client{Transport: antigravityHTTP11Transport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
++	client := &http.Client{Transport: antigravitySharedTransport(auth, http.DefaultTransport.(*http.Transport), poolCfg)}
+ 
+ 	const (
+ 		waves      = 3
+@@ -399,35 +399,35 @@ func TestAntigravityHTTP11TransportReusesPoolWithoutAuthID(t *testing.T) {
+ 	base := http.DefaultTransport.(*http.Transport)
+ 
+ 	anonymous := &cliproxyauth.Auth{}
+-	first := antigravityHTTP11Transport(anonymous, base)
+-	second := antigravityHTTP11Transport(anonymous, base)
++	first := antigravitySharedTransport(anonymous, base)
++	second := antigravitySharedTransport(anonymous, base)
+ 	if first == nil || second == nil {
+ 		t.Fatal("expected a transport for an auth without an ID")
+ 	}
+ 	if first != second {
+ 		t.Fatal("an auth without any identity must reuse one shared pool instead of leaking a new pool per request")
+ 	}
+-	if nilAuth := antigravityHTTP11Transport(nil, base); nilAuth != first {
++	if nilAuth := antigravitySharedTransport(nil, base); nilAuth != first {
+ 		t.Fatal("a nil auth carries no credential to isolate and must share the same pool")
+ 	}
+ 
+ 	// An auth without an ID but with credential material stays isolated from both the
+ 	// anonymous pool and from a different credential.
+-	tokenA := antigravityHTTP11Transport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-a"}}, base)
+-	tokenB := antigravityHTTP11Transport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-b"}}, base)
++	tokenA := antigravitySharedTransport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-a"}}, base)
++	tokenB := antigravitySharedTransport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-b"}}, base)
+ 	if tokenA == first || tokenB == first {
+ 		t.Fatal("a credential with an access token must not fall back to the anonymous pool")
+ 	}
+ 	if tokenA == tokenB {
+ 		t.Fatal("different access tokens must not share a connection pool")
+ 	}
+-	if again := antigravityHTTP11Transport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-a"}}, base); again != tokenA {
++	if again := antigravitySharedTransport(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "token-a"}}, base); again != tokenA {
+ 		t.Fatal("the same access token must resolve to the same pool across requests")
+ 	}
+ 
+ 	// Identified auths keep sharing their pool.
+ 	identified := &cliproxyauth.Auth{ID: "stable-identity"}
+-	if antigravityHTTP11Transport(identified, base) != antigravityHTTP11Transport(identified, base) {
++	if antigravitySharedTransport(identified, base) != antigravitySharedTransport(identified, base) {
+ 		t.Fatal("an auth with a stable ID must reuse its cached pool")
+ 	}
+ }
+@@ -499,7 +499,7 @@ func TestAntigravityTransportScopeIgnoresNonUniqueLabel(t *testing.T) {
+ 	}
+ 
+ 	base := http.DefaultTransport.(*http.Transport)
+-	if antigravityHTTP11Transport(first, base) == antigravityHTTP11Transport(second, base) {
++	if antigravitySharedTransport(first, base) == antigravitySharedTransport(second, base) {
+ 		t.Fatal("credentials sharing only a label must not share a connection pool")
+ 	}
+ }
+@@ -589,19 +589,19 @@ func TestAntigravityTransportCacheEvictsStalePools(t *testing.T) {
+ // fall back instead of caching a broken pool.
+ func TestAntigravityProxiedHTTP11TransportRejectsInvalidProxy(t *testing.T) {
+ 	auth := antigravityAuthWithIDAndProxy("invalid-proxy", "ftp://127.0.0.1:1")
+-	if transport := antigravityProxiedHTTP11Transport(auth, "ftp://127.0.0.1:1"); transport != nil {
++	if transport := antigravityProxiedTransport(auth, "ftp://127.0.0.1:1"); transport != nil {
+ 		t.Fatal("an unsupported proxy scheme must not produce a transport")
+ 	}
+-	if transport := antigravityProxiedHTTP11Transport(auth, "   "); transport != nil {
++	if transport := antigravityProxiedTransport(auth, "   "); transport != nil {
+ 		t.Fatal("a blank proxy must not produce a transport")
+ 	}
+ 	// A failed build must not occupy a cache slot, so a later valid setting still works.
+-	if transport := antigravityProxiedHTTP11Transport(auth, "http://127.0.0.1:18099"); transport == nil {
++	if transport := antigravityProxiedTransport(auth, "http://127.0.0.1:18099"); transport == nil {
+ 		t.Fatal("a valid proxy must produce a transport")
+ 	}
+ }
+ 
+-func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
++func TestAntigravityTransportMatchesOfficialClientTLSProfile(t *testing.T) {
+ 	var clientHelloProtos []string
+ 	var requestProto string
+ 	var tlsVersion uint16
+@@ -623,12 +623,13 @@ func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
+ 			return nil, nil
+ 		},
+ 	}
++	server.EnableHTTP2 = true
+ 	server.StartTLS()
+ 	defer server.Close()
+ 
+ 	base := http.DefaultTransport.(*http.Transport).Clone()
+ 	base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+-	transport := antigravityHTTP11Transport(antigravityAuthWithIDAndProxy("native-tls-profile", ""), base)
++	transport := antigravitySharedTransport(antigravityAuthWithIDAndProxy("native-tls-profile", ""), base)
+ 	resp, errDo := (&http.Client{Transport: transport}).Get(server.URL)
+ 	if errDo != nil {
+ 		t.Fatalf("GET() error = %v", errDo)
+@@ -637,17 +638,17 @@ func TestAntigravityTransportMatchesNativeTLSProfile(t *testing.T) {
+ 		t.Fatalf("close response body: %v", errClose)
+ 	}
+ 
+-	if len(clientHelloProtos) != 0 {
+-		t.Fatalf("ClientHello ALPN = %v, want no ALPN extension", clientHelloProtos)
++	if len(clientHelloProtos) != 2 || clientHelloProtos[0] != "h2" || clientHelloProtos[1] != "http/1.1" {
++		t.Fatalf("ClientHello ALPN = %v, want [h2 http/1.1]", clientHelloProtos)
+ 	}
+-	if requestProto != "HTTP/1.1" {
+-		t.Fatalf("request protocol = %q, want HTTP/1.1", requestProto)
++	if requestProto != "HTTP/2.0" {
++		t.Fatalf("request protocol = %q, want HTTP/2.0", requestProto)
+ 	}
+ 	if tlsVersion != tls.VersionTLS13 {
+ 		t.Fatalf("TLS version = %#x, want TLS 1.3", tlsVersion)
+ 	}
+-	if negotiatedProtocol != "" {
+-		t.Fatalf("negotiated ALPN = %q, want empty", negotiatedProtocol)
++	if negotiatedProtocol != "h2" {
++		t.Fatalf("negotiated ALPN = %q, want h2", negotiatedProtocol)
+ 	}
+ }
+ 
+diff --git a/internal/runtime/executor/antigravity_request_id_test.go b/internal/runtime/executor/antigravity_request_id_test.go
+new file mode 100644
+index 0000000..b63c1b4
+--- /dev/null
++++ b/internal/runtime/executor/antigravity_request_id_test.go
+@@ -0,0 +1,50 @@
++package executor
++
++import (
++	"regexp"
++	"strings"
++	"testing"
++)
++
++// officialRequestIDPattern mirrors the template the bundled language server
++// contains: "agent/jetski/%s/%d". Anything else is a fingerprint tell.
++var officialRequestIDPattern = regexp.MustCompile(`^agent/jetski/[0-9a-f]{16}/[0-9]+$`)
++
++func TestGenerateRequestIDMatchesOfficialShape(t *testing.T) {
++	id := generateRequestID("session-abc", 7)
++	if !officialRequestIDPattern.MatchString(id) {
++		t.Fatalf("requestId = %q, want agent/jetski/<16 hex>/<step>", id)
++	}
++	if !strings.HasSuffix(id, "/7") {
++		t.Fatalf("requestId = %q, want step 7 preserved", id)
++	}
++}
++
++// One conversation must keep one conversation segment, or the upstream sees a
++// new conversation on every turn.
++func TestGenerateRequestIDKeepsConversationSegmentStable(t *testing.T) {
++	first := generateRequestID("session-abc", 1)
++	second := generateRequestID("session-abc", 2)
++	if strings.Split(first, "/")[2] != strings.Split(second, "/")[2] {
++		t.Fatalf("conversation segment changed between turns: %q vs %q", first, second)
++	}
++	if first == second {
++		t.Fatalf("requestId repeats across steps: %q", first)
++	}
++}
++
++// The gateway's internal session id must not travel upstream verbatim.
++func TestGenerateRequestIDDoesNotLeakSessionID(t *testing.T) {
++	const sessionID = "sess-deadbeefcafe1234"
++	if id := generateRequestID(sessionID, 1); strings.Contains(id, sessionID) {
++		t.Fatalf("requestId %q leaks the raw session id", id)
++	}
++}
++
++func TestGenerateRequestIDSeparatesSessions(t *testing.T) {
++	main := generateRequestID("sess-main", 1)
++	sub := generateRequestID("sess-sub", 1)
++	if strings.Split(main, "/")[2] == strings.Split(sub, "/")[2] {
++		t.Fatalf("distinct sessions share a conversation segment: %q vs %q", main, sub)
++	}
++}
+diff --git a/internal/runtime/executor/antigravity_transport_decorator_test.go b/internal/runtime/executor/antigravity_transport_decorator_test.go
+index a820621..74217d9 100644
+--- a/internal/runtime/executor/antigravity_transport_decorator_test.go
++++ b/internal/runtime/executor/antigravity_transport_decorator_test.go
+@@ -22,7 +22,7 @@ type auditTestTransport struct {
+ 	http.RoundTripper
+ }
+ 
+-func TestAntigravityDecoratorRunsAfterCredentialHTTP11PoolSelection(t *testing.T) {
++func TestAntigravityDecoratorRunsAfterCredentialPoolSelection(t *testing.T) {
+ 	for _, proxy := range []string{"", "http://127.0.0.1:12345"} {
+ 		t.Run("proxy_"+proxy, func(t *testing.T) {
+ 			calls := 0
+@@ -31,8 +31,8 @@ func TestAntigravityDecoratorRunsAfterCredentialHTTP11PoolSelection(t *testing.T
+ 				calls++
+ 				selected = next
+ 				tr, ok := next.(*http.Transport)
+-				if !ok || tr.ForceAttemptHTTP2 || len(tr.TLSNextProto) != 0 || tr.TLSClientConfig == nil || len(tr.TLSClientConfig.NextProtos) != 0 {
+-					t.Fatal("decorator preceded HTTP/1.1 selection")
++				if !ok || !tr.ForceAttemptHTTP2 || tr.TLSClientConfig == nil || len(tr.TLSClientConfig.NextProtos) != 2 {
++					t.Fatal("decorator preceded Antigravity transport selection")
+ 				}
+ 				return &auditTestTransport{RoundTripper: next}
+ 			})
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+index 28943af..0e07554 100644
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -1034,7 +1034,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 				clearAuthStateOnSuccess(auth, now)
+ 			}
+ 		} else {
+-			if modelKey != "" {
++			// An account-level TOS block is not a per-model cooldown: every model
++			// on the credential fails identically until the block is lifted. It
++			// must be applied to the credential here, before the per-model branch
++			// that would otherwise record a short, expiring model cooldown.
++			if !wasTerminalUnauthorized && isTOSViolationResultError(result.Error) {
++				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, false)
++				auth.cooldownRecordedSeq = m.currentExecutionSeq()
++			} else if modelKey != "" {
+ 				if !shouldSkipCredentialCooldown(result.Error) {
+ 					disableCooling := m.cooldownDisabledForAuth(auth)
+ 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
+@@ -2795,6 +2802,35 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
+ 			BackoffLevel:  backoffLevel,
+ 		})
+ 		auth.NextRetryAfter = next
++	} else if isTOSViolationResultError(resultErr) {
++		// The account is banned, not throttled. A cooldown would park it for a
++		// while and then route it again, producing the same 403 forever; only an
++		// appeal filed by the account owner can lift the block.
++		//
++		// The ban is therefore persisted as disabled on the credential itself
++		// rather than held in memory: a process restart would otherwise clear the
++		// park and route the next request straight back into the 403. Disabling
++		// also stops the proactive token refresh, which would otherwise keep
++		// presenting a banned account to Google every few minutes.
++		auth.StatusMessage = tosViolationStatusMessage
++		auth.Unavailable = true
++		auth.Disabled = true
++		auth.Status = StatusDisabled
++		auth.NextRetryAfter = time.Time{}
++		auth.Quota.Exceeded = false
++		auth.Quota.Reason = tosViolationStatusMessage
++		auth.Quota.NextRecoverAt = time.Time{}
++		if auth.Metadata != nil {
++			auth.Metadata["disabled"] = true
++			auth.Metadata["disabled_reason"] = tosViolationStatusMessage
++		}
++	} else if isValidationBlockedResultError(resultErr) {
++		auth.StatusMessage = "validation_required"
++		if disableCooling {
++			auth.NextRetryAfter = time.Time{}
++		} else {
++			auth.NextRetryAfter = now.Add(validationBlockedCooldown)
++		}
+ 	} else if isInvalidGrantResultError(resultErr) {
+ 		auth.StatusMessage = "invalid_grant"
+ 		if disableCooling {
+@@ -2905,3 +2941,75 @@ func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int)
+ 	}
+ 	return cooldown, prevLevel + 1
+ }
++
++// antigravityTOSViolationMarkers identify an account-level Terms of Service
++// block. Google answers these with 403 and reason TOS_VIOLATION, and no retry,
++// cooldown or routing change can make the call succeed again: only an appeal
++// filed by the account owner can. Treating it as a transient 403 is what turns a
++// permanent ban into a recurring retry loop against a dead credential.
++var antigravityTOSViolationMarkers = [...]string{
++	"tos_violation",
++	"violation of terms of service",
++	"violation of the terms of service",
++	"has been disabled in this account",
++}
++
++// antigravityValidationMarkers identify a challenge Google raises while it
++// re-verifies the account. Unlike a TOS block this one clears on its own, so it
++// gets a short cooldown instead of either a 30-minute payment cooldown or a
++// permanent park.
++var antigravityValidationMarkers = [...]string{
++	"validation_required",
++	"verify your account",
++	"validation_url",
++	"account verification required",
++}
++
++func isTOSViolationResultError(err *Error) bool {
++	if err == nil {
++		return false
++	}
++	status := statusCodeFromResult(err)
++	if status != http.StatusForbidden && status != http.StatusUnauthorized {
++		return false
++	}
++	return isTOSViolationMessage(err.Message) || isTOSViolationMessage(err.Code)
++}
++
++func isTOSViolationMessage(message string) bool {
++	lower := strings.ToLower(strings.TrimSpace(message))
++	if lower == "" {
++		return false
++	}
++	for _, marker := range antigravityTOSViolationMarkers {
++		if strings.Contains(lower, marker) {
++			return true
++		}
++	}
++	return false
++}
++
++// isValidationBlockedResultError reports the re-verification challenge. It is
++// checked after the TOS marker because a TOS block may mention verification too.
++func isValidationBlockedResultError(err *Error) bool {
++	if err == nil || isTOSViolationResultError(err) {
++		return false
++	}
++	if status := statusCodeFromResult(err); status != http.StatusForbidden {
++		return false
++	}
++	return isValidationBlockedMessage(err.Message) || isValidationBlockedMessage(err.Code)
++}
++
++func isValidationBlockedMessage(message string) bool {
++	lower := strings.ToLower(strings.TrimSpace(message))
++	if lower == "" {
++		return false
++	}
++	for _, marker := range antigravityValidationMarkers {
++		if strings.Contains(lower, marker) {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
+index e21998c..447c2a5 100644
+--- a/sdk/cliproxy/auth/conductor_refresh.go
++++ b/sdk/cliproxy/auth/conductor_refresh.go
+@@ -38,6 +38,14 @@ const (
+ 	quotaBackoffMax           = 30 * time.Minute
+ 	minQuotaCooldownFloor     = 10 * time.Second
+ 	transientErrorCooldown    = time.Minute
++	// validationBlockedCooldown parks an account that Google asked to re-verify.
++	// It is deliberately short: the challenge normally clears once the owner
++	// completes verification, and a long park would hide a recovered account.
++	validationBlockedCooldown = 10 * time.Minute
++	// tosViolationStatusMessage is the public marker for an account-level Terms
++	// of Service block. It is not a cooldown reason: the account stays parked
++	// until its credential changes.
++	tosViolationStatusMessage = "tos_violation"
+ )
+ 
+ // StartAutoRefresh launches a background loop that evaluates auth freshness
+diff --git a/sdk/cliproxy/auth/conductor_tos_park_test.go b/sdk/cliproxy/auth/conductor_tos_park_test.go
+new file mode 100644
+index 0000000..4444dd0
+--- /dev/null
++++ b/sdk/cliproxy/auth/conductor_tos_park_test.go
+@@ -0,0 +1,204 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"sync"
++	"testing"
++	"time"
++)
++
++// tosViolationError mirrors the 403 Google returns for an account it has blocked
++// for a Terms of Service violation.
++func tosViolationError() *Error {
++	return &Error{
++		Code:       "permission_denied",
++		Message:    "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.",
++		HTTPStatus: http.StatusForbidden,
++	}
++}
++
++// TestApplyAuthFailureStateParksTOSViolationAsDisabled verifies that a TOS block
++// is persisted as disabled instead of a cooldown. A cooldown would expire and
++// route the next request back into the same permanent 403.
++func TestApplyAuthFailureStateParksTOSViolationAsDisabled(t *testing.T) {
++	now := time.Now()
++	auth := &Auth{ID: "tos-parked", Metadata: map[string]any{}}
++
++	applyAuthFailureState(auth, tosViolationError(), nil, now, false)
++
++	if !auth.Disabled {
++		t.Fatal("expected a TOS violation to disable the credential")
++	}
++	if auth.Status != StatusDisabled {
++		t.Fatalf("expected status %q, got %q", StatusDisabled, auth.Status)
++	}
++	if !auth.Unavailable {
++		t.Fatal("expected a TOS violation to mark the credential unavailable")
++	}
++	if auth.StatusMessage != tosViolationStatusMessage {
++		t.Fatalf("expected status message %q, got %q", tosViolationStatusMessage, auth.StatusMessage)
++	}
++	// A re-arm would make the scheduler retry a permanently dead credential.
++	if !auth.NextRetryAfter.IsZero() {
++		t.Fatalf("expected no retry schedule, got %v", auth.NextRetryAfter)
++	}
++	if auth.Quota.Exceeded {
++		t.Fatal("a TOS block is not a quota condition")
++	}
++	// The disabled flag must reach Metadata so the filestore writes it to disk;
++	// a memory-only park would be cleared by the next restart.
++	if disabled, ok := auth.Metadata["disabled"].(bool); !ok || !disabled {
++		t.Fatalf("expected metadata disabled=true, got %v", auth.Metadata["disabled"])
++	}
++	if reason, _ := auth.Metadata["disabled_reason"].(string); reason != tosViolationStatusMessage {
++		t.Fatalf("expected disabled_reason %q, got %q", tosViolationStatusMessage, reason)
++	}
++}
++
++// TestApplyAuthFailureStateKeepsPlainForbiddenCooling guards the neighbouring
++// behaviour: an ordinary 403 is still a cooldown and must not disable the
++// credential.
++func TestApplyAuthFailureStateKeepsPlainForbiddenCooling(t *testing.T) {
++	now := time.Now()
++	auth := &Auth{ID: "plain-forbidden", Metadata: map[string]any{}}
++	plainForbidden := &Error{Code: "forbidden", Message: "permission denied", HTTPStatus: http.StatusForbidden}
++
++	applyAuthFailureState(auth, plainForbidden, nil, now, false)
++
++	if auth.Disabled {
++		t.Fatal("a plain 403 must not disable the credential")
++	}
++	if auth.StatusMessage != "payment_required" {
++		t.Fatalf("expected the existing payment_required mapping, got %q", auth.StatusMessage)
++	}
++	if !auth.NextRetryAfter.After(now) {
++		t.Fatalf("expected a cooldown window, got %v", auth.NextRetryAfter)
++	}
++}
++
++// TestIsTOSViolationResultErrorMarkers covers the appeal wording Google ships in
++// the details array, which is what the live 403 carries.
++func TestIsTOSViolationResultErrorMarkers(t *testing.T) {
++	cases := []struct {
++		name string
++		err  *Error
++		want bool
++	}{
++		{"live message", tosViolationError(), true},
++		{"reason code", &Error{Code: "TOS_VIOLATION", Message: "blocked", HTTPStatus: http.StatusForbidden}, true},
++		{"plain forbidden", &Error{Code: "forbidden", Message: "permission denied", HTTPStatus: http.StatusForbidden}, false},
++		{"tos on success status", &Error{Code: "TOS_VIOLATION", HTTPStatus: http.StatusOK}, false},
++		{"nil", nil, false},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := isTOSViolationResultError(tc.err); got != tc.want {
++				t.Fatalf("isTOSViolationResultError = %v, want %v", got, tc.want)
++			}
++		})
++	}
++}
++
++// recordingStore captures the payload handed to the store so a test can assert
++// that a state change actually reached persistence.
++type recordingStore struct {
++	mu    sync.Mutex
++	saves []*Auth
++}
++
++func (s *recordingStore) List(context.Context) ([]*Auth, error) { return nil, nil }
++
++func (s *recordingStore) Save(_ context.Context, auth *Auth) (string, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.saves = append(s.saves, auth.Clone())
++	return auth.ID, nil
++}
++
++func (s *recordingStore) Delete(context.Context, string) error { return nil }
++
++func (s *recordingStore) last() *Auth {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if len(s.saves) == 0 {
++		return nil
++	}
++	return s.saves[len(s.saves)-1]
++}
++
++// TestMarkResultTOSViolationPersistsDisabled proves the park survives a restart.
++// The in-memory flag is not enough: the gateway persists through Store.Save and
++// only Metadata["disabled"] is read back on load. MarkResult reaches this branch
++// with a non-empty model, which is why the TOS check must run before the
++// per-model cooldown branch; if it regresses, a banned account silently returns
++// to the pool after a restart and burns a request on a permanent 403.
++func TestMarkResultTOSViolationPersistsDisabled(t *testing.T) {
++	store := &recordingStore{}
++	manager := NewManager(store, nil, nil)
++
++	auth := &Auth{
++		ID:       "antigravity-banned@example.com",
++		Provider: "antigravity",
++		Status:   StatusActive,
++		Metadata: map[string]any{"email": "banned@example.com"},
++	}
++	if _, err := manager.Register(context.Background(), auth); err != nil {
++		t.Fatalf("register: %v", err)
++	}
++
++	manager.MarkResult(context.Background(), Result{
++		AuthID:   auth.ID,
++		Provider: "antigravity",
++		Model:    "gemini-3.8-flash-high",
++		Error:    tosViolationError(),
++	})
++
++	saved := store.last()
++	if saved == nil {
++		t.Fatal("MarkResult never persisted the credential")
++	}
++	if !saved.Disabled {
++		t.Fatal("persisted credential is not disabled: a restart would return the banned account to the pool")
++	}
++	if got := saved.Metadata["disabled"]; got != true {
++		t.Fatalf("persisted metadata[disabled] = %#v, want true (the loader reads this key)", got)
++	}
++	if got := saved.Metadata["disabled_reason"]; got != tosViolationStatusMessage {
++		t.Fatalf("persisted metadata[disabled_reason] = %#v, want %q", got, tosViolationStatusMessage)
++	}
++	if !saved.NextRetryAfter.IsZero() {
++		t.Fatalf("persisted NextRetryAfter = %v, want zero: a cooldown expires and retries a permanent block", saved.NextRetryAfter)
++	}
++}
++
++// TestMarkResultPlainForbiddenKeepsCooling guards the neighbouring behaviour: an
++// ordinary 403 is a per-model permission problem, not an account block, so the
++// credential must stay enabled.
++func TestMarkResultPlainForbiddenKeepsCooling(t *testing.T) {
++	store := &recordingStore{}
++	manager := NewManager(store, nil, nil)
++
++	auth := &Auth{ID: "antigravity-plain@example.com", Provider: "antigravity", Status: StatusActive, Metadata: map[string]any{}}
++	if _, err := manager.Register(context.Background(), auth); err != nil {
++		t.Fatalf("register: %v", err)
++	}
++
++	manager.MarkResult(context.Background(), Result{
++		AuthID:   auth.ID,
++		Provider: "antigravity",
++		Model:    "gemini-3.8-flash-high",
++		Error:    &Error{Code: "permission_denied", Message: "caller does not have permission", HTTPStatus: http.StatusForbidden},
++	})
++
++	saved := store.last()
++	if saved == nil {
++		t.Fatal("MarkResult never persisted the credential")
++	}
++	if saved.Disabled {
++		t.Fatal("a plain 403 must not disable the credential")
++	}
++	if got := saved.Metadata["disabled"]; got == true {
++		t.Fatal("a plain 403 wrote metadata[disabled]")
++	}
++}
+diff --git a/sdk/cliproxy/auth/cooldown_view.go b/sdk/cliproxy/auth/cooldown_view.go
+index f42f2f1..03fe135 100644
+--- a/sdk/cliproxy/auth/cooldown_view.go
++++ b/sdk/cliproxy/auth/cooldown_view.go
+@@ -130,6 +130,10 @@ func cooldownErrorReason(err *Error) string {
+ 		return "model_not_supported"
+ 	case isCloudflareChallengeResultError(err):
+ 		return "cloudflare_challenge"
++	case isTOSViolationResultError(err):
++		return tosViolationStatusMessage
++	case isValidationBlockedResultError(err):
++		return "validation_required"
+ 	case isInvalidGrantResultError(err):
+ 		return "invalid_grant"
+ 	}
+@@ -159,7 +163,8 @@ func cooldownStatusReason(message string) string {
+ 		return "quota"
+ 	case "cloudflare challenge":
+ 		return "cloudflare_challenge"
+-	case "invalid_grant", "unauthorized", "payment_required", "not_found":
++	case "invalid_grant", "unauthorized", "payment_required", "not_found",
++		"validation_required", "tos_violation":
+ 		return strings.TrimSpace(message)
+ 	case "model_not_supported":
+ 		return "model_not_supported"

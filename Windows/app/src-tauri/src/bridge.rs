@@ -88,7 +88,9 @@ pub fn invalidate_providers(state: &BridgeState) {
 pub fn model_cache_invalidator(state: &BridgeState) -> impl Fn() + Send + 'static {
     let models = state.models.clone();
     move || {
-        if let Ok(mut guard) = models.lock() { *guard = None; }
+        if let Ok(mut guard) = models.lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -380,6 +382,7 @@ fn injection_source(lang: &str) -> String {
             "opencode": "OpenCode",
             "openrouter": "OpenRouter",
             "deepinfra": "DeepInfra",
+            "nvidia": "NVIDIA",
             "vercel": "Vercel",
             "zai": "Z.ai",
             "commandcode": "CommandCode",
@@ -399,6 +402,8 @@ fn provider_of(model: &str) -> &'static str {
         "openrouter"
     } else if model.starts_with("deepinfra/") {
         "deepinfra"
+    } else if model.starts_with("nvidia/") {
+        "nvidia"
     } else if model.starts_with("vercel/") {
         "vercel"
     } else if model.starts_with("zai/") {
@@ -554,12 +559,14 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
     let commandcode_key = settings.commandcode_key.trim();
     let vercel_key = settings.vercel_key.trim();
     let deepinfra_key = settings.deepinfra_key.trim();
+    let nvidia_key = settings.nvidia_key.trim();
     let zai_key = settings.zai_key.trim();
     if openrouter_key.is_empty()
         && opencode_key.is_empty()
         && commandcode_key.is_empty()
         && vercel_key.is_empty()
         && deepinfra_key.is_empty()
+        && nvidia_key.is_empty()
         && zai_key.is_empty()
     {
         return json!({});
@@ -615,6 +622,17 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
             }),
         };
         providers.insert("vercel".to_string(), entry);
+    }
+    if !nvidia_key.is_empty() {
+        providers.insert(
+            "nvidia".to_string(),
+            json!({
+                "title": "NVIDIA",
+                "modelCount": settings.nvidia_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
     }
     if !deepinfra_key.is_empty() {
         providers.insert(

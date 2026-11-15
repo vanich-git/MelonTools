@@ -472,22 +472,44 @@ mod tests {
         let mut account = Account {
             pool_enabled: Some(false),
             quota_updated_at: Some(now),
-            quota: Some(Quota { hourly_remaining_percent: Some(100.0), ..Default::default() }),
+            quota: Some(Quota {
+                hourly_remaining_percent: Some(100.0),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert!(super::auth_should_be_disabled(&account, false, now));
-        super::merge_reading(&mut account, &Quota { weekly_remaining_percent: Some(80.0), ..Default::default() }, now);
+        super::merge_reading(
+            &mut account,
+            &Quota {
+                weekly_remaining_percent: Some(80.0),
+                ..Default::default()
+            },
+            now,
+        );
         account.quota_block = reconcile_block(&account, now, crate::vault::unix_now());
         assert!(super::auth_should_be_disabled(&account, true, now));
         assert_eq!(account.pool_enabled, Some(false));
         account.quota_updated_at = None;
         account.pool_enabled = Some(true);
-        assert!(!super::auth_should_be_disabled(&account, true, now), "manual enable clears stale manual auth flag");
+        assert!(
+            !super::auth_should_be_disabled(&account, true, now),
+            "manual enable clears stale manual auth flag"
+        );
         account.pool_enabled = None;
-        assert!(super::auth_should_be_disabled(&account, true, now), "legacy stale quota pause stays protected");
+        assert!(
+            super::auth_should_be_disabled(&account, true, now),
+            "legacy stale quota pause stays protected"
+        );
         account.pool_enabled = Some(true);
-        account.quota_block = Some(QuotaBlock { code: "hourly_exhausted".into(), ..Default::default() });
-        assert!(super::auth_should_be_disabled(&account, false, now), "manual enable cannot bypass quota");
+        account.quota_block = Some(QuotaBlock {
+            code: "hourly_exhausted".into(),
+            ..Default::default()
+        });
+        assert!(
+            super::auth_should_be_disabled(&account, false, now),
+            "manual enable cannot bypass quota"
+        );
     }
 
     #[test]

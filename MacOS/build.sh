@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
+# Xcode's DerivedData and the DMG staging folder must not land in
+# ~/Library/Developer: build output stays off the system volume. /tmp is on the
+# boot volume (fast) and is cleared by the OS, so nothing is left behind.
+DERIVED="${DERIVED_DATA_PATH:-/tmp/MelonToolsDerivedData}"
+
 # One composer script for both platforms; keep the bundle copy in sync.
 "$ROOT/../scripts/sync-composer.sh" >/dev/null
 
@@ -74,9 +79,9 @@ echo "==> 3/6 xcode project"
 
 echo "==> 4/6 release build"
 xcodebuild -project app/MelonTools.xcodeproj -scheme MelonTools -configuration Release \
-  -derivedDataPath "$HOME/Library/Developer/MelonTools" build | tail -3
+  -derivedDataPath "$DERIVED" build | tail -3
 
-APP="$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
+APP="$DERIVED/Build/Products/Release/MelonTools.app"
 
 echo "==> 5/6 ad-hoc codesign"
 xattr -cr "$APP"
@@ -96,7 +101,7 @@ fi
 codesign --verify --strict "$APP" && echo "signature ok"
 
 echo "==> 6/6 dmg"
-STAGE="$HOME/Library/Developer/MelonTools/dmg-stage"
+STAGE="$DERIVED/dmg-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/Melon Tools.app"

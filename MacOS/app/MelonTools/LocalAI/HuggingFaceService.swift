@@ -117,6 +117,62 @@ struct HFModelDetails: Identifiable, Equatable {
 enum HuggingFaceService {
     private static let baseURL = URL(string: "https://huggingface.co/api")!
 
+    // MARK: - Transport
+
+    /// Hub metadata is small, so a stuck request must fail fast instead of
+    /// holding the catalogue for the session default.
+    private static let requestTimeout: TimeInterval = 30
+    /// One retry only, and only for throttling or a server-side failure.
+    private static let retryDelay: UInt64 = 1_000_000_000
+
+    /// One Hub round trip. The body stays with the status so a failure can
+    /// explain itself instead of collapsing into "status code N".
+    private struct HubReply {
+        let data: Data
+        let status: Int
+        let url: URL
+
+        var isSuccess: Bool { (200...299).contains(status) }
+        var isTransient: Bool { status == 429 || (500...599).contains(status) }
+
+        var error: NSError {
+            let body = String(decoding: data.prefix(512), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let description = body.isEmpty
+                ? "Hugging Face returned status code \(status)"
+                : "Hugging Face returned status code \(status): \(body)"
+            return NSError(
+                domain: "HuggingFaceService",
+                code: status,
+                userInfo: [
+                    NSLocalizedDescriptionKey: description,
+                    NSURLErrorKey: url,
+                    "HTTPStatus": status
+                ]
+            )
+        }
+    }
+
+    /// Sends one Hub request, retrying a throttled or failed one exactly once.
+    private static func reply(for request: URLRequest) async throws -> HubReply {
+        var request = request
+        request.timeoutInterval = Self.requestTimeout
+        var reply = try await send(request)
+        if !reply.isSuccess, reply.isTransient {
+            try await Task.sleep(nanoseconds: Self.retryDelay)
+            reply = try await send(request)
+        }
+        return reply
+    }
+
+    private static func send(_ request: URLRequest) async throws -> HubReply {
+        let (data, response) = try await NetworkProxy.session().data(for: request)
+        guard let http = response as? HTTPURLResponse, let url = request.url else {
+            throw URLError(.badServerResponse)
+        }
+        return HubReply(data: data, status: http.statusCode, url: url)
+    }
+
     /// Sort orders Hugging Face exposes for its model index (§7.2).
     enum SortOrder: String, CaseIterable, Identifiable {
         case downloads
@@ -181,14 +237,11 @@ enum HuggingFaceService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, response) = try await NetworkProxy.session().data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw NSError(domain: "HuggingFaceService", code: status, userInfo: [NSLocalizedDescriptionKey: "Hugging Face returned status code \(status)"])
-        }
+        let reply = try await Self.reply(for: request)
+        guard reply.isSuccess else { throw reply.error }
 
         let decoder = JSONDecoder()
-        return try decoder.decode([HFModelSearchResult].self, from: data)
+        return try decoder.decode([HFModelSearchResult].self, from: reply.data)
     }
 
     /// Extracts `owner/repo` from a pasted link or bare identifier.
@@ -244,13 +297,10 @@ enum HuggingFaceService {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
-        let (data, response) = try await NetworkProxy.session().data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw NSError(domain: "HuggingFaceService", code: status, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch model details (status: \(status))"])
-        }
+        let reply = try await Self.reply(for: request)
+        guard reply.isSuccess else { throw reply.error }
 
-        return try await parseModelDetails(data, repoId: repoId)
+        return try await parseModelDetails(reply.data, repoId: repoId)
     }
 
     /// Keeps absent Hub metadata absent. No model-name or weight-size inference.
@@ -317,14 +367,10 @@ enum HuggingFaceService {
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await NetworkProxy.session().data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        if http.statusCode == 404 { return "" }
-        guard (200...299).contains(http.statusCode) else {
-            throw NSError(domain: "HuggingFaceService", code: http.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "README: HTTP \(http.statusCode)"])
-        }
-        guard let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
+        let reply = try await Self.reply(for: request)
+        if reply.status == 404 { return "" }
+        guard reply.isSuccess else { throw reply.error }
+        guard let text = String(data: reply.data, encoding: .utf8) else { throw URLError(.cannotDecodeContentData) }
         return text
     }
 

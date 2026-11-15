@@ -40,10 +40,9 @@ struct LocalAISettingsTab: View {
                                     .truncationMode(.middle)
                             }
                             Spacer()
-                            Button(L("Change...")) {
+                            MTGlassButton(title: L("Change..."), size: .small) {
                                 chooseDirectory()
                             }
-                            .buttonStyle(.bordered)
 
                             if store.customModelsDirectory != nil {
                                 Button(L("Reset")) {
@@ -142,10 +141,9 @@ struct LocalAISettingsTab: View {
                                 }
                             }
                             Spacer()
-                            Button(L("Browse...")) {
+                            MTGlassButton(title: L("Browse..."), size: .small) {
                                 chooseServerBinary()
                             }
-                            .buttonStyle(.bordered)
 
                             if runtime.customBinaryPath != nil {
                                 Button(L("Reset")) {
@@ -228,11 +226,9 @@ struct LocalAISettingsTab: View {
                                 .font(MTTheme.body(10))
                                 .foregroundStyle(MTTheme.textTertiary)
                             Spacer()
-                            Button(L("Restart Engine")) {
+                            MTGlassButton(title: L("Restart Engine"), size: .small, tint: MTTheme.amber) {
                                 Task { await runtime.applySettingsChange() }
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
                             .disabled(!runtime.status.isRunning)
                         }
                     }
@@ -253,13 +249,9 @@ struct LocalAISettingsTab: View {
                         }
 
                         HStack(spacing: MTTheme.s3) {
-                            Button(L("Browse Runtimes...")) { showingRuntimeCatalog = true }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
+                            MTGlassButton(title: L("Browse Runtimes..."), size: .small, tint: MTTheme.emerald, prominent: true) { showingRuntimeCatalog = true }
                                 .disabled(runtimeStore.isInstalling)
-                            Button(L("Add Runtime...")) { addRuntime() }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                            MTGlassButton(title: L("Add Runtime..."), size: .small) { addRuntime() }
                                 .disabled(runtimeStore.isInstalling)
                             Spacer()
                         }
@@ -267,12 +259,12 @@ struct LocalAISettingsTab: View {
 
                         Divider()
                         TextField(L("Runtime archive URL (.tar.gz)"), text: $runtimeURL)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.mtInput)
                         TextField(L("Archive SHA-256 (required)"), text: $runtimeSHA256)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.mtInput)
                             .font(MTTheme.mono(10))
                         HStack {
-                            Button(L("Download Runtime")) {
+                            MTGlassButton(title: L("Download Runtime"), size: .small, tint: MTTheme.emerald, prominent: true) {
                                 guard let url = URL(string: runtimeURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                                     runtimeActionError = L("Invalid runtime URL.")
                                     return
@@ -282,7 +274,9 @@ struct LocalAISettingsTab: View {
                             }
                             .disabled(runtimeStore.isInstalling || runtimeURL.isEmpty || !RuntimePackageInstaller.validDigest(runtimeSHA256.trimmingCharacters(in: .whitespacesAndNewlines)))
                             if runtimeStore.isInstalling {
-                                Button(L("Cancel")) { runtimeStore.cancelInstall() }
+                                MTGlassButton(title: L("Cancel"), size: .small, tint: MTTheme.danger) {
+                                    runtimeStore.cancelInstall()
+                                }
                             }
                         }
                         if runtimeStore.isInstalling {
@@ -320,18 +314,16 @@ struct LocalAISettingsTab: View {
 
                         HStack {
                             SecureField(L("hf_... token"), text: $hfToken)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.body(12))
 
-                            Button(L("Save Token")) {
+                            MTGlassButton(title: L("Save Token"), size: .regular, tint: MTTheme.amber, prominent: true) {
                                 saveToken()
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(MTTheme.amber)
                             .disabled(hfToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                             if store.hfTokenConfigured {
-                                Button(L("Remove")) {
+                                MTGlassButton(title: L("Remove"), size: .regular, tint: MTTheme.danger) {
                                     do {
                                         try store.setHuggingFaceToken(nil)
                                         hfToken = ""
@@ -340,8 +332,6 @@ struct LocalAISettingsTab: View {
                                         tokenError = error.localizedDescription
                                     }
                                 }
-                                .buttonStyle(.bordered)
-                                .foregroundStyle(MTTheme.danger)
                             }
                         }
 

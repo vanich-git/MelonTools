@@ -65,18 +65,23 @@ render = function renderWithScroll(force) {
     const element = document.getElementById(id);
     return [id, element ? element.scrollTop : 0];
   });
-  const hfInput = document.getElementById("hf-search");
-  const hfFocus = hfInput && document.activeElement === hfInput
-    ? [hfInput.selectionStart, hfInput.selectionEnd] : null;
+  const activeField = document.activeElement && document.activeElement.closest
+    ? document.activeElement.closest(".search-field") : null;
+  const activeInput = activeField ? activeField.querySelector("input") : null;
+  const fieldFocus = activeInput && activeInput.id && typeof activeInput.selectionStart === "number"
+    ? [activeInput.id, activeInput.selectionStart, activeInput.selectionEnd]
+    : null;
   baseRender(force);
   for (const [id, top] of hfScroll) {
     const element = document.getElementById(id);
     if (element) element.scrollTop = top;
   }
-  const nextHfInput = document.getElementById("hf-search");
-  if (hfFocus && nextHfInput) {
-    nextHfInput.focus();
-    nextHfInput.setSelectionRange(hfFocus[0], hfFocus[1]);
+  if (fieldFocus) {
+    const nextInput = document.getElementById(fieldFocus[0]);
+    if (nextInput) {
+      nextInput.focus();
+      nextInput.setSelectionRange(fieldFocus[1], fieldFocus[2]);
+    }
   }
   if (detail) detail.scrollTop = scrollTop;
   const nextLog = document.getElementById("local-ai-logs");
@@ -362,6 +367,45 @@ Object.assign(A, {
     });
   },
 
+  accountWake(id) {
+    if (!id) return;
+    return run("quotas", async () => {
+      const result = await inv("account_wake", { id });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length) return;
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_selected", { ids });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSleeping() {
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_sleeping");
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
   accountsDeleteSelected() {
     const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
     if (!ids.length || !window.confirm(fmt(t("accountDeleteSelectedConfirm"), { n: ids.length }))) return;
@@ -414,6 +458,7 @@ Object.assign(A, {
   },
 
   poolClose() {
+    const modal = S.poolModal;
     S.poolModal = null;
     S.poolQuery = "";
     S.poolError = null;
@@ -422,7 +467,23 @@ Object.assign(A, {
       S.accountSettings = S.accountSettingsReturn;
       S.accountSettingsReturn = null;
     }
-    render();
+    // Forced: Esc closes the dialog while focus is still inside its search
+    // field, and the edit guard would otherwise skip the repaint.
+    render(true);
+    // When the dialog was opened from account settings, that dialog is back on
+    // screen and must own focus, not the card behind it.
+    const settingsCard = S.accountSettings ? document.querySelector(".account-settings-card") : null;
+    const settingsField = settingsCard
+      ? settingsCard.querySelector("button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]")
+      : null;
+    if (settingsField) { settingsField.focus(); return; }
+    // Put focus back on the control that opened the dialog instead of <body>.
+    const accountId = modal && modal.mode === "account" ? modal.accountId : null;
+    const trigger = accountId
+      ? Array.from(document.querySelectorAll('[data-action="poolOpenAccount"]')).find((el) => el.dataset.id === accountId)
+      : null;
+    const target = trigger || document.querySelector('[data-action="poolOpen"]');
+    if (target) target.focus();
   },
 
   accountSettingsSave(id) {

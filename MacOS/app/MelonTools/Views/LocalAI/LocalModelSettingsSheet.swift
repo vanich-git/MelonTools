@@ -292,6 +292,7 @@ struct LocalModelSettingsSheet: View {
                     Toggle("", isOn: $flashAttention)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                        .tint(MTTheme.emerald)
                         .controlSize(.small)
                         .accessibilityLabel(L("Flash Attention (-fa)"))
                 }
@@ -310,6 +311,7 @@ struct LocalModelSettingsSheet: View {
                     Toggle("", isOn: $reasoningEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                        .tint(MTTheme.emerald)
                         .controlSize(.small)
                         .accessibilityLabel(L("Model reasoning"))
                 }
@@ -529,12 +531,9 @@ struct LocalModelSettingsSheet: View {
 
             Spacer(minLength: MTTheme.s2)
 
-            Button(L("Save Settings")) {
+            MTGlassButton(title: L("Save Settings"), size: .regular, tint: MTTheme.emerald, prominent: true) {
                 saveSettings()
             }
-            .buttonStyle(.borderedProminent)
-            .tint(MTTheme.emerald)
-            .controlSize(.regular)
             .keyboardShortcut(.defaultAction)
             .disabled(isSaving || maxTokens > contextLength)
         }
@@ -643,11 +642,14 @@ struct LocalModelSettingsSheet: View {
 
     // MARK: - Formatters
 
-    private static func integerFormatter(minimum: Int) -> NumberFormatter {
+    private static func integerFormatter(minimum: Int, maximum: Int = 4_194_304) -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.numberStyle = .none
         formatter.allowsFloats = false
         formatter.minimum = NSNumber(value: minimum)
+        // Without an upper bound an absurd Context value reaches the memory
+        // estimate and the INI writer; 4M tokens is above any real context.
+        formatter.maximum = NSNumber(value: maximum)
         return formatter
     }
 }

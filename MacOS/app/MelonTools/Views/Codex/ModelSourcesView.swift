@@ -21,6 +21,7 @@ struct CodexProvidersView: View {
 
     @State private var route: ProviderRoute?
     @State private var searches: [String: String] = [:]
+    @State private var openRouterFreeOnly = false
     @State private var poolSearch = ""
     @State private var poolError: String?
     @State private var confirmClaudeDisconnect = false
@@ -28,6 +29,10 @@ struct CodexProvidersView: View {
     @State private var antigravityIssue: AntigravityAuthService.VerificationIssue?
     @ObservedObject private var antigravityPool = AntigravityPoolStore.shared
     @State private var pendingAntigravityRemoval: AntigravityAccount?
+    @State private var pendingProxyAccount: AntigravityAccount?
+    @State private var proxyDraft: String = ""
+    @State private var customEditor: CustomProviderDraft?
+    @State private var pendingCustomRemoval: ModelSource?
 
     /// Sub-pages of the provider board.
     enum ProviderRoute: String, Identifiable {
@@ -35,6 +40,7 @@ struct CodexProvidersView: View {
         case openCode
         case commandCode
         case deepInfra
+        case nvidia
         case vercel
         case zai
         case claude
@@ -49,6 +55,7 @@ struct CodexProvidersView: View {
             case .openCode: return "OpenCode"
             case .commandCode: return "CommandCode"
             case .deepInfra: return "DeepInfra"
+            case .nvidia: return "NVIDIA"
             case .vercel: return "Vercel"
             case .zai: return "Z.ai"
             case .claude: return "Claude"
@@ -62,7 +69,7 @@ struct CodexProvidersView: View {
             case .openRouter: return "point.3.connected.trianglepath.dotted"
             case .openCode: return "chevron.left.forwardslash.chevron.right"
             case .commandCode: return "terminal"
-            case .deepInfra: return "server.rack"
+            case .deepInfra, .nvidia: return "server.rack"
             case .vercel: return "triangle"
             case .zai: return "atom"
             case .claude: return "sparkles"
@@ -85,10 +92,12 @@ struct CodexProvidersView: View {
                     openCodeCard
                     commandCodeCard
                     deepInfraCard
+                    nvidiaCard
                     vercelCard
                     zaiCard
                     claudeCard
                     antigravityCard
+                    customProvidersCard
                     localAICard
                     applyCard
                 }
@@ -108,6 +117,147 @@ struct CodexProvidersView: View {
                 await usage.refreshSession(threadUUID: ComposerBridge.shared.activeThreadID)
             }
         }
+        .sheet(item: $customEditor) { draft in
+            CustomProviderSheet(draft: draft) { result in
+                if let error = sources.saveCustomSource(
+                    originalID: draft.originalID,
+                    identifier: result.identifier,
+                    title: result.title,
+                    baseURL: result.baseURL,
+                    apiProtocol: result.apiProtocol,
+                    apiKey: result.apiKey,
+                    models: result.models
+                ) {
+                    return error
+                }
+                customEditor = nil
+                return nil
+            }
+        }
+        .confirmationDialog(
+            L("Delete this provider?"),
+            isPresented: Binding(
+                get: { pendingCustomRemoval != nil },
+                set: { if !$0 { pendingCustomRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L("Delete"), role: .destructive) {
+                if let provider = pendingCustomRemoval {
+                    sources.removeCustomSource(id: provider.id)
+                }
+                pendingCustomRemoval = nil
+            }
+            Button(L("Cancel"), role: .cancel) { pendingCustomRemoval = nil }
+        } message: {
+            Text(pendingCustomRemoval?.title ?? "")
+        }
+    }
+
+    // MARK: - Custom providers
+
+    /// One generic card for user-defined endpoints. Unlike the branded cards
+    /// above it has no settings sub-page: the same sheet creates and edits,
+    /// and the routing identifier doubles as the model prefix.
+    private var customProvidersCard: some View {
+        MTCard(title: L("Custom providers"), systemImage: "plus.rectangle.on.rectangle", accent: MTTheme.violet, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(alignment: .top, spacing: MTTheme.s3) {
+                    VStack(alignment: .leading, spacing: MTTheme.s1) {
+                        Text(L("Connect any endpoint that speaks OpenAI Chat, OpenAI Responses, Anthropic Messages or Gemini."))
+                            .font(MTTheme.mono(10))
+                            .foregroundStyle(MTTheme.textSecondary)
+                        Text(L("Models are namespaced by the provider identifier, so they never collide with the account pool."))
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                    Spacer(minLength: 0)
+                    MTGlassButton(title: L("Add provider"), systemImage: "plus", tint: MTTheme.violet, prominent: true) {
+                        customEditor = CustomProviderDraft(source: nil)
+                    }
+                }
+
+                if sources.customSources.isEmpty {
+                    VStack(spacing: MTTheme.s1) {
+                        Text(L("No custom providers yet"))
+                            .font(MTTheme.body(12))
+                            .foregroundStyle(MTTheme.textSecondary)
+                        Text(L("Add a relay or a self-hosted gateway to route its models through Melon Tools."))
+                            .font(MTTheme.mono(9))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, MTTheme.s4)
+                    .background(
+                        RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                            .strokeBorder(MTTheme.borderColor, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                    )
+                } else {
+                    ForEach(sources.customSources) { provider in
+                        customProviderRow(provider)
+                    }
+                }
+            }
+        }
+    }
+
+    private func customProviderRow(_ provider: ModelSource) -> some View {
+        HStack(alignment: .center, spacing: MTTheme.s3) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MTTheme.violet)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(MTTheme.violet.opacity(0.12)))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: MTTheme.s2) {
+                    Text(provider.title)
+                        .font(MTTheme.body(12))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    Text(provider.effectiveProtocol.title)
+                        .font(MTTheme.mono(8))
+                        .foregroundStyle(MTTheme.violet)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(MTTheme.violet.opacity(0.12)))
+                    Text(provider.id)
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.textTertiary)
+                }
+                Text(provider.baseURL)
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .lineLimit(1)
+                Text(String(format: L("%d models, %d enabled"), provider.models.count, provider.selectedModels.count))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+            Spacer(minLength: MTTheme.s2)
+            Toggle("", isOn: Binding(
+                get: { provider.enabled },
+                set: { sources.setCustomSourceEnabled(provider.id, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .tint(MTTheme.violet)
+            .help(L("Enable provider"))
+            MTGlassButton(title: L("Edit"), systemImage: "slider.horizontal.3", tint: MTTheme.cyan) {
+                customEditor = CustomProviderDraft(source: provider)
+            }
+            MTGlassButton(title: L("Delete"), systemImage: "trash", tint: MTTheme.danger) {
+                pendingCustomRemoval = provider
+            }
+        }
+        .padding(MTTheme.s3)
+        .background(
+            RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                .fill(MTTheme.surface.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                        .strokeBorder(MTTheme.borderColor, lineWidth: 1)
+                )
+        )
+        .opacity(provider.enabled ? 1 : 0.62)
     }
 
     // MARK: - Connection check
@@ -563,6 +713,22 @@ struct CodexProvidersView: View {
         }
     }
 
+    private var nvidiaCard: some View {
+        let configured = !sources.nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return MTCard(title: "NVIDIA", systemImage: ProviderRoute.nvidia.systemImage, accent: MTTheme.emerald, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                MTStatusPill(text: configured ? L("Key configured") : L("No key"), status: configured ? .ok : .idle)
+                MTMetricTile(title: L("Models"), value: "\(sources.nvidiaSource?.models.count ?? 0)", caption: L("Available"))
+                HStack {
+                    Spacer()
+                    MTGlassButton(title: L("Settings"), systemImage: "slider.horizontal.3", tint: MTTheme.amber) {
+                        route = .nvidia
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Board: Vercel AI Gateway
 
     private var vercelCard: some View {
@@ -948,6 +1114,11 @@ struct CodexProvidersView: View {
                     MTGlassButton(title: L("Add Google account"), systemImage: "person.badge.plus", tint: MTTheme.violet, isLoading: antigravityAuth.login.isBusy) {
                         Task { await antigravityAuth.startLogin() }
                     }
+                    if !accounts.isEmpty {
+                        MTGlassButton(title: L("Warm up all"), systemImage: "flame", tint: MTTheme.gold, isLoading: !antigravityPool.warmingUpAccountNames.isEmpty) {
+                            Task { await antigravityPool.warmupAll() }
+                        }
+                    }
                     MTGlassButton(title: L("Refresh"), systemImage: "arrow.clockwise", tint: MTTheme.cyan) {
                         Task {
                             await antigravityPool.refresh(forceQuota: true)
@@ -993,13 +1164,54 @@ struct CodexProvidersView: View {
         } message: {
             Text(pendingAntigravityRemoval?.email ?? pendingAntigravityRemoval?.name ?? "")
         }
+        .sheet(item: $pendingProxyAccount) { account in
+            antigravityProxySheet(account)
+        }
+    }
+
+    /// One proxy per account. The reason this exists at all: Google ties an
+    /// OAuth grant to the address it was issued from, so mixing a login from one
+    /// country with traffic from another is itself a signal. Pinning each
+    /// account to its own egress keeps that stable and stops one banned address
+    /// from taking the whole pool down.
+    private func antigravityProxySheet(_ account: AntigravityAccount) -> some View {
+        VStack(alignment: .leading, spacing: MTTheme.s3) {
+            Text(L("Proxy for this account"))
+                .font(MTTheme.body(13, weight: .semibold))
+            Text(account.email ?? account.name)
+                .font(MTTheme.mono(10))
+                .foregroundStyle(MTTheme.textSecondary)
+            TextField("socks5://user:pass@host:port", text: $proxyDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(MTTheme.mono(10))
+            Text(L("Leave empty to use the global proxy. The engine applies the value without a restart."))
+                .font(MTTheme.mono(9))
+                .foregroundStyle(MTTheme.textSecondary)
+            HStack {
+                Spacer()
+                Button(L("Cancel")) { pendingProxyAccount = nil }
+                Button(L("Save")) {
+                    let value = proxyDraft
+                    pendingProxyAccount = nil
+                    Task {
+                        _ = await AntigravityPoolStore.setProxy(name: account.name, proxyURL: value)
+                        await antigravityPool.refresh(forceQuota: false)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(MTTheme.s4)
+        .frame(width: 420)
+        .onAppear { proxyDraft = account.proxyURL ?? "" }
     }
 
     @ViewBuilder
     private func antigravityAccountRow(_ account: AntigravityAccount) -> some View {
         let cooldown = account.activeCooldown
-        let status: MTStatus = account.isPaused ? .idle : cooldown != nil ? .warn : .ok
-        let statusText = account.isPaused ? L("Paused") : cooldown != nil ? L("Quarantined") : L("Connected")
+        let isWarmingUp = antigravityPool.warmingUpAccountNames.contains(account.name)
+        let status: MTStatus = account.isPaused ? .idle : cooldown != nil ? .warn : (isWarmingUp ? .running : .ok)
+        let statusText = account.isPaused ? L("Paused") : cooldown != nil ? L("Quarantined") : (isWarmingUp ? L("Warming up...") : L("Connected"))
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             HStack(spacing: MTTheme.s2) {
                 MTStatusPill(text: statusText, status: status)
@@ -1023,6 +1235,11 @@ struct CodexProvidersView: View {
                         .foregroundStyle(MTTheme.gold)
                 }
                 MTMenuButton(systemImage: "ellipsis.circle", tint: MTTheme.textSecondary, entries: [
+                    .item(L("Warm up account"), systemImage: "flame") {
+                        Task {
+                            _ = await antigravityPool.warmupAccount(account)
+                        }
+                    },
                     .item(L("Refresh sign-in"), systemImage: "arrow.clockwise") {
                         Task {
                             _ = await antigravityAuth.refreshCredential(name: account.name)
@@ -1051,6 +1268,10 @@ struct CodexProvidersView: View {
                         Task { _ = await antigravityPool.setPriority(account, priority: account.priority - 1) }
                     },
                     .divider,
+                    .item(L("Bind proxy to this account"), systemImage: "network") {
+                        pendingProxyAccount = account
+                    },
+                    .divider,
                     .item(L("Remove account"), systemImage: "trash", destructive: true) {
                         pendingAntigravityRemoval = account
                     }
@@ -1069,6 +1290,7 @@ struct CodexProvidersView: View {
                 }
                 .foregroundStyle(MTTheme.warn)
             }
+            egressRow(account)
             if let gemini = account.geminiQuota {
                 antigravityQuotaRow(title: L("Gemini pool"), window: gemini)
             }
@@ -1076,9 +1298,17 @@ struct CodexProvidersView: View {
                 antigravityQuotaRow(title: L("Claude / GPT pool"), window: claude)
             }
             if account.geminiQuota == nil, account.claudeQuota == nil, let error = account.quotaError {
-                Text(error)
-                    .font(MTTheme.mono(9))
-                    .foregroundStyle(MTTheme.textTertiary)
+                // A ban or a denial is a real problem, not a quiet footnote:
+                // the row has to look broken, because it is.
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 8))
+                    Text(error)
+                        .font(MTTheme.mono(9))
+                        .lineLimit(3)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(MTTheme.danger)
             }
         }
         .padding(MTTheme.s2)
@@ -1153,18 +1383,62 @@ struct CodexProvidersView: View {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
+        // Without an explicit zone the formatter follows the process locale, so a
+        // row could render a reset instant in a zone the user never selected and
+        // disagree with the same timestamp shown elsewhere in the app.
+        formatter.timeZone = .current
         return formatter
     }()
 
     /// Why the account is quarantined: the badge alone cannot tell a
     /// first-token timeout from an exhausted Google quota window.
+    /// The address Google actually sees for this account. Shown on the row so a
+    /// geo or country mismatch is visible before it turns into a 403, instead
+    /// of being buried in a global proxy setting.
+    private func egressRow(_ account: AntigravityAccount) -> some View {
+        HStack(spacing: MTTheme.s2) {
+            Image(systemName: account.proxyURL == nil ? "globe" : "arrow.triangle.branch")
+                .font(.system(size: 9))
+            Text(account.proxyURL.map { Self.proxyLabel($0) } ?? L("Global proxy"))
+                .font(MTTheme.mono(9))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if account.proxyURL != nil {
+                Button {
+                    Task { _ = await AntigravityPoolStore.setProxy(name: account.name, proxyURL: "") ; await antigravityPool.refresh(forceQuota: false) }
+                } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 9))
+                }
+                .buttonStyle(.plain)
+                .help(L("Use the global proxy"))
+            }
+        }
+        .foregroundStyle(MTTheme.textSecondary)
+    }
+
+    /// Credentials in a proxy URL must never reach the screen. Show scheme, host
+    /// and port only, so a shared screenshot cannot leak the login pair.
+    static func proxyLabel(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw) else { return L("Custom proxy") }
+        components.user = nil
+        components.password = nil
+        let host = components.host ?? ""
+        let port = components.port.map { ":\($0)" } ?? ""
+        return (components.scheme ?? "proxy") + "://" + host + port
+    }
+
     private static func cooldownReason(_ cooldown: AntigravityCooldown) -> String? {
         if cooldown.httpStatus == 504 { return L("Waiting for the first token") }
         switch cooldown.reason {
         case "quota", "credential_quota": return L("Quota exhausted")
         case "cloudflare_challenge": return L("Cloudflare challenge")
         case "unauthorized", "invalid_grant": return L("Sign in again")
-        case "payment_required": return L("Payment required")
+        // 403 from Cloud Code splits three ways, and none of them is billing.
+        // "payment_required" is the legacy label the gateway used for the whole
+        // 403 family; existing cooldown snapshots may still carry it, so it maps
+        // to the same explanation as an explicit TOS block.
+        case "tos_violation", "payment_required": return L("Blocked by Google")
+        case "validation_required": return L("Account frozen")
         case "model_not_supported": return L("Model not supported")
         case "transient_error": return L("Upstream error")
         default: return nil
@@ -1304,6 +1578,8 @@ struct CodexProvidersView: View {
             commandCodeSettings
         case .deepInfra:
             deepInfraSettings
+        case .nvidia:
+            nvidiaSettings
         case .vercel:
             vercelSettings
         case .zai:
@@ -1324,6 +1600,7 @@ struct CodexProvidersView: View {
         case .openCode: return L("Paid models use your OpenCode account balance.")
         case .commandCode: return L("Models served by CommandCode with your provider API key.")
         case .deepInfra: return L("Chat models served by DeepInfra with your API key.")
+        case .nvidia: return L("Models served by NVIDIA with your API key.")
         case .vercel: return L("Language models served by the Vercel AI Gateway with your gateway key.")
         case .zai: return L("GLM Coding Plan models served by Z.ai with your Coding Plan API key.")
         case .claude: return L("Connect your Claude subscription or paste an Anthropic API key.")
@@ -1416,6 +1693,29 @@ struct CodexProvidersView: View {
                 }
                 .font(MTTheme.mono(10))
                 .foregroundStyle(MTTheme.textTertiary)
+            }
+        }
+    }
+
+    private var nvidiaSettings: some View {
+        MTCard(title: "NVIDIA", systemImage: ProviderRoute.nvidia.systemImage, accent: MTTheme.emerald, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                keyRow(key: $sources.nvidiaKey) {
+                    Task { await sources.loadNvidiaModels() }
+                }
+                if let source = sources.nvidiaSource {
+                    modelBlock(source: source)
+                } else {
+                    Text(L("Paste the NVIDIA API key to load the model list."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                Text(L("NVIDIA limit: 40 requests per minute per key. Requests wait when the limit is reached."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
+                Text(L("NVIDIA's model list is public; the key is verified on the first request. Some listed models may not support chat."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
             }
         }
     }
@@ -1514,7 +1814,7 @@ struct CodexProvidersView: View {
 
                 HStack(spacing: MTTheme.s2) {
                     SecureField(L("Anthropic API key (fallback)"), text: $sources.claudeKey)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.mtInput)
                         .font(MTTheme.mono(11))
                         .frame(maxWidth: 360)
                     MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan, prominent: true, isLoading: sources.isBusy) {
@@ -1585,6 +1885,9 @@ struct CodexProvidersView: View {
                         Task { await antigravityAuth.startLogin() }
                     }
                     if !accounts.isEmpty {
+                        MTGlassButton(title: L("Warm up all"), systemImage: "flame", tint: MTTheme.gold, isLoading: !antigravityPool.warmingUpAccountNames.isEmpty) {
+                            Task { await antigravityPool.warmupAll() }
+                        }
                         MTGlassButton(title: L("Disconnect all"), systemImage: "xmark.circle", tint: MTTheme.ruby) {
                             confirmAntigravityDisconnect = true
                         }
@@ -1799,7 +2102,7 @@ struct CodexProvidersView: View {
     private func keyRow(key: Binding<String>, action: @escaping () -> Void) -> some View {
         HStack(spacing: MTTheme.s2) {
             SecureField(L("API key"), text: key)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.mtInput)
                 .font(MTTheme.mono(11))
                 .frame(maxWidth: 360)
             MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan, prominent: true, isLoading: sources.isBusy, action: action)
@@ -1809,7 +2112,8 @@ struct CodexProvidersView: View {
 
     private func modelBlock(source: ModelSource) -> some View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
-            HStack(spacing: MTTheme.s2) {
+            VStack(alignment: .leading, spacing: MTTheme.s2) {
+              HStack(spacing: MTTheme.s2) {
                 Toggle(isOn: Binding(
                     get: { source.enabled },
                     set: { sources.setSourceEnabled(source.id, enabled: $0) }
@@ -1822,13 +2126,27 @@ struct CodexProvidersView: View {
                 Text(String(format: L("Selected %d of %d"), source.selectedModels.count, source.models.count))
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textSecondary)
-                Spacer()
+              }
+              if source.kind == .openRouter {
+                  Toggle(L("Free only"), isOn: $openRouterFreeOnly)
+                      .toggleStyle(.checkbox)
+                      .font(MTTheme.mono(10))
+              }
+              ScrollView(.horizontal, showsIndicators: false) {
                 SelectAllControls(
                     search: searchBinding(source.id),
                     placeholder: L("Search"),
-                    onSelectAll: { query in sources.setAllModels(source.id, enabled: true, matching: query) },
-                    onClear: { query in sources.setAllModels(source.id, enabled: false, matching: query) }
+                    onSelectAll: { query in
+                        sources.setAllModels(source.id, enabled: true, matching: query,
+                                             freeOnly: source.kind == .openRouter && openRouterFreeOnly)
+                    },
+                    onClear: { query in
+                        sources.setAllModels(source.id, enabled: false, matching: query,
+                                             freeOnly: source.kind == .openRouter && openRouterFreeOnly)
+                    }
                 )
+                .fixedSize(horizontal: true, vertical: false)
+              }
             }
             modelList(source: source, height: 320)
         }
@@ -1886,26 +2204,29 @@ struct CodexProvidersView: View {
     }
 
     private func modelRow(sourceId: String, model: SourceModel) -> some View {
-        HStack(spacing: MTTheme.s2) {
-            checkbox(model.enabled)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.display)
-                    .font(MTTheme.body(12))
-                    .foregroundStyle(MTTheme.textPrimary)
-                    .lineLimit(1)
-                if model.display != model.id {
-                    Text(model.id)
-                        .font(MTTheme.mono(9))
-                        .foregroundStyle(MTTheme.textTertiary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: MTTheme.s1) {
+          HStack(spacing: MTTheme.s2) {
+            Button {
+                sources.setModel(sourceId, modelId: model.id, enabled: !model.enabled)
+            } label: {
+                HStack(spacing: MTTheme.s2) {
+                    checkbox(model.enabled)
+                    modelLabel(model)
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.display)
+            .accessibilityValue(model.enabled ? L("On") : L("Off"))
+            .help(model.id)
             Spacer(minLength: MTTheme.s2)
             if model.goTier == true {
                 MTStatusPill(text: "Go", status: .ok)
             }
-            if model.freeTier == true {
-                MTStatusPill(text: L("app only"), status: .warn)
+            if sources.sources.first(where: { $0.id == sourceId })?.kind == .openRouter {
+                if model.isOpenRouterFree { MTStatusPill(text: L("Free"), status: .ok) }
+            } else if model.freeTier == true {
+                MTStatusPill(text: L("App Only"), status: .ok)
             }
             imagesToggle(sourceId: sourceId, model: model)
             if let context = model.contextLength, context > 0 {
@@ -1913,29 +2234,84 @@ struct CodexProvidersView: View {
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textSecondary)
             }
+          }
+
+          if sources.sources.first(where: { $0.id == sourceId })?.kind == .openRouter {
+            ScrollView(.horizontal, showsIndicators: false) {
+              HStack(spacing: MTTheme.s2) {
+                // Provider routing controls
+                TextField(L("Provider slug"), text: Binding(
+                    get: { model.provider ?? "" },
+                    set: { sources.setModelProvider(sourceId, modelId: model.id, provider: $0.isEmpty ? nil : $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 110)
+                .font(MTTheme.mono(10))
+                .help(L("Provider identifier help"))
+                .accessibilityLabel(L("Provider slug"))
+
+                Picker(L("Routing priority"), selection: Binding(
+                    get: { model.sortOrder == "speed" ? "throughput" : (model.sortOrder ?? "price") },
+                    set: { sources.setModelSortOrder(sourceId, modelId: model.id, sortOrder: $0) }
+                )) {
+                    Text(L("Price")).tag("price")
+                    Text(L("Throughput")).tag("throughput")
+                    Text(L("Latency")).tag("latency")
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                .font(MTTheme.mono(10))
+                .help(L("Routing priority help"))
+
+                Toggle(L("Fallback"), isOn: Binding(
+                    get: { model.fallback ?? true },
+                    set: { sources.setModelFallback(sourceId, modelId: model.id, fallback: $0) }
+                ))
+                .font(MTTheme.mono(10))
+                .help(L("Fallback help"))
+
+                Toggle(L("Floor"), isOn: Binding(
+                    get: { model.isFloorModel ?? false },
+                    set: { sources.setModelIsFloorModel(sourceId, modelId: model.id, isFloorModel: $0) }
+                ))
+                .font(MTTheme.mono(10))
+                .help(L("Floor help"))
+
+                Toggle(L("Nitro"), isOn: Binding(
+                    get: { model.isNitroModel ?? false },
+                    set: { sources.setModelIsNitroModel(sourceId, modelId: model.id, isNitroModel: $0) }
+                ))
+                .font(MTTheme.mono(10))
+                .help(L("Nitro help"))
+              }
+              .fixedSize(horizontal: true, vertical: false)
+            }
+          }
         }
         .padding(.horizontal, MTTheme.s3)
-        .padding(.vertical, 1)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            sources.setModel(sourceId, modelId: model.id, enabled: !model.enabled)
-        }
-        .focusable()
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(model.display)
-        .accessibilityValue(model.enabled ? L("On") : L("Off"))
-        .accessibilityAddTraits(.isButton)
-        .onKeyPress(.space) {
-            sources.setModel(sourceId, modelId: model.id, enabled: !model.enabled)
-            return .handled
+        .padding(.vertical, MTTheme.s1)
+    }
+
+    private func modelLabel(_ model: SourceModel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.display)
+                .font(MTTheme.body(12))
+                .foregroundStyle(MTTheme.textPrimary)
+                .lineLimit(1)
+            if model.display != model.id {
+                Text(model.id)
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+                    .lineLimit(1)
+            }
         }
     }
 
     private func filtered(_ source: ModelSource) -> [SourceModel] {
         let query = (searches[source.id] ?? "").trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return source.models }
-        return source.models.filter {
-            $0.id.localizedCaseInsensitiveContains(query) || $0.display.localizedCaseInsensitiveContains(query)
+        return source.models.filter { model in
+            let freeMatches = source.kind != .openRouter || !openRouterFreeOnly || model.isOpenRouterFree
+            return freeMatches && (query.isEmpty || model.id.localizedCaseInsensitiveContains(query) || model.display.localizedCaseInsensitiveContains(query))
         }
     }
 
@@ -1975,6 +2351,7 @@ struct CodexProvidersView: View {
                 HStack(spacing: MTTheme.s2) {
                     Toggle(L("Apply model changes automatically"), isOn: autoApply)
                         .toggleStyle(.switch)
+                        .tint(MTTheme.emerald)
                         .controlSize(.small)
                     Spacer()
                 }
@@ -2086,11 +2463,438 @@ private struct SelectAllControls: View {
     var body: some View {
         HStack(spacing: MTTheme.s2) {
             TextField(placeholder, text: $search)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.mtInput)
                 .font(MTTheme.mono(10))
                 .frame(width: 170)
             MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) { onSelectAll(search) }
+                .fixedSize()
             MTGlassButton(title: L("Clear"), size: .small, tint: MTTheme.textSecondary) { onClear(search) }
+                .fixedSize()
         }
+    }
+}
+
+// MARK: - Custom provider editor
+
+/// Initial values for the create/edit sheet. The sheet owns a working copy;
+/// nothing reaches `ModelSourcesStore` until Save succeeds.
+struct CustomProviderDraft: Identifiable {
+    let id = UUID()
+    let originalID: String?
+    var identifier = ""
+    var title = ""
+    var baseURL = ""
+    var apiProtocol: ModelSource.APIProtocol = .openAIChat
+    var apiKey = ""
+    var models: [SourceModel] = []
+
+    init(source: ModelSource?) {
+        originalID = source?.id
+        identifier = source?.id ?? ""
+        title = source?.title ?? ""
+        baseURL = source?.baseURL ?? ""
+        apiProtocol = source?.effectiveProtocol ?? .openAIChat
+        apiKey = source?.apiKey ?? ""
+        models = source?.models ?? []
+    }
+}
+
+struct CustomProviderResult {
+    var identifier: String
+    var title: String
+    var baseURL: String
+    var apiProtocol: ModelSource.APIProtocol
+    var apiKey: String
+    var models: [SourceModel]
+}
+
+/// One sheet for both create and edit. Field order and wording follow the
+/// provider sheet in the product design: identity, endpoint, protocol, key,
+/// then the model list.
+struct CustomProviderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let draft: CustomProviderDraft
+    let onSave: (CustomProviderResult) -> String?
+
+    @State private var identifier: String
+    @State private var title: String
+    @State private var baseURL: String
+    @State private var apiProtocol: ModelSource.APIProtocol
+    @State private var apiKey: String
+    @State private var models: [SourceModel]
+    @State private var isFetching = false
+    @State private var fetchError: String?
+    @State private var error: String?
+    @State private var addingModel = false
+    @State private var newModelID = ""
+    @State private var newModelDisplay = ""
+
+    init(draft: CustomProviderDraft, onSave: @escaping (CustomProviderResult) -> String?) {
+        self.draft = draft
+        self.onSave = onSave
+        _identifier = State(initialValue: draft.identifier)
+        _title = State(initialValue: draft.title)
+        _baseURL = State(initialValue: draft.baseURL)
+        _apiProtocol = State(initialValue: draft.apiProtocol)
+        _apiKey = State(initialValue: draft.apiKey)
+        _models = State(initialValue: draft.models)
+    }
+
+    private var isEditing: Bool { draft.originalID != nil }
+
+    private var identifierProblem: String? {
+        ModelSourcesStore.customIdentifierProblem(identifier, sources: ModelSourcesStore.shared.sources, excluding: draft.originalID)
+    }
+
+    private var titleProblem: String? {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L("Enter a display name.") : nil
+    }
+
+    private var baseURLProblem: String? {
+        ModelSourcesStore.normalizedBaseURL(baseURL) == nil ? L("Enter a valid http or https base URL.") : nil
+    }
+
+    private var keyProblem: String? {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L("Enter an API key.") : nil
+    }
+
+    private var modelsProblem: String? {
+        models.contains(where: \.enabled) ? nil : L("Enable at least one model.")
+    }
+
+    private var canSave: Bool {
+        identifierProblem == nil && titleProblem == nil && baseURLProblem == nil && keyProblem == nil && modelsProblem == nil
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: MTTheme.s3) {
+                VStack(alignment: .leading, spacing: MTTheme.s1) {
+                    Text(isEditing ? L("Edit provider") : L("New provider"))
+                        .font(MTTheme.display(18))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    Text(L("Point Melon Tools at any relay, gateway or self-hosted endpoint."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MTTheme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help(L("Close"))
+                .accessibilityLabel(L("Close"))
+            }
+            .padding(MTTheme.s5)
+
+            Divider().overlay(MTTheme.borderColor)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: MTTheme.s4) {
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        fieldLabel(L("Provider identifier"))
+                        TextField("acme-gateway", text: $identifier)
+                            .textFieldStyle(.mtInput)
+                            .font(MTTheme.mono(11))
+                        if let problem = identifierProblem, !identifier.isEmpty {
+                            footnote(problem, color: MTTheme.danger)
+                        } else {
+                            footnote(L("Lowercase letters, digits and hyphens. Used as the model prefix."), color: MTTheme.textTertiary)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        fieldLabel(L("Display name"))
+                        TextField("Acme Gateway", text: $title)
+                            .textFieldStyle(.mtInput)
+                            .font(MTTheme.body(12))
+                    }
+
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        fieldLabel(L("Base URL"))
+                        TextField("https://gateway.example/v1", text: $baseURL)
+                            .textFieldStyle(.mtInput)
+                            .font(MTTheme.mono(11))
+                        if let problem = baseURLProblem, !baseURL.isEmpty {
+                            footnote(problem, color: MTTheme.danger)
+                        }
+                        footnote(apiProtocol.baseURLHint, color: MTTheme.textTertiary)
+                    }
+
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        fieldLabel(L("API protocol"))
+                        Picker("", selection: $apiProtocol) {
+                            ForEach(ModelSource.APIProtocol.allCases) { item in
+                                Text(item.title).tag(item)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(maxWidth: 280, alignment: .leading)
+                    }
+
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        fieldLabel(L("Custom provider API key"))
+                        HStack(spacing: MTTheme.s2) {
+                            SecureField(L("Custom provider API key"), text: $apiKey)
+                                .textFieldStyle(.mtInput)
+                                .font(MTTheme.mono(11))
+                            MTGlassButton(
+                                title: L("Get available models"),
+                                systemImage: "arrow.down.circle",
+                                tint: MTTheme.cyan,
+                                prominent: true,
+                                isLoading: isFetching
+                            ) {
+                                Task { await fetchModels() }
+                            }
+                            .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || baseURLProblem != nil || isFetching)
+                        }
+                        footnote(L("The key is stored in the app settings and written only to the local gateway config."), color: MTTheme.textTertiary)
+                    }
+
+                    VStack(alignment: .leading, spacing: MTTheme.s2) {
+                        HStack(spacing: MTTheme.s2) {
+                            fieldLabel(L("Models"))
+                            Text("\(models.count)")
+                                .font(MTTheme.mono(9))
+                                .foregroundStyle(MTTheme.textTertiary)
+                            Spacer(minLength: 0)
+                            if !models.isEmpty {
+                                Button(L("Select all")) { setAllModels(enabled: true) }
+                                    .buttonStyle(.plain)
+                                    .font(MTTheme.mono(9))
+                                    .foregroundStyle(MTTheme.cyan)
+                                Button(L("Clear")) { setAllModels(enabled: false) }
+                                    .buttonStyle(.plain)
+                                    .font(MTTheme.mono(9))
+                                    .foregroundStyle(MTTheme.textTertiary)
+                            }
+                        }
+                        if let fetchError {
+                            footnote(fetchError, color: MTTheme.danger)
+                        }
+                        if models.isEmpty {
+                            VStack(spacing: MTTheme.s1) {
+                                Text(L("No models yet"))
+                                    .font(MTTheme.body(12))
+                                    .foregroundStyle(MTTheme.textSecondary)
+                                Text(L("Fetch the endpoint list or add a model id manually."))
+                                    .font(MTTheme.mono(9))
+                                    .foregroundStyle(MTTheme.textTertiary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, MTTheme.s4)
+                            .background(
+                                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                                    .strokeBorder(MTTheme.borderColor, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                            )
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach($models) { $model in
+                                    modelRow(model: $model)
+                                    if model.id != models.last?.id {
+                                        Divider().overlay(MTTheme.borderColor.opacity(0.6))
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, MTTheme.s3)
+                            .background(
+                                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                                    .fill(MTTheme.surface.opacity(0.6))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                                            .strokeBorder(MTTheme.borderColor, lineWidth: 1)
+                                    )
+                            )
+                        }
+                        if addingModel {
+                            HStack(spacing: MTTheme.s2) {
+                                TextField(L("Model id"), text: $newModelID)
+                                    .textFieldStyle(.mtInput)
+                                    .font(MTTheme.mono(10))
+                                TextField(L("Display name"), text: $newModelDisplay)
+                                    .textFieldStyle(.mtInput)
+                                    .font(MTTheme.mono(10))
+                                MTGlassButton(title: L("Add"), tint: MTTheme.cyan) {
+                                    addManualModel()
+                                }
+                                .disabled(newModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                Button(L("Cancel")) {
+                                    addingModel = false
+                                    newModelID = ""
+                                    newModelDisplay = ""
+                                }
+                                .buttonStyle(.plain)
+                                .font(MTTheme.mono(9))
+                                .foregroundStyle(MTTheme.textTertiary)
+                            }
+                        } else {
+                            Button {
+                                addingModel = true
+                            } label: {
+                                Label(L("+ Add model"), systemImage: "plus")
+                                    .font(MTTheme.mono(10, weight: .semibold))
+                                    .foregroundStyle(MTTheme.cyan)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if let problem = modelsProblem, !models.isEmpty {
+                            footnote(problem, color: MTTheme.danger)
+                        }
+                    }
+                }
+                .padding(MTTheme.s5)
+            }
+
+            Divider().overlay(MTTheme.borderColor)
+
+            HStack(spacing: MTTheme.s2) {
+                if let error {
+                    Text(error)
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.danger)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
+                MTGlassButton(
+                    title: isEditing ? L("Save provider") : L("Create provider"),
+                    systemImage: "checkmark",
+                    tint: MTTheme.violet,
+                    prominent: true
+                ) {
+                    save()
+                }
+                .disabled(!canSave)
+            }
+            .padding(MTTheme.s5)
+        }
+        .frame(width: 640, height: 720)
+        .background(MTTheme.background)
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(MTTheme.mono(9, weight: .semibold))
+            .foregroundStyle(MTTheme.textSecondary)
+            .textCase(.uppercase)
+            .tracking(0.6)
+    }
+
+    private func footnote(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(MTTheme.mono(9))
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func modelRow(model: Binding<SourceModel>) -> some View {
+        HStack(spacing: MTTheme.s2) {
+            Toggle("", isOn: model.enabled)
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .accessibilityLabel(L("Enable model"))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.wrappedValue.display.isEmpty ? model.wrappedValue.id : model.wrappedValue.display)
+                    .font(MTTheme.body(11))
+                    .foregroundStyle(MTTheme.textPrimary)
+                    .lineLimit(1)
+                HStack(spacing: MTTheme.s2) {
+                    Text(model.wrappedValue.id)
+                        .font(MTTheme.mono(9))
+                        .foregroundStyle(MTTheme.textTertiary)
+                        .lineLimit(1)
+                    if let context = model.wrappedValue.contextLength, context > 0 {
+                        Text(String(format: L("%@ context"), formattedTokens(context)))
+                            .font(MTTheme.mono(8))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+            Button {
+                let id = model.wrappedValue.id
+                models.removeAll { $0.id == id }
+            } label: {
+                Image(systemName: "minus.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MTTheme.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help(L("Remove model"))
+            .accessibilityLabel(L("Remove model"))
+        }
+        .padding(.vertical, MTTheme.s2)
+    }
+
+    private func formattedTokens(_ value: Int) -> String {
+        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
+        if value >= 1_000 { return "\(value / 1_000)K" }
+        return "\(value)"
+    }
+
+    private func setAllModels(enabled: Bool) {
+        for index in models.indices { models[index].enabled = enabled }
+    }
+
+    private func addManualModel() {
+        let id = newModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !models.contains(where: { $0.id == id }) else { return }
+        let display = newModelDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        models.append(SourceModel(
+            id: id,
+            display: display.isEmpty ? id : display,
+            contextLength: nil,
+            enabled: true,
+            alias: ModelSourcesStore.customAlias(identifier: identifier, modelID: id)
+        ))
+        newModelID = ""
+        newModelDisplay = ""
+        addingModel = false
+    }
+
+    private func fetchModels() async {
+        isFetching = true
+        fetchError = nil
+        do {
+            let fetched = try await ModelSourcesStore.shared.fetchCustomModels(
+                identifier: identifier,
+                baseURL: baseURL,
+                apiProtocol: apiProtocol,
+                apiKey: apiKey
+            )
+            var merged = fetched
+            for existing in models where !merged.contains(where: { $0.id == existing.id }) {
+                merged.append(existing)
+            }
+            for index in merged.indices {
+                if let old = models.first(where: { $0.id == merged[index].id }) {
+                    merged[index].enabled = old.enabled
+                    if !old.display.isEmpty, old.display != old.id { merged[index].display = old.display }
+                }
+            }
+            models = ModelSourcesStore.normalizedCustomModels(identifier: identifier, models: merged)
+        } catch {
+            fetchError = error.localizedDescription
+        }
+        isFetching = false
+    }
+
+    private func save() {
+        let result = CustomProviderResult(
+            identifier: identifier.trimmingCharacters(in: .whitespacesAndNewlines),
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            apiProtocol: apiProtocol,
+            apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+            models: models
+        )
+        error = onSave(result)
+        if error == nil { dismiss() }
     }
 }

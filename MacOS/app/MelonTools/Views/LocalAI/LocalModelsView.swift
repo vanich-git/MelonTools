@@ -79,7 +79,7 @@ struct LocalModelsView: View {
                     }
                     .font(MTTheme.body(11, weight: .medium))
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(MTGlassButtonStyle(size: .small))
                 .disabled(isImporting)
             }
             .padding(.horizontal, MTTheme.s4)
@@ -265,7 +265,7 @@ struct LocalModelsView: View {
                             Text(L("Import .gguf File..."))
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(MTGlassButtonStyle(size: .regular))
 
                     // A split model or a folder of models is imported in one go.
                     Button(action: { openImportPanel(folder: true) }) {
@@ -274,7 +274,7 @@ struct LocalModelsView: View {
                             Text(L("Import Folder..."))
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(MTGlassButtonStyle(size: .regular))
                 }
             }
             Spacer()
@@ -362,7 +362,7 @@ struct LocalModelsView: View {
                                 }
                                 .font(MTTheme.body(11, weight: .medium))
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.danger, prominent: false, size: .small))
                         } else {
                             Button(action: { startModel(model) }) {
                                 HStack(spacing: 4) {
@@ -371,22 +371,21 @@ struct LocalModelsView: View {
                                 }
                                 .font(MTTheme.body(11, weight: .medium))
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(MTTheme.emerald)
+                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.emerald, prominent: true, size: .small))
                             .disabled(isBusy)
                         }
 
                         Button(action: { testModel = model }) {
                             Image(systemName: "sparkles")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(MTGlassButtonStyle(size: .small))
                         .help(L("Test Model"))
                         .accessibilityLabel(L("Test Model"))
 
                         Button(action: { settingsModel = model }) {
                             Image(systemName: "gearshape")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(MTGlassButtonStyle(size: .small))
                         .help(L("Settings"))
                         .accessibilityLabel(L("Settings"))
 

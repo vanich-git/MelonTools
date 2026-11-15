@@ -135,4 +135,33 @@ final class AntigravityPoolTests: XCTestCase {
         ]
         XCTAssertTrue(AntigravityPoolStore.watchdogModels(in: cooldowns).isEmpty)
     }
+
+    /// A banned account must say so instead of "quota unavailable": the ban is
+    /// permanent, and a passing glitch is exactly the wrong message.
+    func testTermsOfServiceBanIsFinalAndExplained() {
+        let body = #"{"error":{"code":403,"message":"This account was suspended for a violation of Terms of Service.","status":"PERMISSION_DENIED"}}"#
+        let reason = AntigravityPoolStore.finalReason(status: 403, body: body)
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("Terms of Service"))
+    }
+
+    /// A 401 is the stale-token case, so it must stay retryable rather than
+    /// telling the user the account is blocked.
+    func testUnauthorizedStaysRetryable() {
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 401, body: ""))
+    }
+
+    /// Transient upstream trouble and network blips are retried silently.
+    func testServerErrorsStayRetryable() {
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 500, body: "internal error"))
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 503, body: ""))
+    }
+
+    /// A plain 403 without a ban reason still explains the denial instead of
+    /// falling back to the generic "unavailable".
+    func testForbiddenWithoutBanReasonIsExplained() {
+        let reason = AntigravityPoolStore.finalReason(status: 403, body: #"{"error":{"status":"PERMISSION_DENIED"}}"#)
+        XCTAssertNotNil(reason)
+        XCTAssertFalse(reason!.isEmpty)
+    }
 }

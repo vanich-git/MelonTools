@@ -128,12 +128,20 @@ final class CodexRoutingTests: XCTestCase {
         XCTAssertEqual(resolution.orderedIds.last, backup.id)
     }
 
-    func testPrioritiesGiveFirstAccountHighestValue() {
+    func testPrioritiesEncodeTierNotPosition() {
         let first = account()
         let second = account()
-        let values = CodexRoutingPlanner.priorities(from: [first.id, second.id])
-        XCTAssertEqual(values[first.id], 2)
-        XCTAssertEqual(values[second.id], 1)
+        let backup = account(backup: true)
+        let values = CodexRoutingPlanner.priorities(
+            from: [first.id, second.id, backup.id], backupIds: [backup.id]
+        )
+        // Equal inside a tier: that is what lets the engine rotate.
+        XCTAssertEqual(values[first.id], CodexRoutingPlanner.regularPriority)
+        XCTAssertEqual(values[second.id], CodexRoutingPlanner.regularPriority)
+        XCTAssertEqual(values[backup.id], CodexRoutingPlanner.backupPriority)
+        XCTAssertGreaterThan(
+            CodexRoutingPlanner.regularPriority, CodexRoutingPlanner.backupPriority
+        )
     }
 
     func testManualOrderMovesAcrossDisabledAccountsInOneClick() {
@@ -521,7 +529,10 @@ final class LRUCacheTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let ids = try XCTUnwrap(object["orderedIds"] as? [String])
         let expected = try XCTUnwrap(object["priorities"] as? [String: Int])
-        XCTAssertEqual(CodexRoutingPlanner.priorities(from: ids), expected)
+        let backupIds = Set(try XCTUnwrap(object["backupIds"] as? [String]))
+        XCTAssertEqual(
+            CodexRoutingPlanner.priorities(from: ids, backupIds: backupIds), expected
+        )
 
         let ranks = try XCTUnwrap(object["planRank"] as? [String: Int])
         for (plan, rank) in ranks {

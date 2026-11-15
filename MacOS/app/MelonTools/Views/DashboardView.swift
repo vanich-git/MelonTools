@@ -638,13 +638,14 @@ struct DashboardView: View {
         switch kind {
         case .openRouter: return MTTheme.violet
         case .openCode: return MTTheme.cyan
-        case .deepInfra: return MTTheme.emerald
+        case .deepInfra, .nvidia: return MTTheme.emerald
         case .vercel: return MTTheme.textSecondary
         case .zai: return MTTheme.amber
         case .commandCode: return MTTheme.violet
         case .claude: return MTTheme.amber
         case .antigravity: return MTTheme.cyan
         case .localAI: return MTTheme.emerald
+        case .custom: return MTTheme.violet
         }
     }
 

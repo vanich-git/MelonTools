@@ -69,31 +69,38 @@ sign_windows_file() {
 }
 
 echo "==> 1/6 gateway sidecar (Go, windows/amd64)"
-"$ROOT/../MacOS/scripts/apply-engine-patches.sh"
 if [ -d "$CLI_SRC" ]; then
+  "$ROOT/../MacOS/scripts/apply-engine-patches.sh" "$CLI_SRC"
   mkdir -p app/src-tauri/binaries
   (cd "$CLI_SRC" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
     -o "$SIDECAR" ./cmd/server)
 else
-  echo "CLIProxyAPI sources not found at $CLI_SRC — using the embedded gateway engine"
+  echo "CLIProxyAPI sources not found at $CLI_SRC" >&2
+  exit 1
 fi
 
 if [ -f "$SIDECAR" ]; then
   echo "==> 2/6 compress the engine into the app (single-file build)"
   python3 - "$SIDECAR" "$PACKED_ENGINE" <<'PY'
+import struct
 import sys
 import zlib
 
 src, dst = sys.argv[1:]
 data = open(src, "rb").read()
+if len(data) < 64 or data[:2] != b"MZ":
+    sys.exit("Invalid gateway executable: missing DOS header")
+pe_offset = struct.unpack_from("<I", data, 0x3c)[0]
+if pe_offset + 6 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0" or struct.unpack_from("<H", data, pe_offset + 4)[0] != 0x8664:
+    sys.exit("Invalid gateway executable: expected Windows x86_64 PE")
+if b"integrate.api.nvidia.com" not in data or b"NvidiaLimitedDo" not in data:
+    sys.exit("Gateway executable does not contain the NVIDIA request limiter")
 packed = zlib.compress(data, 9)
 open(dst, "wb").write(packed)
 print(f"engine: {len(data)/1e6:.1f} MB -> {len(packed)/1e6:.1f} MB embedded")
 PY
-elif [ -f "$PACKED_ENGINE" ]; then
-  echo "==> 2/6 using the checked-in compressed gateway engine"
 else
-  echo "No gateway engine found. Fetch CLIProxyAPI sources or provide the embedded engine." >&2
+  echo "Cannot build a gateway with NVIDIA rate limiting. Fetch the CLIProxyAPI sources first." >&2
   exit 1
 fi
 

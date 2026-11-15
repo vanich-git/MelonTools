@@ -51,6 +51,7 @@ enum ProviderDiagnostics {
             var openRouter = false
             var openCode = false
             var deepInfra = false
+            var nvidia = false
             var vercel = false
             var zai = false
             var commandCode = false
@@ -73,7 +74,7 @@ enum ProviderDiagnostics {
 
     static let ids = [
         "codex", "claude", "antigravity", "localai", "openrouter", "opencode",
-        "deepinfra", "vercel", "zai", "commandcode",
+        "deepinfra", "nvidia", "vercel", "zai", "commandcode",
     ]
 
     static func title(for id: String) -> String {
@@ -85,6 +86,7 @@ enum ProviderDiagnostics {
         case "openrouter": return "OpenRouter"
         case "opencode": return "OpenCode"
         case "deepinfra": return "DeepInfra"
+        case "nvidia": return "NVIDIA"
         case "vercel": return "Vercel"
         case "zai": return "Z.ai"
         case "commandcode": return "CommandCode"
@@ -143,6 +145,8 @@ enum ProviderDiagnostics {
             return models.filter { isOwned($0, by: "opencode") }.count
         case "deepinfra":
             return models.filter { isOwned($0, by: "deepinfra") }.count
+        case "nvidia":
+            return models.filter { $0.id.hasPrefix("nvidia/") || isOwned($0, by: "nvidia") }.count
         case "vercel":
             return models.filter { isOwned($0, by: "vercel") }.count
         case "zai":
@@ -159,6 +163,8 @@ enum ProviderDiagnostics {
                     && !isOwned($0, by: "openrouter")
                     && !isOwned($0, by: "opencode")
                     && !isOwned($0, by: "deepinfra")
+                    && !$0.id.hasPrefix("nvidia/")
+                    && !isOwned($0, by: "nvidia")
                     && !isOwned($0, by: "vercel")
                     && !$0.id.hasPrefix("zai/")
                     && !isOwned($0, by: "zai")
@@ -282,6 +288,7 @@ enum ProviderDiagnostics {
         case "openrouter": return keys.openRouter
         case "opencode": return keys.openCode
         case "deepinfra": return keys.deepInfra
+        case "nvidia": return keys.nvidia
         case "vercel": return keys.vercel
         case "zai": return keys.zai
         case "commandcode": return keys.commandCode
@@ -325,6 +332,7 @@ final class ProviderDiagnosticsStore: ObservableObject {
             openRouter: !sources.openRouterKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             openCode: !sources.openCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             deepInfra: !sources.deepInfraKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            nvidia: !sources.nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             vercel: !sources.vercelKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             zai: !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             commandCode: !sources.commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

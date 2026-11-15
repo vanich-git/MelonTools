@@ -92,6 +92,57 @@ function localAiProfileForSettings(settings, current) {
   return "custom";
 }
 
+function customNormalizedBase(raw) {
+  return String(raw || "").trim().replace(/\/+$/, "");
+}
+
+function customBaseProblem(raw) {
+  const value = customNormalizedBase(raw);
+  if (!value) return t("customBaseRequired");
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return t("customBaseInvalid");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return t("customBaseInvalid");
+  if (!parsed.hostname) return t("customBaseInvalid");
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return t("customBaseInvalid");
+  return null;
+}
+
+/// Mirrors the Rust validation so the sheet can explain the problem before an
+/// IPC round trip. The backend repeats every check defensively.
+function customProviderProblem(draft, providers) {
+  const id = String(draft.id || "").trim();
+  if (!id) return t("customIdRequired");
+  if (!/^[a-z][a-z0-9-]{1,31}$/.test(id)) return t("customIdInvalid");
+  if (CUSTOM_RESERVED_IDS.includes(id)) return t("customIdReserved");
+  if ((providers || []).some((provider) => provider.id === id && provider.id !== draft.editing)) {
+    return t("customIdDuplicate");
+  }
+  if (!String(draft.name || "").trim()) return t("customNameRequired");
+  const baseProblem = customBaseProblem(draft.baseUrl);
+  if (baseProblem) return baseProblem;
+  if (!CUSTOM_PROTOCOLS.some((protocol) => protocol.id === draft.protocol)) return t("customProtocolInvalid");
+  if (!String(draft.apiKey || "").trim()) return t("customKeyRequired");
+  const models = draft.models || [];
+  if (!models.some((model) => model.enabled !== false && String(model.id || "").trim())) {
+    return t("customAtLeastOneModel");
+  }
+  const seen = new Set();
+  for (const model of models) {
+    const modelId = String(model.id || "").trim();
+    if (!modelId) {
+      if (model.enabled !== false) return t("customModelIdRequired");
+      continue;
+    }
+    if (seen.has(modelId)) return fmt(t("customModelDuplicate"), { id: modelId });
+    seen.add(modelId);
+  }
+  return null;
+}
+
 const A = {
   go(section) {
     S.section = section;
@@ -252,6 +303,7 @@ const A = {
         inv("gateway_recent_calls", { limit: 8 }),
         inv("autostart_get"),
         inv("scheduler_summary").catch(() => inv("scheduler_list")),
+        inv("gateway_recent_usage", { limit: 10 }),
       ]);
       const value = (index, fallback) => settled[index].status === "fulfilled"
         ? settled[index].value
@@ -269,6 +321,7 @@ const A = {
       S.calls = value(6, []);
       S.autostart = value(7, false);
       S.schedulerSummary = value(8, S.schedulerSummary);
+      S.usage = value(9, []);
     } catch (error) {
       toast(errorText(error), true);
     }
@@ -435,6 +488,7 @@ const A = {
             ? gatewayIds.filter((id) => !id.startsWith("opencode/")
               && !id.startsWith("openrouter/")
               && !id.startsWith("deepinfra/")
+              && !id.startsWith("nvidia/")
               && !id.startsWith("vercel/")
               && !id.startsWith("zai/")
               && !id.startsWith("commandcode/")).length
@@ -459,6 +513,12 @@ const A = {
           models: countCell(has("gatewayModels") ? countPrefix("deepinfra/") : null),
           // DeepInfra exposes no per-key balance endpoint.
           quota: { text: "—", cls: "" },
+        },
+        {
+          name: "NVIDIA", reach: viaGateway,
+          auth: keyAuth(settings.nvidiaKey),
+          models: countCell(has("gatewayModels") ? countPrefix("nvidia/") : null),
+          quota: { text: "-", cls: "" },
         },
         {
           name: t("vercel"), reach: viaGateway,
@@ -499,6 +559,227 @@ const A = {
     });
   },
 
+  customProviderOpen(id) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const existing = id ? providers.find((provider) => provider.id === id) : null;
+    if (id && !existing) return;
+    S.customDraft = existing
+      ? {
+        editing: existing.id,
+        id: existing.id,
+        name: existing.name || "",
+        baseUrl: existing.baseUrl || "",
+        protocol: existing.protocol || "openai-chat",
+        apiKey: existing.apiKey || "",
+        enabled: existing.enabled !== false,
+        models: (existing.models || []).map((model) => ({
+          id: model.id || "",
+          display: model.display || "",
+          contextWindow: model.contextWindow || null,
+          enabled: model.enabled !== false,
+        })),
+        error: "",
+        status: "",
+        fetching: false,
+      }
+      : {
+        editing: null,
+        id: "",
+        name: "",
+        baseUrl: "",
+        protocol: "openai-chat",
+        apiKey: "",
+        enabled: true,
+        models: [],
+        error: "",
+        status: "",
+        fetching: false,
+      };
+    render(true);
+    const field = document.getElementById("custom-id");
+    if (field) field.focus();
+  },
+
+  customProviderClose() {
+    S.customDraft = null;
+    render(true);
+    const add = document.querySelector('[data-action="customProviderOpen"]');
+    if (add) add.focus();
+  },
+
+  customProviderField(field, value) {
+    const draft = S.customDraft;
+    if (!draft) return;
+    draft[field] = value;
+    draft.error = "";
+    if (field === "protocol") {
+      const hint = document.getElementById("custom-base-hint");
+      if (hint) hint.textContent = customBaseHint(value);
+    }
+  },
+
+  customModelAdd() {
+    const draft = S.customDraft;
+    if (!draft) return;
+    draft.models.push({ id: "", display: "", contextWindow: null, enabled: true });
+    customProviderModalRefresh();
+    const rows = document.querySelectorAll("#custom-models .custom-model-row");
+    const last = rows[rows.length - 1];
+    const input = last ? last.querySelector('input[data-field="id"]') : null;
+    if (input) input.focus();
+  },
+
+  customModelRemove(index) {
+    const draft = S.customDraft;
+    if (!draft || !Number.isInteger(index)) return;
+    draft.models.splice(index, 1);
+    customProviderModalRefresh();
+  },
+
+  customModelToggle(index, checked) {
+    const draft = S.customDraft;
+    if (!draft || !draft.models[index]) return;
+    draft.models[index].enabled = !!checked;
+  },
+
+  customModelField(index, field, value) {
+    const draft = S.customDraft;
+    if (!draft || !draft.models[index]) return;
+    if (field === "contextWindow") {
+      const parsed = parseInt(String(value || ""), 10);
+      draft.models[index].contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    } else {
+      draft.models[index][field] = value;
+    }
+    draft.error = "";
+  },
+
+  async customProviderFetch() {
+    const draft = S.customDraft;
+    if (!draft || draft.fetching) return;
+    const baseProblem = customBaseProblem(draft.baseUrl);
+    if (baseProblem) {
+      draft.error = baseProblem;
+      customProviderModalRefresh();
+      return;
+    }
+    if (!String(draft.apiKey || "").trim()) {
+      draft.error = t("customKeyRequired");
+      customProviderModalRefresh();
+      return;
+    }
+    draft.fetching = true;
+    draft.error = "";
+    draft.status = "";
+    customProviderModalRefresh();
+    try {
+      const result = await inv("custom_provider_models", {
+        protocol: draft.protocol,
+        baseUrl: customNormalizedBase(draft.baseUrl),
+        apiKey: String(draft.apiKey).trim(),
+      });
+      const incoming = Array.isArray(result && result.models) ? result.models : [];
+      const previous = new Map(
+        (draft.models || []).map((model) => [String(model.id || "").trim(), model]),
+      );
+      const fetched = incoming.map((model) => {
+        const old = previous.get(String(model.id || "").trim());
+        return {
+          id: String(model.id || "").trim(),
+          display: String(model.display || (old && old.display) || model.id || "").trim(),
+          contextWindow: model.contextWindow || (old && old.contextWindow) || null,
+          enabled: old ? old.enabled !== false : true,
+        };
+      });
+      const fetchedIds = new Set(fetched.map((model) => model.id));
+      const kept = (draft.models || []).filter((model) => {
+        const id = String(model.id || "").trim();
+        return id && !fetchedIds.has(id);
+      });
+      draft.models = fetched.concat(kept);
+      draft.status = fmt(t("customProviderFetchDone"), { n: fetched.length });
+    } catch (error) {
+      draft.error = errorText(error);
+    } finally {
+      draft.fetching = false;
+      customProviderModalRefresh();
+    }
+  },
+
+  async customProviderSave() {
+    const draft = S.customDraft;
+    if (!draft) return;
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const problem = customProviderProblem(draft, providers);
+    if (problem) {
+      draft.error = problem;
+      customProviderModalRefresh();
+      toast(problem, true);
+      return;
+    }
+    const providerID = String(draft.id).trim();
+    const provider = {
+      id: providerID,
+      name: String(draft.name).trim(),
+      baseUrl: customNormalizedBase(draft.baseUrl),
+      protocol: draft.protocol,
+      apiKey: String(draft.apiKey).trim(),
+      enabled: draft.enabled !== false,
+      models: (draft.models || [])
+        .filter((model) => String(model.id || "").trim())
+        .map((model) => {
+          const id = String(model.id).trim();
+          return {
+            id,
+            display: String(model.display || "").trim() || id,
+            contextWindow: model.contextWindow || null,
+            enabled: model.enabled !== false,
+            alias: `${providerID}/${id}`,
+          };
+        }),
+    };
+    const wasEditing = !!draft.editing;
+    const replacedID = wasEditing ? draft.editing : provider.id;
+    await run("custom-provider-save", async () => {
+      const next = providers
+        .filter((item) => item.id !== replacedID && item.id !== provider.id)
+        .concat(provider);
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+      S.customDraft = null;
+      toast(wasEditing ? t("customProviderSaved") : t("customProviderCreated"));
+      render(true);
+    });
+  },
+
+  async customProviderToggle(id, enabled) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    if (!providers.some((provider) => provider.id === id)) return;
+    await run(`custom-provider-toggle-${id}`, async () => {
+      const next = providers.map((provider) => (
+        provider.id === id ? { ...provider, enabled: !!enabled } : provider
+      ));
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+    });
+  },
+
+  async customProviderDelete(id) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const provider = providers.find((item) => item.id === id);
+    if (!provider) return;
+    if (!window.confirm(fmt(t("customProviderDeleteConfirm"), { name: provider.name || provider.id }))) return;
+    await run(`custom-provider-delete-${id}`, async () => {
+      const next = providers.filter((item) => item.id !== id);
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+      toast(t("customProviderDeleted"));
+    });
+  },
+
   codexRouteApply() {
     run("route", async () => {
       const result = await inv("codex_route_apply");
@@ -511,6 +792,7 @@ const A = {
     const openrouter = document.getElementById("or-enabled");
     const opencode = document.getElementById("oc-enabled");
     const deepinfra = document.getElementById("di-enabled");
+    const nvidia = document.getElementById("nvidia-enabled");
     const vercel = document.getElementById("vc-enabled");
     const zai = document.getElementById("zai-enabled");
     const commandcode = document.getElementById("cc-enabled");
@@ -520,6 +802,7 @@ const A = {
       ...(openrouter ? { openrouterEnabled: openrouter.checked } : {}),
       ...(opencode ? { opencodeEnabled: opencode.checked } : {}),
       ...(deepinfra ? { deepinfraEnabled: deepinfra.checked } : {}),
+      ...(nvidia ? { nvidiaEnabled: nvidia.checked } : {}),
       ...(vercel ? { vercelEnabled: vercel.checked } : {}),
       ...(zai ? { zaiEnabled: zai.checked } : {}),
       ...(commandcode ? { commandcodeEnabled: commandcode.checked } : {}),
@@ -567,6 +850,44 @@ const A = {
       if (S.routing.accounts) S.accounts = S.routing.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+    });
+  },
+
+  accountWake(id) {
+    run("quotas", async () => {
+      const result = await inv("account_wake", { id });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length) return;
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_selected", { ids });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSleeping() {
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_sleeping");
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
     });
   },
 
@@ -721,12 +1042,14 @@ const A = {
     const openrouterNode = document.getElementById("or-key");
     const opencodeNode = document.getElementById("oc-key");
     const deepinfraNode = document.getElementById("di-key");
+    const nvidiaNode = document.getElementById("nvidia-key");
     const vercelNode = document.getElementById("vc-key");
     const zaiNode = document.getElementById("zai-key");
     const commandcodeNode = document.getElementById("cc-key");
     const openrouterEnabledNode = document.getElementById("or-enabled");
     const opencodeEnabledNode = document.getElementById("oc-enabled");
     const deepinfraEnabledNode = document.getElementById("di-enabled");
+    const nvidiaEnabledNode = document.getElementById("nvidia-enabled");
     const vercelEnabledNode = document.getElementById("vc-enabled");
     const zaiEnabledNode = document.getElementById("zai-enabled");
     const commandcodeEnabledNode = document.getElementById("cc-enabled");
@@ -739,6 +1062,7 @@ const A = {
     const deepinfraKey = deepinfraNode
       ? deepinfraNode.value.trim()
       : (S.settings.deepinfraKey || "");
+    const nvidiaKey = nvidiaNode ? nvidiaNode.value.trim() : (S.settings.nvidiaKey || "");
     const vercelKey = vercelNode
       ? vercelNode.value.trim()
       : (S.settings.vercelKey || "");
@@ -757,6 +1081,7 @@ const A = {
     const deepinfraEnabled = deepinfraEnabledNode
       ? deepinfraEnabledNode.checked
       : !!S.settings.deepinfraEnabled;
+    const nvidiaEnabled = nvidiaEnabledNode ? nvidiaEnabledNode.checked : !!S.settings.nvidiaEnabled;
     const vercelEnabled = vercelEnabledNode
       ? vercelEnabledNode.checked
       : !!S.settings.vercelEnabled;
@@ -766,9 +1091,50 @@ const A = {
     const commandcodeEnabled = commandcodeEnabledNode
       ? commandcodeEnabledNode.checked
       : !!S.settings.commandcodeEnabled;
+    const openrouterConfig = {
+      ...S.settings.openrouterConfig,
+      defaultStrategy: document.getElementById("or-sort")?.value ?? S.settings.openrouterConfig?.defaultStrategy ?? "price",
+      dataCollection: document.getElementById("or-data-collection")?.value ?? S.settings.openrouterConfig?.dataCollection ?? "deny",
+      requireParameters: document.getElementById("or-require-parameters")?.checked ?? S.settings.openrouterConfig?.requireParameters ?? false,
+      allowFallbacks: document.getElementById("or-fallbacks")?.checked ?? S.settings.openrouterConfig?.allowFallbacks ?? true,
+      ...Object.fromEntries(["order", "only", "ignore", "quantizations"].map((key) => {
+        const node = document.getElementById(`or-${key}`);
+        return [key, node ? node.value.split(",").map((value) => value.trim()).filter(Boolean) : (S.settings.openrouterConfig?.[key] || [])];
+      })),
+      models: { ...((S.settings.openrouterConfig || {}).models || {}) },
+      modelProviders: { ...((S.settings.openrouterConfig || {}).modelProviders || {}) },
+    };
+    const modelOrderNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-order]`)).map((node) => [node.dataset.openrouterModelOrder, node]));
+    const modelOnlyNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-only]`)).map((node) => [node.dataset.openrouterModelOnly, node]));
+    const modelIgnoreNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-ignore]`)).map((node) => [node.dataset.openrouterModelIgnore, node]));
+    const modelFallbackNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-fallbacks]`)).map((node) => [node.dataset.openrouterModelFallbacks, node]));
+
+    document.querySelectorAll("[data-openrouter-model-strategy]").forEach((node) => {
+      const modelId = node.dataset.openrouterModelStrategy;
+      if (node.value) openrouterConfig.models[modelId] = node.value;
+      else delete openrouterConfig.models[modelId];
+
+      const orderNode = modelOrderNodes.get(modelId);
+      const onlyNode = modelOnlyNodes.get(modelId);
+      const ignoreNode = modelIgnoreNodes.get(modelId);
+      const fallbacksNode = modelFallbackNodes.get(modelId);
+      if (orderNode && onlyNode && ignoreNode && fallbacksNode) {
+        const order = orderNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const only = onlyNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const ignore = ignoreNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const allowFallbacks = fallbacksNode.value === "true" ? true
+          : fallbacksNode.value === "false" ? false : null;
+        if (order.length || only.length || ignore.length || allowFallbacks !== null) {
+          openrouterConfig.modelProviders[modelId] = { order, only, ignore, allowFallbacks };
+        } else {
+          delete openrouterConfig.modelProviders[modelId];
+        }
+      }
+    });
     const previous = {
       openrouter: S.settings.openrouterKey || "",
       deepinfra: S.settings.deepinfraKey || "",
+      nvidia: S.settings.nvidiaKey || "",
       vercel: S.settings.vercelKey || "",
       zai: S.settings.zaiKey || "",
       commandcode: S.settings.commandcodeKey || "",
@@ -778,14 +1144,17 @@ const A = {
         settings: {
           ...S.settings,
           openrouterKey,
+          openrouterEnabled,
+          openrouterConfig,
           opencodeKey,
           deepinfraKey,
+          nvidiaKey,
           vercelKey,
           zaiKey,
           commandcodeKey,
-          openrouterEnabled,
           opencodeEnabled,
           deepinfraEnabled,
+          nvidiaEnabled,
           vercelEnabled,
           zaiEnabled,
           commandcodeEnabled,
@@ -793,9 +1162,15 @@ const A = {
       });
       // Metrics and cached model lists belong to the key they were fetched
       // with; never leave the previous key's numbers on screen.
-      if (openrouterKey !== previous.openrouter) S.providers = null;
+      if (openrouterKey !== previous.openrouter) {
+        S.providers = null;
+        S.providerModelsError.openrouter = null;
+      }
       if (deepinfraKey !== previous.deepinfra) {
         S.providerModelsError.deepinfra = null;
+      }
+      if (nvidiaKey !== previous.nvidia) {
+        S.providerModelsError.nvidia = null;
       }
       if (vercelKey !== previous.vercel) {
         S.providerModelsError.vercel = null;
@@ -818,6 +1193,7 @@ const A = {
       : provider === "vercel" ? "vc"
       : provider === "commandcode" ? "cc"
       : provider === "opencode" ? "oc"
+      : provider === "openrouter" ? "or"
       : provider;
     const keyNode = document.getElementById(prefix + "-key");
     const field = provider + "Key";
@@ -1069,6 +1445,27 @@ const A = {
     });
   },
 
+  /// Bind one account to one egress proxy. Google ties an OAuth grant to the
+  /// address it was issued from, so pinning each account to its own egress
+  /// keeps that stable and stops one banned address from sinking the pool.
+  antigravityProxy(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    const current = account.proxyUrl || "";
+    const next = window.prompt(t("proxyPrompt"), current);
+    if (next === null) return;
+    run("antigravityProxy", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "proxy",
+        name,
+        proxy: next.trim(),
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
   antigravityPause(name) {
     const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
     if (!account) return;
@@ -1116,6 +1513,31 @@ const A = {
         models,
       });
       toast(result && result.ok ? t("done") : t("error"), !(result && result.ok));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityWarmup(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    run("antigravityWarmup", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "warmup",
+        name,
+        authIndex: account.authIndex,
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      toast(t("done"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityWarmupAll() {
+    run("antigravityWarmupAll", async () => {
+      await inv("antigravity_warmup_all");
+      toast(t("done"));
       await A.antigravityUsageLoad();
       render();
     });
@@ -1239,7 +1661,7 @@ const A = {
     const parsedTimeout = parseInt(streamTimeoutNode ? streamTimeoutNode.value : "", 10);
     const streamBootstrapTimeoutSeconds = Number.isFinite(parsedTimeout)
       ? Math.max(0, Math.min(300, parsedTimeout))
-      : ((S.settings && S.settings.streamBootstrapTimeoutSeconds) ?? 60);
+      : ((S.settings && S.settings.streamBootstrapTimeoutSeconds) ?? 180);
     run("settings", async () => {
       S.settings = await inv("settings_set", {
         settings: {
@@ -1436,7 +1858,15 @@ const A = {
       } else if (!ready.length) {
         check = { ok: false, text: t("localAiCheckNoReady") };
       } else if (missing.length) {
-        check = { ok: false, text: fmt(t("localAiCheckMissing"), { missing: missing.join(", ") }) };
+        // A model the router serves but the gateway has not republished yet is
+        // a publication lag, not a dead engine: say which one it is.
+        const routerAliases = ((S.localAi.apiCatalogue && S.localAi.apiCatalogue.verified
+          ? S.localAi.apiCatalogue.models
+          : []) || []).map(alias);
+        const unpublished = missing.filter((id) => routerAliases.includes(id));
+        check = unpublished.length
+          ? { ok: false, text: fmt(t("localAiCheckNotPublished"), { models: unpublished.join(", ") }) }
+          : { ok: false, text: fmt(t("localAiCheckMissing"), { missing: missing.join(", ") }) };
       } else if (stale.length) {
         // The engine advertises an alias that no Ready row backs any more.
         // Clients can call it and get a 404, so this is a failure even though
@@ -1452,15 +1882,32 @@ const A = {
     });
   },
 
+  localAiApiCheck() {
+    return run("localAiApiCheck", async () => {
+      let catalogue;
+      try {
+        catalogue = await window.api.localAi.apiCatalogue();
+      } catch (error) {
+        catalogue = { models: [], verified: false, error: errorText(error) };
+      }
+      S.localAi.apiCatalogue = catalogue;
+      render();
+      if (catalogue.verified) toast(fmt(t("localAiLocalApiVerifiedToast"), { n: (catalogue.models || []).length }));
+      else toast(catalogue.error || t("localAiLocalApiUnverified"), true);
+    });
+  },
+
   modelsLoad() {
     return run("models", async () => {
       // Connections can be opened without visiting the Local AI page first.
-      const [localModels, localRuntime] = await Promise.all([
+      const [localModels, localRuntime, localCatalogue] = await Promise.all([
         window.api.localAi.modelsList().catch(() => null),
         window.api.localAi.runtimeStatus().catch(() => null),
+        window.api.localAi.apiCatalogue().catch(() => null),
       ]);
       if (localModels) S.localAi.models = localModels;
       if (localRuntime) S.localAi.runtime = localRuntime;
+      if (localCatalogue) S.localAi.apiCatalogue = localCatalogue;
       let rawModels = [];
       try {
         rawModels = (await inv("gateway_models")) || [];
@@ -1519,15 +1966,51 @@ const A = {
 
   modelsSearch(value) {
     S.modelsQuery = value;
-    render();
-    setTimeout(() => {
-      const input = document.getElementById("models-search");
-      if (input) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-      }
-    }, 0);
+    const input = document.getElementById("models-search");
+    const list = document.getElementById("provider-model-list");
+    if (!list) {
+      searchClearSync(input, value);
+      render();
+      return;
+    }
+    // Repaint the rows and the count only: a full render() tore the focused
+    // input out from under the caret on every keystroke and needed a timeout
+    // to put it back.
+    list.innerHTML = providerModelRowsMarkup();
+    const count = document.getElementById("provider-models-count");
+    if (count) count.textContent = `${providerFilteredModels().length} ${t("modelsCount")}`;
+    searchClearSync(input, value);
   },
+
+  modelsClearSearch() {
+    S.modelsQuery = "";
+    const input = document.getElementById("models-search");
+    if (input) input.value = "";
+    A.modelsSearch("");
+    if (input) input.focus();
+  },
+
+  openrouterModelsSearch(value) {
+    S.openrouterModelsQuery = String(value || "");
+    const query = S.openrouterModelsQuery.trim().toLowerCase();
+    document.querySelectorAll("[data-openrouter-filter-row]").forEach((row) => {
+      row.hidden = (!!S.openrouterModelsFreeOnly && row.dataset.free !== "true") || !row.dataset.search.includes(query);
+    });
+    searchClearSync(document.getElementById("openrouter-models-search"), S.openrouterModelsQuery);
+  },
+
+  openrouterModelsClearSearch() {
+    const input = document.getElementById("openrouter-models-search");
+    if (input) input.value = "";
+    A.openrouterModelsSearch("");
+    if (input) input.focus();
+  },
+
+  openrouterModelsFreeToggle() {
+    S.openrouterModelsFreeOnly = !!document.getElementById("openrouter-models-free-only")?.checked;
+    A.openrouterModelsSearch(S.openrouterModelsQuery || "");
+  },
+
 
   // MARK: - Codex model pool
 
@@ -1556,6 +2039,7 @@ const A = {
     S.poolError = null;
     if (!S.pool) await A.poolLoad();
     render();
+    focusPoolSearch();
   },
 
   async poolOpenAccount(id) {
@@ -1570,19 +2054,48 @@ const A = {
       ? selected.slice()
       : ((S.pool && S.pool.models) || []).map((m) => m.slug);
     render();
+    focusPoolSearch();
   },
 
   poolClose() {
+    const modal = S.poolModal;
     S.poolModal = null;
     S.poolQuery = "";
     S.poolError = null;
     S.poolDraft = null;
-    render();
+    // Forced: Esc closes the dialog while focus is still inside its search
+    // field, and the edit guard would otherwise skip this render.
+    render(true);
+    // When the dialog was opened from account settings, that dialog is back on
+    // screen and must own focus, not the card behind it.
+    const settingsCard = S.accountSettings ? document.querySelector(".account-settings-card") : null;
+    const settingsField = settingsCard
+      ? settingsCard.querySelector("button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]")
+      : null;
+    if (settingsField) { settingsField.focus(); return; }
+    // Return focus to the control that opened the dialog instead of dropping it
+    // on <body>, which would restart Tab from the top of the page.
+    const accountId = modal && modal.mode === "account" ? modal.accountId : null;
+    const trigger = accountId
+      ? Array.from(document.querySelectorAll('[data-action="poolOpenAccount"]')).find((el) => el.dataset.id === accountId)
+      : null;
+    const target = trigger || document.querySelector('[data-action="poolOpen"]');
+    if (target) target.focus();
   },
 
   poolSearch(value) {
     S.poolQuery = value;
     poolModalRefresh();
+    searchClearSync(document.getElementById("pool-search"), value);
+  },
+
+  poolClearSearch() {
+    S.poolQuery = "";
+    const input = document.getElementById("pool-search");
+    if (input) input.value = "";
+    poolModalRefresh();
+    searchClearSync(input, "");
+    if (input) input.focus();
   },
 
   poolToggleGlobal(slug, enabled) {
@@ -2127,7 +2640,7 @@ const A = {
 
   async localAiLoad() {
     try {
-      const [hw, models, rt, dls, migration, install, registry] = await Promise.all([
+      const [hw, models, rt, dls, migration, install, registry, catalogue] = await Promise.all([
         window.api.localAi.hardwareInfo().catch(() => null),
         window.api.localAi.modelsList().catch(() => []),
         window.api.localAi.runtimeStatus().catch(() => null),
@@ -2135,11 +2648,13 @@ const A = {
         window.api.localAi.migrationReport().catch(() => null),
         window.api.localAi.runtimeInstallStatus().catch(() => null),
         window.api.localAi.registryHealth().catch(() => null),
+        window.api.localAi.apiCatalogue().catch(() => null),
       ]);
       if (hw) S.localAi.hardware = hw;
       if (models) S.localAi.models = models;
       if (registry) S.localAi.registry = registry;
       if (rt) S.localAi.runtime = rt;
+      if (catalogue) S.localAi.apiCatalogue = catalogue;
       if (migration) S.localAi.migration = migration;
       if (install) S.localAi.install = install;
       if (dls) {
@@ -2174,7 +2689,11 @@ const A = {
       ]);
       let changed = false;
       if (rt && JSON.stringify(rt) !== JSON.stringify(S.localAi.runtime)) {
+        const wasRunning = !!(S.localAi.runtime && S.localAi.runtime.isRunning);
         S.localAi.runtime = rt;
+        // A fresh engine has a new router process, so the previous catalogue
+        // answer no longer describes it.
+        if (wasRunning !== !!rt.isRunning) S.localAi.apiCatalogue = null;
         changed = true;
       }
       if (install && JSON.stringify(install) !== JSON.stringify(S.localAi.install)) {
@@ -2194,6 +2713,16 @@ const A = {
           }
           S.localAi.downloads = dls;
           S.localAi.activeDownloadCount = activeCount;
+          changed = true;
+        }
+      }
+      // The direct-access card needs one answer per engine generation: the
+      // router list is stable while the process lives, and re-probing it on
+      // every poll would only add 401-free noise.
+      if (rt && rt.isRunning && S.localAi.tab === "runtime" && !S.localAi.apiCatalogue) {
+        const catalogue = await window.api.localAi.apiCatalogue().catch(() => null);
+        if (catalogue) {
+          S.localAi.apiCatalogue = catalogue;
           changed = true;
         }
       }
@@ -2262,27 +2791,27 @@ const A = {
   // the result block is repainted instead of the whole board.
   localAiSearch(query) {
     S.localAi.searchQuery = query;
+    const input = document.getElementById("local-ai-search");
     const list = document.getElementById("local-ai-model-list");
     if (!list) {
+      searchClearSync(input, query);
       render();
       return;
     }
     list.innerHTML = localAiModelListMarkup();
-    const clear = document.querySelector(".search-field .search-clear");
-    if (clear) clear.hidden = (query || "").trim().length === 0;
+    searchClearSync(input, query);
   },
 
   localAiClearSearch() {
     S.localAi.searchQuery = "";
-    const input = document.querySelector(".search-field input");
+    const input = document.getElementById("local-ai-search");
     if (input) {
       input.value = "";
       input.focus();
     }
     const list = document.getElementById("local-ai-model-list");
     if (list) list.innerHTML = localAiModelListMarkup();
-    const clear = document.querySelector(".search-field .search-clear");
-    if (clear) clear.hidden = true;
+    searchClearSync(input, "");
   },
 
   async localAiImport() {
@@ -2593,9 +3122,29 @@ const A = {
     render(true);
     const nextCard = document.getElementById("local-ai-settings-card");
     if (nextCard) nextCard.scrollTop = scrollTop;
-    const select = document.getElementById("local-ai-setting-profile");
-    if (select) select.focus();
+    const summary = document.querySelector('details[data-sync="local-ai-setting-profile"] > summary');
+    if (summary) summary.focus();
     A.localAiRefreshEstimate();
+  },
+
+  /// Keeps a `<details>` picker, its hidden value holder and the rows in sync.
+  localAiSyncSelect(id, value) {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+    const box = document.querySelector(`details[data-sync="${id}"]`);
+    if (!box) return;
+    const buttons = [...box.querySelectorAll(".hf-select-panel [data-action]")];
+    const picked = buttons.find((button) => button.value === value);
+    const label = box.querySelector("[data-selected-label]");
+    if (label && picked) label.textContent = picked.textContent.trim();
+    buttons.forEach((button) => button.classList.toggle("selected", button.value === value));
+  },
+
+  /// KV cache picked from the custom dropdown: the estimate reads the hidden
+  /// value holder, so storing it there keeps every reader unchanged.
+  localAiKvPick(value) {
+    A.localAiSyncSelect("local-ai-setting-kv-cache", value);
+    A.localAiEstimateInput();
   },
 
   /// Context/KV edits change the memory figure, so they re-estimate without a
@@ -2619,8 +3168,7 @@ const A = {
     if (flash) s.flashAttention = !!flash.checked;
     // A hand-edited number no longer belongs to the preset it came from.
     s.profile = localAiProfileForSettings(s, s.profile);
-    const select = document.getElementById("local-ai-setting-profile");
-    if (select) select.value = s.profile;
+    A.localAiSyncSelect("local-ai-setting-profile", s.profile);
     A.localAiRefreshEstimate();
   },
 
@@ -2912,8 +3460,7 @@ const A = {
     const more = document.querySelector(".hf-more");
     if (more) more.disabled = true;
     clearTimeout(A._hfDebounce);
-    const clear = document.querySelector(".hf-searchbar .search-clear");
-    if (clear) clear.hidden = !val;
+    searchClearSync(document.getElementById("hf-search"), val);
     A._hfDebounce = setTimeout(() => A.localAiHfSearch(), 350);
   },
 
@@ -2922,6 +3469,7 @@ const A = {
     S.localAi.catalogQuery = "";
     const input = document.getElementById("hf-search");
     if (input) { input.value = ""; input.focus(); }
+    searchClearSync(input, "");
     A.localAiHfSearch();
   },
 

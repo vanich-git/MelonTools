@@ -183,6 +183,25 @@ function mock(cmd, args) {
           { id: "anthropic/claude-sonnet-4.6", display: "Claude Sonnet 4.6", contextWindow: 200000, promptPerToken: 0.000003, completionPerToken: 0.000015, supportsImages: true },
           { id: "openai/gpt-6.1", display: "GPT-6.1", contextWindow: 400000, promptPerToken: 0.000001, completionPerToken: 0.000004, supportsImages: true },
         ] },
+    custom_provider_models: (a) => {
+      if (a.protocol === "gemini") {
+        return { count: 2, models: [
+          { id: "gemini-3.5-pro", display: "Gemini 3.5 Pro", contextWindow: 2097152 },
+          { id: "gemini-3.5-flash", display: "Gemini 3.5 Flash", contextWindow: 1048576 },
+        ] };
+      }
+      if (a.protocol === "anthropic") {
+        return { count: 2, models: [
+          { id: "claude-opus-5-5", display: "Claude Opus 5.5", contextWindow: 200000 },
+          { id: "claude-sonnet-5-5", display: "Claude Sonnet 5.5", contextWindow: 200000 },
+        ] };
+      }
+      return { count: 3, models: [
+        { id: "acme-large", display: "Acme Large", contextWindow: 262144 },
+        { id: "acme-small", display: "Acme Small", contextWindow: 131072 },
+        { id: "acme-reasoner", display: "Acme Reasoner", contextWindow: 262144 },
+      ] };
+    },
     claude_login_start: { url: "https://example.invalid/oauth/authorize?state=demo-state", state: "demo-state" },
     claude_login_status: { status: "wait" },
     claude_login_cancel: { canceled: true },
@@ -240,6 +259,7 @@ function mock(cmd, args) {
     device_login_poll: { done: false },
     gateway_models: [{ id: "gpt-6.1-sol", owned_by: "openai" }, { id: "opencode/grok-4.7", owned_by: "opencode-go" }],
     gateway_recent_calls: [{ time: "19:19:41", status: "200", duration: "9.743s", method: "POST", path: "/v1/responses" }],
+    gateway_recent_usage: [{ timestamp: "2026-11-10T19:19:41Z", model: "claude-3-7-sonnet", provider: "anthravity", auth: "demo-account", input: 120, output: 450, mode: "stream", status: 200 }],
     scheduler_list: () => demoScheduler(),
     scheduler_save: (a) => {
       const demo = demoScheduler();
@@ -337,6 +357,7 @@ function mock(cmd, args) {
       return null;
     },
     local_ai_runtime_status: () => ({ ...DEMO_LOCAL_AI_RUNTIME }),
+    local_ai_api_catalogue: () => ({ models: [], verified: false, error: "demo" }),
     local_ai_runtime_logs: () => [],
     local_ai_runtime_logs_clear: () => null,
     local_ai_runtime_catalog: () => demoRuntimeCatalog(),
@@ -372,6 +393,7 @@ function mock(cmd, args) {
       return null;
     },
     local_ai_hf_search: (a) => demoHfSearch((a && a.query) || ""),
+    local_ai_hf_avatars: () => ({}),
     local_ai_hf_model_details: (a) => demoHfDetails((a && (a.repoId || a.repo_id)) || ""),
     local_ai_download_start: (a) => demoStartDownload((a && a.request) || {}),
     local_ai_download_cancel: (a) => demoCancelDownload((a && (a.modelId || a.model_id)) || ""),
@@ -942,6 +964,7 @@ const api = {
     deleteModel: (id) => inv("local_ai_model_delete", { id }),
     runtimeStatus: () => inv("local_ai_runtime_status"),
     runtimeMetrics: () => inv("local_ai_runtime_metrics"),
+    apiCatalogue: () => inv("local_ai_api_catalogue"),
     runtimeLogs: (maxLines) => inv("local_ai_runtime_logs", { maxLines }),
     clearRuntimeLogs: () => inv("local_ai_runtime_logs_clear"),
     runtimeInstall: (url, sha256) => inv("local_ai_runtime_install", { url, sha256 }),
@@ -954,6 +977,7 @@ const api = {
     setBinaryPath: (path) => inv("local_ai_set_binary_path", { path }),
     hfSearch: (query, limit, token, sort = "trendingScore", offset = 0) => inv("local_ai_hf_search", { query, limit, token, sort, offset }),
     hfModelDetails: (repoId, token) => inv("local_ai_hf_model_details", { repoId, token }),
+    hfAvatars: (owners) => inv("local_ai_hf_avatars", { owners }),
     // One typed request object: the previous positional signature dropped the
     // SHA-256 that `DownloadRequest` expects, so LFS digests were never checked.
     downloadStart: (request) => inv("local_ai_download_start", { request }),

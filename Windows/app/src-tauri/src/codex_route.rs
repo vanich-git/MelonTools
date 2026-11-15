@@ -452,6 +452,8 @@ pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
         Some(("openrouter", 200))
     } else if id.starts_with("deepinfra/") {
         Some(("deepinfra", 300))
+    } else if id.starts_with("nvidia/") {
+        Some(("nvidia", 350))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
@@ -480,6 +482,8 @@ pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> 
         Some(("openrouter", 200))
     } else if id.starts_with("deepinfra/") {
         Some(("deepinfra", 300))
+    } else if id.starts_with("nvidia/") {
+        Some(("nvidia", 350))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
@@ -1003,6 +1007,7 @@ fn provider_display_name(tag: &str) -> &str {
         "opencode" => "OpenCode",
         "openrouter" => "OpenRouter",
         "deepinfra" => "DeepInfra",
+        "nvidia" => "NVIDIA",
         "vercel" => "Vercel",
         "zai" => "Z.ai",
         "commandcode" => "CommandCode",

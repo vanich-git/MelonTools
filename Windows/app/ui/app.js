@@ -173,6 +173,7 @@ function providerOfModel(model) {
   if (id.startsWith("opencode/")) return "opencode";
   if (id.startsWith("openrouter/")) return "openrouter";
   if (id.startsWith("deepinfra/")) return "deepinfra";
+  if (id.startsWith("nvidia/")) return "nvidia";
   if (id.startsWith("vercel/")) return "vercel";
   if (id.startsWith("zai/")) return "zai";
   if (id.startsWith("claude-")) return "claude";
@@ -186,6 +187,7 @@ function providerName(provider) {
     case "opencode": return t("sgOpenCode");
     case "openrouter": return t("sgOpenRouter");
     case "deepinfra": return t("sgDeepInfra");
+    case "nvidia": return "NVIDIA";
     case "vercel": return t("sgVercel");
     case "zai": return t("sgZai");
     default: return String(provider || "—");
@@ -720,13 +722,23 @@ function actionArgs(action, el) {
     case "schedulerTemplateApply":
     case "poolSearch":
     case "modelsSearch":
+    case "openrouterModelsSearch":
     case "proxyUrlChanged":
       return [el.value];
+    case "customProviderField":
+      return [el.dataset.field, el.value];
+    case "customModelField":
+      return [Number(el.dataset.id), el.dataset.field, el.value];
+    case "customModelToggle":
+      return [Number(el.dataset.id), !!el.checked];
+    case "customProviderToggle":
+      return [el.dataset.id, !!el.checked];
     case "copy":
       return [el.dataset.text || ""];
     case "localAiTab":
       return [el.dataset.id || el.dataset.tab || "models"];
     case "localAiProfileChange":
+    case "localAiKvPick":
     case "localAiSearch":
     case "localAiHfSort":
     case "localAiHfVariant":
@@ -771,13 +783,13 @@ function dispatchAction(el) {
 document.addEventListener("click", (event) => {
   // Card menus are native <details> popovers: a click anywhere else closes
   // them, and so does picking an entry (which may not repaint the board).
-  document.querySelectorAll("details.local-ai-menu[open]").forEach((menu) => {
+  document.querySelectorAll("details.local-ai-menu[open], details.hf-select[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
   });
   const el = event.target.closest("[data-action]");
   if (!el || el.dataset.on) return;
   dispatchAction(el);
-  document.querySelectorAll("details.local-ai-menu[open]").forEach((menu) => {
+  document.querySelectorAll("details.local-ai-menu[open], details.hf-select[open]").forEach((menu) => {
     menu.open = false;
   });
 });
@@ -793,6 +805,72 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target && event.target.id === "set-proxy-url") {
     event.preventDefault();
     A.saveProxyUrl();
+  }
+});
+
+// Esc clears a shared search field; on an empty field it falls through to the
+// surrounding dialog. The model pool has no other Esc handler, so close it
+// here — this also covers Escape pressed on any of its buttons.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  const field = event.target && event.target.closest ? event.target.closest(".search-field") : null;
+  const input = field ? field.querySelector("input") : null;
+  if (input && input.value) {
+    event.preventDefault();
+    const clear = field.querySelector(".search-clear");
+    if (clear) clear.click();
+    return;
+  }
+  if (document.getElementById("custom-provider-modal")) {
+    event.preventDefault();
+    A.customProviderClose();
+    return;
+  }
+  if (document.getElementById("pool-modal")) {
+    event.preventDefault();
+    A.poolClose();
+  }
+});
+
+// The shared search field is a plain box with a glyph, an input and a clear
+// button. A <label> wrapper would forward a click on that button to the input,
+// so the wrapper is a <div> and only the non-interactive parts (glyph, padding,
+// frame) move focus into the field.
+document.addEventListener("mousedown", (event) => {
+  if (event.button !== 0) return;
+  const target = event.target;
+  const field = target && target.closest ? target.closest(".search-field") : null;
+  if (!field || target.closest("input, button, a, select, textarea")) return;
+  const input = field.querySelector("input");
+  if (!input) return;
+  event.preventDefault();
+  input.focus();
+});
+
+// The pool dialog declares aria-modal but the page behind it stays in the DOM,
+// so Tab cycles inside the dialog instead of reaching the backdrop content.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const modal = document.getElementById("custom-provider-modal")
+    || document.getElementById("pool-modal");
+  if (!modal) return;
+  const focusable = Array.from(modal.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((el) => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 });
 

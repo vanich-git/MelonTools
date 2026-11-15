@@ -202,6 +202,8 @@ Object.assign(DICT.ru, {
   "ocHint": "После сохранения ключей перезапустите шлюз — модели opencode/* и openrouter/* появятся в списке.",
   "deepinfra": "DeepInfra",
   "diKey": "Ключ DeepInfra",
+  "nvidiaKey": "Ключ NVIDIA API",
+  "nvidiaHint": "Лимит NVIDIA: 40 запросов в минуту. Список публичный, ключ проверяется при первом запросе; не все модели поддерживают чат.",
   "loadModels": "Загрузить модели",
   "diHint": "Только чат-модели. У DeepInfra нет баланса ключа: карточка показывает число моделей и расход сессии. После загрузки перезапустите шлюз.",
   "vercel": "Vercel",
@@ -781,6 +783,8 @@ Object.assign(DICT.en, {
   "ocHint": "After saving keys restart the gateway — opencode/* and openrouter/* models appear in the list.",
   "deepinfra": "DeepInfra",
   "diKey": "DeepInfra key",
+  "nvidiaKey": "NVIDIA API key",
+  "nvidiaHint": "NVIDIA limit: 40 requests per minute. The list is public; the key is checked on the first request. Not all models support chat.",
   "loadModels": "Load models",
   "diHint": "Chat models only. DeepInfra has no key balance endpoint: the card shows the model count and session spend. Restart the gateway after loading.",
   "vercel": "Vercel",
@@ -1191,6 +1195,9 @@ Object.assign(DICT.ru, {
   accountInvalidLimit: "Укажите целый порог от 1 до 100% или выключите лимит.",
   accountSelect: "Выбрать {name}", accountSelectAll: "Выбрать все", accountClearSelection: "Снять выделение", accountSelected: "Выбрано: {n}",
   accountRefreshSelected: "Обновить выбранные", accountDeleteSelected: "Удалить выбранные",
+  accountWakeSelected: "Разбудить выбранные", accountWakeSleeping: "Разбудить спящие", accountWakeSleepingN: "Разбудить спящие ({n})",
+  wakeAccount: "Разбудить аккаунт", wake: "Разбудить", sleeping: "спит",
+  warmup: "Прогреть", warmupAccount: "Прогреть аккаунт", warmupAll: "Прогреть все",
   accountDeleteSelectedConfirm: "Удалить выбранные аккаунты ({n}) из пула?",
 });
 Object.assign(DICT.en, {
@@ -1210,6 +1217,9 @@ Object.assign(DICT.en, {
   accountInvalidLimit: "Enter a whole threshold from 1 to 100%, or turn the limit off.",
   accountSelect: "Select {name}", accountSelectAll: "Select all", accountClearSelection: "Clear selection", accountSelected: "Selected: {n}",
   accountRefreshSelected: "Refresh selected", accountDeleteSelected: "Delete selected",
+  accountWakeSelected: "Wake selected", accountWakeSleeping: "Wake sleeping", accountWakeSleepingN: "Wake sleeping ({n})",
+  wakeAccount: "Wake up account", wake: "Wake up", sleeping: "sleeping",
+  warmup: "Warm up", warmupAccount: "Warm up account", warmupAll: "Warm up all",
   accountDeleteSelectedConfirm: "Remove the selected accounts ({n}) from the pool?",
 });
 
@@ -1432,6 +1442,7 @@ function accountIcon(name) {
     reset: '<path d="M4 10a8 8 0 1 0 3-5M4 3v7h7"/>',
     calendar: '<rect x="3" y="5" width="16" height="15" rx="2"/><path d="M7 3v4m8-4v4M3 10h16m-12 4h1m4 0h1m-6 3h1"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
+    wake: '<path d="M12 2v3m0 14v3M4.93 4.93l2.12 2.12m9.9 9.9l2.12 2.12M2 12h3m14 0h3M4.93 19.07l2.12-2.12m9.9-9.9l2.12-2.12"/><circle cx="12" cy="12" r="4"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[name] || ""}</svg>`;
 }
@@ -1516,6 +1527,7 @@ function accountCard(account) {
           <div class="account-plan-line"><span class="plan">${esc(plan)}</span>${position ? `<span>· №${position}</span>` : ""}</div>
         </div>
         <span class="spacer"></span>
+        ${account.hourlyWindowPresent === false ? `<span class="pill warn">${t("sleeping")}</span>` : ""}
         ${poolDisabled ? `<span class="pill">${t("poolDisabled")}</span>` : account.current ? `<span class="pill ok">${t("accountActive")}</span>` : ""}
         <button class="icon-btn" aria-label="${t("accountSettings")}" title="${t("accountSettings")}" data-action="accountSettingsOpen" data-id="${esc(account.id)}">${ACCOUNT_SETTINGS_ICON}</button>
       </div>
@@ -1534,6 +1546,7 @@ function accountCard(account) {
       <div class="account-actions">
         <button class="ghost small" data-action="switchAccount" data-id="${esc(account.id)}" ${account.current ? "disabled" : ""}>${accountIcon("switch")}${t(account.current ? "accountActive" : "accountSwitch")}</button>
         <button class="ghost small" data-action="refreshQuota" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""}>${accountIcon("quota")}${t("accountQuota")}</button>
+        <button class="ghost small" data-action="accountWake" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""} title="${t("wakeAccount")}">${accountIcon("wake")}${account.hourlyWindowPresent === false ? t("wake") : ""}</button>
         <button class="ghost small" data-action="launchAccountInCodex" data-id="${esc(account.id)}" ${S.busy.launch ? "disabled" : ""}>${accountIcon("launch")}${t("accountLaunch")}</button>
         <button class="ghost small account-models-button" data-action="poolOpenAccount" data-id="${esc(account.id)}" title="${esc(accountModelSelection(account))}">${accountIcon("models")}${t("models")}</button>
         <button class="icon-btn account-delete" aria-label="${t("remove")}" title="${t("remove")}" data-action="deleteAccount" data-id="${esc(account.id)}">${accountIcon("trash")}</button>
@@ -1615,6 +1628,7 @@ function accountsPage() {
   const cards = ordered.map((id) => accountCard(byId.get(id))).join("");
   const selected = (S.selectedAccounts || []).filter((id) => byId.has(id));
   const allSelected = accounts.length > 0 && selected.length === accounts.length;
+  const sleeping = accounts.filter((account) => account.hourlyWindowPresent === false);
 
   const deviceBlock = deviceLogin && !deviceLogin.done
     ? `<div class="row">
@@ -1636,6 +1650,7 @@ function accountsPage() {
     <button class="ghost" data-action="importJsonPick">${t("importJson")}</button>
     <input type="file" id="accounts-json-file" accept=".json,application/json" hidden data-action="importJsonFile" data-on="change">
     <button class="ghost" data-action="refreshQuotas" ${S.busy.quotas ? "disabled" : ""}>${t("refreshQuotas")}</button>
+    ${sleeping.length ? `<button class="ghost" data-action="accountsWakeSleeping" ${S.busy.quotas ? "disabled" : ""}>${fmt(t("accountWakeSleepingN"), { n: sleeping.length })}</button>` : ""}
     <span class="footnote">${t("importHint")}</span>
   </div>
   <div class="card">
@@ -1647,6 +1662,8 @@ function accountsPage() {
     <label><input type="checkbox" data-action="accountsSelectAll" data-on="change" ${allSelected ? "checked" : ""}>${t(allSelected ? "accountClearSelection" : "accountSelectAll")}</label>
     <span class="footnote">${fmt(t("accountSelected"), { n: selected.length })}</span><span class="spacer"></span>
     <button class="ghost small" data-action="accountsRefreshSelected" ${!selected.length || S.busy.quotas ? "disabled" : ""}>${t("accountRefreshSelected")}</button>
+    <button class="ghost small" data-action="accountsWakeSelected" ${!selected.length || S.busy.quotas ? "disabled" : ""}>${t("accountWakeSelected")}</button>
+    ${sleeping.length ? `<button class="ghost small" data-action="accountsWakeSleeping" ${S.busy.quotas ? "disabled" : ""}>${fmt(t("accountWakeSleepingN"), { n: sleeping.length })}</button>` : ""}
     <button class="ghost small danger" data-action="accountsDeleteSelected" ${!selected.length || S.busy["accounts-delete"] ? "disabled" : ""}>${t("accountDeleteSelected")}</button>
   </div>` : ""}
   <div class="account-grid">
@@ -1656,6 +1673,90 @@ function accountsPage() {
   ${poolModal()}
   ${launchModal()}
   ${accountSettingsModal()}`;
+}
+
+function formatUsageDate(iso) {
+  if (!iso) return "-";
+  try {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString();
+  } catch (e) {
+    return iso;
+  }
+}
+
+function formatUsageTime(iso) {
+  if (!iso) return "-";
+  try {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch (e) {
+    return iso;
+  }
+}
+
+function usageCard() {
+  const usage = S.usage || [];
+  const last = usage[0];
+  if (!last) {
+    return `
+  <div class="card">
+    <h2>${t("usageTitle")}</h2>
+    <div class="footnote">${t("noUsageData")}</div>
+  </div>`;
+  }
+
+  const isOk = String(last.status).startsWith("2");
+  return `
+  <div class="card">
+    <h2>${t("usageTitle")}</h2>
+    <div class="stack">
+      <div class="row" style="flex-wrap:wrap;gap:16px">
+        <div style="min-width:140px">
+          <div class="setting-sub" style="font-size:10px;text-transform:uppercase">${t("model")}</div>
+          <div class="mono" style="font-size:12px;font-weight:600">${esc(last.model || "-")}</div>
+        </div>
+        <div style="min-width:180px">
+          <div class="setting-sub" style="font-size:10px;text-transform:uppercase">${t("providerAccount")}</div>
+          <div class="mono" style="font-size:12px">${esc(last.provider || "-")} / ${esc(last.auth || "-")}</div>
+        </div>
+        <div style="min-width:140px">
+          <div class="setting-sub" style="font-size:10px;text-transform:uppercase">${t("dateTime")}</div>
+          <div class="mono" style="font-size:11px">${esc(formatUsageDate(last.timestamp))}</div>
+        </div>
+        <div style="min-width:80px">
+          <div class="setting-sub" style="font-size:10px;text-transform:uppercase">${t("mode")}</div>
+          <div class="mono" style="font-size:11px">${esc(last.mode || "chat")}</div>
+        </div>
+        <div style="min-width:80px">
+          <div class="setting-sub" style="font-size:10px;text-transform:uppercase">${t("status")}</div>
+          <span class="pill ${isOk ? "ok" : "warn"}">${esc(last.status || 200)}</span>
+        </div>
+      </div>
+
+      <div class="row" style="gap:24px">
+        <div>
+          <span class="setting-sub" style="font-size:10px">INPUT: </span>
+          <span class="mono" style="font-size:12px;font-weight:600">${Number(last.input || 0)}</span>
+        </div>
+        <div>
+          <span class="setting-sub" style="font-size:10px">OUTPUT: </span>
+          <span class="mono" style="font-size:12px;font-weight:600">${Number(last.output || 0)}</span>
+        </div>
+      </div>
+
+      ${usage.length > 1
+        ? `<div class="divider"></div>
+           <div class="footnote" style="font-weight:600">${t("recentUsage")}</div>
+           <table class="kv">${usage.slice(0, 5).map((item) => `<tr>
+             <td>${esc(formatUsageTime(item.timestamp))}</td>
+             <td class="mono" style="font-size:11px">${esc(item.model || "-")} <span class="muted">${esc(item.provider || "-")}/${esc(item.auth || "-")}</span></td>
+             <td class="mono" style="font-size:10px">in: ${Number(item.input || 0)} out: ${Number(item.output || 0)}</td>
+             <td><span class="pill ${String(item.status).startsWith("2") ? "ok" : "warn"}">${esc(item.status || 200)}</span></td>
+           </tr>`).join("")}</table>`
+        : ""}
+    </div>
+  </div>`;
 }
 
 function apiPage() {
@@ -1716,6 +1817,8 @@ function apiPage() {
       </div>
     </div>
   </div>
+
+  ${usageCard()}
 
   ${codexAppCard()}
 
@@ -2067,9 +2170,10 @@ function providerLines() {
     detail: `${accounts.length} ${t("accountsShort")}`,
     tint: "var(--info)",
   });
-  if (hasKey(settings.openRouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: `${countModels("openrouter/")} ${t("modelsShort")}`, tint: "var(--violet)" });
+  if (hasKey(settings.openrouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: `${countModels("openrouter/")} ${t("modelsShort")}`, tint: "var(--violet)" });
   if (hasKey(settings.opencodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: `${countModels("opencode/")} ${t("modelsShort")}`, tint: "var(--info)" });
   if (hasKey(settings.deepinfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: `${countModels("deepinfra/")} ${t("modelsShort")}`, tint: "var(--ok)" });
+  if (hasKey(settings.nvidiaKey)) lines.push({ id: "nvidia", name: "NVIDIA", on: !!settings.nvidiaEnabled, detail: `${countModels("nvidia/")} ${t("modelsShort")}`, tint: "var(--ok)" });
   if (hasKey(settings.vercelKey)) lines.push({ id: "vercel", name: "Vercel", on: true, detail: `${countModels("vercel/")} ${t("modelsShort")}`, tint: "var(--text2)" });
   if (hasKey(settings.zaiKey)) lines.push({ id: "zai", name: "Z.ai", on: true, detail: `${countModels("zai/")} ${t("modelsShort")}`, tint: "var(--gold)" });
   if (hasKey(settings.commandcodeKey)) lines.push({ id: "commandcode", name: "CommandCode", on: true, detail: `${countModels("commandcode/")} ${t("modelsShort")}`, tint: "var(--violet)" });

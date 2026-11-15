@@ -1,5 +1,5 @@
 diff --git a/internal/api/handlers/management/quota.go b/internal/api/handlers/management/quota.go
-index 4b8735d4..f5800351 100644
+index 4b8735d..f580035 100644
 --- a/internal/api/handlers/management/quota.go
 +++ b/internal/api/handlers/management/quota.go
 @@ -24,6 +24,45 @@ func (h *Handler) PutSwitchPreviewModel(c *gin.Context) {
@@ -49,7 +49,7 @@ index 4b8735d4..f5800351 100644
  func (h *Handler) ResetQuota(c *gin.Context) {
  	if h.authManager == nil {
 diff --git a/internal/api/server_management.go b/internal/api/server_management.go
-index 1eabc9cd..1e84ee81 100644
+index 1eabc9c..1e84ee8 100644
 --- a/internal/api/server_management.go
 +++ b/internal/api/server_management.go
 @@ -80,6 +80,7 @@ func (s *Server) registerManagementRoutes() {
@@ -61,7 +61,7 @@ index 1eabc9cd..1e84ee81 100644
  		mgmt.GET("/quota/providers", s.mgmt.GetQuotaProviders)
  		mgmt.POST("/quota/fetch", s.mgmt.FetchCredentialQuota)
 diff --git a/internal/config/config.go b/internal/config/config.go
-index faa54336..3532adc8 100644
+index faa5433..3532adc 100644
 --- a/internal/config/config.go
 +++ b/internal/config/config.go
 @@ -98,6 +98,10 @@ type Config struct {
@@ -77,7 +77,7 @@ index faa54336..3532adc8 100644
  	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
 diff --git a/internal/config/stream_bootstrap_timeout_test.go b/internal/config/stream_bootstrap_timeout_test.go
 new file mode 100644
-index 00000000..85a26c36
+index 0000000..85a26c3
 --- /dev/null
 +++ b/internal/config/stream_bootstrap_timeout_test.go
 @@ -0,0 +1,13 @@
@@ -95,7 +95,7 @@ index 00000000..85a26c36
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
-index 7d372f04..28943aff 100644
+index 7d372f0..28943af 100644
 --- a/sdk/cliproxy/auth/conductor_cooldown.go
 +++ b/sdk/cliproxy/auth/conductor_cooldown.go
 @@ -525,6 +525,59 @@ func dedupeStrings(values []string) []string {
@@ -159,7 +159,7 @@ index 7d372f04..28943aff 100644
  	if m == nil {
  		return nil, nil, nil
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index 744950f6..f34b633f 100644
+index 744950f..c558f10 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -2,11 +2,14 @@ package auth
@@ -177,7 +177,7 @@ index 744950f6..f34b633f 100644
  )
  
  func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
-@@ -88,12 +91,60 @@ func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cl
+@@ -88,12 +91,66 @@ func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cl
  	return result, nil
  }
  
@@ -219,11 +219,17 @@ index 744950f6..f34b633f 100644
  		return nil, true, nil
  	}
  	buffered := make([]cliproxyexecutor.StreamChunk, 0, 1)
-+	var timeoutCh <-chan time.Time
-+	if timeout := streamBootstrapTimeout(); timeout > 0 && provider == "antigravity" {
-+		timer := time.NewTimer(timeout)
++	var (
++		timeout      time.Duration
++		timeoutCh    <-chan time.Time
++		timer        *time.Timer
++		heartbeatCap time.Time
++	)
++	if timeout = streamBootstrapTimeout(); timeout > 0 && provider == "antigravity" {
++		timer = time.NewTimer(timeout)
 +		defer timer.Stop()
 +		timeoutCh = timer.C
++		heartbeatCap = time.Now().Add(bootstrapHeartbeatGrace(timeout))
 +	}
  	for {
 +		// A thinking upstream can emit empty heartbeat chunks continuously. The
@@ -239,7 +245,7 @@ index 744950f6..f34b633f 100644
  		var (
  			chunk cliproxyexecutor.StreamChunk
  			ok    bool
-@@ -107,9 +158,17 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
+@@ -107,9 +164,17 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
  				select {
  				case <-ctx.Done():
  					return nil, false, ctx.Err()
@@ -257,10 +263,26 @@ index 744950f6..f34b633f 100644
  		} else {
  			chunk, ok = <-ch
  		}
-@@ -126,6 +185,28 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
- 	}
- }
- 
+@@ -123,7 +188,42 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
+ 		if len(chunk.Payload) > 0 {
+ 			return buffered, false, nil
+ 		}
++		// An empty frame is a heartbeat: the upstream is alive and still
++		// thinking, so a silent-but-healthy model must not be cut off at the
++		// same budget as a dead one. Extend the window, but never past the
++		// cap so a stuck upstream cannot pin the request indefinitely.
++		if timer != nil && time.Now().Before(heartbeatCap) {
++			if !timer.Stop() {
++				select {
++				case <-timer.C:
++				default:
++				}
++			}
++			timer.Reset(timeout)
++		}
++	}
++}
++
 +// readStreamBootstrapForAuth wraps the generic bootstrap read with the selected
 +// credential identity. A watchdog timeout becomes a retryable 504 carrying the
 +// next quarantine rung; a successful first token resets the strike counter.
@@ -279,14 +301,12 @@ index 744950f6..f34b633f 100644
 +			}
 +		}
 +		resetBootstrapStrikes(authID, model)
-+	}
+ 	}
 +	return buffered, closed, err
-+}
-+
+ }
+ 
  // recordCanceledUpstreamCooldown keeps an upstream-confirmed cooldown (an error carrying
- // RetryAfter) when the request context was canceled while the executor was returning, for
- // example because the downstream connection was closed in response to the same upstream error.
-@@ -263,7 +344,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -263,7 +363,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
  		executionSeq := m.nextExecutionSeq()
  		startStream := time.Now()
@@ -295,7 +315,7 @@ index 744950f6..f34b633f 100644
  		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
  		if hasUpstreamExecutionAttempt(errStream) {
  			upstreamErr = errStream
-@@ -285,7 +366,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -285,7 +385,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
  					executionSeq = m.nextExecutionSeq()
  					startRetry := time.Now()
@@ -304,7 +324,7 @@ index 744950f6..f34b633f 100644
  					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
  					if hasUpstreamExecutionAttempt(errStream) {
  						upstreamErr = errStream
-@@ -342,7 +423,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -342,7 +442,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			continue
  		}
  
@@ -313,7 +333,7 @@ index 744950f6..f34b633f 100644
  		bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, bootstrapErr)
  		if hasUpstreamExecutionAttempt(bootstrapErr) {
  			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
-@@ -364,7 +445,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -364,7 +464,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  					ctx = newUpstreamAttemptContext(ctx)
  					executionSeq = m.nextExecutionSeq()
  					startRetry := time.Now()
@@ -322,7 +342,7 @@ index 744950f6..f34b633f 100644
  					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
  					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
  					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
-@@ -378,7 +459,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -378,7 +478,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  						streamResult = &cliproxyexecutor.StreamResult{}
  					} else {
  						streamResult = retryStream
@@ -333,10 +353,10 @@ index 744950f6..f34b633f 100644
  							warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
 diff --git a/sdk/cliproxy/auth/stream_bootstrap_watchdog.go b/sdk/cliproxy/auth/stream_bootstrap_watchdog.go
 new file mode 100644
-index 00000000..9b91975c
+index 0000000..2bf6869
 --- /dev/null
 +++ b/sdk/cliproxy/auth/stream_bootstrap_watchdog.go
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,159 @@
 +package auth
 +
 +import (
@@ -372,14 +392,24 @@ index 00000000..9b91975c
 +
 +const bootstrapStrikeTTL = 6 * time.Hour
 +
-+// bootstrapCooldownLadder is deliberately short for the first strike and long
-+// for repeated silent throttling, mirroring the quarantine ladder used by the
-+// desktop UI.
++// bootstrapCooldownLadder maps consecutive first-token timeouts to a cooldown.
++// The first strike carries no quarantine: a thinking model that stays silent
++// once is not a dead account, so the request simply fails over and the pairing
++// only pays the transient retry cooldown from the config. Quarantine starts on
++// the second strike and grows for repeated silent throttling.
 +var bootstrapCooldownLadder = [...]time.Duration{
++	0,
 +	60 * time.Second,
 +	5 * time.Minute,
 +	30 * time.Minute,
-+	2 * time.Hour,
++}
++
++// bootstrapHeartbeatGrace is how long empty upstream frames keep extending the
++// first-token window. Heartbeats prove the upstream is alive and still
++// thinking, so they must not be punished; the cap stops a chatty but stuck
++// upstream from holding the request forever.
++func bootstrapHeartbeatGrace(timeout time.Duration) time.Duration {
++	return 3 * timeout
 +}
 +
 +type bootstrapStrikeState struct {
@@ -463,6 +493,11 @@ index 00000000..9b91975c
 +	if e == nil {
 +		return errStreamBootstrapTimeout.Error()
 +	}
++	if e.cooldown <= 0 {
++		// The first strike carries no quarantine, so the message must not
++		// claim a cooldown that will not be applied.
++		return fmt.Sprintf("upstream produced no first token for %s (model %s)", e.authID, e.model)
++	}
 +	return fmt.Sprintf("upstream produced no first token for %s (model %s); cooling down %s", e.authID, e.model, e.cooldown)
 +}
 +
@@ -483,16 +518,17 @@ index 00000000..9b91975c
 +}
 diff --git a/sdk/cliproxy/auth/stream_bootstrap_watchdog_test.go b/sdk/cliproxy/auth/stream_bootstrap_watchdog_test.go
 new file mode 100644
-index 00000000..882f89cc
+index 0000000..63bb515
 --- /dev/null
 +++ b/sdk/cliproxy/auth/stream_bootstrap_watchdog_test.go
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,164 @@
 +package auth
 +
 +import (
 +	"context"
 +	"errors"
 +	"net/http"
++	"strings"
 +	"testing"
 +	"time"
 +
@@ -519,21 +555,66 @@ index 00000000..882f89cc
 +	if timeoutErr.StatusCode() != http.StatusGatewayTimeout {
 +		t.Fatalf("status = %d, want 504", timeoutErr.StatusCode())
 +	}
-+	if timeoutErr.RetryAfter() == nil || *timeoutErr.RetryAfter() != 60*time.Second {
-+		t.Fatalf("retry after = %v, want 60s", timeoutErr.RetryAfter())
++	// The first strike carries no quarantine: a single silent response is a
++	// failover hint, not proof that the account is dead.
++	if got := timeoutErr.RetryAfter(); got == nil || *got != 0 {
++		t.Fatalf("retry after = %v, want no cooldown", got)
++	}
++	if strings.Contains(timeoutErr.Error(), "cooling down") {
++		t.Fatalf("error = %q, must not claim a cooldown", timeoutErr.Error())
 +	}
 +	if got := bootstrapStrikeCount("auth-a", "model-a"); got != 1 {
 +		t.Fatalf("strike count = %d, want 1", got)
 +	}
 +}
 +
-+func TestReadStreamBootstrapTimeoutDespiteHeartbeats(t *testing.T) {
++func TestReadStreamBootstrapHeartbeatsExtendWindow(t *testing.T) {
 +	SetStreamBootstrapTimeout(1)
 +	t.Cleanup(func() { SetStreamBootstrapTimeout(0) })
-+	streamBootstrapTimeoutNanos.Store(int64(25 * time.Millisecond))
++	streamBootstrapTimeoutNanos.Store(int64(60 * time.Millisecond))
 +
 +	ch := make(chan cliproxyexecutor.StreamChunk, 64)
 +	done := make(chan struct{})
++	defer close(done)
++	go func() {
++		ticker := time.NewTicker(15 * time.Millisecond)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-ticker.C:
++				select {
++				case ch <- cliproxyexecutor.StreamChunk{Payload: nil}:
++				case <-done:
++					return
++				}
++			case <-done:
++				return
++			}
++		}
++	}()
++	// The upstream stays silent past the base timeout, then produces a real
++	// payload while still inside the heartbeat grace window.
++	go func() {
++		time.Sleep(140 * time.Millisecond)
++		ch <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
++	}()
++	buffered, closed, err := readStreamBootstrapForAuth(context.Background(), ch, "auth-hb", "model-hb", "antigravity", time.Now())
++	if err != nil {
++		t.Fatalf("err = %v, want the delayed payload: heartbeats must extend the window", err)
++	}
++	if closed || len(buffered) == 0 || string(buffered[len(buffered)-1].Payload) != "ok" {
++		t.Fatalf("buffered=%d closed=%v, want the delayed payload after the heartbeats", len(buffered), closed)
++	}
++}
++
++func TestReadStreamBootstrapHeartbeatsRespectCap(t *testing.T) {
++	SetStreamBootstrapTimeout(1)
++	t.Cleanup(func() { SetStreamBootstrapTimeout(0) })
++	streamBootstrapTimeoutNanos.Store(int64(20 * time.Millisecond))
++
++	ch := make(chan cliproxyexecutor.StreamChunk, 64)
++	done := make(chan struct{})
++	t.Cleanup(func() { close(done) })
 +	go func() {
 +		for {
 +			select {
@@ -543,10 +624,13 @@ index 00000000..882f89cc
 +			}
 +		}
 +	}()
-+	t.Cleanup(func() { close(done) })
-+	_, _, err := readStreamBootstrapForAuth(context.Background(), ch, "auth-hb", "model-hb", "antigravity", time.Now())
++	started := time.Now()
++	_, _, err := readStreamBootstrapForAuth(context.Background(), ch, "auth-cap", "model-cap", "antigravity", started)
 +	if !errors.Is(err, errStreamBootstrapTimeout) {
-+		t.Fatalf("err = %v, want timeout despite continuous heartbeat chunks", err)
++		t.Fatalf("err = %v, want timeout once the heartbeat grace is spent", err)
++	}
++	if waited := time.Since(started); waited < bootstrapHeartbeatGrace(20*time.Millisecond) {
++		t.Fatalf("timed out after %v, want at least the %v grace", waited, bootstrapHeartbeatGrace(20*time.Millisecond))
 +	}
 +}
 +
@@ -590,20 +674,20 @@ index 00000000..882f89cc
 +func TestBootstrapCooldownLadder(t *testing.T) {
 +	resetBootstrapStrikes("auth-c", "model-c")
 +	now := time.Now()
-+	want := []time.Duration{60 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 2 * time.Hour}
++	want := []time.Duration{0, 60 * time.Second, 5 * time.Minute, 30 * time.Minute, 30 * time.Minute}
 +	for index, expected := range want {
 +		if got := nextBootstrapCooldown("auth-c", "model-c", now); got != expected {
 +			t.Fatalf("strike %d cooldown = %v, want %v", index+1, got, expected)
 +		}
 +	}
-+	// The TTL expires the strike chain.
++	// The TTL expires the strike chain back to the no-quarantine first strike.
 +	got := nextBootstrapCooldown("auth-c", "model-c", now.Add(bootstrapStrikeTTL+time.Minute))
-+	if got != 60*time.Second {
-+		t.Fatalf("expired cooldown = %v, want 60s", got)
++	if got != 0 {
++		t.Fatalf("expired cooldown = %v, want the first-strike value", got)
 +	}
 +}
 diff --git a/sdk/cliproxy/service_auth.go b/sdk/cliproxy/service_auth.go
-index 92e2693a..3c254b67 100644
+index 92e2693..3c254b6 100644
 --- a/sdk/cliproxy/service_auth.go
 +++ b/sdk/cliproxy/service_auth.go
 @@ -663,12 +663,19 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
@@ -628,3 +712,19 @@ index 92e2693a..3c254b67 100644
  }
  
  func (s *Service) configureCooldownStateStore(cfg *config.Config) {
+diff --git a/internal/config/config_v8.go b/internal/config/config_v8.go
+index 4a50f51..518972c 100644
+--- a/internal/config/config_v8.go
++++ b/internal/config/config_v8.go
+@@ -606,6 +606,11 @@ func IsV8ConfigLayout(root *yaml.Node) bool {
+ 
+ func v8AllowedRoots() map[string]bool {
+ 	allowed := map[string]bool{"models": true, "config-version": true, "api-keys": true, "plugins": true, "quota-exceeded": true, "client": true}
++	// The QoS patch keeps the first-token watchdog at the root, where v0 has
++	// always read it. v8 has to accept the same field: otherwise the desktop's
++	// own config is rejected as an unknown section and the user setting is
++	// lost on every save.
++	allowed["stream-bootstrap-timeout-seconds"] = true
+ 	for _, path := range v8Paths {
+ 		section, _, _ := strings.Cut(path.current, ".")
+ 		allowed[section] = true

@@ -512,6 +512,15 @@ final class ComposerBridge: ObservableObject {
             entry["error"] = NSNull()
             payload["deepinfra"] = entry
         }
+        if !sources.nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["nvidia"] = [
+                "title": "NVIDIA",
+                "modelCount": sources.nvidiaSource?.models.count ?? 0,
+                "selectedCount": sources.nvidiaSource?.selectedModels.count ?? 0,
+                "updatedAt": NSNull(),
+                "error": NSNull(),
+            ] as [String: Any]
+        }
         if let stats = providerUsage.vercel {
             var entry: [String: Any] = [
                 "title": "Vercel",

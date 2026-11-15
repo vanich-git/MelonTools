@@ -28,6 +28,29 @@ struct LocalDownloadsView: View {
 
             Divider().background(Color.primary.opacity(0.06))
 
+            // A broken or unwritable queue is a whole-view problem, not a
+            // per-row one: keep its reason visible above the list.
+            if let journalError = manager.journalError {
+                HStack(alignment: .top, spacing: MTTheme.s2) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MTTheme.danger)
+                    Text(journalError)
+                        .font(MTTheme.body(11))
+                        .foregroundStyle(MTTheme.danger)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .help(journalError)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, MTTheme.s4)
+                .padding(.vertical, MTTheme.s2)
+                .background(MTTheme.danger.opacity(0.08))
+
+                Divider().background(Color.primary.opacity(0.06))
+            }
+
             if manager.items.isEmpty {
                 VStack(spacing: MTTheme.s3) {
                     Spacer()
@@ -91,14 +114,14 @@ struct LocalDownloadsView: View {
                             Button(action: { manager.pauseDownload(id: item.id) }) {
                                 Image(systemName: "pause.fill")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Pause Download"))
                             .accessibilityLabel(L("Pause Download"))
 
                             Button(action: { manager.cancelDownload(id: item.id) }) {
                                 Image(systemName: "xmark")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Cancel Download"))
                             .accessibilityLabel(L("Cancel Download"))
 
@@ -109,15 +132,14 @@ struct LocalDownloadsView: View {
                             }) {
                                 Image(systemName: "play.fill")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(MTTheme.emerald)
+                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.emerald, prominent: true, size: .small))
                             .help(L("Resume Download"))
                             .accessibilityLabel(L("Resume Download"))
 
                             Button(action: { manager.cancelDownload(id: item.id) }) {
                                 Image(systemName: "xmark")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Cancel Download"))
                             .accessibilityLabel(L("Cancel Download"))
 
@@ -128,15 +150,14 @@ struct LocalDownloadsView: View {
                             }) {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(MTTheme.amber)
+                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.amber, prominent: true, size: .small))
                             .help(L("Retry Download"))
                             .accessibilityLabel(L("Retry Download"))
 
                             Button(action: { manager.cancelDownload(id: item.id) }) {
                                 Image(systemName: "trash")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Remove Download"))
                             .accessibilityLabel(L("Remove Download"))
 
@@ -159,7 +180,7 @@ struct LocalDownloadsView: View {
                             Button(action: { manager.cancelDownload(id: item.id) }) {
                                 Image(systemName: "xmark")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Cancel Download"))
                             .accessibilityLabel(L("Cancel Download"))
 
@@ -178,7 +199,7 @@ struct LocalDownloadsView: View {
                             Button(action: { manager.removeCompleted(id: item.id) }) {
                                 Image(systemName: "trash")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MTGlassButtonStyle(size: .small))
                             .help(L("Remove Download"))
                             .accessibilityLabel(L("Remove Download"))
                         }
@@ -208,13 +229,18 @@ struct LocalDownloadsView: View {
                             .font(MTTheme.body(10.5, weight: .medium))
                             .foregroundStyle(MTTheme.cyan)
                     }
+                }
 
-                    if let err = item.errorMessage {
-                        Text(err)
-                            .font(MTTheme.body(10.5))
-                            .foregroundStyle(MTTheme.danger)
-                            .lineLimit(1)
-                    }
+                // A one-line ellipsis hides the actionable part of a server
+                // error, so the reason gets its own wrapping row.
+                if let err = item.errorMessage {
+                    Text(err)
+                        .font(MTTheme.body(10.5))
+                        .foregroundStyle(MTTheme.danger)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .help(err)
                 }
             }
         }

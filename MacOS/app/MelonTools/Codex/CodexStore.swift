@@ -393,6 +393,8 @@ final class CodexStore: ObservableObject {
     @Published private(set) var busyAccountIds: Set<String> = []
     /// Accounts with a reset-credit redemption in flight.
     @Published private(set) var resettingAccountIds: Set<String> = []
+    /// Accounts with a wakeup response request in flight.
+    @Published private(set) var wakingAccountIds: Set<String> = []
     @Published private(set) var lastMessage: String?
 
     /// High-level pool routing mode (persisted). Changing it re-applies the
@@ -588,10 +590,12 @@ final class CodexStore: ObservableObject {
         return index + 1
     }
 
-    /// Gateway priorities: the first account gets the highest value — that is
-    /// what the gateway’s “fill-first” mode uses first.
+    /// Gateway priorities encode the pool tier: regular accounts share the top
+    /// value, backups the one below, and the engine rotates inside a tier.
     func effectivePriorities() -> [String: Int] {
-        CodexRoutingPlanner.priorities(from: routingResolution().orderedIds)
+        let resolution = routingResolution()
+        let backupIds = Set(accounts.filter { $0.isBackup == true }.map(\.id))
+        return CodexRoutingPlanner.priorities(from: resolution.orderedIds, backupIds: backupIds)
     }
 
     /// Banner state: non-nil only while the pool is non-empty and every
@@ -687,7 +691,10 @@ final class CodexStore: ObservableObject {
             return "\(account.id):\(selection)"
         }.joined(separator: ",")
         let membership = accounts.map { "\($0.id):\($0.poolEnabled != false)" }.joined(separator: ",")
-        return ids + "|" + values + "|" + credentials + "|" + models + "|" + membership
+        // The auth-file weight follows the quota left, so a fresh reading must
+        // reach the gateway even when nothing else changed.
+        let weights = accounts.map { "\($0.id)=\(CodexGatewayService.quotaWeight($0))" }.joined(separator: ",")
+        return ids + "|" + values + "|" + credentials + "|" + models + "|" + membership + "|" + weights
     }
 
     private func routingNoteText() -> String? {
@@ -1703,6 +1710,43 @@ final class CodexStore: ObservableObject {
             await refreshQuota(for: accountId)
         } catch {
             lastMessage = L("Could not activate the reset") + ": " + error.localizedDescription
+        }
+    }
+
+    // MARK: - Wakeup
+
+    func wakeAccount(for accountId: String, model: String? = nil) async {
+        guard let account = accounts.first(where: { $0.id == accountId }) else { return }
+        guard !wakingAccountIds.contains(accountId) else { return }
+        wakingAccountIds.insert(accountId)
+        defer { wakingAccountIds.remove(accountId) }
+
+        do {
+            let tokens = try await CodexService.wakeAccount(account: account, model: model)
+            if account.tokens.access_token != tokens.access_token {
+                if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
+                    accounts[idx].tokens = tokens
+                    accounts[idx].lastRefresh = ISO8601DateFormatter().string(from: Date())
+                    save(immediately: true)
+                }
+            }
+            lastMessage = String(format: L("Account %@ awakened successfully."), account.displayName)
+            await refreshQuota(for: accountId, forceTokens: true)
+        } catch {
+            lastMessage = String(format: L("Failed to wake %@: %@"), account.displayName, error.localizedDescription)
+        }
+    }
+
+    func wakeAccounts(ids: [String]) async {
+        for id in ids {
+            await wakeAccount(for: id)
+        }
+    }
+
+    func wakeSleepingAccounts() async {
+        let sleepingIds = accounts.filter { $0.quota?.hourlyWindowPresent == false }.map(\.id)
+        for id in sleepingIds {
+            await wakeAccount(for: id)
         }
     }
 

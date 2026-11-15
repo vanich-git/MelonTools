@@ -999,12 +999,18 @@ mod tests {
             "creditsBalance": "12.50", "unlimitedCredits": true, "hasCredits": true,
             "resetCreditsAvailable": 2, "futureMetadata": "keep"
         }});
-        account["quota"] = super::quota_update(&account, &super::Quota::default(), "{}", &json!({}));
+        account["quota"] =
+            super::quota_update(&account, &super::Quota::default(), "{}", &json!({}));
         assert_eq!(account["quota"]["creditsBalance"], "12.50");
         assert_eq!(account["quota"]["unlimitedCredits"], true);
-        account["quota"] = super::quota_update(&account, &super::Quota::default(), "{}", &json!({
-            "creditsBalance": "0", "unlimitedCredits": false, "hasCredits": false
-        }));
+        account["quota"] = super::quota_update(
+            &account,
+            &super::Quota::default(),
+            "{}",
+            &json!({
+                "creditsBalance": "0", "unlimitedCredits": false, "hasCredits": false
+            }),
+        );
         assert_eq!(account["quota"]["creditsBalance"], "0");
         assert_eq!(account["quota"]["unlimitedCredits"], false);
         assert_eq!(account["quota"]["creditsBalance"], "0");
@@ -1039,7 +1045,8 @@ mod tests {
     fn pool_preference_defaults_enabled_and_roundtrips_without_losing_details() {
         let legacy: super::Account = serde_json::from_value(json!({"id": "legacy"})).unwrap();
         assert!(legacy.pool_enabled());
-        let path = std::env::temp_dir().join(format!("melon-pool-test-{}.json", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("melon-pool-test-{}.json", uuid::Uuid::new_v4()));
         let mut raw = vault_with_tokens();
         raw["accounts"][0]["poolEnabled"] = json!(false);
         raw["accounts"][0]["selectedModels"] = json!(["gpt-test"]);
@@ -1048,14 +1055,22 @@ mod tests {
         super::set_account_field_at(&path, "acc-1", |item| {
             item["quota"]["hourlyRemainingPercent"] = json!(100.0);
             item["tokens"]["access_token"] = json!("refreshed-token");
-        }).unwrap();
+        })
+        .unwrap();
         let updated = super::load_raw_at(&path);
-        let account: super::Account = serde_json::from_value(updated["accounts"][0].clone()).unwrap();
+        let account: super::Account =
+            serde_json::from_value(updated["accounts"][0].clone()).unwrap();
         assert!(!account.pool_enabled());
         assert_eq!(account.block_info().unwrap()["code"], "manual_disabled");
         assert_eq!(account.quota.unwrap().hourly_remaining_percent, Some(100.0));
-        assert_eq!(account.tokens.access_token.as_deref(), Some("refreshed-token"));
-        assert_eq!(updated["accounts"][0]["selectedModels"], json!(["gpt-test"]));
+        assert_eq!(
+            account.tokens.access_token.as_deref(),
+            Some("refreshed-token")
+        );
+        assert_eq!(
+            updated["accounts"][0]["selectedModels"],
+            json!(["gpt-test"])
+        );
         assert_eq!(updated["accounts"][0]["futureField"], json!({"keep": true}));
         assert_eq!(updated["currentAccountId"], "acc-1");
         assert_eq!(path.parent(), Some(std::env::temp_dir().as_path()));

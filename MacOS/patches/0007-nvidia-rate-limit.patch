@@ -1,0 +1,201 @@
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -92,7 +92,7 @@
+ 		return nil, err
+ 	}
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+-	return httpClient.Do(httpReq)
++	return helps.NvidiaLimitedDo(httpClient, httpReq)
+ }
+ 
+ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+@@ -201,7 +201,7 @@
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+ 	httpClient = reporter.TrackHTTPClient(httpClient)
+-	httpResp, err := httpClient.Do(httpReq)
++	httpResp, err := helps.NvidiaLimitedDo(httpClient, httpReq)
+ 	if err != nil {
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		return resp, err
+@@ -302,7 +302,7 @@
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+ 	httpClient = reporter.TrackHTTPClient(httpClient)
+-	httpResp, err := httpClient.Do(httpReq)
++	httpResp, err := helps.NvidiaLimitedDo(httpClient, httpReq)
+ 	if err != nil {
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		return resp, err
+@@ -438,7 +438,7 @@
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+ 	// Early role/empty frames are only first-packet fallbacks, not effective tokens.
+ 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
+-	httpResp, err := httpClient.Do(httpReq)
++	httpResp, err := helps.NvidiaLimitedDo(httpClient, httpReq)
+ 	if err != nil {
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		return nil, err
+@@ -715,7 +715,7 @@
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+ 	httpClient = reporter.TrackHTTPClient(httpClient)
+-	httpResp, err := httpClient.Do(httpReq)
++	httpResp, err := helps.NvidiaLimitedDo(httpClient, httpReq)
+ 	if err != nil {
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		return nil, err
+--- /dev/null
++++ b/internal/runtime/executor/helps/nvidia_rate_limit.go
+@@ -0,0 +1,58 @@
++package helps
++
++import (
++	"crypto/sha256"
++	"net/http"
++	"strings"
++	"sync"
++	"time"
++)
++
++// The rolling window is shared by every NVIDIA model using the same API key.
++var nvidiaRequests = struct {
++	sync.Mutex
++	times map[[32]byte][]time.Time
++}{times: make(map[[32]byte][]time.Time)}
++
++func NvidiaLimitedDo(client *http.Client, req *http.Request) (*http.Response, error) {
++	if !strings.EqualFold(req.URL.Hostname(), "integrate.api.nvidia.com") || req.Method != http.MethodPost {
++		return client.Do(req)
++	}
++	key := sha256.Sum256([]byte(req.Header.Get("Authorization")))
++	for {
++		nvidiaRequests.Lock()
++		now := time.Now()
++		// Drop expired keys as well as old timestamps, without retaining credentials.
++		for k, times := range nvidiaRequests.times {
++			i := 0
++			for i < len(times) && !times[i].After(now.Add(-time.Minute)) {
++				i++
++			}
++			if i == len(times) {
++				delete(nvidiaRequests.times, k)
++			} else {
++				nvidiaRequests.times[k] = times[i:]
++			}
++		}
++		times := nvidiaRequests.times[key]
++		if len(times) < 40 {
++			nvidiaRequests.times[key] = append(times, now)
++			nvidiaRequests.Unlock()
++			return client.Do(req)
++		}
++		wait := time.Until(times[0].Add(time.Minute))
++		nvidiaRequests.Unlock()
++		timer := time.NewTimer(wait)
++		select {
++		case <-req.Context().Done():
++			if !timer.Stop() {
++				select {
++				case <-timer.C:
++				default:
++				}
++			}
++			return nil, req.Context().Err()
++		case <-timer.C:
++		}
++	}
++}
+--- /dev/null
++++ b/internal/runtime/executor/helps/nvidia_rate_limit_test.go
+@@ -0,0 +1,90 @@
++package helps
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++type nvidiaTestTransport struct{}
++
++func (nvidiaTestTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
++}
++
++func TestNvidiaRateLimitSharedAndCancelable(t *testing.T) {
++	nvidiaRequests.Lock()
++	nvidiaRequests.times = make(map[[32]byte][]time.Time)
++	nvidiaRequests.Unlock()
++	client := &http.Client{Transport: nvidiaTestTransport{}}
++	request := func(key string, ctx context.Context) *http.Request {
++		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://integrate.api.nvidia.com/v1/chat/completions", nil)
++		req.Header.Set("Authorization", key)
++		return req
++	}
++	for i := 0; i < 40; i++ {
++		resp, err := NvidiaLimitedDo(client, request("key-a", context.Background()))
++		if err != nil {
++			t.Fatal(err)
++		}
++		resp.Body.Close()
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	if _, err := NvidiaLimitedDo(client, request("key-a", ctx)); err != context.Canceled {
++		t.Fatalf("expected cancellation, got %v", err)
++	}
++	resp, err := NvidiaLimitedDo(client, request("key-b", context.Background()))
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp.Body.Close()
++	nvidiaRequests.Lock()
++	for key, times := range nvidiaRequests.times {
++		for i := range times {
++			times[i] = time.Now().Add(-time.Minute)
++		}
++		nvidiaRequests.times[key] = times
++	}
++	nvidiaRequests.Unlock()
++	resp, err = NvidiaLimitedDo(client, request("key-a", context.Background()))
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp.Body.Close()
++}
++
++func TestNvidiaRateLimitConcurrentRequests(t *testing.T) {
++	nvidiaRequests.Lock()
++	nvidiaRequests.times = make(map[[32]byte][]time.Time)
++	nvidiaRequests.Unlock()
++	client := &http.Client{Transport: nvidiaTestTransport{}}
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	var completed atomic.Int32
++	var wg sync.WaitGroup
++	for i := 0; i < 64; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://integrate.api.nvidia.com/v1/chat/completions", nil)
++			req.Header.Set("Authorization", "same-key")
++			resp, err := NvidiaLimitedDo(client, req)
++			if err == nil {
++				resp.Body.Close()
++				if completed.Add(1) == 40 {
++					cancel()
++				}
++			}
++		}()
++	}
++	wg.Wait()
++	if got := completed.Load(); got != 40 {
++		t.Fatalf("got %d requests, want 40", got)
++	}
++}

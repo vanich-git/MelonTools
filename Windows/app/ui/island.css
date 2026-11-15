@@ -9,7 +9,7 @@ html, body {
 }
 
 body {
-  font-family: -apple-system, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #fff;
   user-select: none;
   -webkit-user-select: none;
@@ -127,7 +127,7 @@ body.island-open .island > .expanded {
   border-radius: 6px;
   background: transparent;
   color: rgba(255, 255, 255, 0.48);
-  font: 500 13px/18px "Segoe UI", system-ui, sans-serif;
+  font: 500 13px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   cursor: pointer;
 }
 
@@ -290,7 +290,7 @@ body.island-open .island > .expanded {
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.96);
-  font: 500 10px/1 -apple-system, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font: 500 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   padding: 0;
   cursor: pointer;
 }

@@ -478,6 +478,7 @@ mod tests {
         assert!(!version_is_newer("6.0.0-rc.1", "6.0.0"));
         assert!(version_is_newer("6.0.0-rc.2", "6.0.0-rc.1"));
         assert!(version_is_newer("6.0.0-rc.10", "6.0.0-rc.9"));
+        assert!(version_is_newer("6.0.0-rc.11", "6.0.0-rc.10"));
         assert!(!version_is_newer("6.0.0-rc.1", "6.0.0-rc.1"));
         assert!(version_is_newer("6.0.1", "6.0.0-rc.1"));
         assert!(!version_is_newer("5.5.7", "6.0.0-rc.1"));

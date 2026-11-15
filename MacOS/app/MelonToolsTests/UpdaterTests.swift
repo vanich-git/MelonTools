@@ -26,6 +26,7 @@ final class UpdaterTests: XCTestCase {
         XCTAssertFalse(UpdaterStore.Version.isNewer("6.0.0-rc.1", than: "6.0.0"))
         XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-rc.2", than: "6.0.0-rc.1"))
         XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-rc.10", than: "6.0.0-rc.9"))
+        XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.0-rc.11", than: "6.0.0-rc.10"))
         XCTAssertFalse(UpdaterStore.Version.isNewer("6.0.0-rc.1", than: "6.0.0-rc.1"))
         XCTAssertTrue(UpdaterStore.Version.isNewer("6.0.1", than: "6.0.0-rc.1"))
         XCTAssertFalse(UpdaterStore.Version.isNewer("5.5.7", than: "6.0.0-rc.1"))

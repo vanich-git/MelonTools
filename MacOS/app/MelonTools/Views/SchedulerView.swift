@@ -183,6 +183,7 @@ struct SchedulerView: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .tint(MTTheme.emerald)
                 .controlSize(.mini)
                 .help(L("Enabled"))
             }
@@ -433,7 +434,7 @@ private struct SchedulerEditorSheet: View {
                 VStack(alignment: .leading, spacing: MTTheme.s4) {
                     field(L("Name")) {
                         TextField(L("Name"), text: $name)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.mtInput)
                     }
 
                     field(L("Prompt")) {
@@ -465,7 +466,7 @@ private struct SchedulerEditorSheet: View {
                                             variableTitle(variable),
                                             text: binding(for: variable)
                                         )
-                                        .textFieldStyle(.roundedBorder)
+                                        .textFieldStyle(.mtInput)
                                     }
                                 }
                                 Text(L("Variables are substituted when the task is created."))
@@ -478,7 +479,7 @@ private struct SchedulerEditorSheet: View {
                     field(L("Working directory")) {
                         HStack(spacing: MTTheme.s2) {
                             TextField(L("Optional path for repository context"), text: $workingDirectory)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(10))
                             MTGlassButton(title: L("Choose…"), systemImage: "folder", size: .small, tint: MTTheme.amber) {
                                 chooseWorkingDirectory()
@@ -488,22 +489,23 @@ private struct SchedulerEditorSheet: View {
 
                     Toggle(L("Include git status, log and diff in the prompt"), isOn: $includeGitContext)
                         .toggleStyle(.switch)
+                        .tint(MTTheme.amber)
                         .font(MTTheme.body(11))
 
                     HStack(spacing: MTTheme.s3) {
                         field(L("Max tokens (0 = default)")) {
                             TextField("", value: $maxTokens, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 90)
                         }
                         field(L("Retries")) {
                             TextField("", value: $retryLimit, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 60)
                         }
                         field(L("Retry delay, min")) {
                             TextField("", value: $retryDelayMinutes, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 70)
                         }
                     }
@@ -511,7 +513,7 @@ private struct SchedulerEditorSheet: View {
                     field(L("Daily token limit (0 = no limit)")) {
                         HStack(alignment: .firstTextBaseline, spacing: MTTheme.s2) {
                             TextField("", text: $dailyTokenLimitText)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 110)
                             Text(L("Tokens per calendar day. The run is skipped without a request when the limit is reached."))
@@ -550,7 +552,7 @@ private struct SchedulerEditorSheet: View {
                         field(L("Interval")) {
                             HStack(spacing: MTTheme.s2) {
                                 TextField("", value: $intervalMinutes, format: .number)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .frame(width: 80)
                                 Text(L("minutes"))
                                     .font(MTTheme.mono(10))
@@ -567,7 +569,7 @@ private struct SchedulerEditorSheet: View {
                         field(L("Cron expression")) {
                             VStack(alignment: .leading, spacing: MTTheme.s1) {
                                 TextField("0 9 * * 1-5", text: $cronExpression)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .font(MTTheme.mono(11))
                                 Text(L("Minute hour day month weekday"))
                                     .font(MTTheme.mono(9))
@@ -604,6 +606,7 @@ private struct SchedulerEditorSheet: View {
 
                     Toggle(L("Enabled"), isOn: $enabled)
                         .toggleStyle(.switch)
+                        .tint(MTTheme.emerald)
                         .font(MTTheme.body(12))
 
                     VStack(alignment: .leading, spacing: MTTheme.s1) {
@@ -791,7 +794,7 @@ private struct SchedulerEditorSheet: View {
         if store.models.isEmpty {
             VStack(alignment: .leading, spacing: MTTheme.s1) {
                 TextField(L("Model id"), text: $model)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.mtInput)
                 HStack(spacing: MTTheme.s2) {
                     if store.isLoadingModels {
                         ProgressView().controlSize(.small)

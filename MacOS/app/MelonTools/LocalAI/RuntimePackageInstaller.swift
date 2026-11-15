@@ -4,6 +4,9 @@ import Foundation
 /// never removed or overwritten; validation never executes downloaded code.
 enum RuntimePackageInstaller {
     static let maximumArchiveBytes: Int64 = 2 * 1024 * 1024 * 1024
+    /// A manifest is a small JSON document; reading an unbounded file into
+    /// memory would let a hostile package exhaust the installer.
+    static let maximumManifestBytes = 1 * 1024 * 1024
 
     static func failure(_ message: String) -> NSError {
         NSError(domain: "MelonTools.Runtime", code: 2,
@@ -63,10 +66,29 @@ enum RuntimePackageInstaller {
         if let enumerationError { throw enumerationError }
     }
 
+    /// Reads one byte past the limit, so an oversized manifest is rejected
+    /// before it is decoded instead of being loaded whole into memory.
+    static func readManifest(_ url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        guard size <= UInt64(maximumManifestBytes) else {
+            throw failure(L("Runtime manifest is larger than the 1 MiB limit."))
+        }
+        try handle.seek(toOffset: 0)
+        guard let data = try handle.read(upToCount: maximumManifestBytes + 1) else {
+            return Data()
+        }
+        guard data.count <= maximumManifestBytes else {
+            throw failure(L("Runtime manifest is larger than the 1 MiB limit."))
+        }
+        return data
+    }
+
     static func validate(_ folder: URL) throws -> RuntimeManifest {
         try inspectTree(folder)
-        var manifest = try JSONDecoder().decode(RuntimeManifest.self,
-            from: Data(contentsOf: folder.appendingPathComponent("runtime.json")))
+        let manifestData = try readManifest(folder.appendingPathComponent("runtime.json"))
+        var manifest = try JSONDecoder().decode(RuntimeManifest.self, from: manifestData)
         guard validID(manifest.id), ["metal", "cpu"].contains(manifest.backend) else {
             throw failure(L("Invalid runtime id or unsupported macOS backend."))
         }
@@ -165,6 +187,61 @@ enum RuntimePackageInstaller {
         return architecture == "arm64" && archs.contains { $0 == "arm64e" || $0.hasPrefix("arm64e.") }
     }
 
+    /// A hung `tar` must fail the install instead of blocking it forever.
+    private static let commandTimeout: TimeInterval = 120
+    /// Time allowed between SIGTERM and SIGKILL.
+    private static let terminationGrace: TimeInterval = 2
+    private static let maximumOutputBytes = 4 * 1024 * 1024
+
+    /// Collects a child's stdout from a background reader. Waiting first and
+    /// reading afterwards would deadlock as soon as the child fills the pipe
+    /// buffer, which a large archive listing does.
+    private final class OutputBuffer {
+        private let lock = NSLock()
+        private let limit: Int
+        private var data = Data()
+        private var overflowed = false
+        private var readError: Error?
+
+        init(limit: Int) { self.limit = limit }
+
+        /// Returns false once the limit is crossed; the reader stops there.
+        func append(_ chunk: Data) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard data.count + chunk.count <= limit else {
+                overflowed = true
+                return false
+            }
+            data.append(chunk)
+            return true
+        }
+
+        func fail(_ error: Error) {
+            lock.lock()
+            defer { lock.unlock() }
+            readError = error
+        }
+
+        var isOverflowed: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return overflowed
+        }
+
+        var error: Error? {
+            lock.lock()
+            defer { lock.unlock() }
+            return readError
+        }
+
+        var contents: Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return data
+        }
+    }
+
     private static func run(_ executable: String, _ arguments: [String]) throws -> String {
         try Task.checkCancellation()
         let process = Process()
@@ -173,19 +250,67 @@ enum RuntimePackageInstaller {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         try process.run()
-        var data = Data()
-        while let chunk = try pipe.fileHandleForReading.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            if Task.isCancelled || data.count + chunk.count > 4 * 1024 * 1024 {
-                process.terminate()
-                process.waitUntilExit()
+
+        let output = OutputBuffer(limit: maximumOutputBytes)
+        let reading = pipe.fileHandleForReading
+        let reader = DispatchQueue(label: "dev.melontools.runtime-installer")
+        let readerDone = DispatchSemaphore(value: 0)
+        reader.async {
+            do {
+                while let chunk = try reading.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                    if !output.append(chunk) { break }
+                }
+            } catch {
+                output.fail(error)
+            }
+            readerDone.signal()
+        }
+
+        let deadline = Date().addingTimeInterval(commandTimeout)
+        while true {
+            if finished.wait(timeout: .now() + 0.2) == .success { break }
+            if Task.isCancelled || output.isOverflowed {
+                stop(process, finished: finished)
                 throw failure(L("Package inspection cancelled or output limit exceeded."))
             }
-            data.append(chunk)
+            if output.error != nil {
+                stop(process, finished: finished)
+                throw failure(L("Could not read runtime tool output."))
+            }
+            if Date() >= deadline {
+                stop(process, finished: finished)
+                throw failure(L("Runtime installation timed out. The package was not installed."))
+            }
         }
-        process.waitUntilExit()
+
+        // The child is gone, so its stdout closes. A descendant that inherited
+        // the pipe must not keep the installer waiting forever.
+        _ = readerDone.wait(timeout: .now() + terminationGrace)
+        if let error = output.error {
+            throw failure(String(format: L("Could not read runtime tool output: %@"), error.localizedDescription))
+        }
         try Task.checkCancellation()
-        guard process.terminationStatus == 0 else { throw failure(L("Runtime inspection or extraction failed.")) }
-        return String(decoding: data, as: UTF8.self)
+        guard !output.isOverflowed else {
+            throw failure(L("Package inspection cancelled or output limit exceeded."))
+        }
+        guard process.terminationStatus == 0 else {
+            throw failure(L("Runtime inspection or extraction failed."))
+        }
+        return String(decoding: output.contents, as: UTF8.self)
+    }
+
+    /// SIGTERM, then SIGKILL when the process ignores the grace period.
+    private static func stop(_ process: Process, finished: DispatchSemaphore) {
+        process.terminate()
+        if finished.wait(timeout: .now() + terminationGrace) == .timedOut {
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            _ = finished.wait(timeout: .now() + terminationGrace)
+        }
     }
 }

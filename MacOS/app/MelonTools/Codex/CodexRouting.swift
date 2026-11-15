@@ -337,16 +337,24 @@ enum CodexRoutingPlanner {
         return result
     }
 
-    /// Gateway priorities: the first account gets the highest number (that is
-    /// what “fill-first” uses first), the last gets 1.
-    static func priorities(from orderedIds: [String]) -> [String: Int] {
+    /// Gateway priorities encode the pool *tier*, not the position inside it.
+    /// The engine always serves the highest ready tier first and only then
+    /// balances inside that tier, so equal values are what let the load
+    /// actually rotate. Regular accounts share the top tier, backups the one
+    /// below, and accounts the planner excluded get no priority at all — they
+    /// are kept out by `disabled: true` instead.
+    static func priorities(from orderedIds: [String], backupIds: Set<String> = []) -> [String: Int] {
         var values: [String: Int] = [:]
-        let count = orderedIds.count
-        for (index, id) in orderedIds.enumerated() {
-            values[id] = count - index
+        for id in orderedIds {
+            values[id] = backupIds.contains(id) ? backupPriority : regularPriority
         }
         return values
     }
+
+    /// Tier values: a higher number wins. Backups stay one step below the
+    /// regular accounts so they only take traffic once that tier is exhausted.
+    static let regularPriority = 2
+    static let backupPriority = 1
 
     /// Rough subscription tiers for plan-based modes. Keep this table in
     /// sync with Windows `routing.rs::plan_rank`.

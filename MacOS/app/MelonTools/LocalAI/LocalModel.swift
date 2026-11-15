@@ -104,6 +104,68 @@ struct LocalModelSettings: Codable, Equatable {
     /// Effective reasoning switch.
     var isReasoningOn: Bool { reasoningEnabled ?? false }
 
+    /// Checks the bounds the engine and the gateway rely on.
+    ///
+    /// Returns a user-facing reason, or `nil` when every value is acceptable.
+    /// A registry can be hand-edited or written by an older build, and the
+    /// engine either clamps impossible values silently or refuses to start, so
+    /// the store validates before it persists a row.
+    func validate() -> String? {
+        guard (512...1_048_576).contains(contextLength) else {
+            return String(
+                format: L("Context length %@ is outside 512...1048576."),
+                String(contextLength)
+            )
+        }
+        guard (1...8_192).contains(batchSize) else {
+            return String(
+                format: L("Batch size %@ is outside 1...8192."),
+                String(batchSize)
+            )
+        }
+        if let threads = cpuThreads {
+            guard (1...1_024).contains(threads) else {
+                return String(
+                    format: L("CPU threads %@ is outside 1...1024."),
+                    String(threads)
+                )
+            }
+        }
+        if let layers = gpuOffloadLayers {
+            guard (0...999).contains(layers) else {
+                return String(
+                    format: L("GPU offload layers %@ is outside 0...999."),
+                    String(layers)
+                )
+            }
+        }
+        guard temperature.isFinite, (0...2).contains(temperature) else {
+            return String(
+                format: L("Temperature %@ is outside 0...2."),
+                String(temperature)
+            )
+        }
+        guard topP.isFinite, (0...1).contains(topP) else {
+            return String(
+                format: L("Top-p %@ is outside 0...1."),
+                String(topP)
+            )
+        }
+        guard (0...1_000).contains(topK) else {
+            return String(
+                format: L("Top-k %@ is outside 0...1000."),
+                String(topK)
+            )
+        }
+        guard repeatPenalty.isFinite, (0.1...4).contains(repeatPenalty) else {
+            return String(
+                format: L("Repeat penalty %@ is outside 0.1...4."),
+                String(repeatPenalty)
+            )
+        }
+        return nil
+    }
+
     static func defaultSettings(forContext context: Int = 8192) -> LocalModelSettings {
         LocalModelSettings(
             contextLength: context,
@@ -233,30 +295,41 @@ struct LocalModel: Identifiable, Codable, Equatable {
         files.first ?? "\(id).gguf"
     }
 
-    /// True if the model file is accessible on disk.
+    /// True if every file of this model is present, readable and not a folder.
     func fileExists(in directory: URL) -> Bool {
-        for file in files {
-            let path = file.hasPrefix("/") ? URL(fileURLWithPath: file) : directory.appendingPathComponent(file)
-            if !FileManager.default.fileExists(atPath: path.path) {
-                return false
-            }
+        guard !files.isEmpty else { return false }
+        let manager = FileManager.default
+        return files.allSatisfy { entry in
+            guard let url = Self.resolveRegisteredFile(entry, in: directory) else { return false }
+            return manager.isReadableFile(atPath: url.path)
         }
-        return !files.isEmpty
     }
 
     /// Resolves absolute URL for the primary model file.
+    ///
+    /// Falls back to a normalized path when the entry cannot be resolved, so
+    /// callers that only need a display path keep working; engine callers check
+    /// `fileExists(in:)` first.
     func primaryFileURL(in directory: URL) -> URL {
-        if let first = files.first, first.hasPrefix("/") {
-            return URL(fileURLWithPath: first)
+        if let first = files.first {
+            if let resolved = Self.resolveRegisteredFile(first, in: directory) {
+                return resolved
+            }
+            if first.hasPrefix("/") {
+                return URL(fileURLWithPath: first).standardizedFileURL
+            }
         }
-        return directory.appendingPathComponent(primaryFileName)
+        return directory.standardizedFileURL
+            .appendingPathComponent(primaryFileName)
+            .standardizedFileURL
     }
 
-    /// Absolute URLs of every file of this model, in declaration order.
+    /// Absolute URLs of every registered file that is present, in declaration
+    /// order. Entries that escape the models root, do not exist or are folders
+    /// are dropped. Unreadable files are kept so cleanup and resume still see
+    /// their bytes; `fileExists(in:)` adds the readability requirement.
     func fileURLs(in directory: URL) -> [URL] {
-        files.map { file in
-            file.hasPrefix("/") ? URL(fileURLWithPath: file) : directory.appendingPathComponent(file)
-        }
+        files.compactMap { Self.resolveRegisteredFile($0, in: directory) }
     }
 
     /// Context the engine actually gives one parallel slot.
@@ -278,6 +351,34 @@ struct LocalModel: Identifiable, Codable, Equatable {
 }
 
 extension LocalModel {
+    /// Resolves one registry file entry against the models root.
+    ///
+    /// A registry row is data: an older build or a hand edit can put `..` or an
+    /// absolute path there. `standardizedFileURL` collapses `..` before the
+    /// containment check, so a relative entry cannot address anything outside
+    /// `directory`. Absolute entries stay allowed because linked models keep
+    /// their own location; deleting them is still guarded by the caller's
+    /// root-prefix check. Folders are rejected because they cannot be handed to
+    /// the engine; readability is checked by `fileExists(in:)`.
+    static func resolveRegisteredFile(_ entry: String, in directory: URL) -> URL? {
+        guard !entry.isEmpty else { return nil }
+        let root = directory.standardizedFileURL
+        let candidate: URL
+        if entry.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: entry).standardizedFileURL
+        } else {
+            candidate = root.appendingPathComponent(entry).standardizedFileURL
+            let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+            guard candidate.path.hasPrefix(prefix) else { return nil }
+        }
+
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: candidate.path) else { return nil }
+        let isDirectory = (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? true
+        guard !isDirectory else { return nil }
+        return candidate
+    }
+
     /// Directory this model owns, when its files were published into a
     /// per-model namespace. Deleting the namespace removes every part of a split
     /// model, and the name pattern check keeps unrelated folders untouched.

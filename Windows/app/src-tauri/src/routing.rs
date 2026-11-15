@@ -171,10 +171,15 @@ mod tests {
             preferred_first: Some(true),
             ..Default::default()
         };
-        let enabled = Account { id: "enabled".into(), ..Default::default() };
+        let enabled = Account {
+            id: "enabled".into(),
+            ..Default::default()
+        };
         for strategy in STRATEGIES {
             let (ordered, blocked) = resolve(
-                &[disabled.clone(), enabled.clone()], strategy, &["disabled".into()],
+                &[disabled.clone(), enabled.clone()],
+                strategy,
+                &["disabled".into()],
             );
             assert_eq!(ordered, vec!["enabled"], "{strategy}");
             assert!(blocked.is_empty(), "manual exclusion is not a quota pause");

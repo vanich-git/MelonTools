@@ -294,6 +294,16 @@ final class LocalHardwareService: ObservableObject {
         }
     }
 
+    /// `UInt64(_:)` traps on NaN, infinity and anything above `UInt64.max`.
+    /// The estimate runs inside a SwiftUI `body`, so one absurd registry value
+    /// would crash the window instead of showing a silly number.
+    nonisolated static func clampedBytes(_ value: Double) -> UInt64 {
+        guard value.isFinite, value > 0 else { return 0 }
+        // 2^60 bytes is far above any real machine; keeping every component
+        // below it also keeps the sums below from overflowing UInt64.
+        return value >= Double(1 << 60) ? 1 << 60 : UInt64(value)
+    }
+
     nonisolated static func calculateMemoryEstimation(
         info: HardwareInfo,
         weightsSize: UInt64,
@@ -308,10 +318,12 @@ final class LocalHardwareService: ObservableObject {
         flashAttention: Bool = true
     ) -> MemoryEstimation {
         let bytesPerElement = kvCacheBytesPerElement(kvCacheType)
-        let layers = max(1, totalLayers)
+        // A corrupted registry or GGUF header must not overflow the byte
+        // arithmetic below: both bounds are far above any real model.
+        let layers = min(max(1, totalLayers), 4_096)
         let parallelSlots = max(1, slots)
         // --ctx-size is the TOTAL KV capacity, shared across parallel slots.
-        let totalTokens = max(1, contextLength)
+        let totalTokens = min(max(1, contextLength), 4 * 1_024 * 1_024)
 
         var assumptions: [String] = []
         var confidence: EstimationConfidence = .low
@@ -399,7 +411,7 @@ final class LocalHardwareService: ObservableObject {
         if recurrentLayers > 0, let inner = profile?.ssmInnerSize, inner > 0 {
             let kernel = max(1, profile?.ssmConvKernel ?? 4)
             let state = max(1, profile?.ssmStateSize ?? 128)
-            stateBytes = UInt64((Double(kernel) + Double(state)) * Double(inner) * 4
+            stateBytes = Self.clampedBytes((Double(kernel) + Double(state)) * Double(inner) * 4
                 * Double(recurrentLayers) * Double(parallelSlots))
             assumptions.append(L("Recurrent state is architecture-dependent; this SSM estimate is not an allocator measurement."))
             confidence = .low
@@ -412,37 +424,37 @@ final class LocalHardwareService: ObservableObject {
             confidence = .low
             assumptions.append(L("MLA cache layout is runtime-dependent; standard K/V geometry is only a fallback."))
         }
-        let kvCacheBytes = UInt64(kvBytes)
-        let kvLow = UInt64(kvBytes * (confidence == .low ? 0.5 : 1.0))
-        let kvHigh = UInt64(kvBytes * (confidence == .low ? 2.0 : 1.1)) + 64 * 1024 * 1024
+        let kvCacheBytes = Self.clampedBytes(kvBytes)
+        let kvLow = Self.clampedBytes(kvBytes * (confidence == .low ? 0.5 : 1.0))
+        let kvHigh = Self.clampedBytes(kvBytes * (confidence == .low ? 2.0 : 1.1)) + 64 * 1024 * 1024
 
         // Compute buffers scale with the batch and the hidden size, not with the
         // context: the old `batchSize * 1 MB` was unrelated to either.
-        let batch = max(1, batchSize)
+        let batch = min(max(1, batchSize), 65_536)
         let computePerToken = Double(embeddingFallback) * 4.0 * 3.0
-        var computeBuffers = max(256 * 1024 * 1024, UInt64(computePerToken * Double(batch)))
+        var computeBuffers = max(256 * 1024 * 1024, Self.clampedBytes(computePerToken * Double(batch)))
         if !flashAttention {
             // Non-FA attention materializes scores for a microbatch. The real
             // microbatch is runtime-dependent, so cap this heuristic at 512.
-            computeBuffers += UInt64(Double(min(batch, 512)) * Double(totalTokens)
+            computeBuffers += Self.clampedBytes(Double(min(batch, 512)) * Double(totalTokens)
                 * Double(max(1, profile?.headCount ?? 32)) * 4)
         }
         assumptions.append(L("Compute buffers and weight residency are estimates; mmap, microbatch, Flash Attention and runtime version affect actual usage."))
         assumptions.append(L("The total includes an OS reserve, not current free memory; GPU and RAM budgets are checked separately."))
-        let osReserve: UInt64 = max(2 * 1024 * 1024 * 1024, UInt64(Double(info.totalRAM) * 0.15))
+        let osReserve: UInt64 = max(2 * 1024 * 1024 * 1024, Self.clampedBytes(Double(info.totalRAM) * 0.15))
 
         let base = weightsSize + computeBuffers + osReserve
         let totalRequired = base + kvCacheBytes + stateBytes
-        let totalLow = base + kvLow + UInt64(Double(stateBytes) * 0.8)
-        let totalHigh = base + kvHigh + UInt64(Double(stateBytes) * 1.5)
+        let totalLow = base + kvLow + Self.clampedBytes(Double(stateBytes) * 0.8)
+        let totalHigh = base + kvHigh + Self.clampedBytes(Double(stateBytes) * 1.5)
 
         let offloadedLayers = backend == .cpu ? 0 : min(layers, max(0, gpuLayers ?? layers))
         let fraction = Double(offloadedLayers) / Double(layers)
         let gpuRequired = offloadedLayers > 0
-            ? UInt64(Double(weightsSize + kvCacheBytes + stateBytes) * fraction) + computeBuffers : 0
+            ? Self.clampedBytes(Double(weightsSize + kvCacheBytes + stateBytes) * fraction) + computeBuffers : 0
         let ramRequired = info.gpuHasUnifiedMemory || offloadedLayers == 0
             ? totalRequired
-            : totalRequired - UInt64(Double(weightsSize + kvCacheBytes + stateBytes) * fraction)
+            : totalRequired - Self.clampedBytes(Double(weightsSize + kvCacheBytes + stateBytes) * fraction)
         let gpuBudget = offloadedLayers > 0 ? info.gpuRecommendedMaxWorkingSetSize : nil
         if offloadedLayers > 0 {
             assumptions.append(L("GPU layer placement uses proportional weights; embeddings, output tensors and per-layer sizes may differ."))
@@ -518,10 +530,18 @@ final class LocalHardwareService: ObservableObject {
         )
     }
 
-    nonisolated static func formatBytes(_ bytes: UInt64) -> String {
+    /// Built once: panels call `formatBytes` dozens of times per body, and
+    /// constructing a `ByteCountFormatter` dominates the formatting itself.
+    /// `nonisolated(unsafe)` matches the nonisolated `formatBytes` below — the
+    /// formatter is configured here and only read afterwards.
+    nonisolated(unsafe) private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useGB, .useMB]
         formatter.countStyle = .memory
-        return formatter.string(fromByteCount: Int64(bytes))
+        return formatter
+    }()
+
+    nonisolated static func formatBytes(_ bytes: UInt64) -> String {
+        byteFormatter.string(fromByteCount: Int64(bytes))
     }
 }

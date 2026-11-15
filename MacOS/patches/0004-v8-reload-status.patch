@@ -1,0 +1,570 @@
+diff --git a/internal/api/handlers/management/config_v8.go b/internal/api/handlers/management/config_v8.go
+index 5f94409..a1eb316 100644
+--- a/internal/api/handlers/management/config_v8.go
++++ b/internal/api/handlers/management/config_v8.go
+@@ -177,8 +177,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
+ 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
+ 		return
+ 	}
+-	next, err := config.ParseConfigBytes(data)
+-	if err != nil {
++	if _, err := config.ParseConfigBytes(data); err != nil {
+ 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+ 		return
+ 	}
+@@ -198,19 +197,73 @@ func (h *Handler) ConfigV8(c *gin.Context) {
+ 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
+ 		return
+ 	}
+-	// Runtime-only ownership state is never sourced from an uploaded YAML document.
+-	next.Home = h.cfg.Home
+-	// WriteConfig may normalize the bytes, so report the version actually on
+-	// disk. If it cannot be read back, omit the ETag instead of guessing one.
+-	// Like Home, SourceHash keeps its runtime owner and is published by the
+-	// reload, so it is not overwritten on next here.
+-	if saved, errSaved := os.ReadFile(h.configFilePath); errSaved == nil {
+-		c.Header("ETag", configV8ETag(config.ComputeSourceHash(saved)))
++	// WriteConfig may normalize the bytes, so the document that was actually
++	// saved is the one the runtime must apply. Re-parse it instead of applying a
++	// pre-normalization tree: the digest and the applied config then describe
++	// the same bytes. The whole handler holds h.mu, so no other management save
++	// can replace the file between the write and this read.
++	saved, errSaved := os.ReadFile(h.configFilePath)
++	if errSaved != nil {
++		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": errSaved.Error()})
++		return
+ 	}
+-	h.cfg = next
++	appliedConfig, errApplied := config.ParseConfigBytes(saved)
++	if errApplied != nil {
++		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid_config", "message": errApplied.Error()})
++		return
++	}
++	// Runtime-only ownership state is never sourced from an uploaded YAML document.
++	appliedConfig.Home = h.cfg.Home
++	digest := config.ComputeSourceHash(saved)
++	c.Header("ETag", configV8ETag(digest))
++	h.cfg = appliedConfig
+ 	snapshot := h.reloadSnapshotConfigLocked()
++	snapshot.digest = digest
++	h.savedConfigDigest = digest
+ 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+-	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
++	// The reload is asynchronous: this number is the generation the client must
++	// see on /v8/management/reload-status before treating the save as applied.
++	// The digest is the exact document that was saved; only an equal applied
++	// digest proves this document reached the runtime.
++	c.JSON(http.StatusOK, gin.H{
++		"status":            "ok",
++		"config-version":    8,
++		"reload-generation": snapshot.generation,
++		"reload-digest":     digest,
++	})
++}
++
++// GetReloadStatusV8 reports how far the asynchronous reload has got.
++//
++// PUT /v8/management/config.yaml answers before reloadConfigAfterManagementSave
++// runs, and no other management read exposes that completion: the config GETs
++// return the file or the value assigned to h.cfg before the 200, while
++// /v1/models carries aliases but not the provider generation behind them. A
++// client that must know whether its file was handed to the runtime compares
++// the generation it received with applied-generation here.
++func (h *Handler) GetReloadStatusV8(c *gin.Context) {
++	if h == nil {
++		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
++		return
++	}
++	h.mu.Lock()
++	saved := h.reloadGeneration
++	applied := h.appliedReloadGeneration
++	savedDigest := h.savedConfigDigest
++	appliedDigest := h.appliedConfigDigest
++	h.mu.Unlock()
++	c.Header("Cache-Control", "no-store")
++	// Generations also advance for plugin reloads, which save no YAML. The
++	// digest pair is the config-save contract: pending means the last saved
++	// document has not been proven applied, even if a later unrelated reload
++	// already advanced the generation counter.
++	c.JSON(http.StatusOK, gin.H{
++		"saved-generation":   saved,
++		"applied-generation": applied,
++		"saved-digest":       savedDigest,
++		"applied-digest":     appliedDigest,
++		"pending":            savedDigest != "" && savedDigest != appliedDigest,
++	})
+ }
+ 
+ // configV8ETag renders a config source hash as a strong ETag.
+diff --git a/internal/api/handlers/management/config_v8_reload_status_test.go b/internal/api/handlers/management/config_v8_reload_status_test.go
+new file mode 100644
+index 0000000..48b6720
+--- /dev/null
++++ b/internal/api/handlers/management/config_v8_reload_status_test.go
+@@ -0,0 +1,221 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++const reloadStatusConfig = `config-version: 8
++server:
++  host: "127.0.0.1"
++  port: 8317
++access:
++  api-keys:
++    - "client"
++management:
++  allow-remote: false
++`
++
++type reloadStatusAnswer struct {
++	Saved         uint64 `json:"saved-generation"`
++	Applied       uint64 `json:"applied-generation"`
++	SavedDigest   string `json:"saved-digest"`
++	AppliedDigest string `json:"applied-digest"`
++	Pending       bool   `json:"pending"`
++}
++
++type reloadPutAnswer struct {
++	Status           string `json:"status"`
++	ConfigVersion    int    `json:"config-version"`
++	ReloadGeneration uint64 `json:"reload-generation"`
++	ReloadDigest     string `json:"reload-digest"`
++}
++
++func newReloadStatusHandler(t *testing.T, hook func(context.Context, *config.Config) bool) (*Handler, *gin.Engine) {
++	t.Helper()
++	gin.SetMode(gin.TestMode)
++	path := filepath.Join(t.TempDir(), "config.yaml")
++	if err := os.WriteFile(path, []byte(reloadStatusConfig), 0600); err != nil {
++		t.Fatal(err)
++	}
++	cfg, err := config.LoadConfig(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	h := &Handler{cfg: cfg, configFilePath: path}
++	if hook != nil {
++		h.SetConfigReloadResultHook(hook)
++	}
++	router := gin.New()
++	router.PUT("/v8/management/config.yaml", h.ConfigV8)
++	router.GET("/v8/management/reload-status", h.GetReloadStatusV8)
++	return h, router
++}
++
++func putReloadStatusConfig(t *testing.T, router *gin.Engine, body string) reloadPutAnswer {
++	t.Helper()
++	recorder := httptest.NewRecorder()
++	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/v8/management/config.yaml", strings.NewReader(body)))
++	if recorder.Code != http.StatusOK {
++		t.Fatalf("PUT status=%d body=%s", recorder.Code, recorder.Body.String())
++	}
++	var answer reloadPutAnswer
++	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
++		t.Fatalf("PUT answer is not JSON: %v (%s)", err, recorder.Body.String())
++	}
++	if answer.Status != "ok" || answer.ConfigVersion != 8 {
++		t.Fatalf("PUT lost its v8 acknowledgement: %+v", answer)
++	}
++	if answer.ReloadGeneration == 0 {
++		t.Fatal("PUT did not report a reload generation")
++	}
++	if answer.ReloadDigest == "" {
++		t.Fatal("PUT did not report the digest of the saved config")
++	}
++	return answer
++}
++
++func readReloadStatus(t *testing.T, router *gin.Engine) reloadStatusAnswer {
++	t.Helper()
++	recorder := httptest.NewRecorder()
++	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v8/management/reload-status", nil))
++	if recorder.Code != http.StatusOK {
++		t.Fatalf("GET reload-status=%d body=%s", recorder.Code, recorder.Body.String())
++	}
++	var answer reloadStatusAnswer
++	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
++		t.Fatalf("reload-status is not JSON: %v", err)
++	}
++	return answer
++}
++
++func waitAppliedDigest(t *testing.T, router *gin.Engine, digest string) reloadStatusAnswer {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for {
++		status := readReloadStatus(t, router)
++		if status.AppliedDigest == digest {
++			return status
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("digest %s was never applied: %+v", digest, status)
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
++func TestConfigV8ReloadStatusReportsAsyncCompletion(t *testing.T) {
++	release := make(chan struct{}, 4)
++	_, router := newReloadStatusHandler(t, func(_ context.Context, _ *config.Config) bool {
++		<-release
++		return true
++	})
++
++	put := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8318", 1))
++	status := readReloadStatus(t, router)
++	if status.Saved != put.ReloadGeneration || status.SavedDigest != put.ReloadDigest || !status.Pending {
++		t.Fatalf("accepted save was reported as applied: %+v (generation=%d digest=%s)", status, put.ReloadGeneration, put.ReloadDigest)
++	}
++
++	release <- struct{}{}
++	status = waitAppliedDigest(t, router, put.ReloadDigest)
++	if status.Pending || status.Applied != put.ReloadGeneration {
++		t.Fatalf("completed reload is still pending or lost its generation: %+v", status)
++	}
++}
++
++func TestConfigV8ReloadStatusAppliesOnlyTheLatestConcurrentSave(t *testing.T) {
++	release := make(chan struct{}, 4)
++	_, router := newReloadStatusHandler(t, func(_ context.Context, _ *config.Config) bool {
++		<-release
++		return true
++	})
++
++	first := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8318", 1))
++	second := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8319", 1))
++	if first.ReloadDigest == second.ReloadDigest {
++		t.Fatal("different documents produced the same digest")
++	}
++	release <- struct{}{}
++	release <- struct{}{}
++
++	status := waitAppliedDigest(t, router, second.ReloadDigest)
++	if status.Pending || status.SavedDigest != second.ReloadDigest || status.AppliedDigest != second.ReloadDigest {
++		t.Fatalf("an older save won over the latest one: %+v", status)
++	}
++}
++
++func TestConfigV8ReloadStatusAcceptsIdenticalDigest(t *testing.T) {
++	_, router := newReloadStatusHandler(t, func(_ context.Context, _ *config.Config) bool { return true })
++
++	body := strings.Replace(reloadStatusConfig, "port: 8317", "port: 8318", 1)
++	first := putReloadStatusConfig(t, router, body)
++	waitAppliedDigest(t, router, first.ReloadDigest)
++
++	second := putReloadStatusConfig(t, router, body)
++	if second.ReloadDigest != first.ReloadDigest {
++		t.Fatalf("identical documents produced different digests: %s != %s", second.ReloadDigest, first.ReloadDigest)
++	}
++	status := readReloadStatus(t, router)
++	if status.Pending || status.AppliedDigest != second.ReloadDigest {
++		t.Fatalf("an already applied identical document stayed pending: %+v", status)
++	}
++}
++
++func TestConfigV8ReloadStatusDoesNotPublishFailedApply(t *testing.T) {
++	_, router := newReloadStatusHandler(t, func(_ context.Context, _ *config.Config) bool { return false })
++
++	put := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8318", 1))
++	// The callback is invoked asynchronously; give it a chance to report failure.
++	time.Sleep(100 * time.Millisecond)
++	status := readReloadStatus(t, router)
++	if status.SavedDigest != put.ReloadDigest || status.AppliedDigest != "" || !status.Pending {
++		t.Fatalf("a rejected apply was published as applied: %+v", status)
++	}
++}
++
++func TestConfigV8ReloadStatusDoesNotClaimAnUnappliedSave(t *testing.T) {
++	_, router := newReloadStatusHandler(t, nil)
++
++	put := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8320", 1))
++	status := readReloadStatus(t, router)
++	if status.SavedDigest != put.ReloadDigest || status.AppliedDigest != "" || !status.Pending {
++		t.Fatalf("a save without a consumer was reported as applied: %+v", status)
++	}
++}
++
++func TestConfigV8ReloadDigestMatchesAppliedDocument(t *testing.T) {
++	ports := make(chan int, 4)
++	h, router := newReloadStatusHandler(t, func(_ context.Context, cfg *config.Config) bool {
++		ports <- cfg.Port
++		return true
++	})
++
++	put := putReloadStatusConfig(t, router, strings.Replace(reloadStatusConfig, "port: 8317", "port: 8318", 1))
++	saved, err := os.ReadFile(h.configFilePath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := config.ComputeSourceHash(saved); got != put.ReloadDigest {
++		t.Fatalf("digest does not describe the saved document: reported=%s file=%s", put.ReloadDigest, got)
++	}
++	waitAppliedDigest(t, router, put.ReloadDigest)
++	select {
++	case port := <-ports:
++		if port != 8318 {
++			t.Fatalf("hook received a different document than the one saved: port=%d", port)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("hook was never called with the saved document")
++	}
++}
+diff --git a/internal/api/handlers/management/handler.go b/internal/api/handlers/management/handler.go
+index 529c3a8..5767416 100644
+--- a/internal/api/handlers/management/handler.go
++++ b/internal/api/handlers/management/handler.go
+@@ -38,36 +38,43 @@ const attemptMaxIdleTime = 2 * time.Hour
+ 
+ // Handler aggregates config reference, persistence path and helpers.
+ type Handler struct {
+-	cfg                     *config.Config
+-	configFilePath          string
+-	mu                      sync.Mutex
+-	authStatusMu            sync.Mutex
+-	reloadMu                sync.Mutex
+-	reloadGeneration        uint64
+-	appliedReloadGeneration uint64
+-	attemptsMu              sync.Mutex
+-	failedAttempts          map[string]*attemptInfo // keyed by client IP
+-	authManager             *coreauth.Manager
+-	tokenStore              coreauth.Store
+-	localPassword           string
+-	allowRemoteOverride     bool
+-	envSecret               string
+-	logDir                  string
+-	postAuthHook            coreauth.PostAuthHook
+-	postAuthPersistHook     coreauth.PostAuthHook
+-	pluginHost              *pluginhost.Host
+-	configReloadHook        func(context.Context, *config.Config)
+-	pluginStoreRegistryURL  string
+-	pluginStoreHTTPClient   pluginstore.HTTPDoer
+-	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
+-	pluginReleases          pluginReleaseCache
+-	siwcOAuthFactory        func(*config.Config) siwcOAuthService
+-	siwcCommitMu            sync.Mutex
++	cfg                       *config.Config
++	configFilePath            string
++	mu                        sync.Mutex
++	authStatusMu              sync.Mutex
++	reloadMu                  sync.Mutex
++	reloadGeneration          uint64
++	deliveredReloadGeneration uint64
++	appliedReloadGeneration   uint64
++	savedConfigDigest         string
++	appliedConfigDigest       string
++	attemptsMu                sync.Mutex
++	failedAttempts            map[string]*attemptInfo // keyed by client IP
++	authManager               *coreauth.Manager
++	tokenStore                coreauth.Store
++	localPassword             string
++	allowRemoteOverride       bool
++	envSecret                 string
++	logDir                    string
++	postAuthHook              coreauth.PostAuthHook
++	postAuthPersistHook       coreauth.PostAuthHook
++	pluginHost                *pluginhost.Host
++	configReloadHook          func(context.Context, *config.Config)
++	configReloadResultHook    func(context.Context, *config.Config) bool
++	pluginStoreRegistryURL    string
++	pluginStoreHTTPClient     pluginstore.HTTPDoer
++	pluginStoreRateLimiter    *pluginstore.GitHubRateLimiter
++	pluginReleases            pluginReleaseCache
++	siwcOAuthFactory          func(*config.Config) siwcOAuthService
++	siwcCommitMu              sync.Mutex
+ }
+ 
+ type configReloadSnapshot struct {
+ 	cfg        *config.Config
+ 	generation uint64
++	// digest identifies the exact document saved for this snapshot. Plugin
++	// reloads leave it empty because they did not save a configuration file.
++	digest string
+ }
+ 
+ // NewHandler creates a new management handler instance.
+@@ -218,6 +225,19 @@ func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)
+ 	h.mu.Unlock()
+ }
+ 
++// SetConfigReloadResultHook registers a callback that reports whether the saved
++// configuration was applied. It takes precedence over SetConfigReloadHook: a
++// void hook cannot distinguish "applied" from "ignored" or "failed", so only a
++// positive result from this callback publishes a reload as applied.
++func (h *Handler) SetConfigReloadResultHook(hook func(context.Context, *config.Config) bool) {
++	if h == nil {
++		return
++	}
++	h.mu.Lock()
++	h.configReloadResultHook = hook
++	h.mu.Unlock()
++}
++
+ // reloadSnapshotConfigLocked clones the runtime config and assigns a reload generation.
+ // Callers must hold h.mu.
+ func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
+@@ -251,22 +271,48 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot
+ 	defer h.reloadMu.Unlock()
+ 
+ 	h.mu.Lock()
+-	if snapshot.generation < h.appliedReloadGeneration {
++	if snapshot.generation <= h.deliveredReloadGeneration {
+ 		h.mu.Unlock()
+ 		return
+ 	}
++	resultHook := h.configReloadResultHook
+ 	hook := h.configReloadHook
+ 	host := h.pluginHost
+ 	h.mu.Unlock()
+-	if hook != nil {
++
++	applied := false
++	switch {
++	case resultHook != nil:
++		// The callback applies this exact snapshot and reports whether the
++		// runtime accepted it. A false result must stay pending: a completed
++		// callback can still mean "no change", "rejected" or "failed".
++		applied = resultHook(ctx, snapshot.cfg)
++	case hook != nil:
++		// Legacy hooks return no result. Their completion is not evidence that
++		// the configuration was applied, so the save stays pending.
+ 		hook(ctx, snapshot.cfg)
+-	} else if host != nil {
++	case host != nil:
+ 		host.ApplyConfig(ctx, snapshot.cfg)
++	default:
++		// Without a consumer the save was never applied. Marking it would make
++		// GET /v8/management/reload-status report a completion that did not
++		// happen, which is worse than staying pending forever.
++		return
+ 	}
+-
+ 	h.mu.Lock()
+-	if snapshot.generation > h.appliedReloadGeneration {
+-		h.appliedReloadGeneration = snapshot.generation
++	// Delivery order is tracked separately from proof of application: an older
++	// snapshot must never be handed to the runtime after a newer one, even when
++	// the newer apply failed and therefore stays pending.
++	if snapshot.generation > h.deliveredReloadGeneration {
++		h.deliveredReloadGeneration = snapshot.generation
++	}
++	if applied {
++		if snapshot.generation > h.appliedReloadGeneration {
++			h.appliedReloadGeneration = snapshot.generation
++		}
++		if snapshot.digest != "" {
++			h.appliedConfigDigest = snapshot.digest
++		}
+ 	}
+ 	h.mu.Unlock()
+ }
+diff --git a/internal/api/server.go b/internal/api/server.go
+index 87ddc27..f4e236c 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -222,6 +222,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+ 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+ 	s.mgmt.SetPluginHost(optionState.pluginHost)
+ 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
++	s.mgmt.SetConfigReloadResultHook(optionState.configReloadResultHook)
+ 	if optionState.localPassword != "" {
+ 		s.mgmt.SetLocalPassword(optionState.localPassword)
+ 	}
+diff --git a/internal/api/server_management_v8.go b/internal/api/server_management_v8.go
+index a0cb343..3e47878 100644
+--- a/internal/api/server_management_v8.go
++++ b/internal/api/server_management_v8.go
+@@ -22,6 +22,7 @@ func (s *Server) registerManagementV8Routes() {
+ 	v8.PUT("/config", s.mgmt.ConfigV8)
+ 	v8.PATCH("/config", s.mgmt.ConfigV8)
+ 	v8.GET("/config.yaml", s.mgmt.ConfigV8)
++	v8.GET("/reload-status", s.mgmt.GetReloadStatusV8)
+ 	v8.PUT("/config.yaml", s.mgmt.ConfigV8)
+ 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+ 		v8.Handle(method, "/config/*path", s.mgmt.ConfigV8)
+diff --git a/internal/api/server_options.go b/internal/api/server_options.go
+index f5ea197..6041c1d 100644
+--- a/internal/api/server_options.go
++++ b/internal/api/server_options.go
+@@ -14,19 +14,20 @@ import (
+ )
+ 
+ type serverOptionConfig struct {
+-	extraMiddleware       []gin.HandlerFunc
+-	engineConfigurator    func(*gin.Engine)
+-	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+-	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
+-	localPassword         string
+-	keepAliveEnabled      bool
+-	keepAliveTimeout      time.Duration
+-	keepAliveOnTimeout    func()
+-	postAuthHook          auth.PostAuthHook
+-	postAuthPersistHook   auth.PostAuthHook
+-	pluginHost            *pluginhost.Host
+-	configReloadHook      func(context.Context, *config.Config)
+-	exampleAPIKeySafeMode bool
++	extraMiddleware        []gin.HandlerFunc
++	engineConfigurator     func(*gin.Engine)
++	routerConfigurator     func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
++	requestLoggerFactory   func(*config.Config, string) logging.RequestLogger
++	localPassword          string
++	keepAliveEnabled       bool
++	keepAliveTimeout       time.Duration
++	keepAliveOnTimeout     func()
++	postAuthHook           auth.PostAuthHook
++	postAuthPersistHook    auth.PostAuthHook
++	pluginHost             *pluginhost.Host
++	configReloadHook       func(context.Context, *config.Config)
++	configReloadResultHook func(context.Context, *config.Config) bool
++	exampleAPIKeySafeMode  bool
+ }
+ 
+ // ServerOption customises HTTP server construction.
+@@ -128,6 +129,15 @@ func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOpti
+ 	}
+ }
+ 
++// WithConfigReloadResultHook registers a callback that applies the saved config
++// and reports whether the runtime accepted it. It takes precedence over
++// WithConfigReloadHook because a void callback cannot prove application.
++func WithConfigReloadResultHook(hook func(context.Context, *config.Config) bool) ServerOption {
++	return func(cfg *serverOptionConfig) {
++		cfg.configReloadResultHook = hook
++	}
++}
++
+ // WithExampleAPIKeySafeMode blocks proxy API endpoints while template API keys remain configured.
+ func WithExampleAPIKeySafeMode() ServerOption {
+ 	return func(cfg *serverOptionConfig) {
+diff --git a/sdk/cliproxy/builder.go b/sdk/cliproxy/builder.go
+index 532bde1..16268c9 100644
+--- a/sdk/cliproxy/builder.go
++++ b/sdk/cliproxy/builder.go
+@@ -301,6 +301,14 @@ func (b *Builder) Build() (*Service, error) {
+ 		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
+ 			service.reloadConfigFromWatcher()
+ 		}),
++		// The watcher hook above cannot report whether the runtime accepted the
++		// document: ReloadConfigIfChanged only reports that it was invoked. The
++		// management reload contract needs the result of applying this exact
++		// snapshot, so it is applied directly instead of being re-read from a
++		// file another writer may already have replaced.
++		api.WithConfigReloadResultHook(func(ctx context.Context, cfg *config.Config) bool {
++			return service.applyConfigUpdateWithAuthSynthesis(ctx, cfg, false)
++		}),
+ 	)
+ 	return service, nil
+ }

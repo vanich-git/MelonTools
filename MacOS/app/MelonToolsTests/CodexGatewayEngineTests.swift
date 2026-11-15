@@ -261,4 +261,147 @@ final class CodexGatewayEngineTests: XCTestCase {
         XCTAssertEqual(writes, 2)
         XCTAssertEqual(servedCalls, 1, "a failed rewrite must not fall through to a matching catalogue")
     }
+
+    func testParsesUsageLogLine() {
+        let line = "[2026-11-10 18:00:00] [12345678] [info ] [telemetry_logger.go:75] [usage] timestamp=2026-11-10T18:00:00Z model=claude-3-7-sonnet provider=anthravity auth=test-account-1 input=150 output=320 mode=stream status=200"
+        let record = CodexGatewayService.parseUsageLine(line)
+        XCTAssertNotNil(record)
+        XCTAssertEqual(record?.model, "claude-3-7-sonnet")
+        XCTAssertEqual(record?.provider, "anthravity")
+        XCTAssertEqual(record?.auth, "test-account-1")
+        XCTAssertEqual(record?.inputTokens, 150)
+        XCTAssertEqual(record?.outputTokens, 320)
+        XCTAssertEqual(record?.mode, "stream")
+        XCTAssertEqual(record?.status, 200)
+    }
+}
+
+@MainActor
+final class CustomProviderTests: XCTestCase {
+    private func source(
+        id: String = "acme",
+        protocol apiProtocol: ModelSource.APIProtocol,
+        baseURL: String,
+        modelID: String = "acme-chat"
+    ) -> ModelSource {
+        ModelSource(
+            id: id,
+            kind: .custom,
+            title: "Acme",
+            baseURL: baseURL,
+            apiKey: "sk-acme",
+            enabled: true,
+            models: [SourceModel(
+                id: modelID,
+                display: "Acme Chat",
+                contextLength: 32_000,
+                enabled: true,
+                alias: "\(id)/\(modelID)"
+            )],
+            apiProtocol: apiProtocol
+        )
+    }
+
+    func testCustomProviderEmitsEachProtocolGroupWithNormalizedBases() {
+        let chat = source(protocol: .openAIChat, baseURL: "https://chat.example/v1")
+        let responses = source(id: "responses", protocol: .openAIResponses, baseURL: "https://responses.example/v1", modelID: "acme-responses")
+        let anthropic = source(id: "anthropic", protocol: .anthropic, baseURL: "https://messages.example/v1", modelID: "acme-messages")
+        let gemini = source(id: "gemini", protocol: .gemini, baseURL: "https://gemini.example/v1beta", modelID: "acme-gemini")
+
+        let yaml = ModelSourcesStore.gatewayYAML(sources: [chat, responses, anthropic, gemini])
+
+        XCTAssertTrue(yaml.contains("  openai-compatibility:"), yaml)
+        XCTAssertTrue(yaml.contains("  codex:"), yaml)
+        XCTAssertTrue(yaml.contains("  claude:"), yaml)
+        XCTAssertTrue(yaml.contains("  gemini:"), yaml)
+        XCTAssertTrue(yaml.contains("base-url: \"https://chat.example/v1\""), yaml)
+        XCTAssertTrue(yaml.contains("base-url: \"https://responses.example/v1\""), yaml)
+        XCTAssertTrue(yaml.contains("base-url: \"https://messages.example\""), yaml)
+        XCTAssertFalse(yaml.contains("messages.example/v1\""), yaml)
+        XCTAssertTrue(yaml.contains("base-url: \"https://gemini.example\""), yaml)
+        XCTAssertFalse(yaml.contains("gemini.example/v1beta\""), yaml)
+        XCTAssertTrue(yaml.contains("alias: \"acme/acme-chat\""), yaml)
+        XCTAssertTrue(yaml.contains("alias: \"gemini/acme-gemini\""), yaml)
+    }
+
+    func testDisabledOrEmptyCustomProviderIsNotWritten() {
+        var source = source(protocol: .openAIChat, baseURL: "https://chat.example/v1")
+        source.enabled = false
+        XCTAssertEqual(ModelSourcesStore.gatewayYAML(sources: [source]), "")
+
+        var keyless = source
+        keyless.enabled = true
+        keyless.apiKey = "  "
+        XCTAssertEqual(ModelSourcesStore.gatewayYAML(sources: [keyless]), "")
+    }
+
+    func testParsesGeminiModelEnvelopeAndStripsPrefix() throws {
+        let data = Data(#"""
+        {
+          "models": [
+            { "name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro", "inputTokenLimit": 1048576 },
+            { "name": "models/gemini-2.5-flash", "displayName": "Gemini 2.5 Flash", "inputTokenLimit": 1048576 },
+            { "name": "models/gemini-2.5-lite", "inputTokenLimit": 1048576 }
+          ]
+        }
+        """#.utf8)
+
+        let models = try ModelSourcesStore.parseCustomModels(data, identifier: "acme")
+
+        XCTAssertEqual(models.map(\.id), ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-lite"])
+        XCTAssertEqual(models.first?.display, "Gemini 2.5 Pro")
+        XCTAssertEqual(models.last?.display, "gemini-2.5-lite")
+        XCTAssertEqual(models.first?.contextLength, 1_048_576)
+        XCTAssertEqual(models.first?.alias, "acme/gemini-2.5-pro")
+    }
+
+    func testParsesOpenAIEnvelopeAndDropsDuplicates() throws {
+        let data = Data(#"""
+        {
+          "object": "list",
+          "data": [
+            { "id": "acme-large", "context_length": 128000 },
+            { "id": "acme-large", "name": "Duplicate" },
+            { "id": "acme-small", "display_name": "Acme Small" }
+          ]
+        }
+        """#.utf8)
+
+        let models = try ModelSourcesStore.parseCustomModels(data, identifier: "acme")
+
+        XCTAssertEqual(models.map(\.id), ["acme-large", "acme-small"])
+        XCTAssertEqual(models.first?.display, "acme-large")
+        XCTAssertEqual(models.first?.contextLength, 128_000)
+        XCTAssertEqual(models.last?.display, "Acme Small")
+    }
+
+    func testIdentifierAndBaseURLValidation() {
+        let existing = source(protocol: .openAIChat, baseURL: "https://chat.example/v1")
+        XCTAssertNotNil(ModelSourcesStore.customIdentifierProblem("Acme", sources: [existing]))
+        XCTAssertNotNil(ModelSourcesStore.customIdentifierProblem("a", sources: [existing]))
+        XCTAssertNotNil(ModelSourcesStore.customIdentifierProblem("acme_chat", sources: [existing]))
+        XCTAssertNotNil(ModelSourcesStore.customIdentifierProblem("claude", sources: [existing]))
+        XCTAssertNotNil(ModelSourcesStore.customIdentifierProblem("acme", sources: [existing]))
+        XCTAssertNil(ModelSourcesStore.customIdentifierProblem("acme", sources: [existing], excluding: "acme"))
+        XCTAssertNil(ModelSourcesStore.customIdentifierProblem("acme-2", sources: [existing]))
+
+        XCTAssertEqual(ModelSourcesStore.normalizedBaseURL(" https://gateway.example/v1/// "), "https://gateway.example/v1")
+        XCTAssertNil(ModelSourcesStore.normalizedBaseURL("ftp://gateway.example"))
+        XCTAssertNil(ModelSourcesStore.normalizedBaseURL("gateway.example/v1"))
+        XCTAssertNil(ModelSourcesStore.normalizedBaseURL("https://gateway.example/v1?x=1"))
+    }
+
+    func testModelFetchURLFollowsProtocol() {
+        let chat = ModelSourcesStore.customModelsURL(baseURL: "https://relay.example/v1", apiProtocol: .openAIChat)
+        let anthropic = ModelSourcesStore.customModelsURL(baseURL: "https://api.example", apiProtocol: .anthropic)
+        let anthropicV1 = ModelSourcesStore.customModelsURL(baseURL: "https://api.example/v1", apiProtocol: .anthropic)
+        let gemini = ModelSourcesStore.customModelsURL(baseURL: "https://gemini.example", apiProtocol: .gemini)
+        let geminiV1 = ModelSourcesStore.customModelsURL(baseURL: "https://gemini.example/v1beta", apiProtocol: .gemini)
+
+        XCTAssertEqual(chat?.absoluteString, "https://relay.example/v1/models")
+        XCTAssertEqual(anthropic?.absoluteString, "https://api.example/v1/models")
+        XCTAssertEqual(anthropicV1?.absoluteString, "https://api.example/v1/models")
+        XCTAssertEqual(gemini?.absoluteString, "https://gemini.example/v1beta/models")
+        XCTAssertEqual(geminiV1?.absoluteString, "https://gemini.example/v1beta/models")
+    }
 }

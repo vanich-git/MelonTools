@@ -2193,6 +2193,8 @@ pub fn model_group(id: &str) -> &'static str {
         "openrouter"
     } else if id.starts_with("deepinfra/") {
         "deepinfra"
+    } else if id.starts_with("nvidia/") {
+        "nvidia"
     } else if id.starts_with("vercel/") {
         "vercel"
     } else if id.starts_with("zai/") {
@@ -2215,6 +2217,7 @@ pub fn model_groups(ids: &[String]) -> Vec<Value> {
         "opencode",
         "openrouter",
         "deepinfra",
+        "nvidia",
         "vercel",
         "zai",
         "commandcode",
@@ -2679,6 +2682,7 @@ mod tests {
             "opencode/grok-4.7",
             "openrouter/meta/llama",
             "deepinfra/deepseek-ai/DeepSeek-V4",
+            "nvidia/vendor/model",
             "vercel/anthropic/claude-sonnet-4.6",
             "zai/glm-5.3",
             "commandcode/claude-sonnet-5-5",
@@ -2710,19 +2714,14 @@ mod tests {
             ids_of("deepinfra"),
             vec!["deepinfra/deepseek-ai/DeepSeek-V4"]
         );
+        assert_eq!(ids_of("nvidia"), vec!["nvidia/vendor/model"]);
         assert_eq!(ids_of("vercel"), vec!["vercel/anthropic/claude-sonnet-4.6"]);
         assert_eq!(ids_of("zai"), vec!["zai/glm-5.3"]);
-        assert_eq!(
-            ids_of("commandcode"),
-            vec!["commandcode/claude-sonnet-5-5"]
-        );
+        assert_eq!(ids_of("commandcode"), vec!["commandcode/claude-sonnet-5-5"]);
         assert_eq!(groups[0]["id"], "gateway");
         assert_eq!(model_group("claude-opus-5-5"), "claude");
         assert_eq!(model_group("zai/glm-5.3"), "zai");
-        assert_eq!(
-            model_group("commandcode/claude-sonnet-5-5"),
-            "commandcode"
-        );
+        assert_eq!(model_group("commandcode/claude-sonnet-5-5"), "commandcode");
     }
 
     #[test]

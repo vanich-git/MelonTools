@@ -333,13 +333,12 @@ impl ModelDownloadManager {
                         &downloads_arc,
                     );
                 }
-                Err(_) => {
+                Err(error) => {
                     let _ = fs::remove_file(&part_path);
                     let _ = fs::remove_file(&meta_path);
-                    return Err(
-                        "The server rejected the resume range and the partial file did not verify. The download was reset."
-                            .to_string(),
-                    );
+                    return Err(format!(
+                        "The server rejected the resume range and the partial file did not verify ({error}). The download was reset."
+                    ));
                 }
             }
         }
@@ -359,7 +358,29 @@ impl ModelDownloadManager {
         let status = resp.status();
         let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
         if !status.is_success() && !is_partial {
-            return Err(format!("Download failed with HTTP status: {}", status));
+            // One string for 401, 403, 404, 429 and 5xx left the user with
+            // nothing to act on. The body is bounded because it can be an
+            // HTML error page.
+            let code = status.as_u16();
+            let hint = match code {
+                401 | 403 => {
+                    "The access token is missing, expired or has no access to this repository."
+                }
+                404 => "The file was not found in the repository.",
+                429 => "The download was rate limited; wait and retry.",
+                416 => "The server rejected the requested resume range.",
+                _ => "The server refused the download.",
+            };
+            let body = resp.text().await.unwrap_or_default();
+            let body: String = body.chars().take(300).collect();
+            return Err(format!(
+                "Download failed with HTTP status {code}: {hint}{}",
+                if body.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" {body}")
+                }
+            ));
         }
 
         let content_length = resp.content_length().unwrap_or(0);
@@ -644,6 +665,14 @@ pub(crate) fn sanitize_filename(raw: &str) -> Result<String, String> {
     }
     if name.chars().any(|c| c.is_control()) {
         return Err("The model file name contains control characters.".to_string());
+    }
+    // Windows rejects a component longer than 255 units and a path longer than
+    // MAX_PATH; both surfaced as a bare `Failed to create` from `fs`.
+    if name.chars().count() > 200 {
+        return Err(format!(
+            "The model file name is too long ({} characters).",
+            name.chars().count()
+        ));
     }
     if name.ends_with('.') || name.ends_with(' ') {
         return Err("The model file name ends with a dot or a space.".to_string());

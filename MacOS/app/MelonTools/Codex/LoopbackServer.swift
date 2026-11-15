@@ -207,7 +207,7 @@ final class LoopbackServer: @unchecked Sendable {
         let body = """
         <!doctype html><html><head><meta charset="utf-8"><title>Melon Tools</title>
         <style>
-        body{font-family:-apple-system,system-ui;background:#1a1a1c;color:#f5f5f7;display:grid;place-items:center;height:100vh;margin:0}
+        body{font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;background:#1a1a1c;color:#f5f5f7;display:grid;place-items:center;height:100vh;margin:0}
         .c{text-align:center;max-width:460px}.m{font-size:56px;margin-bottom:4px}
         h2{font-weight:600}p{color:#a2a2aa;font-size:14px}
         </style></head><body><div class="c">\(html)</div></body></html>

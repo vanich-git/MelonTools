@@ -242,6 +242,35 @@ impl LocalModelSettings {
                 ));
             }
         }
+        if let Some(threads) = self.cpu_threads {
+            if !(1..=1024).contains(&threads) {
+                return Err(format!(
+                    "CPU threads must be between 1 and 1024 (got {}).",
+                    threads
+                ));
+            }
+        }
+        if let Some(layers) = self.gpu_offload_layers {
+            if layers > 1024 {
+                return Err(format!("GPU offload layers is out of range ({}).", layers));
+            }
+        }
+        // The values below are written into `models.ini`, which is line based:
+        // a newline in one of them adds keys (or whole sections) to the preset.
+        const KV_CACHE_TYPES: [&str; 9] = [
+            "f32", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
+        ];
+        if !KV_CACHE_TYPES.contains(&self.kv_cache_type.as_str()) {
+            return Err(format!(
+                "Unsupported KV cache type '{}'.",
+                self.kv_cache_type
+            ));
+        }
+        if let Some(template) = self.chat_template.as_deref() {
+            if template.contains('\n') || template.contains('\r') {
+                return Err("The chat template must be a single line.".to_string());
+            }
+        }
         if self.kv_cache_type.trim().is_empty() {
             return Err("KV cache type must not be empty.".to_string());
         }

@@ -52,15 +52,12 @@ struct HuggingFaceCatalogView: View {
                     Text(searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && sortOrder == .trendingScore ? L("Trending on Hugging Face") : L("Hugging Face results"))
                         .font(MTTheme.body(10)).foregroundStyle(.secondary)
                     Spacer(minLength: 4)
-                    Picker(L("Sort by"), selection: $sortOrder) {
-                        ForEach([HuggingFaceService.SortOrder.trendingScore, .likes, .downloads, .lastModified]) { order in
-                            Text(L(order.title)).tag(order)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize()
-                    .controlSize(.small)
+                    MTSelect(
+                        selection: $sortOrder,
+                        options: [HuggingFaceService.SortOrder.trendingScore, .likes, .downloads, .lastModified]
+                            .map { ($0, L($0.title)) },
+                        width: 172
+                    )
                     .help(L("Recommended uses Hugging Face trending, not staff picks."))
                 }
                 .padding(.horizontal, 12).padding(.bottom, 8)
@@ -91,6 +88,11 @@ struct HuggingFaceCatalogView: View {
                     }
                     .listStyle(.sidebar)
                     .scrollContentBackground(.hidden)
+                    // One lookup per publisher instead of one per row, and the
+                    // result is cached on disk across launches.
+                    .task(id: searchResults.map(\.id).joined(separator: "\u{1F}")) {
+                        await HFAvatarService.shared.prefetch(owners: searchResults.compactMap(\.author))
+                    }
                     if hasMore {
                         Button(action: loadMore) {
                             HStack(spacing: 6) {
@@ -192,7 +194,7 @@ struct HuggingFaceCatalogView: View {
                 .foregroundStyle(MTTheme.textSecondary)
 
             SecureField("hf_...", text: $hfToken)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.mtInput)
 
             HStack {
                 Button(L("Get Token on Hugging Face")) {
@@ -206,13 +208,12 @@ struct HuggingFaceCatalogView: View {
 
                 Spacer()
 
-                Button(L("Cancel")) {
+                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) {
                     showTokenSheet = false
                 }
-                .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
 
-                Button(L("Save Token")) {
+                MTGlassButton(title: L("Save Token"), tint: MTTheme.emerald, prominent: true) {
                     let trimmed = hfToken.trimmingCharacters(in: .whitespacesAndNewlines)
                     if trimmed.isEmpty {
                         _ = LocalKeychainHelper.deleteHuggingFaceToken()
@@ -221,8 +222,6 @@ struct HuggingFaceCatalogView: View {
                     }
                     showTokenSheet = false
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(MTTheme.emerald)
             }
         }
         .padding(MTTheme.s4)

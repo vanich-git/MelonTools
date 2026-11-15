@@ -1,6 +1,6 @@
 //! Lifecycle management and supervision of the `llama-server` process.
 
-use super::hardware::{detect_hardware, InferenceBackend};
+use super::hardware::InferenceBackend;
 use super::local_models::{LocalModel, LocalModelSettings, LocalModelStore, ModelRuntimeStatus};
 use crate::paths::{llama_server_exe_path, local_logs_dir, local_metadata_dir, local_runtime_dir};
 use futures_util::StreamExt;
@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -97,26 +97,31 @@ fn reconciled_registry_status(
     }
 }
 
-/// Extracts the router's error message without losing the HTTP status when the
-/// body is not JSON.
+/// Extracts the router's error message and always keeps the HTTP status.
+///
+/// The status used to be dropped whenever the body carried text, so a rejected
+/// key (401) and an out-of-memory kill (500) reached the Console as the same
+/// bare phrase and a 401 could be mistaken for a slow load.
 fn router_error_message(body: &str, status: u16) -> String {
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if let Some(message) = value
+    // A JSON body without a usable message yields no text at all: echoing the
+    // raw JSON back would hide the status behind a wall of braces.
+    let text = match serde_json::from_str::<Value>(body) {
+        Ok(value) => value
             .get("error")
             .and_then(|error| error.get("message"))
+            .or_else(|| value.get("message"))
             .and_then(Value::as_str)
-        {
-            return message.to_string();
-        }
-        if let Some(message) = value.get("message").and_then(Value::as_str) {
-            return message.to_string();
-        }
-    }
-    let text = body.trim();
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string)
+            .unwrap_or_default(),
+        Err(_) => body.trim().to_string(),
+    };
+    let text: String = text.chars().take(512).collect();
     if text.is_empty() {
         format!("HTTP {status}")
     } else {
-        text.chars().take(512).collect()
+        format!("HTTP {status}: {text}")
     }
 }
 
@@ -375,17 +380,29 @@ fn apply_live_rates(current: &mut RuntimeMetrics, previous: &RuntimeMetrics, ela
 /// corporate proxy: `HTTP_PROXY` must never receive the engine token or turn a
 /// loopback read into a remote call. The timeout and body cap bound a hung or
 /// misbehaving engine.
+/// Shared loopback client for the router probes.
+///
+/// A fresh `reqwest::Client` per call allocated its own connection pool every
+/// two seconds (metrics poll) and every five seconds (router reconcile) for the
+/// whole session. The gateway already keeps one client for the same reason.
+fn router_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
 async fn fetch_runtime_metrics(
     port: u16,
     token: &str,
     model_id: &str,
 ) -> Result<RuntimeMetrics, String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(Duration::from_secs(1))
-        .timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|e| format!("Failed to build metrics client: {}", e))?;
+    let client = router_client();
 
     let mut response = client
         .get(metrics_url(port, model_id))
@@ -1046,8 +1063,13 @@ async fn cancel_signal(cancel: &mut watch::Receiver<bool>) {
 pub fn validate_install_url(raw: &str) -> Result<url::Url, String> {
     let url =
         url::Url::parse(raw.trim()).map_err(|e| format!("Invalid runtime archive URL: {}", e))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("Runtime archive URL must use http or https".to_string());
+    // The archive is executed after extraction, so it must not travel over
+    // plaintext HTTP where anyone on the path can swap the bytes.
+    if url.scheme() != "https" {
+        return Err(
+            "Runtime archive URL must use https; plain http is not accepted because the archive is executed."
+                .to_string(),
+        );
     }
     if url.host_str().unwrap_or("").is_empty() {
         return Err("Runtime archive URL has no host".to_string());
@@ -1317,6 +1339,227 @@ fn custom_binary_path_file() -> PathBuf {
     local_runtime_dir().join("binary_path.txt")
 }
 
+/// PID of the running engine process group. The Windows job object already
+/// kills the tree when the app closes; macOS has no such safety net, so the
+/// pid is recorded here and reaped on the next launch.
+fn engine_pid_file() -> PathBuf {
+    local_metadata_dir().join("engine.pid")
+}
+
+fn remember_engine_pid(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    let _ = fs::create_dir_all(local_metadata_dir());
+    let _ = fs::write(engine_pid_file(), pid.to_string());
+}
+
+fn forget_engine_pid() {
+    let _ = fs::remove_file(engine_pid_file());
+}
+
+/// How long a signalled engine may take to disappear before it is killed
+/// again. A process wedged in GPU teardown must not hold the runtime forever.
+const ENGINE_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Spawn attempts when the chosen port is taken before llama-server binds it.
+/// `find_available_port` cannot reserve the port, so a lost race is retried on
+/// the next candidate instead of failing the whole launch.
+const ENGINE_PORT_ATTEMPTS: u8 = 3;
+
+/// True when the engine log written since `from` names a bind failure. Only a
+/// bounded tail is scanned, and only bytes from the current attempt count: an
+/// older failure in the same file must not fail a healthy start.
+fn log_reports_bind_failure(path: &Path, from: u64) -> bool {
+    const TAIL: u64 = 64 << 10;
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    // A rotated/truncated file holds this attempt only, so start from zero.
+    let start = if metadata.len() >= from { from } else { 0 };
+    let end = metadata.len().min(start.saturating_add(TAIL));
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buffer = Vec::new();
+    if file
+        .take(end.saturating_sub(start))
+        .read_to_end(&mut buffer)
+        .is_err()
+    {
+        return false;
+    }
+    let tail = String::from_utf8_lossy(&buffer).to_ascii_lowercase();
+    [
+        "address already in use",
+        "couldn't bind",
+        "failed to bind",
+        "bind error",
+        "eaddrinuse",
+    ]
+    .iter()
+    .any(|needle| tail.contains(needle))
+}
+
+/// Signals the router and every process it started to die, without waiting.
+///
+/// llama.cpp's router mode runs one `llama-server` child per loaded model.
+/// `Child::kill` only terminates the router, so the child kept the weights in
+/// RAM and the model port busy; on Unix nothing ever reaped it, not even after
+/// a clean quit. Split from the wait so async callers can await the exit
+/// instead of parking a runtime worker on `std::thread::sleep`.
+fn signal_engine_termination(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        if pid != 0 {
+            let mut command = Command::new("taskkill");
+            command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+            let _ = command.output();
+        }
+    }
+    #[cfg(unix)]
+    {
+        if pid != 0 {
+            // The engine is spawned as its own process group leader, so the
+            // negative pid reaches the router and each model child.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+    // Covers a failed taskkill/killpg and gives `try_wait` a reason to report
+    // the exit promptly.
+    let _ = child.kill();
+}
+
+/// Blocks until the signalled engine is reaped, killing it once more when it
+/// outlives [`ENGINE_EXIT_TIMEOUT`]. Every lifecycle path is async and awaits
+/// [`terminate_engine_async`]; this stays for synchronous callers.
+#[allow(dead_code)]
+fn terminate_engine(child: &mut Child) {
+    signal_engine_termination(child);
+    let deadline = Instant::now() + ENGINE_EXIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                return;
+            }
+        }
+    }
+}
+
+/// Same contract as [`terminate_engine`] without blocking a runtime worker:
+/// the wait yields to the executor instead of sleeping the thread.
+async fn terminate_engine_async(child: &mut Child) {
+    signal_engine_termination(child);
+    let deadline = Instant::now() + ENGINE_EXIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            _ => {
+                let _ = child.kill();
+                return;
+            }
+        }
+    }
+}
+
+/// Kills an engine left behind by a crash on a platform without a job object.
+#[cfg(unix)]
+#[cfg_attr(test, allow(dead_code))]
+fn reap_orphan_engine() {
+    let path = engine_pid_file();
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let _ = fs::remove_file(&path);
+    let Some(pid) = text.trim().parse::<u32>().ok().filter(|pid| *pid != 0) else {
+        return;
+    };
+    // Process ids are reused after a reboot. Only signal the group when the
+    // recorded pid still names our engine binary.
+    let output = Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output();
+    let command = output
+        .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+        .unwrap_or_default();
+    if !command.contains("llama-server") {
+        return;
+    }
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+fn reap_orphan_engine() {
+    let path = engine_pid_file();
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let _ = fs::remove_file(&path);
+    let Some(pid) = text.trim().parse::<u32>().ok().filter(|pid| *pid != 0) else {
+        return;
+    };
+    // The job object normally takes the tree down with the app, but a crash
+    // before `assign` or a failed assignment leaves the engine running. Pids
+    // are reused after a reboot, so only a pid that still names our binary is
+    // killed; anything else is left alone.
+    let Some(image) = windows_process_image(pid) else {
+        return;
+    };
+    if !image.to_ascii_lowercase().contains("llama-server") {
+        return;
+    }
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+    let _ = command.output();
+}
+
+/// Image name of a live process, or `None` when the pid is gone or `tasklist`
+/// could not answer. The command prints one CSV row per match; a localized
+/// "no tasks" notice is not a row and has no leading quote.
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+fn windows_process_image(pid: u32) -> Option<String> {
+    let mut command = Command::new("tasklist");
+    command.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().next()?.trim();
+    if !line.starts_with('"') {
+        return None;
+    }
+    let name = line.trim_start_matches('"').split('"').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 fn load_custom_binary_path() -> Option<PathBuf> {
     let raw = fs::read_to_string(custom_binary_path_file()).ok()?;
     let path = PathBuf::from(raw.trim());
@@ -1389,25 +1632,73 @@ async fn wait_for_lifecycle_change(receiver: &mut watch::Receiver<u64>, generati
 const ROUTER_MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 const ROUTER_MODEL_LOAD_POLL: Duration = Duration::from_millis(400);
 
-/// Reads every model's router state. `None` means the request or the pinned
-/// response shape failed; an empty map is a valid "router lists nothing".
+/// Why `GET /models` could not be read. The distinction matters: a rejected
+/// key stays rejected until the settings change, so it must reach the user at
+/// once instead of looking like a slow model load.
+#[derive(Debug)]
+enum RouterFetchError {
+    /// The engine refused the internal token (401/403).
+    Unauthorized(u16),
+    /// Any other non-success status.
+    Http(u16),
+    /// The request never completed.
+    Network,
+    /// The response did not match the pinned `data[].id`/`status` shape.
+    Malformed,
+}
+
+impl RouterFetchError {
+    fn is_unauthorized(&self) -> bool {
+        matches!(self, Self::Unauthorized(_))
+    }
+
+    /// Message for the Console and the model card; the status is always named
+    /// so a 401 is not mistaken for a timeout.
+    fn message(&self) -> String {
+        match self {
+            Self::Unauthorized(status) => format!(
+                "The local engine rejected the internal key (HTTP {status}). Restart the engine from the Runtime tab."
+            ),
+            Self::Http(status) => {
+                format!("The local engine answered the model list with HTTP {status}.")
+            }
+            Self::Network => {
+                "Cannot reach the local engine on its model port.".to_string()
+            }
+            Self::Malformed => {
+                "The local engine returned an unexpected model list.".to_string()
+            }
+        }
+    }
+}
+
+/// Reads every model's router state. An empty map is a valid "router lists
+/// nothing"; every other outcome is a typed error so a rejected key stays
+/// distinguishable from a slow load.
 async fn fetch_router_models(
     client: &reqwest::Client,
     port: u16,
     token: &str,
-) -> Option<HashMap<String, RouterModelState>> {
+) -> Result<HashMap<String, RouterModelState>, RouterFetchError> {
     let response = client
         .get(format!("http://127.0.0.1:{}/models", port))
         .bearer_auth(token)
         .timeout(Duration::from_secs(5))
         .send()
         .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+        .map_err(|_| RouterFetchError::Network)?;
+    let status = response.status().as_u16();
+    if matches!(status, 401 | 403) {
+        return Err(RouterFetchError::Unauthorized(status));
     }
-    let body = response.text().await.ok()?;
-    parse_router_models(&body)
+    if !response.status().is_success() {
+        return Err(RouterFetchError::Http(status));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|_| RouterFetchError::Network)?;
+    parse_router_models(&body).ok_or(RouterFetchError::Malformed)
 }
 
 async fn post_router_model_load(
@@ -1448,6 +1739,10 @@ async fn post_router_model_load(
 pub struct PublicationState {
     revision: u64,
     message: Option<String>,
+    /// Why the prompt relay is not listening, if its last start failed. Kept
+    /// apart from `message` because a successful catalogue publication clears
+    /// that, while a dead relay keeps dropping system prompts in silence.
+    prompt_relay_error: Option<String>,
 }
 
 /// Cloneable handle the deferred catalogue poll uses to report its outcome.
@@ -1487,6 +1782,14 @@ impl PublicationReporter {
             == revision
     }
 
+    /// Records the prompt relay's start failure (or clears it) for the status
+    /// payload. Publication results never touch this slot, so a successful
+    /// catalogue write cannot hide a relay that never bound its port.
+    pub fn report_prompt_relay_error(&self, error: Option<String>) {
+        let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
+        slot.prompt_relay_error = error;
+    }
+
     pub fn report(&self, revision: u64, message: Option<String>) {
         let mut slot = self.slot.lock().unwrap_or_else(|error| error.into_inner());
         if revision >= slot.revision {
@@ -1522,6 +1825,11 @@ pub struct LocalRuntimeManager {
     lifecycle_changed: watch::Sender<u64>,
     /// Last catalogue publication outcome, keyed by lifecycle revision.
     publication: PublicationReporter,
+    /// HTTP status of the last `GET /models` refusal (0 = none). The
+    /// supervisor polls every five seconds and the engine bans a caller after
+    /// five rejected keys, so a repeated probe would turn one bad token into a
+    /// lockout. Cleared when the lifecycle changes (`begin_lifecycle`).
+    router_key_rejected: Arc<AtomicU16>,
 }
 
 struct RuntimeInner {
@@ -1604,10 +1912,30 @@ impl RuntimeInner {
 
         if let Some(status) = exited {
             self.child = None;
+            forget_engine_pid();
+            super::system_prompt_proxy::set_upstream(0);
             // Keep `current_model` so `failedModelId` still names the card
             // that has to show the error.
             let model_id = self.current_model.as_ref().map(|model| model.id.clone());
-            let error = format!("llama-server exited unexpectedly ({})", status);
+            // The exit code alone cannot tell OOM, a busy port and a broken
+            // GGUF apart; the engine already wrote the reason to its log.
+            let detail = read_log_tail(&local_logs_dir().join("llama-server.log"), 12)
+                .ok()
+                .filter(|lines| !lines.is_empty())
+                .map(|lines| {
+                    let text = lines.join("\n");
+                    let text: String = text
+                        .chars()
+                        .rev()
+                        .take(2000)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    format!("\n{}", text)
+                })
+                .unwrap_or_default();
+            let error = format!("llama-server exited unexpectedly ({}){}", status, detail);
             self.transition(LocalRuntimeState::Failed { error });
             self.applied_settings = None;
             return model_id.map(|id| (id, ModelRuntimeStatus::Error));
@@ -1621,6 +1949,7 @@ impl RuntimeInner {
         ) && self.child.is_none()
             && self.state_changed_at.elapsed() > Duration::from_secs(5);
         if impossible {
+            forget_engine_pid();
             let model_id = self.current_model.as_ref().map(|model| model.id.clone());
             let error = "llama-server is not running".to_string();
             self.transition(LocalRuntimeState::Failed { error });
@@ -1714,6 +2043,13 @@ impl Default for LocalRuntimeManager {
 
 impl LocalRuntimeManager {
     pub fn new() -> Self {
+        // A crash skips the orderly stop. Reap the engine recorded by the last
+        // run before reporting any status, otherwise its model stays resident.
+        // Not under `cargo test`: the tests build managers against the real
+        // metadata directory, and a test run next to a live app would kill the
+        // engine that app is using.
+        #[cfg(not(test))]
+        reap_orphan_engine();
         RuntimeInner::normalize_stale_statuses();
         let published_gateway = Arc::new(AtomicU64::new(0));
         let inner = Arc::new(Mutex::new(RuntimeInner {
@@ -1743,6 +2079,7 @@ impl LocalRuntimeManager {
             },
             publication: PublicationReporter::new(published_gateway, inner.clone()),
             inner,
+            router_key_rejected: Arc::new(AtomicU16::new(0)),
         }
     }
 
@@ -1782,11 +2119,34 @@ impl LocalRuntimeManager {
             .slot
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if slot.revision == revision {
+        let mut message = if slot.revision == revision {
             slot.message.clone()
         } else {
             None
+        };
+        if let Some(relay) = slot.prompt_relay_error.as_deref() {
+            let relay = format!("Prompt relay did not start: {relay}");
+            message = Some(match message {
+                Some(message) => format!("{message} {relay}"),
+                None => relay,
+            });
         }
+        drop(slot);
+        // A rejected internal key is a standing condition, not a one-off
+        // publication result: `report` clears `message` on the next successful
+        // catalogue write, so it is surfaced here instead. The latch keeps the
+        // supervisor from probing a key the engine already refuses.
+        let rejected = self.router_key_rejected.load(Ordering::Acquire);
+        if rejected != 0 {
+            let notice = format!(
+                "The local engine rejected the internal key (HTTP {rejected}). Restart the engine from the Runtime tab."
+            );
+            message = Some(match message {
+                Some(message) => format!("{message} {notice}"),
+                None => notice,
+            });
+        }
+        message
     }
 
     /// Sets the lifecycle revision without running a transition, so the
@@ -1828,30 +2188,69 @@ impl LocalRuntimeManager {
             },
             publication: PublicationReporter::new(published_gateway, inner.clone()),
             inner,
+            router_key_rejected: Arc::new(AtomicU16::new(0)),
         }
     }
 
     /// Persists the explicit choice so a runtime installed into
     /// `runtime/packages/<id>` stays selected after a restart instead of
     /// falling back to PATH.
-    pub fn set_custom_binary_path(&self, path: Option<PathBuf>) {
+    /// Records the engine the user picked. The path is validated before it is
+    /// stored: a missing file or a non-x64 image used to be accepted silently,
+    /// the launch then fell back to another engine, and the UI still showed the
+    /// path the user typed. The file is written first so a failed write cannot
+    /// leave the in-memory choice disagreeing with the persisted one.
+    ///
+    /// Switching the path under a running engine used to leave `Running`
+    /// describing a binary the stored state no longer named. Validation happens
+    /// first (a rejected path must not stop a healthy runtime), then the engine
+    /// is stopped before the new path is persisted.
+    pub async fn set_custom_binary_path(&self, path: Option<PathBuf>) -> Result<(), String> {
         let path = path.filter(|candidate| !candidate.as_os_str().is_empty());
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.custom_binary_path = path.clone();
+        if let Some(candidate) = path.as_ref() {
+            if !candidate.is_file() {
+                return Err(format!(
+                    "The engine path {} is not a file.",
+                    candidate.display()
+                ));
+            }
+            #[cfg(windows)]
+            validate_pe_x64(candidate)?;
+        }
+        let (changed, live) = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                inner.custom_binary_path.as_deref() != path.as_deref(),
+                inner.child.is_some()
+                    || matches!(
+                        &inner.state,
+                        LocalRuntimeState::Starting { .. } | LocalRuntimeState::Running { .. }
+                    ),
+            )
+        };
+        if changed && live {
+            self.stop().await;
         }
         let file = custom_binary_path_file();
-        match path {
-            Some(path) => {
+        match path.as_ref() {
+            Some(candidate) => {
                 if let Some(parent) = file.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Cannot create the settings folder: {e}"))?;
                 }
-                let _ = fs::write(&file, path.to_string_lossy().as_bytes());
+                fs::write(&file, candidate.to_string_lossy().as_bytes())
+                    .map_err(|e| format!("Cannot save the engine path: {e}"))?;
             }
             None => {
-                let _ = fs::remove_file(&file);
+                if file.exists() {
+                    fs::remove_file(&file)
+                        .map_err(|e| format!("Cannot clear the engine path: {e}"))?;
+                }
             }
         }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.custom_binary_path = path;
+        Ok(())
     }
 
     /// The Mac build ships `llama-server` inside the app bundle. Windows has
@@ -1871,9 +2270,9 @@ impl LocalRuntimeManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if !installing {
-            let releases = super::runtime_catalog::fetch_catalog().await.map_err(|error| {
-                format!("Cannot list the official llama.cpp builds: {}", error)
-            })?;
+            let releases = super::runtime_catalog::fetch_catalog()
+                .await
+                .map_err(|error| format!("Cannot list the official llama.cpp builds: {}", error))?;
             let variant = preferred_runtime_variant();
             let (url, sha256) = pick_runtime_asset(&releases, variant).ok_or_else(|| {
                 format!(
@@ -1892,7 +2291,8 @@ impl LocalRuntimeManager {
                     let binary = status.binary_path.ok_or_else(|| {
                         "The installed runtime did not report a llama-server path.".to_string()
                     })?;
-                    self.set_custom_binary_path(Some(PathBuf::from(binary)));
+                    self.set_custom_binary_path(Some(PathBuf::from(binary)))
+                        .await?;
                     return Ok(());
                 }
                 RuntimeInstallStage::Failed => {
@@ -1916,7 +2316,7 @@ impl LocalRuntimeManager {
     }
 
     pub fn binary_path(&self) -> Option<PathBuf> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref custom) = inner.custom_binary_path {
             if custom.is_file() {
                 return Some(custom.clone());
@@ -1954,11 +2354,15 @@ impl LocalRuntimeManager {
     }
 
     pub fn port(&self) -> u16 {
-        self.inner.lock().unwrap().port
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).port
     }
 
     pub fn token(&self) -> String {
-        self.inner.lock().unwrap().token.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .token
+            .clone()
     }
 
     /// Writes the INI the router reads: one section per installed model with
@@ -2084,14 +2488,21 @@ impl LocalRuntimeManager {
         status_payload(snapshot, binary_path, publication_error)
     }
 
-    pub fn find_available_port(start: u16) -> u16 {
+    /// The listener is dropped immediately, so this only rules out the ports
+    /// held right now; the spawn below can still lose the race. What it must
+    /// not do is return `start` when every candidate is taken: the engine then
+    /// failed with a bare exit code instead of naming the port conflict.
+    pub fn find_available_port(start: u16) -> Result<u16, String> {
         for candidate in start..(start + 31) {
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
                 drop(listener);
-                return candidate;
+                return Ok(candidate);
             }
         }
-        start
+        Err(format!(
+            "No free loopback port between {start} and {}. Close the program holding them and retry.",
+            start + 30
+        ))
     }
 
     pub fn install_status(&self) -> RuntimeInstallStatus {
@@ -2187,6 +2598,8 @@ impl LocalRuntimeManager {
             self.lifecycle_changed.send_replace(inner.generation);
             inner.generation
         };
+        // A start/stop may also have fixed the key, so allow one probe again.
+        self.router_key_rejected.store(0, Ordering::Release);
         (generation, self.lifecycle_changed.subscribe())
     }
 
@@ -2200,6 +2613,10 @@ impl LocalRuntimeManager {
 
     /// Publishes `state` only when `generation` is still the newest intent.
     /// Returns false when the caller was superseded and must not publish.
+    ///
+    /// Only the tests drive it directly now: production paths publish through
+    /// `publish_ready`/`fail_launch`, which own the same lock.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn transition_if_current(&self, generation: u64, state: LocalRuntimeState) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.generation != generation {
@@ -2234,22 +2651,35 @@ impl LocalRuntimeManager {
     /// Kills a process this launch owns after it was superseded, so a start
     /// that lost the race never leaves an orphan behind. Only the lifecycle
     /// holder can call it, which guarantees the child is its own.
-    fn discard_child(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut child) = inner.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    async fn discard_child(&self) {
+        let child = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.child.take()
+        };
+        if let Some(mut child) = child {
+            terminate_engine_async(&mut child).await;
+            forget_engine_pid();
         }
     }
 
     /// Kills the engine this manager owns and publishes `Stopped`. The caller
     /// must hold `lifecycle` and must still own the current generation.
-    fn stop_locked(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(mut child) = inner.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    async fn stop_locked(&self) {
+        // The kill is awaited without holding the state lock: a wedged engine
+        // takes up to three seconds and the supervisor polls the status every
+        // five, so it must not block on this mutex.
+        let child = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.child.take()
+        };
+        if let Some(mut child) = child {
+            terminate_engine_async(&mut child).await;
+            forget_engine_pid();
         }
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // The relay keeps listening so the gateway config stays valid, but it
+        // must answer 503 "not running" instead of dialling the dead port.
+        super::system_prompt_proxy::set_upstream(0);
         // Reset every warm router model before publishing the Stopped revision,
         // for the same reason Ready is persisted before publishing Running.
         if let Some(model) = inner.current_model.as_ref() {
@@ -2276,19 +2706,26 @@ impl LocalRuntimeManager {
         if !self.is_current_generation(generation) {
             return;
         }
-        self.stop_locked();
+        self.stop_locked().await;
     }
 
     /// Publishes a terminal launch failure only for the current generation.
     /// A superseded launch returns false and leaves the new state alone.
-    fn fail_launch(&self, generation: u64, model_id: &str, error: &str) -> bool {
+    async fn fail_launch(&self, generation: u64, model_id: &str, error: &str) -> bool {
+        let child = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.generation != generation {
+                return false;
+            }
+            inner.child.take()
+        };
+        if let Some(mut child) = child {
+            terminate_engine_async(&mut child).await;
+            forget_engine_pid();
+        }
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.generation != generation {
             return false;
-        }
-        if let Some(mut child) = inner.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
         }
         inner.applied_settings = None;
         inner.transition(LocalRuntimeState::Failed {
@@ -2297,6 +2734,17 @@ impl LocalRuntimeManager {
         drop(inner);
         self.update_model_status_if_current(generation, model_id, ModelRuntimeStatus::Error);
         true
+    }
+
+    /// Publishes a launch failure through [`Self::fail_launch`] and returns the
+    /// message the command reports. Early `?` paths used to return bare `Err`
+    /// after the previous engine was stopped, so the failure never reached the
+    /// runtime state or the model status.
+    async fn fail_launch_error(&self, generation: u64, model_id: &str, error: String) -> String {
+        if !self.fail_launch(generation, model_id, &error).await {
+            return Self::superseded_message();
+        }
+        error
     }
 
     /// Returns an error when this launch's process is gone or exited while a
@@ -2333,11 +2781,24 @@ impl LocalRuntimeManager {
         token: &str,
         model_id: &str,
     ) -> Result<(), String> {
-        let already_loaded = tokio::select! {
+        let already_loaded = match tokio::select! {
             _ = wait_for_lifecycle_change(cancelled, generation) => {
                 return Err(Self::superseded_message());
             }
             states = fetch_router_models(client, port, token) => states,
+        } {
+            Ok(states) => Some(states),
+            Err(error) if error.is_unauthorized() => {
+                // A rejected key fails every following call the same way; report
+                // it now instead of waiting out the load timeout, and latch it
+                // so the supervisor does not probe a key the engine bans after
+                // five attempts.
+                if let RouterFetchError::Unauthorized(status) = &error {
+                    self.router_key_rejected.store(*status, Ordering::Release);
+                }
+                return Err(error.message());
+            }
+            Err(_) => None,
         };
         if already_loaded
             .as_ref()
@@ -2362,11 +2823,20 @@ impl LocalRuntimeManager {
             }
             self.ensure_child_alive(generation)?;
 
-            let states = tokio::select! {
+            let states = match tokio::select! {
                 _ = wait_for_lifecycle_change(cancelled, generation) => {
                     return Err(Self::superseded_message());
                 }
                 states = fetch_router_models(client, port, token) => states,
+            } {
+                Ok(states) => Some(states),
+                Err(error) if error.is_unauthorized() => {
+                    if let RouterFetchError::Unauthorized(status) = &error {
+                        self.router_key_rejected.store(*status, Ordering::Release);
+                    }
+                    return Err(error.message());
+                }
+                Err(_) => None,
             };
             if let Some(states) = states {
                 match states.get(model_id) {
@@ -2395,6 +2865,13 @@ impl LocalRuntimeManager {
 
     pub async fn load_model(&self, model_id: &str) -> Result<(), String> {
         let (generation, mut cancelled) = self.begin_lifecycle();
+        let models_dir = LocalModelStore::models_dir();
+        let _ = fs::create_dir_all(&models_dir);
+        // The hardware probe shells out to PowerShell and can take seconds, so
+        // it runs before the lifecycle lock and off the async worker. A stop or
+        // a newer start during the probe bumps the generation and is caught by
+        // the check right after the lock.
+        let hw = super::hardware::detect_hardware_async(Some(models_dir.clone())).await;
         let _guard = self.lifecycle.lock().await;
         if !self.is_current_generation(generation) {
             return Err(Self::superseded_message());
@@ -2409,43 +2886,62 @@ impl LocalRuntimeManager {
         }
         // Replaces the old public `stop()` call: this already runs under the
         // lifecycle lock, so no concurrent start can interleave with the reset.
-        self.stop_locked();
+        self.stop_locked().await;
 
-        let bin = self.binary_path().ok_or_else(|| {
-            "llama-server executable not found. Please place llama-server in the runtime directory or specify its path in settings.".to_string()
-        })?;
-
-        let models_dir = LocalModelStore::models_dir();
-        let model_file_path = if let Some(first) = model.files.first() {
-            if Path::new(first).is_absolute() {
-                PathBuf::from(first)
-            } else {
-                models_dir.join(first)
-            }
-        } else {
-            return Err("Model has no files specified".to_string());
+        let Some(bin) = self.binary_path() else {
+            let error = "llama-server executable not found. Please place llama-server in the runtime directory or specify its path in settings.".to_string();
+            return Err(self.fail_launch_error(generation, &model.id, error).await);
         };
 
-        if !model_file_path.exists() {
+        let models_root = match fs::canonicalize(&models_dir) {
+            Ok(root) => root,
+            Err(error) => {
+                let error = format!("Cannot resolve the models directory: {error}");
+                return Err(self.fail_launch_error(generation, &model.id, error).await);
+            }
+        };
+        let requested = match model.files.first() {
+            Some(first) => {
+                let path = Path::new(first);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    models_dir.join(path)
+                }
+            }
+            None => {
+                let error = "Model has no files specified".to_string();
+                return Err(self.fail_launch_error(generation, &model.id, error).await);
+            }
+        };
+        // `join` does not normalise `..`, and a directory satisfies `exists()`.
+        // Both used to reach the preset and fail later as an engine exit code.
+        let model_file_path = fs::canonicalize(&requested).map_err(|_| {
             self.update_model_status_if_current(
                 generation,
                 &model.id,
                 ModelRuntimeStatus::NotInstalled,
             );
-            return Err(format!(
-                "Model file does not exist: {}",
+            format!("Model file does not exist: {}", requested.display())
+        })?;
+        if !model_file_path.is_file() {
+            let error = format!("Model path is not a file: {}", model_file_path.display());
+            return Err(self.fail_launch_error(generation, &model.id, error).await);
+        }
+        if !model_file_path.starts_with(&models_root) {
+            let error = format!(
+                "Model file is outside the models directory: {}",
                 model_file_path.display()
-            ));
+            );
+            return Err(self.fail_launch_error(generation, &model.id, error).await);
         }
 
-        let port = Self::find_available_port(18318);
-        save_runtime_port(port);
+        // `mut` because a taken port is retried on the next candidate below.
+        let mut port = match Self::find_available_port(18318) {
+            Ok(port) => port,
+            Err(error) => return Err(self.fail_launch_error(generation, &model.id, error).await),
+        };
         let token = get_or_create_internal_token();
-
-        // The gateway is pointed at the prompt relay, which forwards to this
-        // port. Started before the config is written so the URL is live.
-        super::system_prompt_proxy::set_upstream(port);
-        super::system_prompt_proxy::ensure_started();
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -2465,7 +2961,6 @@ impl LocalRuntimeManager {
         }
         self.update_model_status_if_current(generation, &model.id, ModelRuntimeStatus::Loading);
 
-        let hw = detect_hardware(Some(&models_dir));
         // Router mode: the engine serves every installed model and loads them
         // on demand, matching the macOS implementation (§4.3).
         let preset_path =
@@ -2474,192 +2969,241 @@ impl LocalRuntimeManager {
                 Err(error) => {
                     // The state is already Starting: returning without a
                     // terminal transition would leave the UI waiting forever.
-                    if !self.fail_launch(generation, &model.id, &error) {
-                        return Err(Self::superseded_message());
-                    }
-                    return Err(error);
+                    return Err(self.fail_launch_error(generation, &model.id, error).await);
                 }
             };
-        let mut args = vec![
-            "--host".to_string(),
-            "127.0.0.1".to_string(),
-            "--port".to_string(),
-            port.to_string(),
-            "--api-key".to_string(),
-            token.clone(),
-            "--models-preset".to_string(),
-            preset_path.to_string_lossy().to_string(),
-            "--models-max".to_string(),
-            "1".to_string(),
-            "--metrics".to_string(),
-        ];
-
         let parallel = Self::parallel_requests();
-        if parallel > 1 {
-            args.push("--parallel".to_string());
-            args.push(parallel.to_string());
-        }
         let idle = Self::idle_unload_seconds();
-        if idle > 0 {
-            args.push("--sleep-idle-seconds".to_string());
-            args.push(idle.to_string());
-        }
-
         let log_file_path = local_logs_dir().join("llama-server.log");
         let log_sink =
             match EngineLogSink::open(&log_file_path, ENGINE_LOG_MAX_BYTES, ENGINE_LOG_BACKUPS) {
                 Ok(sink) => Arc::new(Mutex::new(sink)),
                 Err(error) => {
-                    if !self.fail_launch(generation, &model.id, &error) {
-                        return Err(Self::superseded_message());
-                    }
-                    return Err(error);
+                    return Err(self.fail_launch_error(generation, &model.id, error).await);
                 }
             };
 
-        let mut cmd = Command::new(&bin);
-        cmd.args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = cmd.spawn().map_err(|e| {
-            let msg = format!("Failed to spawn llama-server: {}", e);
-            if self
-                .transition_if_current(generation, LocalRuntimeState::Failed { error: msg.clone() })
-            {
-                self.update_model_status_if_current(
-                    generation,
-                    &model.id,
-                    ModelRuntimeStatus::Error,
-                );
-            }
-            msg
-        })?;
-        // Same kill-on-close job as the gateway: an app crash or the updater's
-        // exit must not leave the engine holding RAM and its port.
-        let pid = child.id();
-        if pid != 0 {
-            if let Err(error) = crate::engine_job::assign(pid) {
-                let _ = child.kill();
-                let _ = child.wait();
-                let message = format!("Cannot contain the Local AI process safely: {error}");
-                if self.transition_if_current(
-                    generation,
-                    LocalRuntimeState::Failed {
-                        error: message.clone(),
-                    },
-                ) {
-                    self.update_model_status_if_current(
-                        generation,
-                        &model.id,
-                        ModelRuntimeStatus::Error,
-                    );
-                }
-                return Err(message);
-            }
-        }
-        if let Some(stdout) = child.stdout.take() {
-            pump_engine_log(stdout, Arc::clone(&log_sink));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            pump_engine_log(stderr, Arc::clone(&log_sink));
-        }
-
-        let mut unpublished = Some(child);
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if inner.generation == generation {
-                inner.child = unpublished.take();
-            }
-        }
-        if let Some(mut child) = unpublished {
-            // A stop (or the next start) claimed the generation while this
-            // process was spawning. It must not become an orphan.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Self::superseded_message());
-        }
-
-        // Health check loop: wait up to 30 seconds for llama-server to be ready
+        // Short timeout and no proxy: a half-open socket must not stall startup.
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_millis(1500))
             .build()
             .unwrap_or_default();
-        let health_url = format!("http://127.0.0.1:{}/health", port);
 
-        let mut ready = false;
-        for _ in 0..60 {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-                _ = wait_for_lifecycle_change(&mut cancelled, generation) => {
-                    self.discard_child();
-                    return Err(Self::superseded_message());
-                }
-            }
-            if !self.is_current_generation(generation) {
-                self.discard_child();
-                return Err(Self::superseded_message());
-            }
-
-            // Verify process hasn't exited prematurely
-            let exited = {
+        // `find_available_port` only proves the port was free when it probed;
+        // another process can take it before llama-server binds. That used to
+        // surface as a 30-second "exited prematurely" failure, so a bind
+        // failure is retried on the next candidate port instead.
+        let mut port_attempts = ENGINE_PORT_ATTEMPTS;
+        let port = 'attempt: loop {
+            save_runtime_port(port);
+            {
                 let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
                 if inner.generation != generation {
                     return Err(Self::superseded_message());
                 }
-                if let Some(ref mut child) = inner.child {
-                    if let Ok(Some(status)) = child.try_wait() {
-                        inner.child = None;
-                        Some(status)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some(status) = exited {
-                let err = format!("llama-server exited prematurely with status {}", status);
-                self.fail_launch(generation, &model.id, &err);
-                return Err(err);
+                inner.port = port;
+            }
+            // The gateway is pointed at the prompt relay, which forwards to this
+            // port. Started before the config is written so the URL is live.
+            super::system_prompt_proxy::set_upstream(port);
+            // A relay that cannot bind leaves the gateway config pointing at a
+            // dead socket and quietly drops every stored system prompt; release
+            // builds hide stderr, so surface the reason next to the publication
+            // error.
+            let relay_port = super::system_prompt_proxy::ensure_started();
+            self.publication.report_prompt_relay_error(
+                (relay_port == 0)
+                    .then(super::system_prompt_proxy::last_error)
+                    .flatten(),
+            );
+
+            let mut args = vec![
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                port.to_string(),
+                "--api-key".to_string(),
+                token.clone(),
+                "--models-preset".to_string(),
+                preset_path.to_string_lossy().to_string(),
+                "--models-max".to_string(),
+                "1".to_string(),
+                "--metrics".to_string(),
+            ];
+            if parallel > 1 {
+                args.push("--parallel".to_string());
+                args.push(parallel.to_string());
+            }
+            if idle > 0 {
+                args.push("--sleep-idle-seconds".to_string());
+                args.push(idle.to_string());
             }
 
-            let resp = tokio::select! {
-                _ = wait_for_lifecycle_change(&mut cancelled, generation) => {
-                    self.discard_child();
-                    return Err(Self::superseded_message());
+            // Only bytes written by this attempt may be read as its bind error.
+            let log_offset = fs::metadata(&log_file_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+
+            let mut cmd = Command::new(&bin);
+            cmd.args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            #[cfg(unix)]
+            {
+                // Own group, so `terminate_engine_async` can signal the router
+                // and every model child it forks with a single killpg.
+                use std::os::unix::process::CommandExt;
+                cmd.process_group(0);
+            }
+
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let error = format!("Failed to spawn llama-server: {error}");
+                    return Err(self.fail_launch_error(generation, &model.id, error).await);
                 }
-                resp = client
-                    .get(&health_url)
-                    .header("Authorization", format!("Bearer {}", token))
-                    .send() => resp,
             };
-            if !self.is_current_generation(generation) {
-                self.discard_child();
+            // Same kill-on-close job as the gateway: an app crash or the
+            // updater's exit must not leave the engine holding RAM and its port.
+            let pid = child.id();
+            if pid != 0 {
+                if let Err(error) = crate::engine_job::assign(pid) {
+                    terminate_engine_async(&mut child).await;
+                    let message = format!("Cannot contain the Local AI process safely: {error}");
+                    return Err(self.fail_launch_error(generation, &model.id, message).await);
+                }
+                remember_engine_pid(pid);
+            }
+            if let Some(stdout) = child.stdout.take() {
+                pump_engine_log(stdout, Arc::clone(&log_sink));
+            }
+            if let Some(stderr) = child.stderr.take() {
+                pump_engine_log(stderr, Arc::clone(&log_sink));
+            }
+
+            let mut unpublished = Some(child);
+            {
+                let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.generation == generation {
+                    inner.child = unpublished.take();
+                }
+            }
+            if let Some(mut child) = unpublished {
+                // A stop (or the next start) claimed the generation while this
+                // process was spawning. It must not become an orphan.
+                terminate_engine_async(&mut child).await;
+                forget_engine_pid();
                 return Err(Self::superseded_message());
             }
 
-            if let Ok(r) = resp {
-                if r.status().is_success() {
-                    ready = true;
-                    break;
+            // Health check loop: wait up to 30 seconds for llama-server to be
+            // ready on this attempt's port.
+            let health_url = format!("http://127.0.0.1:{port}/health");
+            let mut ready = false;
+            for _ in 0..60 {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                    _ = wait_for_lifecycle_change(&mut cancelled, generation) => {
+                        self.discard_child().await;
+                        return Err(Self::superseded_message());
+                    }
+                }
+                if !self.is_current_generation(generation) {
+                    self.discard_child().await;
+                    return Err(Self::superseded_message());
+                }
+
+                // Verify the process did not exit before it answered.
+                let exited = {
+                    let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    if inner.generation != generation {
+                        return Err(Self::superseded_message());
+                    }
+                    if let Some(ref mut child) = inner.child {
+                        if let Ok(Some(status)) = child.try_wait() {
+                            inner.child = None;
+                            Some(status)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some(status) = exited {
+                    let mut bind_failure = log_reports_bind_failure(&log_file_path, log_offset);
+                    if !bind_failure {
+                        // The engine can die before its stderr reaches the log;
+                        // a port that is still unavailable is the same signal.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        bind_failure = log_reports_bind_failure(&log_file_path, log_offset)
+                            || TcpListener::bind(("127.0.0.1", port)).is_err();
+                    }
+                    if bind_failure && port_attempts > 1 {
+                        port_attempts -= 1;
+                        forget_engine_pid();
+                        let next = match Self::find_available_port(port.saturating_add(1)) {
+                            Ok(next) => next,
+                            Err(error) => {
+                                return Err(self
+                                    .fail_launch_error(generation, &model.id, error)
+                                    .await);
+                            }
+                        };
+                        eprintln!(
+                            "local ai: port {port} was taken before llama-server bound ({status}); retrying on {next}"
+                        );
+                        port = next;
+                        continue 'attempt;
+                    }
+                    let err = if bind_failure {
+                        format!(
+                            "llama-server could not bind 127.0.0.1:{port} after {ENGINE_PORT_ATTEMPTS} attempts: {status}"
+                        )
+                    } else {
+                        format!("llama-server exited prematurely with status {status}")
+                    };
+                    return Err(self.fail_launch_error(generation, &model.id, err).await);
+                }
+
+                let resp = tokio::select! {
+                    _ = wait_for_lifecycle_change(&mut cancelled, generation) => {
+                        self.discard_child().await;
+                        return Err(Self::superseded_message());
+                    }
+                    resp = client
+                        .get(&health_url)
+                        .header("Authorization", format!("Bearer {}", token))
+                        .send() => resp,
+                };
+                if !self.is_current_generation(generation) {
+                    self.discard_child().await;
+                    return Err(Self::superseded_message());
+                }
+
+                if let Ok(response) = resp {
+                    if response.status().is_success() {
+                        ready = true;
+                        break;
+                    }
                 }
             }
-        }
 
-        if !ready {
-            let err = "llama-server healthcheck timed out after 30 seconds".to_string();
-            self.fail_launch(generation, &model.id, &err);
-            return Err(err);
-        }
+            if !ready {
+                let err = "llama-server healthcheck timed out after 30 seconds".to_string();
+                return Err(self.fail_launch_error(generation, &model.id, err).await);
+            }
+            break port;
+        };
 
         // Health only proves the HTTP router is up. The model must be loaded
         // into the router before the runtime is Running and the gateway may
@@ -2669,37 +3213,64 @@ impl LocalRuntimeManager {
             .await
         {
             if error == Self::superseded_message() {
-                self.discard_child();
+                self.discard_child().await;
             } else {
-                self.fail_launch(generation, &model.id, &error);
+                self.fail_launch(generation, &model.id, &error).await;
             }
             return Err(error);
         }
 
+        match self.publish_ready(generation, port, &model) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                self.discard_child().await;
+                Err(Self::superseded_message())
+            }
+            Err(message) => {
+                self.fail_launch(generation, &model.id, &message).await;
+                Err(message)
+            }
+        }
+    }
+
+    /// Publishes `Ready` and the lifecycle revision under one lock.
+    ///
+    /// The publish must not hold the `RuntimeInner` guard across an `await`:
+    /// the guard is not `Send`, and a lock held across the store write would
+    /// also block the supervisor. Everything here is synchronous, and the
+    /// caller reaps the engine outside the lock when the generation moved on
+    /// while the model was loading.
+    ///
+    /// Returns `Ok(false)` when a newer generation superseded this launch and
+    /// the caller must discard the child instead of publishing it.
+    fn publish_ready(
+        &self,
+        generation: u64,
+        port: u16,
+        model: &LocalModel,
+    ) -> Result<bool, String> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.generation != generation {
-            drop(inner);
-            self.discard_child();
-            return Err(Self::superseded_message());
+            return Ok(false);
         }
-        // Publish the registry and lifecycle revision under the same lock.
-        // Otherwise the supervisor can observe Running, write a catalogue with
-        // no Ready model, and mark that revision synced before Ready is saved.
-        // A failed write must abort the launch: without the Ready row the
-        // gateway can never advertise this model.
-        if let Err(error) = LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Ready)
+        // The registry write and the lifecycle revision stay under the same
+        // lock. Otherwise the supervisor can observe Running, write a
+        // catalogue with no Ready model, and mark that revision synced before
+        // Ready is saved. A failed write must abort the launch: without the
+        // Ready row the gateway can never advertise this model.
+        if let Err(error) =
+            LocalModelStore::update_model_status(&model.id, ModelRuntimeStatus::Ready)
         {
-            drop(inner);
-            let message = format!("The model runtime status could not be saved: {error}");
-            self.fail_launch(generation, &model.id, &message);
-            return Err(message);
+            return Err(format!(
+                "The model runtime status could not be saved: {error}"
+            ));
         }
         inner.applied_settings = Some(model.user_settings.clone());
         inner.transition(LocalRuntimeState::Running {
             port,
             model_id: model.id.clone(),
         });
-        Ok(())
+        Ok(true)
     }
 
     /// Re-reads `GET /models` while the router is Running and normalizes the
@@ -2717,13 +3288,24 @@ impl LocalRuntimeManager {
             }
         };
 
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
-        let Some(states) = fetch_router_models(&client, port, &token).await else {
+        // A rejected key stays rejected: the supervisor calls this every five
+        // seconds and the engine bans a caller after five 401s, so probing again
+        // would lock the app out instead of reporting the problem.
+        if self.router_key_rejected.load(Ordering::Acquire) != 0 {
             return;
+        }
+
+        let states = match fetch_router_models(router_client(), port, &token).await {
+            Ok(states) => states,
+            Err(RouterFetchError::Unauthorized(status)) => {
+                self.router_key_rejected.store(status, Ordering::Release);
+                eprintln!(
+                    "local ai: the engine rejected the internal key (HTTP {status}); \
+                     status polling is paused until the next start/stop"
+                );
+                return;
+            }
+            Err(_) => return,
         };
         self.apply_router_snapshot(generation, port, &states);
     }
@@ -2790,6 +3372,7 @@ mod runtime_tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -2884,8 +3467,8 @@ mod runtime_tests {
     /// `load_model` publishes `Starting` before writing `models.ini` and
     /// opening the engine log. A failure there must become a terminal state,
     /// otherwise the renderer spins forever on a launch that never reports.
-    #[test]
-    fn a_failed_launch_step_publishes_failed_instead_of_staying_starting() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_launch_step_publishes_failed_instead_of_staying_starting() {
         let manager = LocalRuntimeManager::for_test();
         let (generation, _) = manager.begin_lifecycle();
         let model_id = "local/preset-failure-test";
@@ -2897,7 +3480,11 @@ mod runtime_tests {
             });
         }
 
-        assert!(manager.fail_launch(generation, model_id, "No installed model files to serve."));
+        assert!(
+            manager
+                .fail_launch(generation, model_id, "No installed model files to serve.")
+                .await
+        );
 
         let status = manager.get_status();
         match status.state {
@@ -3120,14 +3707,27 @@ mod runtime_tests {
     fn router_error_message_prefers_json_and_falls_back_to_status() {
         assert_eq!(
             router_error_message(r#"{"error":{"message":"CUDA out of memory"}}"#, 500),
-            "CUDA out of memory"
+            "HTTP 500: CUDA out of memory"
         );
         assert_eq!(
             router_error_message(r#"{"message":"bad preset"}"#, 400),
-            "bad preset"
+            "HTTP 400: bad preset"
         );
-        assert_eq!(router_error_message("  plain body \n", 502), "plain body");
+        assert_eq!(
+            router_error_message("  plain body \n", 502),
+            "HTTP 502: plain body"
+        );
         assert_eq!(router_error_message("", 503), "HTTP 503");
+        // The status survives a rejected key, which is what tells it apart
+        // from a slow load.
+        assert_eq!(
+            router_error_message("unauthorized", 401),
+            "HTTP 401: unauthorized"
+        );
+        assert_eq!(
+            router_error_message(r#"{"error":{"message":"  "}}"#, 403),
+            "HTTP 403"
+        );
     }
 
     /// Minimal one-shot HTTP fixture: records the request, then answers with
@@ -3307,10 +3907,35 @@ mod runtime_tests {
         reporter.report(4, Some("stale".to_string()));
         assert_eq!(manager.current_publication_error(), None);
         reporter.report(6, Some("new".to_string()));
+        assert_eq!(manager.current_publication_error().as_deref(), Some("new"));
+
+        // A relay that never bound its port is reported next to the catalogue
+        // error and survives a successful publication, which clears `message`.
+        reporter.report_prompt_relay_error(Some("could not bind 127.0.0.1:0".to_string()));
+        reporter.report(6, None);
         assert_eq!(
             manager.current_publication_error().as_deref(),
-            Some("new")
+            Some("Prompt relay did not start: could not bind 127.0.0.1:0")
         );
+        reporter.report_prompt_relay_error(None);
+        assert_eq!(manager.current_publication_error(), None);
+    }
+
+    /// A 401 from the router is a standing condition, not a publication
+    /// result: it must keep showing after a later catalogue write succeeds,
+    /// otherwise the user only sees a launch that never finishes.
+    #[test]
+    fn a_rejected_internal_key_stays_reported_after_publication() {
+        let manager = LocalRuntimeManager::for_test();
+        manager.router_key_rejected.store(401, Ordering::Release);
+        manager.publication.report(manager.revision(), None);
+        assert_eq!(
+            manager.current_publication_error().as_deref(),
+            Some("The local engine rejected the internal key (HTTP 401). Restart the engine from the Runtime tab.")
+        );
+        // A new lifecycle clears the latch, and the stale revision with it.
+        manager.begin_lifecycle();
+        assert_eq!(manager.current_publication_error(), None);
     }
 
     #[test]
@@ -3441,8 +4066,12 @@ mod runtime_tests {
                 Some(1),
                 "a fresh manager must republish instead of trusting the old config"
             );
-            let yaml =
-                crate::gateway::api_keys_yaml_with_local(&crate::settings::Settings::default(), &[], 0, "");
+            let yaml = crate::gateway::api_keys_yaml_with_local(
+                &crate::settings::Settings::default(),
+                &[],
+                0,
+                "",
+            );
             assert!(!yaml.contains("local/stale"), "{yaml}");
             assert!(!yaml.contains("melon-local-ai"), "{yaml}");
         });
@@ -3818,10 +4447,11 @@ llamacpp:requests_processing
     }
 
     #[test]
-    fn install_url_allows_http_but_not_credentials_or_other_schemes() {
+    fn install_url_requires_https_and_no_credentials() {
         assert!(validate_install_url("https://example.com/runtime.zip").is_ok());
-        assert!(validate_install_url("http://example.com/runtime.zip").is_ok());
+        assert!(validate_install_url("http://example.com/runtime.zip").is_err());
         assert!(validate_install_url("http://user:pass@example.com/runtime.zip").is_err());
+        assert!(validate_install_url("https://user:pass@example.com/runtime.zip").is_err());
         assert!(validate_install_url("file:///tmp/runtime.zip").is_err());
         assert!(validate_install_url("ftp://example.com/runtime.zip").is_err());
         assert!(validate_install_url("not a url").is_err());

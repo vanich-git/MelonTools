@@ -10,7 +10,14 @@ let saveError = null;
 let saves = 0;
 let starts = 0;
 let holdSave;
-const button = { disabled: false };
+// Enough of an element for localAiSyncSelect(): the fake document returns this
+// single stand-in from querySelector, so it needs the two lookups that helper
+// performs even though this suite never renders a real .hf-select panel.
+const button = {
+  disabled: false,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+};
 const timers = new Map();
 let nextTimer = 0;
 const estimates = [];

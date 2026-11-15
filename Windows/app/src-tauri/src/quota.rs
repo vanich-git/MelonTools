@@ -14,6 +14,9 @@ const RESET_CREDITS_ENDPOINT: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CONSUME_RESET_CREDIT_ENDPOINT: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
+const RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+const MODELS_USER_AGENT: &str = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+const WAKE_ORIGINATOR: &str = "codex_cli_rs";
 const USER_AGENT: &str = "Codex Desktop (Windows)";
 const ORIGINATOR: &str = "Codex Desktop";
 const WEB_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
@@ -209,6 +212,45 @@ fn reset_signal(
         .map(|seconds| now + seconds - APPLE_REF_UNIX_OFFSET)
 }
 
+/// Stable tag a 401 usage error starts with. `refresh_one` retries on it, so
+/// the stored wording can change freely without breaking the retry.
+const UNAUTHORIZED_PREFIX: &str = "usage 401:";
+
+/// Plain-language reason for an HTTP status, so the account list says *why* it
+/// stopped instead of echoing the raw provider body. The upstream text is
+/// appended only when it adds information the status alone does not carry (a
+/// ban reason, a rate-limit reset).
+pub fn human_http(code: u16, body: &str) -> String {
+    let detail = body.trim();
+    let lower = detail.to_lowercase();
+    match code {
+        401 => "Вход устарел - войдите в этот аккаунт заново.".to_string(),
+        403 => {
+            if lower.contains("terms of service") || lower.contains("violation") {
+                "Заблокирован OpenAI за нарушение условий использования - аккаунт нельзя использовать."
+                    .to_string()
+            } else if lower.contains("cloudflare") {
+                "Заблокирован Cloudflare - попробуйте позже.".to_string()
+            } else {
+                "Доступ запрещён OpenAI (403).".to_string()
+            }
+        }
+        404 => "Аккаунт не найден на стороне OpenAI - войдите заново.".to_string(),
+        429 => "OpenAI ограничил частоту - окно квоты исчерпано.".to_string(),
+        500..=599 => {
+            "OpenAI временно недоступен (ошибка сервера) - это не вина аккаунта.".to_string()
+        }
+        _ => {
+            let head: String = detail.chars().take(200).collect();
+            if head.is_empty() {
+                format!("HTTP {code}")
+            } else {
+                format!("HTTP {code} - {head}")
+            }
+        }
+    }
+}
+
 pub async fn fetch_usage(
     client: &Client,
     account: &Account,
@@ -228,6 +270,8 @@ pub async fn fetch_usage(
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
+        // Raw shape kept on purpose: `refresh_one` retries a revoked token by
+        // matching this prefix. `human_http` turns it into the stored wording.
         return Err(format!(
             "usage {}: {}",
             status.as_u16(),
@@ -258,10 +302,26 @@ pub async fn fetch_usage(
     Ok((quota, text))
 }
 
+/// Converts the raw `usage <status>: <body>` shape into the wording the user
+/// sees. Anything else (network errors, missing tokens) already carries a
+/// readable message and passes through.
+fn stored_message(error: &str) -> String {
+    let Some(rest) = error.strip_prefix("usage ") else {
+        return error.to_string();
+    };
+    let Some((code, body)) = rest.split_once(':') else {
+        return error.to_string();
+    };
+    match code.trim().parse::<u16>() {
+        Ok(status) => human_http(status, body),
+        Err(_) => error.to_string(),
+    }
+}
+
 pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), String> {
     let mut tokens = ensure_fresh(client, account).await?;
     let mut usage = fetch_usage(client, account, &tokens).await;
-    if matches!(&usage, Err(error) if error.starts_with("usage 401:")) {
+    if matches!(&usage, Err(error) if error.starts_with(UNAUTHORIZED_PREFIX)) {
         // Providers can revoke an access token before its JWT expiry. Retry
         // once with a freshly rotated token instead of leaving the reset
         // probe stuck until the next long quota interval.
@@ -314,8 +374,12 @@ pub async fn refresh_one(client: &Client, account: &Account) -> Result<(), Strin
             Ok(())
         }
         Err(error) => {
-            let _ = vault::set_quota_error(&account.id, &error);
-            Err(error)
+            // The vault holds the plain-language reason the account list shows.
+            // `fetch_usage` keeps the raw shape for the retry above, so the
+            // conversion happens exactly here, once.
+            let shown = stored_message(&error);
+            let _ = vault::set_quota_error(&account.id, &shown);
+            Err(shown)
         }
     }
 }
@@ -715,6 +779,112 @@ pub fn reset_notification_key(
     }
 }
 
+async fn send_wake_request(
+    client: &Client,
+    account: &Account,
+    tokens: &Tokens,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let access = tokens
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "нет access_token".to_string())?;
+
+    let chosen_model = model.unwrap_or("gpt-5.6-luna");
+    let payload = json!({
+        "model": chosen_model,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "hi" }
+                ]
+            }
+        ],
+        "instructions": "",
+        "reasoning": { "effort": "low", "summary": "auto" },
+        "include": ["reasoning.encrypted_content"],
+        "parallel_tool_calls": true,
+        "store": false,
+        "stream": true
+    });
+
+    let mut request = client
+        .post(RESPONSES_ENDPOINT)
+        .header("Authorization", format!("Bearer {}", access))
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("Originator", WAKE_ORIGINATOR)
+        .header("User-Agent", MODELS_USER_AGENT)
+        .json(&payload);
+
+    let account_id = account.account_id.clone().or(tokens.account_id.clone());
+    if let Some(id) = account_id.filter(|v| !v.trim().is_empty()) {
+        request = request.header("ChatGPT-Account-Id", id);
+    }
+
+    let resp = request.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if status.as_u16() == 401 {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("{UNAUTHORIZED_PREFIX} {body}"));
+    }
+    if !status.is_success() && status.as_u16() >= 500 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("wake {}: {}", status.as_u16(), text.chars().take(200).collect::<String>()));
+    }
+    Ok(())
+}
+
+/// Wake a single Codex account by sending a minimal ping request to open its quota window.
+pub async fn wake_account(
+    client: &Client,
+    account: &Account,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let mut tokens = ensure_fresh(client, account).await?;
+    let mut result = send_wake_request(client, account, &tokens, model).await;
+    if matches!(&result, Err(error) if error.starts_with(UNAUTHORIZED_PREFIX)) {
+        tokens = refresh_tokens(client, account).await?;
+        vault::update_tokens(&account.id, &tokens, &chrono::Utc::now().to_rfc3339())?;
+        result = send_wake_request(client, account, &tokens, model).await;
+    }
+    result?;
+    let _ = refresh_one(client, account).await;
+    Ok(())
+}
+
+/// Wake specified Codex accounts.
+pub async fn wake_accounts(
+    client: &Client,
+    ids: &[String],
+    model: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let accounts = vault::accounts();
+    for id in ids {
+        if let Some(account) = accounts.iter().find(|a| &a.id == id) {
+            if let Err(err) = wake_account(client, account, model).await {
+                errors.push(format!("{}: {}", account.display_name(), err));
+            }
+        }
+    }
+    errors
+}
+
+/// Wake all sleeping accounts (where hourly window is not present).
+pub async fn wake_sleeping(client: &Client, model: Option<&str>) -> Vec<String> {
+    let sleeping_ids: Vec<String> = vault::accounts()
+        .into_iter()
+        .filter(|a| a.quota.as_ref().and_then(|q| q.hourly_window_present) == Some(false))
+        .map(|a| a.id)
+        .collect();
+    wake_accounts(client, &sleeping_ids, model).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -728,12 +898,21 @@ mod tests {
 
     #[test]
     fn usage_credits_match_macos_and_keep_explicit_false_and_zero() {
-        let credits = super::usage_credits(r#"{"credits":{"balance":"0","unlimited":false,"has_credits":false}}"#);
+        let credits = super::usage_credits(
+            r#"{"credits":{"balance":"0","unlimited":false,"has_credits":false}}"#,
+        );
         assert_eq!(credits.get("creditsBalance"), Some(&json!("0")));
         assert_eq!(credits.get("unlimitedCredits"), Some(&json!(false)));
         assert_eq!(credits.get("hasCredits"), Some(&json!(false)));
-        assert_eq!(super::usage_credits(r#"{"credits":{"balance":"12.50","unlimited":true}}"#).get("creditsBalance"), Some(&json!("12.50")));
-        assert!(super::usage_credits(r#"{"credits":{"balance":12,"unlimited":"true","has_credits":null}}"#).is_empty());
+        assert_eq!(
+            super::usage_credits(r#"{"credits":{"balance":"12.50","unlimited":true}}"#)
+                .get("creditsBalance"),
+            Some(&json!("12.50"))
+        );
+        assert!(super::usage_credits(
+            r#"{"credits":{"balance":12,"unlimited":"true","has_credits":null}}"#
+        )
+        .is_empty());
         assert!(super::usage_credits(r#"{"rate_limit":{}}"#).is_empty());
         assert!(super::usage_credits("not json").is_empty());
     }
@@ -1008,5 +1187,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn wake_constants_and_endpoint_are_defined() {
+        assert_eq!(super::RESPONSES_ENDPOINT, "https://chatgpt.com/backend-api/codex/responses");
+        assert_eq!(super::WAKE_ORIGINATOR, "codex_cli_rs");
+        assert!(super::MODELS_USER_AGENT.contains("codex_cli_rs"));
     }
 }

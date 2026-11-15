@@ -944,6 +944,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
     case openCode
     case openRouter
     case deepInfra
+    case nvidia
     case vercel
     case zai
     case commandCode
@@ -959,6 +960,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         case .openCode: return "OpenCode"
         case .openRouter: return "OpenRouter"
         case .deepInfra: return "DeepInfra"
+        case .nvidia: return "NVIDIA"
         case .vercel: return "Vercel"
         case .zai: return "Z.ai"
         case .commandCode: return "CommandCode"
@@ -974,6 +976,7 @@ enum SchedulerModelGroup: String, CaseIterable, Identifiable {
         if id.hasPrefix("opencode/") { return .openCode }
         if id.hasPrefix("openrouter/") { return .openRouter }
         if id.hasPrefix("deepinfra/") { return .deepInfra }
+        if id.hasPrefix("nvidia/") { return .nvidia }
         if id.hasPrefix("vercel/") { return .vercel }
         if id.hasPrefix("zai/") { return .zai }
         if id.hasPrefix("commandcode/") { return .commandCode }

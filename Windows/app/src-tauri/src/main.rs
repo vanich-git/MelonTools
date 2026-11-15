@@ -12,10 +12,12 @@ mod catalog;
 mod claude;
 mod codex_models;
 mod codex_route;
+mod custom;
 mod device_login;
 mod dpapi;
 mod engine;
 mod engine_job;
+mod antigravity_identity;
 mod gateway;
 mod history;
 mod instances;
@@ -36,7 +38,7 @@ mod vault;
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
@@ -45,7 +47,7 @@ use tauri_plugin_notification::NotificationExt;
 pub struct AppState {
     pub gw: gateway::Gateway,
     pub bridge: bridge::BridgeState,
-    pub settings: Mutex<settings::Settings>,
+    pub settings: std::sync::Arc<Mutex<settings::Settings>>,
     /// Engine watchdog bookkeeping.
     pub watchdog: Mutex<Watchdog>,
     /// Last validated `update_check` result. `update_apply` uses only this
@@ -57,6 +59,15 @@ pub struct AppState {
     pub island: Mutex<Option<(Instant, Value)>>,
     /// Generation counter for the pointer watcher that folds the panel.
     pub island_watch: AtomicU64,
+    /// Set before the first stop on every exit path. The watchdog and the Local
+    /// AI supervisor re-read it before starting an engine, so a tick that was
+    /// already in flight cannot bring the gateway back during shutdown.
+    pub shutting_down: AtomicBool,
+    /// One model-stop budget per process exit. The tray quit stops the engine
+    /// and `RunEvent::Exit` then repeats the call; a second five-second wait
+    /// would double the worst-case shutdown without freeing anything the first
+    /// wait could not.
+    pub runtime_stop_attempted: AtomicBool,
     pub local_runtime: std::sync::Arc<local_ai::LocalRuntimeManager>,
     pub download_manager: std::sync::Arc<local_ai::ModelDownloadManager>,
 }
@@ -77,6 +88,13 @@ pub struct Watchdog {
     pub health_ok: bool,
     pub restarts: u32,
     pub last_restart: Option<String>,
+    /// Consecutive successful health probes since the last restart. Reaching
+    /// `WATCHDOG_RESET_AFTER_TICKS` returns the restart budget.
+    #[serde(skip)]
+    pub healthy_streak: u32,
+    /// Why the watchdog stopped supervising, surfaced through `gateway_status`
+    /// so a disabled watchdog is visible outside the log (§2.2, W7).
+    pub disabled_reason: Option<String>,
     /// One-shot guard: a long-running log is rotated by a restart once per
     /// session, so a rotation that cannot shrink the file (adopted engine that
     /// keeps its handle) does not restart the gateway on every health tick.
@@ -84,9 +102,62 @@ pub struct Watchdog {
     pub log_rotated: bool,
 }
 
+/// Restarts allowed before the watchdog stops supervising. A manual start
+/// resets the budget.
+const WATCHDOG_MAX_RESTARTS: u32 = 3;
+
+/// Successful probes that earn the restart budget back. One probe runs every
+/// 30 s, so this is ten minutes of uninterrupted health.
+const WATCHDOG_RESET_AFTER_TICKS: u32 = 20;
+
+/// Hard budget for the final Local AI stop. The exit path runs on the UI thread
+/// and the tray quit on its own, so a model that ignores `terminate` must not
+/// keep the process alive: after this the exit proceeds.
+const RUNTIME_STOP_BUDGET: Duration = Duration::from_secs(5);
+
 impl AppState {
     fn settings(&self) -> settings::Settings {
         self.settings.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Marks the process as exiting. The watchdog and the Local AI supervisor
+    /// re-read this flag (and the same `watchdog` lock) immediately before they
+    /// start an engine, so a tick that overlapped the exit cannot revive the
+    /// gateway between the stop and process exit (§2.2, W8).
+    fn begin_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        if let Ok(mut guard) = self.watchdog.lock() {
+            guard.user_stopped = true;
+            guard.supervised = false;
+            guard.health_ok = false;
+        }
+    }
+}
+
+/// Stops the Local AI engine with a hard budget. `RunEvent::Exit` runs on the
+/// UI thread and the tray quit on its own, so a model that ignores `terminate`
+/// must not keep the process alive (§2.2, W6).
+///
+/// `LocalRuntimeManager` exposes only `stop`, no force-kill entry point, so the
+/// timeout path is a loud log rather than a second kill. The engine still dies
+/// with this process: the Windows job object is kill-on-close, and the next
+/// launch reaps a recorded engine PID.
+fn stop_runtime_bounded(state: &AppState) -> bool {
+    if state.runtime_stop_attempted.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+    match tauri::async_runtime::block_on(tokio::time::timeout(
+        RUNTIME_STOP_BUDGET,
+        state.local_runtime.stop(),
+    )) {
+        Ok(()) => true,
+        Err(_) => {
+            eprintln!(
+                "[local-ai] stop did not finish in {} s; exiting anyway (the next launch reaps the engine)",
+                RUNTIME_STOP_BUDGET.as_secs()
+            );
+            false
+        }
     }
 }
 
@@ -140,57 +211,53 @@ async fn settings_set(
     state: State<'_, AppState>,
     settings: settings::Settings,
 ) -> Result<Value, String> {
-    let old = state.settings();
-    let was_running = gateway::health(old.port, &old.api_key).await;
-    let mut merged = settings;
-    if !(1024..=65535).contains(&merged.port) {
+    // Snapshot only for the health probe and for deciding whether a port
+    // change must restart the engine. The payload is merged against the live
+    // state under the settings lock after the probe returns: another command
+    // can change routing, provider models, or the check timestamp while the
+    // probe is in flight, and a whole-object write would silently undo it.
+    let before = state.settings();
+    let was_running = gateway::health(before.port, &before.api_key).await;
+    let payload = settings;
+    if !(1024..=65535).contains(&payload.port) {
         return Err("порт должен быть в диапазоне 1024–65535".to_string());
     }
-    if !(60..=86_400).contains(&merged.quota_interval) {
+    if !(60..=86_400).contains(&payload.quota_interval) {
         return Err("интервал квот: от 60 до 86400 секунд".to_string());
     }
-    if merged.lang != "ru" && merged.lang != "en" {
+    if payload.lang != "ru" && payload.lang != "en" {
         return Err("неизвестный язык".to_string());
     }
-    if !settings::ISLAND_AUTO_COLLAPSE_CHOICES.contains(&merged.island_auto_collapse_seconds) {
+    if !settings::ISLAND_AUTO_COLLAPSE_CHOICES.contains(&payload.island_auto_collapse_seconds) {
         return Err("автосворачивание островка: 0, 5, 10, 15 или 20 секунд".to_string());
     }
-    if merged.api_key.trim().is_empty() {
-        merged.api_key = state.settings().api_key;
-    }
-    // The management secret is app-managed: a settings payload from an older
-    // UI must not wipe the persisted value (a fresh one would invalidate every
-    // management call until the engine reloads the config).
-    if merged.management_secret.trim().is_empty() {
-        merged.management_secret = state.settings().management_secret;
-    }
-    // Reset-notification markers are app-managed: an older UI payload without
-    // them must not cause the same window to be announced again.
-    if merged.quota_reset_notified.is_empty() {
-        merged.quota_reset_notified = state.settings().quota_reset_notified;
-    }
-    settings::carry_provider_models(&mut merged, &old);
-    settings::save(&merged)?;
+    let merged = {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "settings lock".to_string())?;
+        let merged = settings::merge_user_payload(payload, &before, &guard);
+        settings::save(&merged)?;
+        *guard = merged.clone();
+        merged
+    };
     if let Ok(mut guard) = state.island.lock() {
         *guard = None;
     }
     proxy::configure(&merged);
-    if let Ok(mut guard) = state.settings.lock() {
-        *guard = merged.clone();
-    }
     bridge::invalidate_providers(&state.bridge);
-    if was_running && old.port == merged.port {
-        // Every settings save lands here; `write_config` compares the generated
-        // YAML with the last generation and leaves the file untouched, so a
-        // change that does not affect the gateway no longer reloads the engine.
-        let _ = gateway::write_config(&merged);
+    // Write the config on every save, not only when the health probe said the
+    // engine was up. A stopped or just-starting engine still needs the newest
+    // file, and a false-negative probe must not leave the old port/key on disk.
+    if let Err(error) = gateway::write_config_current(|| state.settings()) {
+        eprintln!("[gateway] config write failed: {error}");
     }
-    if old.lang != merged.lang {
+    if before.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
     }
     set_island_visible(&app, merged.island_visible);
     taskbar_widget::set_visible(&app, merged.taskbar_widget_visible);
-    if was_running && old.port != merged.port {
+    if was_running && before.port != merged.port {
         let _ = stop_gateway(state.inner()).await;
         let _ = start_gateway(state.inner()).await;
     }
@@ -291,8 +358,12 @@ async fn support_bundle(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 async fn start_gateway(state: &AppState) -> Result<String, String> {
+    let result = gateway::start(&state.gw, || state.settings()).await?;
+    // The start path waits for the catalog refresh and may adopt an engine that
+    // is already running. Read the settings again: the port or key can have
+    // changed while that await was in flight, and Codex must point at the
+    // engine that is actually listening now.
     let settings = state.settings();
-    let result = gateway::start(&state.gw, &settings).await?;
     // Generate the catalog before pointing Codex at it; a dangling
     // model_catalog_json can stop the Codex app from starting.
     if let Ok(client) = quota::local_client() {
@@ -308,6 +379,8 @@ async fn start_gateway(state: &AppState) -> Result<String, String> {
         guard.health_ok = true;
         // A manual start resets the restart budget: the user asked for it.
         guard.restarts = 0;
+        guard.healthy_streak = 0;
+        guard.disabled_reason = None;
     }
     Ok(result)
 }
@@ -336,8 +409,8 @@ async fn gateway_stop(state: State<'_, AppState>) -> Result<String, String> {
 /// Rewrites config.yaml + gateway auth files from the vault.
 #[tauri::command]
 async fn gateway_sync(state: State<'_, AppState>) -> Result<Value, String> {
+    gateway::write_config_current(|| state.settings())?;
     let settings = state.settings();
-    gateway::write_config(&settings)?;
     let written = gateway::sync_accounts(&settings)?;
     Ok(json!({ "syncedAccounts": written }))
 }
@@ -351,6 +424,11 @@ async fn gateway_check(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn gateway_recent_calls(limit: Option<usize>) -> Result<Value, String> {
     Ok(gateway::recent_calls(limit.unwrap_or(10)))
+}
+
+#[tauri::command]
+async fn gateway_recent_usage(limit: Option<usize>) -> Result<Value, String> {
+    Ok(gateway::recent_usage(limit.unwrap_or(10)))
 }
 
 #[tauri::command]
@@ -725,6 +803,91 @@ async fn account_refresh_tokens(id: String) -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
+async fn account_wake(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let account = vault::accounts()
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| "аккаунт не найден".to_string())?;
+    let client = quota::client()?;
+    let previous = quota_snapshot();
+    let res = quota::wake_account(&client, &account, model.as_deref()).await;
+    let errors = match res {
+        Ok(()) => Vec::new(),
+        Err(e) => vec![format!("{}: {}", account.display_name(), e)],
+    };
+    let settings = state.settings();
+    live_quota::tick(&settings).await;
+    let synced = if gateway::health(settings.port, &settings.api_key).await {
+        gateway::sync_accounts(&settings).unwrap_or(0)
+    } else {
+        0
+    };
+    check_low_quota(&app, &state, &previous);
+    check_quota_reset(&app, &state, &previous);
+    Ok(json!({
+        "accounts": vault::list_views(),
+        "errors": errors,
+        "syncedAccounts": synced,
+    }))
+}
+
+#[tauri::command]
+async fn accounts_wake_selected(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let client = quota::client()?;
+    let previous = quota_snapshot();
+    let errors = quota::wake_accounts(&client, &ids, model.as_deref()).await;
+    let settings = state.settings();
+    live_quota::tick(&settings).await;
+    let synced = if gateway::health(settings.port, &settings.api_key).await {
+        gateway::sync_accounts(&settings).unwrap_or(0)
+    } else {
+        0
+    };
+    check_low_quota(&app, &state, &previous);
+    check_quota_reset(&app, &state, &previous);
+    Ok(json!({
+        "accounts": vault::list_views(),
+        "errors": errors,
+        "syncedAccounts": synced,
+    }))
+}
+
+#[tauri::command]
+async fn accounts_wake_sleeping(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let client = quota::client()?;
+    let previous = quota_snapshot();
+    let errors = quota::wake_sleeping(&client, model.as_deref()).await;
+    let settings = state.settings();
+    live_quota::tick(&settings).await;
+    let synced = if gateway::health(settings.port, &settings.api_key).await {
+        gateway::sync_accounts(&settings).unwrap_or(0)
+    } else {
+        0
+    };
+    check_low_quota(&app, &state, &previous);
+    check_quota_reset(&app, &state, &previous);
+    Ok(json!({
+        "accounts": vault::list_views(),
+        "errors": errors,
+        "syncedAccounts": synced,
+    }))
+}
+
+#[tauri::command]
 async fn save_reserves(
     state: State<'_, AppState>,
     id: String,
@@ -736,7 +899,12 @@ async fn save_reserves(
         item["hourlyReservePercent"] = json!(hourly);
         item["weeklyReservePercent"] = json!(weekly);
         if let Some(enabled) = pool_enabled {
-            if item.get("poolEnabled").and_then(Value::as_bool).unwrap_or(true) != enabled {
+            if item
+                .get("poolEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+                != enabled
+            {
                 item["poolEnabled"] = json!(enabled);
             }
         }
@@ -826,7 +994,10 @@ async fn move_priority(state: State<'_, AppState>, id: String, up: bool) -> Resu
             order = vault::accounts().iter().map(|a| a.id.clone()).collect();
         }
         let enabled: std::collections::HashSet<String> = vault::accounts()
-            .iter().filter(|account| account.pool_enabled()).map(|account| account.id.clone()).collect();
+            .iter()
+            .filter(|account| account.pool_enabled())
+            .map(|account| account.id.clone())
+            .collect();
         move_enabled_priority(&mut order, &id, up, &enabled);
         s.priority_order = order;
     })?;
@@ -834,15 +1005,28 @@ async fn move_priority(state: State<'_, AppState>, id: String, up: bool) -> Resu
     resync(&state).await
 }
 
-fn move_enabled_priority(order: &mut [String], id: &str, up: bool, enabled: &std::collections::HashSet<String>) {
-    if !enabled.contains(id) { return; }
-    let Some(index) = order.iter().position(|value| value == id) else { return; };
+fn move_enabled_priority(
+    order: &mut [String],
+    id: &str,
+    up: bool,
+    enabled: &std::collections::HashSet<String>,
+) {
+    if !enabled.contains(id) {
+        return;
+    }
+    let Some(index) = order.iter().position(|value| value == id) else {
+        return;
+    };
     let target = if up {
-        (0..index).rev().find(|&candidate| enabled.contains(&order[candidate]))
+        (0..index)
+            .rev()
+            .find(|&candidate| enabled.contains(&order[candidate]))
     } else {
         (index + 1..order.len()).find(|&candidate| enabled.contains(&order[candidate]))
     };
-    if let Some(target) = target { order.swap(index, target); }
+    if let Some(target) = target {
+        order.swap(index, target);
+    }
 }
 
 #[tauri::command]
@@ -1470,10 +1654,24 @@ async fn provider_models_load(
         "opencode" => providers::opencode_models(&settings.opencode_key).await?,
         "commandcode" => providers::commandcode_models(&settings.commandcode_key).await?,
         "deepinfra" => providers::deepinfra_models(&settings.deepinfra_key).await?,
+        "nvidia" => providers::nvidia_models(&settings.nvidia_key).await?,
         "vercel" => providers::vercel_models(&settings.vercel_key).await?,
         "zai" => providers::zai_models(&settings.zai_key).await?,
+        "openrouter" => providers::openrouter_models(&settings.openrouter_key).await?,
         other => return Err(format!("неизвестный провайдер: {other}")),
     };
+    Ok(json!({ "models": models, "count": models.len() }))
+}
+
+/// Model list for the custom provider sheet. The protocol decides the URL and
+/// the auth header; nothing is persisted until the sheet is saved.
+#[tauri::command]
+async fn custom_provider_models(
+    protocol: String,
+    base_url: String,
+    api_key: String,
+) -> Result<Value, String> {
+    let models = providers::custom_provider_models(&protocol, &base_url, &api_key).await?;
     Ok(json!({ "models": models, "count": models.len() }))
 }
 
@@ -1607,6 +1805,7 @@ async fn antigravity_account_action(
     model: Option<String>,
     models: Option<Vec<String>>,
     value: Option<i64>,
+    proxy: Option<String>,
 ) -> Result<Value, String> {
     match action.as_str() {
         "remove" => Ok(json!({ "ok": antigravity::remove_auth_file(&name) })),
@@ -1623,9 +1822,20 @@ async fn antigravity_account_action(
                 "ok": manager.set_priority(&name, value.unwrap_or(0)).await
             }))
         }
+        "proxy" => {
+            let manager = antigravity_management(&state)?;
+            Ok(json!({
+                "ok": manager.set_proxy(&name, proxy.as_deref().unwrap_or("")).await
+            }))
+        }
         "refresh" => {
             let manager = antigravity_management(&state)?;
             Ok(manager.refresh(Some(&name)).await)
+        }
+        "warmup" => {
+            let settings = state.settings();
+            let ok = antigravity::warmup_account(&settings, &name, model.as_deref()).await;
+            Ok(json!({ "ok": ok }))
         }
         "probe" => {
             let settings = state.settings();
@@ -1648,6 +1858,18 @@ async fn antigravity_account_action(
 async fn antigravity_disconnect() -> Result<Value, String> {
     let (removed, remaining) = antigravity::disconnect_in(&paths::auths_dir());
     Ok(json!({ "removed": removed, "remaining": remaining }))
+}
+
+#[tauri::command]
+async fn antigravity_warmup_all(
+    state: State<'_, AppState>,
+    model: Option<String>,
+) -> Result<Value, String> {
+    let settings = state.settings();
+    let results = antigravity::warmup_all(&settings, model.as_deref()).await;
+    Ok(json!({
+        "results": results.into_iter().map(|(name, ok)| json!({ "name": name, "ok": ok })).collect::<Vec<_>>()
+    }))
 }
 
 /// Launcher argv for an http(s) URL. The browser is opened through
@@ -1683,6 +1905,7 @@ async fn open_url(url: String) -> Result<(), String> {
 
 /// Restarts the engine when it dies while we believe it should run.
 async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
+    let shutting_down = state.shutting_down.load(Ordering::SeqCst);
     let (supervised, user_stopped, misses, restarts) = match state.watchdog.lock() {
         Ok(guard) => (
             guard.supervised,
@@ -1692,7 +1915,22 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
         ),
         Err(_) => return,
     };
-    if !supervised || user_stopped || restarts >= 3 {
+    if shutting_down || !supervised || user_stopped {
+        return;
+    }
+    if restarts >= WATCHDOG_MAX_RESTARTS {
+        // A silent early return hid the disabled watchdog from the UI and the
+        // support bundle. Record the reason once; `gateway_status` serialises
+        // the whole struct, so the renderer sees it without a new command
+        // (§2.2, W7).
+        if let Ok(mut guard) = state.watchdog.lock() {
+            if guard.disabled_reason.is_none() {
+                guard.disabled_reason = Some(format!("off after {restarts} restarts"));
+                eprintln!(
+                    "[watchdog] disabled after {restarts} restarts; start the API manually to reset the budget"
+                );
+            }
+        }
         return;
     }
     let settings = state.settings();
@@ -1700,6 +1938,19 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
         if let Ok(mut guard) = state.watchdog.lock() {
             guard.misses = 0;
             guard.health_ok = true;
+            // Ten uninterrupted healthy minutes earn the restart budget back;
+            // without this a transient outage disabled the watchdog for the
+            // rest of the session (§2.2, W7).
+            if guard.restarts > 0 {
+                guard.healthy_streak = guard.healthy_streak.saturating_add(1);
+                if guard.healthy_streak >= WATCHDOG_RESET_AFTER_TICKS {
+                    guard.restarts = 0;
+                    guard.healthy_streak = 0;
+                    guard.disabled_reason = None;
+                }
+            } else {
+                guard.healthy_streak = 0;
+            }
         }
         // A long-running engine keeps `gateway.log` open, so the file can only
         // be rotated by a restart. Rotate once per session, and only while the
@@ -1713,7 +1964,13 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
                 .unwrap_or(false);
         if needs_rotation {
             let _ = gateway::stop(&state.gw);
-            let outcome = gateway::start(&state.gw, &settings).await;
+            let outcome = gateway::start(&state.gw, || state.settings()).await;
+            // The exit path stops the gateway; a start that overlapped it must
+            // not leave a fresh engine behind (§2.2, W8).
+            if state.shutting_down.load(Ordering::SeqCst) {
+                let _ = gateway::stop(&state.gw);
+                return;
+            }
             if let Ok(mut guard) = state.watchdog.lock() {
                 guard.log_rotated = outcome.is_ok();
             }
@@ -1727,11 +1984,13 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
                 if crate::catalog::refresh_in_background().await {
-                    let state = handle.state::<AppState>();
-                    let settings = state.settings();
-                    // Coalesced with the other config writers; an unchanged
-                    // generation leaves the file untouched.
-                    crate::gateway::schedule_write_config(settings);
+                    // Coalesced with the other config writers; the callback
+                    // loads the settings when it fires, not now, so a save that
+                    // lands during the debounce is not overwritten by this
+                    // older snapshot.
+                    crate::gateway::schedule_write_config(move || {
+                        handle.state::<AppState>().settings()
+                    });
                 }
             });
         }
@@ -1739,6 +1998,7 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
     }
     if let Ok(mut guard) = state.watchdog.lock() {
         guard.health_ok = false;
+        guard.healthy_streak = 0;
     }
     let missed = misses + 1;
     if let Ok(mut guard) = state.watchdog.lock() {
@@ -1750,7 +2010,28 @@ async fn watchdog_check(state: &AppState, app: &tauri::AppHandle) {
     // Every attempt counts toward the bound (a persistently failing start
     // must not retry forever), and the miss counter resets so a failed
     // attempt is followed by a fresh two-miss wait instead of a hot loop.
-    let outcome = gateway::start(&state.gw, &settings).await;
+    //
+    // The health probe awaited above takes up to 15 seconds; a stop that
+    // landed meanwhile sets `user_stopped`, and starting here would override
+    // the user's decision, so the flag is re-read right before the start.
+    if state
+        .watchdog
+        .lock()
+        .map(|guard| guard.user_stopped || guard.restarts >= WATCHDOG_MAX_RESTARTS)
+        .unwrap_or(true)
+        || state.shutting_down.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    let outcome = gateway::start(&state.gw, || state.settings()).await;
+    // The exit path may have stopped the gateway while this start was already
+    // in flight; it would have found nothing to stop, and the engine spawned
+    // here would outlive the quit. Stop it again - `gateway::stop` is
+    // idempotent (§2.2, W9) - and skip the restart bookkeeping (§2.2, W8).
+    if state.shutting_down.load(Ordering::SeqCst) {
+        let _ = gateway::stop(&state.gw);
+        return;
+    }
     if let Ok(mut guard) = state.watchdog.lock() {
         guard.misses = 0;
         guard.restarts += 1;
@@ -1840,11 +2121,11 @@ fn handle_tray_menu(app: &tauri::AppHandle, menu_id: &str) {
             // engine before exiting so no unauthenticated gateway survives
             // the app in the background.
             let state = app.state::<AppState>();
+            // Flag first: a watchdog or supervisor tick that already passed its
+            // own check must see the exit before it can start an engine.
+            state.begin_shutdown();
             let _ = gateway::stop(&state.gw);
-            let runtime = state.local_runtime.clone();
-            tauri::async_runtime::block_on(async move {
-                runtime.stop().await;
-            });
+            let _ = stop_runtime_bounded(state.inner());
             app.exit(0);
         }
         _ => {}
@@ -2054,6 +2335,9 @@ fn island_provider_count(settings: &settings::Settings, codex_accounts: usize) -
         count += 1;
     }
     if settings.deepinfra_enabled && !settings.deepinfra_key.is_empty() {
+        count += 1;
+    }
+    if settings.nvidia_enabled && !settings.nvidia_key.is_empty() {
         count += 1;
     }
     if settings.vercel_enabled && !settings.vercel_key.is_empty() {
@@ -2337,11 +2621,13 @@ fn main() {
         .manage(AppState {
             gw: gateway::Gateway::new(),
             bridge: bridge::BridgeState::new(),
-            settings: Mutex::new(initial_settings),
+            settings: std::sync::Arc::new(Mutex::new(initial_settings)),
             watchdog: Mutex::new(Watchdog::default()),
             update: Mutex::new(None),
             island: Mutex::new(None),
             island_watch: AtomicU64::new(0),
+            shutting_down: AtomicBool::new(false),
+            runtime_stop_attempted: AtomicBool::new(false),
             local_runtime: std::sync::Arc::new(local_ai::LocalRuntimeManager::new()),
             download_manager: std::sync::Arc::new(local_ai::ModelDownloadManager::new()),
         })
@@ -2388,8 +2674,8 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 {
                     let state = handle.state::<AppState>();
-                    let settings = state.settings();
-                    if gateway::start(&state.gw, &settings).await.is_ok() {
+                    if gateway::start(&state.gw, || state.settings()).await.is_ok() {
+                        let settings = state.settings();
                         if let Ok(client) = quota::local_client() {
                             let _ = codex_route::sync_catalog(
                                 &client,
@@ -2440,6 +2726,34 @@ fn main() {
                         let _status = state.local_runtime.get_status();
                         state.local_runtime.reconcile_router_state().await;
                         local_ai::commands::sync_gateway_after_transition(&state);
+                        // An acknowledged document that still served no local
+                        // model cannot be fixed by rewriting it again: the
+                        // engine applies the file at startup but not through
+                        // its management reload on that host. Restarting once
+                        // makes it read the same bytes through the path that
+                        // works; the next tick republishes if it still fails.
+                        if local_ai::commands::take_engine_restart_request() {
+                            // A user who stopped the API owns that decision;
+                            // the request is spent without overriding it. The
+                            // exit path sets the same intent, so a tick that
+                            // arrives during shutdown must not start an engine
+                            // (§2.2, W8).
+                            let stopped = state
+                                .watchdog
+                                .lock()
+                                .map(|watchdog| watchdog.user_stopped)
+                                .unwrap_or(false)
+                                || state.shutting_down.load(Ordering::SeqCst);
+                            if !stopped {
+                                let _ = gateway::stop(&state.gw);
+                                let _ = gateway::start(&state.gw, || state.settings()).await;
+                                // The exit may have stopped the gateway before
+                                // this start spawned it; stop the survivor.
+                                if state.shutting_down.load(Ordering::SeqCst) {
+                                    let _ = gateway::stop(&state.gw);
+                                }
+                            }
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
@@ -2550,6 +2864,7 @@ fn main() {
             gateway_sync,
             gateway_check,
             gateway_recent_calls,
+            gateway_recent_usage,
             gateway_models,
             vault_list,
             quota_refresh,
@@ -2559,6 +2874,9 @@ fn main() {
             import_current_auth,
             import_json_accounts,
             account_refresh_tokens,
+            account_wake,
+            accounts_wake_selected,
+            accounts_wake_sleeping,
             save_reserves,
             delete_account,
             device_login_start,
@@ -2609,6 +2927,7 @@ fn main() {
             openrouter_refresh,
             vercel_refresh,
             provider_models_load,
+            custom_provider_models,
             claude_login_start,
             claude_login_status,
             claude_login_cancel,
@@ -2623,6 +2942,7 @@ fn main() {
             antigravity_models,
             antigravity_metrics,
             antigravity_disconnect,
+            antigravity_warmup_all,
             antigravity_account_action,
             open_url,
             island_snapshot,
@@ -2642,6 +2962,7 @@ fn main() {
             local_ai::local_ai_model_delete,
             local_ai::local_ai_runtime_status,
             local_ai::local_ai_runtime_metrics,
+            local_ai::local_ai_api_catalogue,
             local_ai::local_ai_runtime_logs,
             local_ai::local_ai_runtime_logs_clear,
             local_ai::local_ai_migration_report,
@@ -2654,6 +2975,7 @@ fn main() {
             local_ai::local_ai_set_binary_path,
             local_ai::local_ai_hf_search,
             local_ai::local_ai_hf_model_details,
+            local_ai::local_ai_hf_avatars,
             local_ai::local_ai_download_start,
             local_ai::local_ai_download_cancel,
             local_ai::local_ai_downloads_list,
@@ -2672,15 +2994,19 @@ fn main() {
             // orderly case where the engine would otherwise linger.
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
+                // Set before the first stop: the watchdog and the Local AI
+                // supervisor re-read it before starting an engine, so a tick
+                // already past its check cannot revive the gateway (§2.2, W8).
+                state.begin_shutdown();
                 // A coalesced write still sleeping in the runtime dies with it;
                 // persist the current intent so the next launch and the audit
                 // trail see the last configured state (no-op when unchanged).
-                let _ = gateway::write_config(&state.settings());
+                if let Err(error) = gateway::write_config_current(|| state.settings()) {
+                    eprintln!("[gateway] final config write failed: {error}");
+                }
                 let _ = gateway::stop(&state.gw);
-                let runtime = state.local_runtime.clone();
-                tauri::async_runtime::block_on(async move {
-                    runtime.stop().await;
-                });
+                // Bounded: a stuck model must not hold the exit (§2.2, W6).
+                let _ = stop_runtime_bounded(state.inner());
             }
         });
 }
@@ -2692,6 +3018,20 @@ mod tests {
         pool_toggle_selection, settings_view, tray_event_payload, ApiToggle,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn island_counts_enabled_nvidia_with_key() {
+        let mut settings = super::settings::Settings::default();
+        settings.claude_enabled = false;
+        let initial = super::island_provider_count(&settings, 0);
+        settings.nvidia_key = "test-key".to_string();
+        settings.nvidia_enabled = false;
+        assert_eq!(super::island_provider_count(&settings, 0), initial);
+        settings.nvidia_enabled = true;
+        assert_eq!(super::island_provider_count(&settings, 0), initial + 1);
+        settings.nvidia_key.clear();
+        assert_eq!(super::island_provider_count(&settings, 0), initial);
+    }
 
     #[test]
     fn island_quota_summary_excludes_manual_off_and_preserves_unknown() {

@@ -893,4 +893,68 @@ final class LocalAICoreTests: XCTestCase {
         let second = try await store.importGGUFFileAsync(from: secondDirectory.appendingPathComponent("model.gguf"))
         XCTAssertNotEqual(first.files, second.files)
     }
+
+    // MARK: - Preset hardening (audit R2)
+
+    /// The preset is a flat INI: a newline inside a chat template used to end
+    /// the `chat-template` key and inject arbitrary engine options.
+    func testPresetFlattensNewlinesInChatTemplate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("melon-preset-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("inject.gguf")
+        try Data().write(to: file)
+
+        var settings = LocalModelSettings.defaultSettings(forContext: 8192)
+        settings.chatTemplate = "{% for m in messages %}{{m}}{% endfor %}\nthreads = 999\nn-gpu-layers = 0"
+        settings.kvCacheType = "q4_0\nbatch-size = 1"
+
+        let model = LocalModel(
+            id: "local/inject", displayName: "I", provider: "Local AI", source: "import",
+            repoId: nil, revision: nil, files: [file.lastPathComponent], fileSize: 0,
+            quantization: "Q4_K_M", format: "GGUF", contextLength: 8192, configuredContext: 8192,
+            blockCount: 24, architecture: "qwen35", backend: .metal, gpuOffload: 99, threads: 8,
+            runtimeStatus: .installed, capabilities: [.text], installedAt: Date(), updatedAt: Date(),
+            lastUsedAt: nil, license: nil, checksum: nil, userSettings: settings
+        )
+        let lines = LocalInferenceService.presetLines(
+            models: [model], modelsDirectory: directory, backend: .metal, cpuCores: 8
+        )
+        XCTAssertFalse(lines.contains { $0.hasPrefix("threads = 999") })
+        XCTAssertFalse(lines.contains { $0.hasPrefix("batch-size = 1") })
+        // An unknown cache type is replaced with the safe default.
+        XCTAssertTrue(lines.contains("cache-type-k = f16"))
+        XCTAssertTrue(lines.contains("cache-type-v = f16"))
+        // Every emitted line stays a single "key = value" line.
+        for line in lines {
+            XCTAssertFalse(line.contains("\n"))
+            XCTAssertFalse(line.contains("\r"))
+        }
+    }
+
+    /// A section name built from a model id must not be able to close the
+    /// `[id]` bracket early.
+    func testPresetSanitisesSectionName() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("melon-preset-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("section.gguf")
+        try Data().write(to: file)
+
+        let model = LocalModel(
+            id: "local/x]\nthreads = 999", displayName: "S", provider: "Local AI", source: "import",
+            repoId: nil, revision: nil, files: [file.lastPathComponent], fileSize: 0,
+            quantization: "Q4_K_M", format: "GGUF", contextLength: 8192, configuredContext: 8192,
+            blockCount: 24, architecture: "qwen35", backend: .metal, gpuOffload: 99, threads: 8,
+            runtimeStatus: .installed, capabilities: [.text], installedAt: Date(), updatedAt: Date(),
+            lastUsedAt: nil, license: nil, checksum: nil, userSettings: .defaultSettings(forContext: 8192)
+        )
+        let lines = LocalInferenceService.presetLines(
+            models: [model], modelsDirectory: directory, backend: .metal, cpuCores: 8
+        )
+        XCTAssertTrue(lines.contains("[local/x--threads = 999]"))
+        XCTAssertFalse(lines.contains { $0.hasPrefix("threads = 999") })
+    }
 }

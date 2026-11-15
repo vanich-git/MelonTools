@@ -9,11 +9,13 @@
 //!
 //! One request per connection: the relay always answers with
 //! `Connection: close`, which keeps the response framing simple at the cost of
-//! a reconnect per call — irrelevant on loopback.
+//! a reconnect per call — irrelevant on loopback. At most `MAX_CONNECTIONS`
+//! requests are served at once; past that the relay answers `503` without
+//! reading the request.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -25,10 +27,25 @@ static PORT: AtomicU16 = AtomicU16::new(0);
 /// so the engine updates this each time it starts.
 static UPSTREAM: AtomicU16 = AtomicU16::new(0);
 static START_LOCK: Mutex<()> = Mutex::new(());
+/// Connections currently being served; the budget is `MAX_CONNECTIONS`.
+static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+/// Why the relay last failed to start. Falling back to the router is silent by
+/// design, so this is the only place an ignored system prompt explains itself;
+/// `last_error` hands the reason to the diagnostics view.
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 const MAX_BODY: usize = 64 << 20;
+/// Request/status line and header block cap. `take_line`/`take_head` grow their
+/// buffer until the terminator arrives, so a client that never sends one would
+/// otherwise expand it for the whole I/O timeout.
+const MAX_HEAD: usize = 64 << 10;
 /// Long enough for a slow model to stream a whole answer.
 const IO_TIMEOUT_SECS: u64 = 600;
+/// Requests served at once. Every connection holds a thread and may buffer a
+/// `MAX_BODY` request, and the 600-second I/O timeouts keep a slow generation
+/// in its slot for ten minutes, so an unbounded `spawn` turns a burst of calls
+/// into a thread and memory leak.
+const MAX_CONNECTIONS: usize = 32;
 
 /// Binds the relay once and returns its port, 0 when it cannot bind.
 ///
@@ -51,11 +68,19 @@ pub fn ensure_started() -> u16 {
 
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
-        Err(_) => return 0,
+        Err(error) => {
+            fail_start(format!(
+                "system prompt relay could not bind 127.0.0.1:0: {error}"
+            ));
+            return 0;
+        }
     };
     let port = match listener.local_addr() {
         Ok(addr) => addr.port(),
-        Err(_) => return 0,
+        Err(error) => {
+            fail_start(format!("system prompt relay has no bound address: {error}"));
+            return 0;
+        }
     };
     if UPSTREAM.load(Ordering::SeqCst) == 0 {
         UPSTREAM.store(super::local_runtime::get_runtime_port(), Ordering::SeqCst);
@@ -63,13 +88,31 @@ pub fn ensure_started() -> u16 {
     let spawned = std::thread::Builder::new()
         .name("system-prompt-relay".to_string())
         .spawn(move || accept_loop(listener));
-    if spawned.is_err() {
+    if let Err(error) = spawned {
         // Advertising a port with no listener would break every local call
         // with a connection error instead of a clean fallback to the router.
+        fail_start(format!(
+            "system prompt relay could not start its accept thread: {error}"
+        ));
         return 0;
     }
     PORT.store(port, Ordering::SeqCst);
+    set_last_error(None);
     port
+}
+
+/// Reports a start failure on stderr, like every other engine error in this
+/// module, and keeps the reason for `last_error`.
+fn fail_start(message: String) {
+    eprintln!("local ai: {message}");
+    set_last_error(Some(message));
+}
+
+/// Records or clears the reason the relay is not running.
+fn set_last_error(message: Option<String>) {
+    *LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = message;
 }
 
 /// Router the relay forwards to; called by the engine on every launch.
@@ -84,6 +127,17 @@ pub fn published_port(fallback: u16) -> u16 {
         0 => fallback,
         relay => relay,
     }
+}
+
+/// Reason the relay last failed to start, `None` while it is healthy. The
+/// fallback to the router is otherwise invisible: the gateway keeps working and
+/// every stored system prompt is quietly dropped.
+#[allow(dead_code)] // Read by the diagnostics view, which lives outside this module.
+pub fn last_error() -> Option<String> {
+    LAST_ERROR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 // MARK: - Prompt plumbing
@@ -191,13 +245,55 @@ fn canonical_model_id(id: &str) -> String {
 
 // MARK: - Connection handling
 
+/// Slot in the connection budget. Taken before the connection thread starts and
+/// released when it ends, however it ends — including a panic in `handle`.
+struct ConnectionSlot;
+
+impl ConnectionSlot {
+    /// `None` while `MAX_CONNECTIONS` requests are already being served.
+    fn acquire() -> Option<Self> {
+        let mut current = ACTIVE_CONNECTIONS.load(Ordering::SeqCst);
+        loop {
+            if current >= MAX_CONNECTIONS {
+                return None;
+            }
+            // `compare_exchange_weak` keeps two threads from taking the last
+            // free slot and overshooting the cap.
+            match ACTIVE_CONNECTIONS.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn accept_loop(listener: TcpListener) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                let Some(slot) = ConnectionSlot::acquire() else {
+                    reject_overloaded(stream);
+                    continue;
+                };
+                // The closure owns the slot: it is released when the thread
+                // returns, and also when spawning fails and drops the closure.
                 let _ = std::thread::Builder::new()
                     .name("system-prompt-relay-conn".to_string())
-                    .spawn(move || handle(stream));
+                    .spawn(move || {
+                        let _slot = slot;
+                        handle(stream);
+                    });
             }
             Err(error) => {
                 if error.kind() == std::io::ErrorKind::Interrupted {
@@ -210,6 +306,17 @@ fn accept_loop(listener: TcpListener) {
             }
         }
     }
+}
+
+/// Turns a connection away without reading a byte of it: the cap exists so an
+/// overloaded relay spends neither a thread nor a body buffer on the request.
+fn reject_overloaded(mut client: TcpStream) {
+    // Written from the accept loop, so a client that never drains the answer
+    // must not park accepting for everyone else.
+    let _ = client.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = client.write_all(
+        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
 }
 
 fn handle(client: TcpStream) {
@@ -229,8 +336,19 @@ where
         return;
     };
     let mut reader = Reader::new(source);
-    let Some(request) = read_request(&mut reader) else {
-        return;
+    let mut request = match read_request(&mut reader) {
+        Ok(request) => request,
+        Err(ReadFailure::TooLarge) => {
+            // A silent empty body reached the engine as invalid JSON and the
+            // caller could not tell a huge request from a malformed one.
+            respond_plain(
+                &mut client,
+                "413 Payload Too Large",
+                "The request body exceeds the relay limit.",
+            );
+            return;
+        }
+        Err(ReadFailure::Incomplete) => return,
     };
 
     if upstream == 0 {
@@ -242,7 +360,10 @@ where
         return;
     }
 
-    let mut body = request.body.clone();
+    // The body can reach `MAX_BODY`, and copying it doubled the peak memory of
+    // every proxied request; the relay takes it out of the request and keeps
+    // ownership, so the bytes below are the only buffer of that size.
+    let mut body = std::mem::take(&mut request.body);
     if request.method == "POST" && is_rewritable(&request.target) {
         if let Some(model) = model_id(&body) {
             if let Some(prompt) = prompt_for(&model) {
@@ -286,14 +407,22 @@ struct Request {
     body: Vec<u8>,
 }
 
-fn read_request(reader: &mut Reader) -> Option<Request> {
-    let head = String::from_utf8_lossy(&reader.take_head()?).to_string();
+enum ReadFailure {
+    /// The peer closed or stalled before the message was complete.
+    Incomplete,
+    /// The declared body cannot be buffered inside `MAX_BODY`.
+    TooLarge,
+}
+
+fn read_request(reader: &mut Reader) -> Result<Request, ReadFailure> {
+    let head = reader.take_head().ok_or(ReadFailure::Incomplete)?;
+    let head = String::from_utf8_lossy(&head).to_string();
     let mut lines = head.split("\r\n");
-    let request_line = lines.next()?;
+    let request_line = lines.next().ok_or(ReadFailure::Incomplete)?;
     let mut parts = request_line.split(' ');
-    let method = parts.next()?.to_string();
-    let target = parts.next()?.to_string();
-    parts.next()?;
+    let method = parts.next().ok_or(ReadFailure::Incomplete)?.to_string();
+    let target = parts.next().ok_or(ReadFailure::Incomplete)?.to_string();
+    parts.next().ok_or(ReadFailure::Incomplete)?;
 
     let mut headers = Vec::new();
     for line in lines {
@@ -305,8 +434,8 @@ fn read_request(reader: &mut Reader) -> Option<Request> {
         }
     }
 
-    let body = read_body(reader, &headers);
-    Some(Request {
+    let body = read_body(reader, &headers)?;
+    Ok(Request {
         method,
         target,
         headers,
@@ -314,7 +443,7 @@ fn read_request(reader: &mut Reader) -> Option<Request> {
     })
 }
 
-fn read_body(reader: &mut Reader, headers: &[(String, String)]) -> Vec<u8> {
+fn read_body(reader: &mut Reader, headers: &[(String, String)]) -> Result<Vec<u8>, ReadFailure> {
     if let Some(value) = header(headers, "transfer-encoding") {
         if value.to_ascii_lowercase().contains("chunked") {
             return read_chunked(reader);
@@ -323,24 +452,28 @@ fn read_body(reader: &mut Reader, headers: &[(String, String)]) -> Vec<u8> {
     if let Some(length) =
         header(headers, "content-length").and_then(|value| value.parse::<usize>().ok())
     {
-        if length > 0 && length <= MAX_BODY {
-            return reader.take(length).unwrap_or_default();
+        if length > MAX_BODY {
+            return Err(ReadFailure::TooLarge);
+        }
+        if length > 0 {
+            return reader.take(length).ok_or(ReadFailure::Incomplete);
         }
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
-fn read_chunked(reader: &mut Reader) -> Vec<u8> {
+fn read_chunked(reader: &mut Reader) -> Result<Vec<u8>, ReadFailure> {
     let mut body = Vec::new();
-    while body.len() <= MAX_BODY {
-        let Some(line) = reader.take_line() else {
-            return body;
-        };
+    loop {
+        let line = reader.take_line().ok_or(ReadFailure::Incomplete)?;
         let text = String::from_utf8_lossy(&line).to_string();
         let size_text = text.split(';').next().unwrap_or(&text).trim().to_string();
-        let Ok(size) = usize::from_str_radix(&size_text, 16) else {
-            return body;
-        };
+        let size = usize::from_str_radix(&size_text, 16).map_err(|_| ReadFailure::Incomplete)?;
+        // The budget used to be checked only between chunks, so a declared
+        // size of e.g. 0xFFFFFFFF made `take` buffer gigabytes first.
+        if size > MAX_BODY || body.len().saturating_add(size) > MAX_BODY {
+            return Err(ReadFailure::TooLarge);
+        }
         if size == 0 {
             // Trailers, if any, end with an empty line.
             while let Some(trailer) = reader.take_line() {
@@ -348,15 +481,12 @@ fn read_chunked(reader: &mut Reader) -> Vec<u8> {
                     break;
                 }
             }
-            return body;
+            return Ok(body);
         }
-        let Some(chunk) = reader.take(size) else {
-            return body;
-        };
+        let chunk = reader.take(size).ok_or(ReadFailure::Incomplete)?;
         body.extend_from_slice(&chunk);
         let _ = reader.take_line();
     }
-    body
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -457,6 +587,11 @@ fn relay_chunked(upstream: &mut Reader, client: &mut TcpStream) {
         let Ok(size) = usize::from_str_radix(&size_text, 16) else {
             return;
         };
+        // One declared chunk must fit the body budget; without this an upstream
+        // (or a compromised local client) could make `take` allocate gigabytes.
+        if size > MAX_BODY {
+            return;
+        }
         if size == 0 {
             // Trailers, if any, end with an empty line.
             while let Some(trailer) = upstream.take_line() {
@@ -580,7 +715,7 @@ impl Reader {
                 self.buffer.drain(..index + 2);
                 return Some(line);
             }
-            if !self.fill() {
+            if self.buffer.len() > MAX_HEAD || !self.fill() {
                 return None;
             }
         }
@@ -593,7 +728,7 @@ impl Reader {
                 self.buffer.drain(..index + 4);
                 return Some(head);
             }
-            if !self.fill() {
+            if self.buffer.len() > MAX_HEAD || !self.fill() {
                 return None;
             }
         }
@@ -863,5 +998,52 @@ mod tests {
     fn relay_reports_a_stopped_engine() {
         let response = round_trip(0, None, "GET", "/v1/models", "");
         assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    }
+
+    /// Only the conversation endpoints are rewritten, so every other body has
+    /// to reach the router byte for byte — which also proves the relay still
+    /// owns the request body after taking it out of the request.
+    #[test]
+    fn relay_forwards_unrewritten_bodies_verbatim() {
+        let (router_port, captured) = fake_router(false);
+        let body = r#"{"input":["alpha","beta"],"model":"qwen-test"}"#;
+        let response = round_trip(
+            router_port,
+            Some("You are terse."),
+            "POST",
+            "/v1/embeddings",
+            body,
+        );
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        let forwarded = captured.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(forwarded, body);
+    }
+
+    /// The cap is what keeps a burst of calls from spawning a thread and
+    /// buffering a body per request; the slot has to cover every exit.
+    #[test]
+    fn connection_cap_refuses_past_the_limit() {
+        let held: Vec<ConnectionSlot> = (0..MAX_CONNECTIONS)
+            .map(|_| ConnectionSlot::acquire().expect("a free slot below the cap"))
+            .collect();
+        assert!(
+            ConnectionSlot::acquire().is_none(),
+            "the relay took more than {MAX_CONNECTIONS} connections"
+        );
+        drop(held);
+        assert_eq!(ACTIVE_CONNECTIONS.load(Ordering::SeqCst), 0);
+    }
+
+    /// A start failure is invisible at the call site, so the reason has to
+    /// survive for the diagnostics view.
+    #[test]
+    fn last_error_keeps_the_start_failure_until_the_next_start() {
+        // `ensure_started` binds a real port, so the recording path is
+        // exercised directly instead.
+        fail_start("could not bind 127.0.0.1:0".to_string());
+        assert_eq!(last_error().as_deref(), Some("could not bind 127.0.0.1:0"));
+        set_last_error(None);
+        assert!(last_error().is_none());
     }
 }

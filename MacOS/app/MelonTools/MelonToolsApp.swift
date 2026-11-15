@@ -163,6 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SchedulerStore.shared.flushSave()
             QuotaHistoryStore.shared.flush()
             ComposerBridge.shared.shutdownForQuit()
+            // An interrupted download leaves a partially written `.part` and
+            // marks the item failed on the next launch; an interrupted unpack
+            // leaves `.download-`/`.install-` debris that maintenance only
+            // clears after 24 hours. Both are cheap to finalise here.
+            LocalDownloadManager.shared.shutdown()
+            RuntimeStore.shared.cancelInstall()
             // A llama-server left behind keeps gigabytes of model weights
             // resident and answers on a port the app no longer tracks, so it
             // must not survive a clean quit.

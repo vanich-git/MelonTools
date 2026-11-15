@@ -142,6 +142,14 @@ struct CodexAccountsView: View {
                 .font(MTTheme.mono(10))
                 .foregroundStyle(MTTheme.textSecondary)
             Spacer()
+            MTGlassButton(title: L("Wake selected"), systemImage: "sun.max.fill", size: .small, tint: MTTheme.gold) {
+                Task {
+                    for id in selectedAccounts {
+                        await store.wakeAccount(for: id)
+                    }
+                }
+            }
+            .disabled(selectedAccounts.isEmpty)
             MTGlassButton(title: L("Refresh selected"), systemImage: "arrow.clockwise", size: .small, tint: MTTheme.emerald) {
                 Task {
                     for id in selectedAccounts {
@@ -218,6 +226,12 @@ struct CodexAccountsView: View {
                 chooseBulkJSON()
             }
             Spacer()
+            let sleepingCount = store.accounts.filter { $0.quota?.hourlyWindowPresent == false }.count
+            if sleepingCount > 0 {
+                MTGlassButton(title: String(format: L("Wake sleeping (%d)"), sleepingCount), systemImage: "sun.max.fill", tint: MTTheme.gold, isLoading: !store.wakingAccountIds.isEmpty) {
+                    Task { await store.wakeSleepingAccounts() }
+                }
+            }
             MTGlassButton(title: L("Refresh quotas"), systemImage: "arrow.clockwise", tint: MTTheme.amber) {
                 Task { await store.refreshAllQuotas() }
             }
@@ -309,10 +323,15 @@ struct CodexAccountsView: View {
                 }
 
                 if let error = account.quotaError {
-                    Text(error)
-                        .font(MTTheme.mono(9))
-                        .foregroundStyle(MTTheme.danger)
-                        .lineLimit(2)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 8))
+                        Text(error)
+                            .font(MTTheme.mono(9))
+                            .lineLimit(3)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(MTTheme.danger)
                 } else if let updated = account.quotaUpdatedAt {
                     let source = account.quotaSource == "gateway" ? L("live gateway") : L("provider usage")
                     Text(String(format: L("quota updated %@ · %@"), ISODate.relative(Self.quotaStampISO.string(from: updated)), source))
@@ -328,6 +347,11 @@ struct CodexAccountsView: View {
                     if store.currentAccountId != account.id {
                         MTGlassButton(title: L("Switch"), systemImage: "arrow.left.arrow.right", size: .small, tint: MTTheme.cyan, isLoading: store.busyAccountIds.contains(account.id)) {
                             Task { await store.switchTo(account) }
+                        }
+                    }
+                    if account.quota?.hourlyWindowPresent == false {
+                        MTGlassButton(title: L("Wake up"), systemImage: "sun.max.fill", size: .small, tint: MTTheme.gold, isLoading: store.wakingAccountIds.contains(account.id)) {
+                            Task { await store.wakeAccount(for: account.id) }
                         }
                     }
                     MTGlassButton(title: L("Quota"), systemImage: "gauge.with.dots.needle.33percent", size: .small, tint: MTTheme.emerald, isLoading: store.busyAccountIds.contains(account.id)) {
@@ -369,6 +393,25 @@ struct CodexAccountsView: View {
             }
         }
         .saturation(account.poolEnabled == false ? 0 : 1)
+        .contextMenu {
+            Button {
+                Task { await store.wakeAccount(for: account.id) }
+            } label: {
+                Label(L("Wake up"), systemImage: "sun.max")
+            }
+            Button {
+                Task { await store.refreshQuota(for: account.id, forceTokens: true) }
+            } label: {
+                Label(L("Refresh quota"), systemImage: "arrow.clockwise")
+            }
+            if store.currentAccountId != account.id {
+                Button {
+                    Task { await store.switchTo(account) }
+                } label: {
+                    Label(L("Switch"), systemImage: "arrow.left.arrow.right")
+                }
+            }
+        }
     }
 
     /// Small chips under the account name: quota limits, “first”, “backup”
@@ -986,6 +1029,7 @@ private struct AccountRoutingSheet: View {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 Toggle(L("Participate in pool"), isOn: $poolEnabled)
                     .toggleStyle(.switch)
+                    .tint(MTTheme.emerald)
                 Text(L("When off, the account is excluded from routing. Its data and quotas stay visible and keep updating. Enable it here to return it to the pool."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
@@ -1012,11 +1056,13 @@ private struct AccountRoutingSheet: View {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 Toggle(L("Always first"), isOn: $preferred)
                     .toggleStyle(.switch)
+                    .tint(MTTheme.amber)
                 Text(L("The “always first” account leads while it is not paused by limits."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
                 Toggle(L("Backup"), isOn: $backup)
                     .toggleStyle(.switch)
+                    .tint(MTTheme.cyan)
                     .padding(.top, MTTheme.s1)
                 Text(L("A backup account is used only when the regular accounts are unavailable."))
                     .font(MTTheme.mono(10))
@@ -1090,6 +1136,7 @@ private struct AccountRoutingSheet: View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             Toggle(title, isOn: enabled)
                 .toggleStyle(.switch)
+                .tint(MTTheme.amber)
             if enabled.wrappedValue {
                 HStack(spacing: MTTheme.s3) {
                     Stepper(value: value, in: 1...100) {
@@ -1162,7 +1209,7 @@ private struct AccountModelsSheet: View {
 
             HStack(spacing: MTTheme.s2) {
                 TextField(L("Search"), text: $search)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.mtInput)
                     .font(MTTheme.mono(11))
                     .frame(maxWidth: 260)
                 MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) {

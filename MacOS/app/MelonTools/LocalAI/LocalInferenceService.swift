@@ -484,7 +484,10 @@ final class LocalInferenceService: ObservableObject {
 
     // MARK: - Port Allocation
 
-    private func findAvailablePort(startingFrom start: Int = 18318) -> Int {
+    /// `nil` when the whole range is busy. Returning `start` anyway used to
+    /// hand a taken port to the router, which then failed with a generic
+    /// "engine did not start" after 60 s.
+    private func findAvailablePort(startingFrom start: Int = 18318) -> Int? {
         for candidate in start...(start + 30) {
             var addr = sockaddr_in()
             addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
@@ -495,9 +498,9 @@ final class LocalInferenceService: ObservableObject {
             let sock = socket(AF_INET, SOCK_STREAM, 0)
             guard sock >= 0 else { continue }
 
-            var yes: Int32 = 1
-            setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-
+            // No SO_REUSEADDR here: on macOS it lets a second bind succeed on a
+            // port that is already listening, so the probe would report a busy
+            // port as free and the router would fail with "address in use".
             let bindResult = withUnsafePointer(to: &addr) { ptr in
                 ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                     bind(sock, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
@@ -510,7 +513,7 @@ final class LocalInferenceService: ObservableObject {
                 return candidate
             }
         }
-        return start
+        return nil
     }
 
     // MARK: - Public lifecycle
@@ -544,7 +547,11 @@ final class LocalInferenceService: ObservableObject {
     /// Stops the engine and every pending launch.
     func stop() async {
         let previouslyPublished = Self.readyAliases(in: LocalModelStore.shared.models)
+        // The process belongs to the generation that started it; `generation`
+        // is bumped first so a concurrent Start owns everything after this.
+        let ownedProcessGeneration = processGeneration
         generation += 1
+        let stopGeneration = generation
         startTask?.cancel()
         startTask = nil
         stopMonitoring()
@@ -553,7 +560,14 @@ final class LocalInferenceService: ObservableObject {
         if status.isRunning || status.isStarting {
             status = .stopping
         }
-        await terminateProcess()
+        await terminateProcess(expectedGeneration: ownedProcessGeneration)
+        // A newer Start may have taken ownership while the old engine was
+        // shutting down; its state must not be overwritten by this Stop.
+        guard generation == stopGeneration else { return }
+        // The relay only exists to forward to this engine. Leaving it listening
+        // kept the gateway's published port alive and answering 502 after Stop.
+        SystemPromptProxy.shared.stop()
+        SystemPromptProxy.shared.setUpstream(port: 0)
         currentModel = nil
         failedModelId = nil
         routerStates = [:]
@@ -571,19 +585,46 @@ final class LocalInferenceService: ObservableObject {
         stopMonitoring()
         stopMetricsPolling()
 
+        let hadProcess = process != nil
+        let enginePID = process?.processIdentifier
+        var forcedKill = false
         if let p = process, p.isRunning {
-            p.terminate()
-            let deadline = Date().addingTimeInterval(3)
-            while p.isRunning && Date() < deadline {
-                usleep(100_000)
+            let pid = p.processIdentifier
+            // The whole group goes down: the router's model child is what keeps
+            // the weights mapped, and letting the router exit first would orphan
+            // it. `signalEngine` falls back to the pid when the group is absent.
+            Self.signalEngine(pid: pid, signal: SIGTERM)
+            // Quit runs on the main thread, so the grace period is bounded:
+            // 10 × 50 ms, then SIGKILL and at most 4 × 50 ms more (~0.7 s).
+            var exited = false
+            for _ in 0..<10 {
+                if !p.isRunning { exited = true; break }
+                usleep(50_000)
             }
-            if p.isRunning {
-                kill(p.processIdentifier, SIGKILL)
+            if !exited {
+                forcedKill = true
+                Self.signalEngine(pid: pid, signal: SIGKILL)
+                for _ in 0..<4 {
+                    if !p.isRunning { break }
+                    usleep(50_000)
+                }
             }
+        }
+        // A model child that ignored SIGTERM outlives the router as its own
+        // orphan or as the last member of the router's group. Reap only then:
+        // a clean shutdown must stay cheap on the quit path. The reaper itself
+        // is bounded to ~0.2 s (ps + one short grace), so the worst case stays
+        // under one second even when SIGKILL was needed.
+        let groupSurvived = enginePID.map { kill(-$0, 0) == 0 } ?? false
+        if hadProcess, forcedKill || groupSurvived,
+           let binary = RuntimeStore.shared.activeBinaryURL?.path, !binary.isEmpty {
+            Self.reapOrphanedEnginesSync(binary: binary)
         }
         process = nil
         processIdentifier = nil
         processGeneration = 0
+        SystemPromptProxy.shared.stop()
+        SystemPromptProxy.shared.setUpstream(port: 0)
         closeLogSink()
         LocalModelStore.shared.normalizeRuntimeStates()
         currentModel = nil
@@ -601,8 +642,15 @@ final class LocalInferenceService: ObservableObject {
         let servesModel = currentModel?.id == model.id || routerStates[model.id] == .loaded
         if servesModel || routerStates.isEmpty {
             await stop()
-        } else {
-            try? await unloadModelFromRouter(model.id)
+            return
+        }
+        do {
+            try await unloadModelFromRouter(model.id)
+        } catch {
+            // The weights are still mapped. Deleting the file would not free
+            // them and the router would keep answering a model the catalogue
+            // no longer lists, so stop the engine instead.
+            await stop()
         }
     }
 
@@ -644,9 +692,11 @@ final class LocalInferenceService: ObservableObject {
             }
         }
 
-        // Stop whatever is running; the generation check keeps a concurrent
-        // Stop from being undone by this launch.
-        await stopWithoutBumpingGeneration()
+        // Check before stopping: cancellation is cooperative, so a superseded
+        // launch reached the stop first and killed the engine a newer launch
+        // had just started. The second check keeps an await-race safe.
+        try ensureCurrent(operation)
+        await stopWithoutBumpingGeneration(operation: operation)
         try ensureCurrent(operation)
 
         guard let runtime = resolvedRuntime else {
@@ -672,7 +722,16 @@ final class LocalInferenceService: ObservableObject {
         currentModel = model
         LocalModelStore.shared.updateModelStatus(id: model.id, status: .loading)
 
-        port = findAvailablePort(startingFrom: 18318)
+        guard let picked = findAvailablePort(startingFrom: 18318) else {
+            let message = EngineFailure.portUnavailable.errorDescription
+                ?? "No free local port."
+            status = .failed(message)
+            failedModelId = model.id
+            engineError = message
+            LocalModelStore.shared.updateModelStatus(id: model.id, status: .installed)
+            throw EngineFailure.portUnavailable
+        }
+        port = picked
         internalToken = UUID().uuidString
 
         // The gateway is pointed at the prompt relay, which forwards to this
@@ -711,13 +770,29 @@ final class LocalInferenceService: ObservableObject {
 
         do {
             try p.run()
+            // Own process group: Stop and the crash reaper can then signal the
+            // router and its model child with one negative-pid kill. Foundation
+            // already creates the group on macOS, so EACCES here is expected;
+            // only a genuinely missing group is worth a warning.
+            let enginePID = p.processIdentifier
+            let groupResult = setpgid(enginePID, enginePID)
+            let groupErrno = errno
+            if groupResult != 0, getpgid(enginePID) != enginePID {
+                Self.logger.warning(
+                    "engine process group unavailable pid=\(enginePID, privacy: .public) errno=\(groupErrno, privacy: .public)"
+                )
+            }
         } catch {
-            let message = String(format: L("Failed to start llama-server: %@"), error.localizedDescription)
-            status = .failed(message)
-            failedModelId = model.id
-            engineError = message
-            LocalModelStore.shared.updateModelStatus(id: model.id, status: .error)
-            closeLogSink()
+            // A launch that lost the generation must not overwrite the state
+            // of the one that replaced it, nor close its log sink.
+            if generation == operation {
+                let message = String(format: L("Failed to start llama-server: %@"), error.localizedDescription)
+                status = .failed(message)
+                failedModelId = model.id
+                engineError = message
+                LocalModelStore.shared.updateModelStatus(id: model.id, status: .error)
+                closeLogSink()
+            }
             throw EngineFailure.spawnFailed(error.localizedDescription)
         }
 
@@ -725,6 +800,16 @@ final class LocalInferenceService: ObservableObject {
         processIdentifier = p.processIdentifier
         processGeneration = operation
         Self.logger.info("engine started pid=\(p.processIdentifier, privacy: .public) model=\(model.id, privacy: .public)")
+
+        // Stop may have won the race while `run()` was starting the process.
+        // Reap that orphan immediately instead of waiting for the health
+        // timeout, and do not publish any state for a superseded launch.
+        do {
+            try ensureCurrent(operation)
+        } catch {
+            await terminateProcess(expectedGeneration: operation)
+            throw error
+        }
 
         // Health: the router process is up.
         do {
@@ -735,9 +820,14 @@ final class LocalInferenceService: ObservableObject {
             try ensureCurrent(operation)
             // Publish the router's view immediately: waiting for the 5 s monitor
             // tick left `routerStates` empty right after a successful Start.
-            var states = await routerStatesSnapshot()
-            states[model.id] = .loaded
-            routerStates = states
+            if var states = await routerStatesSnapshot() {
+                states[model.id] = .loaded
+                routerStates = states
+            } else {
+                // The health check above already proved the router answers;
+                // only the richer model list failed, so record what we know.
+                routerStates[model.id] = .loaded
+            }
 
             status = .running(port: port, modelId: model.id)
             failedModelId = nil
@@ -749,7 +839,7 @@ final class LocalInferenceService: ObservableObject {
             startMonitoring(generation: operation)
             publishLocalRoutes()
         } catch {
-            await stopWithoutBumpingGeneration()
+            await stopWithoutBumpingGeneration(operation: operation)
             if generation == operation {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 status = .failed(message)
@@ -763,13 +853,24 @@ final class LocalInferenceService: ObservableObject {
 
     /// Stop without invalidating the caller's generation. Used inside a launch
     /// that is already owned by a generation.
-    private func stopWithoutBumpingGeneration() async {
+    private func stopWithoutBumpingGeneration(operation: Int? = nil) async {
+        // A superseded launch must not touch the state of the launch that
+        // replaced it. It still owns the process it spawned itself, though:
+        // leaving that one running would leak an engine nobody can reach.
+        if let operation, operation != generation {
+            if processGeneration == operation {
+                await terminateProcess(expectedGeneration: operation)
+            }
+            return
+        }
         let previouslyPublished = Self.readyAliases(in: LocalModelStore.shared.models)
+        let ownedProcessGeneration = processGeneration
         stopMetricsPolling()
         if status.isRunning || status.isStarting {
             status = .stopping
         }
-        await terminateProcess()
+        await terminateProcess(expectedGeneration: ownedProcessGeneration)
+        if let operation, operation != generation { return }
         routerStates = [:]
         LocalModelStore.shared.normalizeRuntimeStates()
         currentModel = nil
@@ -777,22 +878,48 @@ final class LocalInferenceService: ObservableObject {
         publishLocalRoutes(expectingAbsent: previouslyPublished)
     }
 
-    private func terminateProcess() async {
+    /// Tears down the engine this call owns.
+    ///
+    /// `expectedGeneration` is the process generation captured before the call.
+    /// If another launch has already replaced the process, no signal is sent:
+    /// otherwise a stale Stop could kill the engine a newer Start just spawned.
+    private func terminateProcess(expectedGeneration: Int? = nil) async {
         guard let p = process else { return }
+        if let expectedGeneration, processGeneration != expectedGeneration { return }
+        let pid = p.processIdentifier
         process = nil
         processIdentifier = nil
         processGeneration = 0
+        var forcedKill = false
         if p.isRunning {
-            p.terminate()
+            // Negative pid signals the whole group; without it a router that
+            // exits first would leave the model child holding the weights.
+            Self.signalEngine(pid: pid, signal: SIGTERM)
             for _ in 0..<30 {
                 if !p.isRunning { break }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             if p.isRunning {
-                kill(p.processIdentifier, SIGKILL)
+                forcedKill = true
+                Self.signalEngine(pid: pid, signal: SIGKILL)
+                // A SIGKILLed router cannot stop the model process it spawned:
+                // the child would keep the model mapped (gigabytes of RSS) and
+                // the port busy until the next launch reaped it.
+                try? await Task.sleep(nanoseconds: 150_000_000)
             }
         }
-        closeLogSink()
+        // A child that ignored SIGTERM can outlive a router that exited
+        // cleanly as the last member of its group, so check the group too.
+        let groupSurvived = kill(-pid, 0) == 0
+        if forcedKill || groupSurvived,
+           let binary = RuntimeStore.shared.activeBinaryURL?.path, !binary.isEmpty {
+            await Self.reapOrphanedEngines(
+                binary: binary, modelsPath: LocalPaths.models.path, appPID: getpid()
+            )
+        }
+        // A newer launch may have attached its log sink while this one was
+        // waiting for the old process to exit.
+        if process == nil { closeLogSink() }
     }
 
     private func handleProcessTermination(exitCode: Int32, generation operation: Int) {
@@ -813,11 +940,28 @@ final class LocalInferenceService: ObservableObject {
         status = .failed(message)
         engineError = message
         publishLocalRoutes(expectingAbsent: previouslyPublished)
+        // A crash can leave the router's model child behind. Run the reaper
+        // even if a Start wins the race and installs a new process: selection
+        // excludes every router whose parent is this app, so only the old
+        // orphan can be hit.
+        if let binary = RuntimeStore.shared.activeBinaryURL?.path, !binary.isEmpty {
+            let modelsPath = LocalPaths.models.path
+            let appPID = getpid()
+            Task.detached(priority: .utility) {
+                await Self.reapOrphanedEngines(
+                    binary: binary, modelsPath: modelsPath, appPID: appPID
+                )
+            }
+        }
     }
 
     // MARK: - Router operations
 
     /// Health check of the router process itself.
+    ///
+    /// A `200` alone is not proof: any local listener can answer with an error
+    /// body. The router reports success as `{"status":"ok"}`; newer builds also
+    /// use `ready`. An unreadable or status-less body is therefore unhealthy.
     func checkHealth(port: Int, token: String) async -> Bool {
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         var req = URLRequest(url: url)
@@ -830,11 +974,9 @@ final class LocalInferenceService: ObservableObject {
         do {
             let (data, resp) = try await NetworkProxy.directSession().data(for: req)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return false }
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let status = json["status"] as? String {
-                return status == "ok" || status == "ready"
-            }
-            return true
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let status = json["status"] as? String else { return false }
+            return status == "ok" || status == "ready"
         } catch {
             return false
         }
@@ -857,7 +999,7 @@ final class LocalInferenceService: ObservableObject {
     /// Returns the `n_ctx` the engine actually allocated, when reported.
     @discardableResult
     private func loadModelInRouter(_ model: LocalModel, generation operation: Int) async throws -> Int? {
-        if await routerStatesSnapshot()[model.id] == .loaded {
+        if let states = await routerStatesSnapshot(), states[model.id] == .loaded {
             return nil
         }
 
@@ -887,7 +1029,7 @@ final class LocalInferenceService: ObservableObject {
         while Date() < deadline {
             try ensureCurrent(operation)
             let statuses = await routerStatesSnapshot()
-            switch statuses[model.id] {
+            switch statuses?[model.id] {
             case .loaded:
                 return await routerContextLength(model.id)
             case .failed:
@@ -908,23 +1050,47 @@ final class LocalInferenceService: ObservableObject {
         request.setValue("Bearer \(internalToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["model": modelId])
-        _ = try? await NetworkProxy.directSession().data(for: request)
+        guard let (_, response) = try? await NetworkProxy.directSession().data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else {
+            throw EngineFailure.modelUnloadFailed(modelId)
+        }
+        // `/models/unload` returns success before the child stops, so a 2xx
+        // alone does not prove the weights are gone.
+        for _ in 0..<10 {
+            // An unreadable snapshot is not proof of unload; keep polling.
+            if let statuses = await routerStatesSnapshot(), statuses[modelId] != .loaded { return }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        throw EngineFailure.modelUnloadFailed(modelId)
     }
 
     /// `GET /models` → `id` → status. The router reports `unloaded`, `loading`,
     /// `loaded` and `sleeping` per model; this is the only honest source of the
     /// "is this model warm" question.
-    private func routerStatesSnapshot() async -> [String: RouterModelStatus] {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/models") else { return [:] }
+    ///
+    /// Returns `nil` when the router could not be asked. An empty dictionary is
+    /// a valid answer ("no models"), so callers can tell "nothing loaded" from
+    /// "unknown" and keep their last known state on the latter.
+    private func routerStatesSnapshot() async -> [String: RouterModelStatus]? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/models") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(internalToken)", forHTTPHeaderField: "Authorization")
-        guard let (data, response) = try? await NetworkProxy.directSession().data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let (data, response) = try? await NetworkProxy.directSession().data(for: request) else {
+            Self.logger.debug("router states unavailable: request failed")
+            return nil
+        }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            Self.logger.debug("router states unavailable: HTTP \(code, privacy: .public)")
+            return nil
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = json["data"] as? [[String: Any]] else {
-            return [:]
+            Self.logger.debug("router states unavailable: malformed body")
+            return nil
         }
         var result: [String: RouterModelStatus] = [:]
         for entry in entries {
@@ -992,7 +1158,12 @@ final class LocalInferenceService: ObservableObject {
         guard generation == operation, process === p else { return }
         guard healthy else { return }
 
-        let statuses = await routerStatesSnapshot()
+        guard let statuses = await routerStatesSnapshot() else {
+            // The router is healthy but its model list is unreadable. Treat the
+            // state as unknown instead of pretending every model was unloaded.
+            Self.logger.debug("router states unavailable; keeping last known model statuses")
+            return
+        }
         guard generation == operation, process === p else { return }
         // If the router cannot confirm any loaded model, never keep stale Ready
         // routes. A later successful snapshot will republish actual loaded ones.
@@ -1029,40 +1200,184 @@ final class LocalInferenceService: ObservableObject {
 
     // MARK: - Health of processes left behind
 
+    /// Ports `startEngine` may hand to a router. A process listening outside
+    /// this range was not started by this app.
+    nonisolated private static let enginePortRange = 18_318...18_348
+
+    private struct PSRow {
+        let pid: pid_t
+        let ppid: pid_t
+        let command: String
+    }
+
     /// Kills engine processes left behind by a previous run.
     ///
     /// A crash or a force-quit can orphan the router, which keeps the model
-    /// resident. Only processes launched from our own runtime folder are
-    /// touched, so a user's separate llama.cpp install is never affected.
+    /// resident. Ownership is proven by the runtime binary path plus the
+    /// loopback host; a live parent that is not this app means the process
+    /// belongs to someone else and is left alone.
     func reapOrphanedEngines() async {
         guard process == nil else { return }
         let binary = RuntimeStore.shared.activeBinaryURL?.path ?? ""
         guard !binary.isEmpty else { return }
+        let modelsPath = LocalPaths.models.path
+        let appPID = getpid()
         let worker = Task.detached(priority: .utility) {
-            await Self.reapOrphanedEngines(binary: binary)
+            await Self.reapOrphanedEngines(binary: binary, modelsPath: modelsPath, appPID: appPID)
         }
         await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
     }
 
-    nonisolated private static func reapOrphanedEngines(binary: String) async {
+    nonisolated private static func reapOrphanedEngines(
+        binary: String,
+        modelsPath: String,
+        appPID: pid_t
+    ) async {
+        guard !binary.isEmpty else { return }
         guard let result = try? await ShellService.run(
-            "/usr/bin/pgrep", ["-f", NSRegularExpression.escapedPattern(for: binary)], timeout: 2
+            "/bin/ps", ["-axo", "pid=,ppid=,command="], timeout: 2
         ), result.exitCode == 0 else { return }
-        let pids = result.stdout
-            .split(separator: "\n")
-            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-            .filter { $0 != getpid() }
 
+        let pids = enginePIDsToReap(
+            fromPSOutput: result.stdout, binary: binary, modelsPath: modelsPath, appPID: appPID
+        )
+        guard !Task.isCancelled, !pids.isEmpty else { return }
+        for pid in pids { signalEngine(pid: pid, signal: SIGTERM) }
+        try? await Task.sleep(nanoseconds: 300_000_000)
         guard !Task.isCancelled else { return }
-        for pid in pids {
-            kill(pid, SIGTERM)
+        for pid in pids where kill(pid, 0) == 0 {
+            signalEngine(pid: pid, signal: SIGKILL)
         }
-        if !pids.isEmpty {
-            try? await Task.sleep(for: .seconds(1))
-            for pid in pids where kill(pid, 0) == 0 {
-                kill(pid, SIGKILL)
+    }
+
+    /// Blocking twin of `reapOrphanedEngines`, used from `stopSync` and
+    /// `applicationWillTerminate`: Swift concurrency is already shutting down
+    /// there, so the async reaper cannot be awaited.
+    nonisolated private static func reapOrphanedEnginesSync(binary: String) {
+        guard !binary.isEmpty, let output = psOutput() else { return }
+        let pids = enginePIDsToReap(
+            fromPSOutput: output, binary: binary, modelsPath: LocalPaths.models.path, appPID: getpid()
+        )
+        guard !pids.isEmpty else { return }
+        for pid in pids { signalEngine(pid: pid, signal: SIGTERM) }
+        usleep(50_000)
+        for pid in pids where kill(pid, 0) == 0 {
+            signalEngine(pid: pid, signal: SIGKILL)
+        }
+    }
+
+    /// One bounded `ps` read. The process table is local and small, but quit
+    /// must not hang on a wedged `ps`, so a watchdog terminates it.
+    nonisolated private static func psOutput(timeout: TimeInterval = 0.1) -> String? {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-axo", "pid=,ppid=,command="]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+        do {
+            try ps.run()
+        } catch {
+            return nil
+        }
+        // Two-stage watchdog: SIGTERM, then SIGKILL if `ps` is stuck. Without
+        // the second stage a wedged `ps` would block the quit path forever.
+        let watchdog = DispatchWorkItem {
+            if ps.isRunning { ps.terminate() }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                if ps.isRunning { kill(ps.processIdentifier, SIGKILL) }
             }
         }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        ps.waitUntilExit()
+        watchdog.cancel()
+        guard ps.terminationStatus == 0 else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Selects only engines this app owns and that nobody is going to clean up:
+    /// a router orphaned on launchd (pid 1) or one whose parent is gone, its
+    /// model children, and model children already orphaned by an earlier kill.
+    /// A process under a live parent is never touched, even if its command line
+    /// mentions our binary.
+    nonisolated private static func enginePIDsToReap(
+        fromPSOutput output: String,
+        binary: String,
+        modelsPath: String,
+        appPID: pid_t
+    ) -> [pid_t] {
+        guard !binary.isEmpty else { return [] }
+        let rows = output.split(separator: "\n").compactMap { line -> PSRow? in
+            let fields = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard fields.count == 3,
+                  let pid = pid_t(fields[0]),
+                  let ppid = pid_t(fields[1]) else { return nil }
+            return PSRow(pid: pid, ppid: ppid, command: String(fields[2]))
+        }
+        guard !rows.isEmpty else { return [] }
+        let livePIDs = Set(rows.map(\.pid))
+
+        let routers = rows.filter { row in
+            guard row.pid != appPID, row.ppid != appPID else { return false }
+            guard row.command.contains(binary), bindsLoopback(row.command),
+                  let port = portArgument(in: row.command),
+                  enginePortRange.contains(port) else { return false }
+            return row.ppid == 1 || !livePIDs.contains(row.ppid)
+        }
+        let routerPIDs = Set(routers.map(\.pid))
+
+        // A router's model children listen on an ephemeral port and load a
+        // model from our own models folder; the parent link proves ownership.
+        let children = rows.filter { row in
+            routerPIDs.contains(row.ppid)
+                && row.command.contains(binary)
+                && (!modelsPath.isEmpty && row.command.contains(modelsPath))
+        }
+
+        // A router SIGKILLed without group cleanup leaves its child on pid 1.
+        let orphanChildren = rows.filter { row in
+            guard row.pid != appPID, row.ppid == 1 else { return false }
+            guard !routerPIDs.contains(row.pid) else { return false }
+            return row.command.contains(binary)
+                && !row.command.contains("--models-preset")
+                && (!modelsPath.isEmpty && row.command.contains(modelsPath))
+        }
+
+        return Set(routers.map(\.pid) + children.map(\.pid) + orphanChildren.map(\.pid)).sorted()
+    }
+
+    nonisolated private static func bindsLoopback(_ command: String) -> Bool {
+        let tokens = command.split(separator: " ")
+        for (index, token) in tokens.enumerated() {
+            if token == "--host", index + 1 < tokens.count, tokens[index + 1] == "127.0.0.1" {
+                return true
+            }
+            if token == "--host=127.0.0.1" { return true }
+        }
+        return false
+    }
+
+    nonisolated private static func portArgument(in command: String) -> Int? {
+        let tokens = command.split(separator: " ")
+        for (index, token) in tokens.enumerated() {
+            if token == "--port", index + 1 < tokens.count, let port = Int(tokens[index + 1]) {
+                return port
+            }
+            if token.hasPrefix("--port="), let port = Int(token.dropFirst("--port=".count)) {
+                return port
+            }
+        }
+        return nil
+    }
+
+    /// Signals the router's process group when it exists, falling back to the
+    /// single pid when the group is already gone.
+    nonisolated private static func signalEngine(pid: pid_t, signal: Int32) {
+        if kill(-pid, signal) == 0 { return }
+        let groupErrno = errno
+        guard groupErrno == ESRCH || groupErrno == EPERM else { return }
+        kill(pid, signal)
     }
 
     // MARK: - Settings
@@ -1226,37 +1541,46 @@ final class LocalInferenceService: ObservableObject {
             guard let fileURL = files.first,
                   FileManager.default.fileExists(atPath: fileURL.path) else { continue }
             let settings = model.userSettings
+            // The preset is a flat INI: a newline in any value would end the
+            // current key and let it define arbitrary options for the model.
+            let identifier = iniBare(model.id)
 
             lines.append("")
-            lines.append("[\(model.id)]")
+            lines.append("[\(identifier)]")
             // A split model is loaded through its first shard; the engine finds
             // the remaining parts by the `-NNNNN-of-NNNNN` name.
-            lines.append("model = \(fileURL.path)")
-            lines.append("alias = \(model.id)")
-            lines.append("ctx-size = \(max(512, settings.contextLength))")
-            lines.append("batch-size = \(max(1, settings.batchSize))")
+            lines.append("model = \(iniValue(fileURL.path))")
+            lines.append("alias = \(identifier)")
+            lines.append("ctx-size = \(min(max(512, settings.contextLength), 1_048_576))")
+            lines.append("batch-size = \(min(max(1, settings.batchSize), 8_192))")
+            let offload = min(max(settings.gpuOffloadLayers ?? 99, 0), 999)
             lines.append(backend == .metal
-                         ? "n-gpu-layers = \(settings.gpuOffloadLayers ?? 99)"
+                         ? "n-gpu-layers = \(offload)"
                          : "n-gpu-layers = 0")
             lines.append("flash-attn = \(settings.flashAttention ? "on" : "off")")
             if let template = settings.chatTemplate, !template.isEmpty, template != "auto" {
-                lines.append("chat-template = \(template)")
+                lines.append("chat-template = \(iniValue(template))")
             }
             lines.append("reasoning = \(settings.isReasoningOn ? "on" : "off")")
-            lines.append("cache-type-k = \(settings.kvCacheType)")
-            lines.append("cache-type-v = \(settings.kvCacheType)")
+            // llama.cpp ignores an unknown cache type or falls back to f16; an
+            // allowlist keeps a typo from reaching the engine as a mystery.
+            let cacheType = allowedKvCacheTypes.contains(settings.kvCacheType)
+                ? settings.kvCacheType
+                : "f16"
+            lines.append("cache-type-k = \(cacheType)")
+            lines.append("cache-type-v = \(cacheType)")
             let threads = settings.cpuThreads ?? max(1, cpuCores)
-            lines.append("threads = \(max(1, threads))")
+            lines.append("threads = \(min(max(1, threads), 1_024))")
 
             // Sampling defaults (§12.2). Without these the saved temperature,
             // top-p, top-k, repeat penalty and output budget never reached the
             // engine, so the sliders were decorative.
             lines.append("temperature = \(clamp(settings.temperature, 0, 2))")
             lines.append("top-p = \(clamp(settings.topP, 0, 1))")
-            lines.append("top-k = \(max(0, settings.topK))")
+            lines.append("top-k = \(min(max(0, settings.topK), 1_000))")
             lines.append("repeat-penalty = \(clamp(settings.repeatPenalty, 0.1, 4))")
             if let maxOutput = settings.maxOutputTokens, maxOutput > 0 {
-                lines.append("n-predict = \(maxOutput)")
+                lines.append("n-predict = \(min(maxOutput, 131_072))")
             }
             if let seed = settings.seed {
                 lines.append("seed = \(seed)")
@@ -1265,7 +1589,36 @@ final class LocalInferenceService: ObservableObject {
         return lines
     }
 
+    /// Cache types llama.cpp understands; anything else is dropped to `f16`.
+    nonisolated private static let allowedKvCacheTypes: Set<String> = [
+        "f16", "f32", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl",
+    ]
+
+    /// INI value sanitiser: one line, no control characters, bounded length.
+    nonisolated private static func iniValue(_ raw: String) -> String {
+        let flattened = raw
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\0", with: "")
+        return String(flattened.prefix(1_024))
+    }
+
+    /// Section name / alias sanitiser: brackets and newlines would break the
+    /// `[id]` line, so they are folded into a dash.
+    nonisolated private static func iniBare(_ raw: String) -> String {
+        let folded = raw
+            .replacingOccurrences(of: "[", with: "-")
+            .replacingOccurrences(of: "]", with: "-")
+            .replacingOccurrences(of: "\r", with: "-")
+            .replacingOccurrences(of: "\n", with: "-")
+        let trimmed = folded.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((trimmed.isEmpty ? "model" : trimmed).prefix(128))
+    }
+
     nonisolated private static func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> String {
+        // `min`/`max` return the NaN operand, which would reach the INI file as
+        // `temperature = nan`.
+        guard value.isFinite else { return String(format: "%.2f", lower) }
         let clamped = min(max(value, lower), upper)
         // Keep the INI value short and locale-independent.
         return String(format: "%.2f", clamped)
@@ -1397,7 +1750,8 @@ final class LocalInferenceService: ObservableObject {
             guard let spaceIndex = line.lastIndex(of: " ") else { continue }
             let namePart = String(line[..<spaceIndex])
             let valuePart = String(line[line.index(after: spaceIndex)...])
-            guard let value = Double(valuePart.trimmingCharacters(in: .whitespaces)) else { continue }
+            guard let value = Double(valuePart.trimmingCharacters(in: .whitespaces)),
+                  value.isFinite, value >= 0, value <= 9.0e15 else { continue }
             let baseName: String
             if let brace = namePart.firstIndex(of: "{") {
                 baseName = String(namePart[..<brace])
@@ -1410,8 +1764,8 @@ final class LocalInferenceService: ObservableObject {
 
         guard sawMetric else { return nil }
         var snapshot = InferenceMetrics()
-        snapshot.promptTokens = Int(values["llamacpp:prompt_tokens_total"] ?? 0)
-        snapshot.predictedTokens = Int(values["llamacpp:tokens_predicted_total"] ?? 0)
+        snapshot.promptTokens = Self.counter(values["llamacpp:prompt_tokens_total"])
+        snapshot.predictedTokens = Self.counter(values["llamacpp:tokens_predicted_total"])
         // The engine writes the throughput gauges when a task finishes and
         // reports 0 for the whole generation, so a 0 gauge is "no sample yet",
         // not "0 tok/s". Fall back to the averages over the counters, but only
@@ -1432,6 +1786,13 @@ final class LocalInferenceService: ObservableObject {
         }
         snapshot.updatedAt = now
         return snapshot
+    }
+
+    /// A counter from the exposition, clamped so `Int(_:)` can never trap.
+    /// `nan`/`inf` and absurd values come from a broken or foreign `/metrics`.
+    nonisolated static func counter(_ value: Double?) -> Int {
+        guard let value, value.isFinite, value > 0 else { return 0 }
+        return value >= 9.0e15 ? 9_000_000_000_000_000 : Int(value)
     }
 
     /// A real tokens/s figure. Anything outside this range is a broken
@@ -1509,26 +1870,7 @@ final class LocalInferenceService: ObservableObject {
         logSink.stopFlushing()
     }
 
-    // MARK: - Gateway Integration
-
-    /// Returns YAML fragment to include in CLIProxyAPI `config.yaml`
-    func gatewayYAML() -> String {
-        guard case .running(let currentPort, _) = status, let model = currentModel else {
-            return ""
-        }
-
-        var lines: [String] = []
-        lines.append("    - name: \"local-inference\"")
-        lines.append("      base-url: \"http://127.0.0.1:\(currentPort)/v1\"")
-        lines.append("      keys:")
-        lines.append("        - api-key: \"\(internalToken)\"")
-        lines.append("      models:")
-        lines.append("        - name: \"\(model.id)\"")
-        lines.append("          alias: \"\(model.id)\"")
-        lines.append("          display-name: \"\(model.displayName)\"")
-        lines.append("          max-context-length: \(model.userSettings.contextLength)")
-        return lines.joined(separator: "\n")
-    }
+    // MARK: - Errors
 
     private static func errorMessage(from data: Data, status: Int) -> String {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -1553,6 +1895,8 @@ enum EngineFailure: LocalizedError {
     case engineExited(exitCode: Int32?)
     case modelLoadFailed(String, String)
     case modelLoadTimeout(String)
+    case modelUnloadFailed(String)
+    case portUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -1575,6 +1919,10 @@ enum EngineFailure: LocalizedError {
             return String(format: L("The engine could not load %@: %@"), id, detail)
         case .modelLoadTimeout(let id):
             return String(format: L("The engine did not finish loading %@ in time."), id)
+        case .modelUnloadFailed(let id):
+            return String(format: L("The engine did not unload %@."), id)
+        case .portUnavailable:
+            return L("No free local port in the 18318–18348 range. Another program holds all of them.")
         }
     }
 }

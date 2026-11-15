@@ -222,6 +222,9 @@ private struct MTSelectKeyMonitor: NSViewRepresentable {
 /// triggers cannot drift into different behaviours.
 struct MTSelectList<Value: Hashable>: View {
     var options: [(value: Value, label: String)]
+    /// Optional second line per option, for lists that need file names or
+    /// sizes under the title. `nil` keeps the compact single-line row.
+    var detail: ((Value) -> String)? = nil
     var selection: Value
     var searchable: Bool
     var minimumWidth: CGFloat
@@ -232,6 +235,10 @@ struct MTSelectList<Value: Hashable>: View {
     @State private var query = ""
     /// Position inside `visibleOptions`, not inside `options`.
     @State private var highlighted = 0
+    /// Bumped only by keyboard navigation. Hover moves the highlight too, and
+    /// scrolling on every highlight change made the list chase the pointer
+    /// instead of the trackpad.
+    @State private var scrollRequest = 0
     @State private var typeAheadBuffer = ""
     @State private var typeAheadAt = Date.distantPast
     @FocusState private var searchFocused: Bool
@@ -251,11 +258,12 @@ struct MTSelectList<Value: Hashable>: View {
     }
 
     private var panelWidth: CGFloat {
-        Self.panelWidth(
+        let measured = Self.panelWidth(
             labels: options.map { $0.label },
             minimum: minimumWidth,
             maximum: maximumWidth
         )
+        return detail == nil ? measured : min(max(measured, 420), maximumWidth)
     }
 
     var body: some View {
@@ -312,15 +320,17 @@ struct MTSelectList<Value: Hashable>: View {
                         // After the outer onAppear has synced the highlight.
                         DispatchQueue.main.async { scrollToHighlight(proxy) }
                     }
-                    .onChange(of: highlighted) { _, _ in scrollToHighlight(proxy) }
+                    .onChange(of: scrollRequest) { _, _ in scrollToHighlight(proxy) }
                 }
             }
         }
     }
 
+    private var rowHeight: CGFloat { detail == nil ? 24 : 38 }
+
     private var listHeight: CGFloat {
         let visible = max(visibleIndices.count, 1)
-        return min(CGFloat(visible), 9) * 24 + 4
+        return min(CGFloat(visible), 9) * rowHeight + 4
     }
 
     private func row(position: Int, index: Int) -> some View {
@@ -334,11 +344,20 @@ struct MTSelectList<Value: Hashable>: View {
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(isSelected ? MTTheme.emerald : Color.clear)
                     .frame(width: 3, height: 15)
-                Text(option.label)
-                    .font(MTTheme.body(11.5, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? MTTheme.textPrimary : MTTheme.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(option.label)
+                        .font(MTTheme.body(11.5, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? MTTheme.textPrimary : MTTheme.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let detail {
+                        Text(detail(option.value))
+                            .font(MTTheme.body(9.5))
+                            .foregroundStyle(MTTheme.textTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 0)
                 if isSelected {
                     Image(systemName: "checkmark")
@@ -397,8 +416,10 @@ struct MTSelectList<Value: Hashable>: View {
             moveHighlight(by: 1)
         case .home:
             highlighted = 0
+            requestScroll()
         case .end:
             highlighted = max(visibleIndices.count - 1, 0)
+            requestScroll()
         case .commit:
             commitHighlighted()
         case .cancel:
@@ -421,6 +442,7 @@ struct MTSelectList<Value: Hashable>: View {
         } else {
             highlighted = next
         }
+        requestScroll()
     }
 
     private func applyTypeAhead(_ character: Character) {
@@ -437,11 +459,19 @@ struct MTSelectList<Value: Hashable>: View {
             from: highlighted
         ) else { return }
         highlighted = target
+        requestScroll()
+    }
+
+    /// Keyboard-driven scroll. The scroll view reads this instead of
+    /// `highlighted`, so a hover that changes the highlight leaves the offset
+    /// alone and the trackpad keeps ownership of scrolling.
+    private func requestScroll() {
+        scrollRequest &+= 1
     }
 
     private func scrollToHighlight(_ proxy: ScrollViewProxy) {
         guard visibleIndices.indices.contains(highlighted) else { return }
-        proxy.scrollTo(highlighted, anchor: .center)
+        proxy.scrollTo(highlighted)
     }
 
     // MARK: - Pure helpers
@@ -505,6 +535,8 @@ struct MTSelect<Value: Hashable>: View {
     @Binding var selection: Value
     var options: [(value: Value, label: String)]
     var width: CGFloat = 196
+    /// Optional second line per option, forwarded to `MTSelectList`.
+    var detail: ((Value) -> String)? = nil
 
     @State private var isPresented = false
     @FocusState private var triggerFocused: Bool
@@ -553,9 +585,10 @@ struct MTSelect<Value: Hashable>: View {
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             MTSelectList(
                 options: options,
+                detail: detail,
                 selection: selection,
                 searchable: false,
-                minimumWidth: max(width, 220),
+                minimumWidth: max(width, detail == nil ? 220 : 420),
                 maximumWidth: MTSelectList<Value>.screenMaximum,
                 onSelect: { value in
                     selection = value

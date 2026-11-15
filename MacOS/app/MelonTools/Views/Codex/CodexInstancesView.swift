@@ -134,7 +134,7 @@ struct CodexInstancesView: View {
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
                 TextField(L("e.g. work"), text: $newName)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.mtInput)
                     .font(MTTheme.mono(11))
                 Text(L("account"))
                     .font(MTTheme.mono(10))

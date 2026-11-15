@@ -378,3 +378,29 @@ struct MTEmptyState: View {
         .padding(MTTheme.s6)
     }
 }
+
+// MARK: - Text Field Style
+
+struct MTTextFieldStyle: TextFieldStyle {
+    var size: MTButtonSize = .regular
+
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .padding(.horizontal, MTTheme.s2)
+            .padding(.vertical, size == .small ? 3 : 5)
+            .background(
+                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                    .fill(MTTheme.cardSoft)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                    .strokeBorder(MTTheme.borderColor.opacity(0.65), lineWidth: 0.75)
+            )
+    }
+}
+
+extension TextFieldStyle where Self == MTTextFieldStyle {
+    static var mtInput: MTTextFieldStyle { MTTextFieldStyle() }
+    static func mtInput(size: MTButtonSize = .regular) -> MTTextFieldStyle { MTTextFieldStyle(size: size) }
+}

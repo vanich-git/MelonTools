@@ -37,6 +37,20 @@ enum StorageChangeMode {
     case migrate(deleteSource: Bool)
 }
 
+/// The models were copied to a new folder, but the choice could not be saved.
+/// The current session keeps using the new folder; the old copies are kept so a
+/// launch that still reads the old root is not left without files.
+private struct StorageLocationSaveFailure: LocalizedError {
+    let underlying: Error
+
+    var errorDescription: String? {
+        String(
+            format: L("The models were moved, but the new folder could not be remembered. Choose it again. (%@)"),
+            underlying.localizedDescription
+        )
+    }
+}
+
 /// Manages local models registry, directories, filesystem operations, and gateway config integration.
 @MainActor
 final class LocalModelStore: ObservableObject {
@@ -47,6 +61,14 @@ final class LocalModelStore: ObservableObject {
     @Published private(set) var storageStatus: StorageStatus = .internalStorage
     @Published var activeModelId: String? = nil
     @Published private(set) var hfTokenConfigured: Bool = false
+    /// Set when the Keychain could not be read, so a denial or a locked Keychain
+    /// is not presented as "no token configured". `nil` when the last probe
+    /// succeeded.
+    @Published private(set) var hfTokenError: String?
+    /// The most recent failure a caller could not be handed directly. Storage
+    /// and registry writes used to fail silently; this keeps the reason
+    /// available for logging or a user-visible banner.
+    @Published private(set) var lastError: String?
     /// Progress of a storage migration, 0...1, `nil` when idle.
     @Published private(set) var relocationProgress: Double?
     @Published private(set) var relocationMessage: String?
@@ -63,6 +85,17 @@ final class LocalModelStore: ObservableObject {
     private let fileManager = FileManager.default
     private var metadataRepairTask: Task<Void, Never>?
     private let directoryOverride: URL?
+    /// Registry bytes are written on this serial queue. Encoding stays on the
+    /// main actor because the array is main-actor state; every writer, sync or
+    /// async, uses the same queue, so a queued status write can never land
+    /// after a newer user-triggered save.
+    private let registryIOQueue = DispatchQueue(
+        label: "dev.melontools.localai.registry",
+        qos: .utility
+    )
+    /// Monotonic id of the newest registry write, used to drop a late failure
+    /// from an older background write after a newer save succeeded.
+    private var registryWriteGeneration: UInt64 = 0
 
     /// An isolated directory is used by regression tests, never the real vault.
     init(directory: URL? = nil) {
@@ -70,16 +103,48 @@ final class LocalModelStore: ObservableObject {
         if directory == nil {
             // The real app remembers whether a Hugging Face token exists. The
             // test host must not trigger a Keychain prompt for a UI flag it
-            // never uses.
+            // never uses. The probe runs off the main thread: a Keychain that
+            // is locked or waiting on a prompt must not delay the first frame.
             if !AppRuntime.isTesting {
-                hfTokenConfigured = LocalKeychainHelper.loadHuggingFaceToken() != nil
+                probeHuggingFaceToken()
             }
             loadCustomPath()
             ensureDirectoriesExist()
         } else if let directory {
             try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
+        // Reading the registry stays synchronous: the models root, the
+        // availability flag and the first UI render all depend on it, and it is
+        // one small file read at launch. Writes are serialized separately.
         loadRegistry()
+        // A llama-server process never survives an app restart. A `ready` row
+        // left by the previous run used to make the cards report a running
+        // model and the publisher wait for an alias nothing served. Test
+        // stores are isolated and keep whatever their fixture encoded.
+        if directory == nil, !AppRuntime.isTesting {
+            normalizeRuntimeStates()
+        }
+    }
+
+    /// Reads the Keychain flag without blocking the main actor and keeps a
+    /// denial apart from "no token stored".
+    private func probeHuggingFaceToken() {
+        Task.detached(priority: .utility) { [weak self] in
+            let result = LocalKeychainHelper.loadHuggingFaceTokenResult()
+            guard let self else { return }
+            await MainActor.run {
+                switch result {
+                case .success(let token):
+                    self.hfTokenConfigured = token != nil
+                    self.hfTokenError = nil
+                case .failure(let error):
+                    self.hfTokenConfigured = false
+                    self.hfTokenError = error.localizedDescription
+                    self.lastError = error.localizedDescription
+                    NSLog("LocalModelStore: Keychain read failed: %@", String(describing: error))
+                }
+            }
+        }
     }
 
     // MARK: - Paths
@@ -129,43 +194,108 @@ final class LocalModelStore: ObservableObject {
     // MARK: - Custom Storage Path
 
     private func loadCustomPath() {
-        guard let data = try? Data(contentsOf: LocalPaths.storageSettings),
-              let location = try? JSONDecoder().decode(StorageLocation.self, from: data),
-              !location.path.isEmpty else {
+        let settingsURL = LocalPaths.storageSettings
+        guard fileManager.fileExists(atPath: settingsURL.path) else {
+            // First launch: no saved choice is not an error.
+            customModelsDirectory = nil
             storageStatus = .internalStorage
             return
         }
+        do {
+            let data = try Data(contentsOf: settingsURL)
+            let location = try JSONDecoder().decode(StorageLocation.self, from: data)
+            guard !location.path.isEmpty else {
+                // An empty path is how "use the internal folder" is stored.
+                customModelsDirectory = nil
+                storageStatus = .internalStorage
+                return
+            }
 
-        let url = URL(fileURLWithPath: location.path)
-        var isDir: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
-            // Keep the path: the drive may simply be unplugged, and silently
-            // switching roots would make every registered file look foreign.
+            let url = URL(fileURLWithPath: location.path)
+            var isDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+                // Keep the path: the drive may simply be unplugged, and silently
+                // switching roots would make every registered file look foreign.
+                customModelsDirectory = url
+                storageStatus = .unavailable
+                return
+            }
+
             customModelsDirectory = url
-            storageStatus = .unavailable
-            return
-        }
-
-        customModelsDirectory = url
-        if let expected = location.volumeID,
-           let actual = Self.volumeIdentifier(for: url),
-           actual != expected {
-            storageStatus = .differentVolume
-        } else if !fileManager.isWritableFile(atPath: url.path) {
-            storageStatus = .readOnly
-        } else {
-            storageStatus = .available
+            if let expected = location.volumeID,
+               let actual = Self.volumeIdentifier(for: url),
+               actual != expected {
+                storageStatus = .differentVolume
+            } else if !fileManager.isWritableFile(atPath: url.path) {
+                storageStatus = .readOnly
+            } else {
+                storageStatus = .available
+            }
+        } catch {
+            resetCustomPath(reason: error.localizedDescription)
         }
     }
 
-    private func saveStorageLocation() {
+    /// Drops an unreadable or malformed saved location and falls back to the
+    /// internal folder. The settings file is left on disk for diagnosis; the
+    /// next saved choice overwrites it.
+    private func resetCustomPath(reason: String) {
+        customModelsDirectory = nil
+        storageStatus = .internalStorage
+        let message = String(
+            format: L("The saved models folder could not be read (%@). Using the internal folder."),
+            reason
+        )
+        lastError = message
+        NSLog("LocalModelStore: %@", message)
+    }
+
+    /// Persists the chosen models folder.
+    ///
+    /// Throws when the choice could not be written, so a caller cannot report
+    /// success while the next launch silently uses a different root.
+    private func saveStorageLocation() throws {
         let location = StorageLocation(
             path: customModelsDirectory?.path ?? "",
             volumeID: customModelsDirectory.flatMap { Self.volumeIdentifier(for: $0) }
         )
-        if let data = try? JSONEncoder().encode(location) {
-            try? data.write(to: LocalPaths.storageSettings, options: .atomic)
+        do {
+            let data = try JSONEncoder().encode(location)
+            try Self.writeAtomically(data, to: LocalPaths.storageSettings)
+        } catch {
+            let message = String(
+                format: L("The models folder could not be saved: %@"),
+                error.localizedDescription
+            )
+            lastError = message
+            NSLog("LocalModelStore: %@", message)
+            throw error
         }
+    }
+
+    /// Writes `data` atomically and flushes it to the volume.
+    ///
+    /// `.atomic` swaps the file into place but does not force its bytes out, so
+    /// a power loss could leave an empty or stale file under a valid name. The
+    /// explicit synchronize closes that window.
+    nonisolated static func writeAtomically(_ data: Data, to url: URL) throws {
+        // The parent can be missing after a launch that could not reach the
+        // storage volume; creating it here keeps a valid choice savable.
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+        try handle.synchronize()
+    }
+
+    /// `2026-11-07T15-47-34.123Z`: ISO 8601 that is also a safe file name.
+    nonisolated static func backupTimestamp(_ date: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date).replacingOccurrences(of: ":", with: "-")
     }
 
     /// Stable identity of the volume a folder lives on. `volumeUUIDString` is not
@@ -181,10 +311,18 @@ final class LocalModelStore: ObservableObject {
     /// not writable and reports volume changes instead of adopting them silently.
     func connectModelsDirectory(_ newURL: URL?) throws {
         guard canWriteRegistry else { throw LocalStorageError.registryUnavailable }
+        let previousDirectory = customModelsDirectory
+        let previousStatus = storageStatus
         guard let newURL else {
             customModelsDirectory = nil
             storageStatus = .internalStorage
-            saveStorageLocation()
+            do {
+                try saveStorageLocation()
+            } catch {
+                customModelsDirectory = previousDirectory
+                storageStatus = previousStatus
+                throw error
+            }
             ensureDirectoriesExist()
             loadRegistry()
             LocalHardwareService.shared.refresh(modelsDirectory: modelsDirectory)
@@ -201,7 +339,13 @@ final class LocalModelStore: ObservableObject {
 
         customModelsDirectory = newURL
         storageStatus = .available
-        saveStorageLocation()
+        do {
+            try saveStorageLocation()
+        } catch {
+            customModelsDirectory = previousDirectory
+            storageStatus = previousStatus
+            throw error
+        }
         ensureDirectoriesExist()
         loadRegistry()
         LocalHardwareService.shared.refresh(modelsDirectory: modelsDirectory)
@@ -257,12 +401,26 @@ final class LocalModelStore: ObservableObject {
             let previousRoot = customModelsDirectory
             customModelsDirectory = newURL
             storageStatus = .available
-            saveStorageLocation()
+            let locationError: Error?
+            do {
+                try saveStorageLocation()
+                locationError = nil
+            } catch {
+                locationError = error
+            }
             ensureDirectoriesExist()
             loadRegistry()
             relocationProgress = nil
             relocationMessage = nil
             LocalHardwareService.shared.refresh(modelsDirectory: modelsDirectory)
+
+            if let locationError {
+                // The files are in the new folder and this session uses it, but
+                // the choice was not remembered. Keep the old copies as the
+                // fallback for a launch that still reads the old root, and tell
+                // the caller instead of reporting a clean migration.
+                throw StorageLocationSaveFailure(underlying: locationError)
+            }
 
             if deleteSource, let previousRoot, previousRoot != newURL {
                 Self.removeOwnedCopies(of: snapshot, in: previousRoot)
@@ -306,9 +464,18 @@ final class LocalModelStore: ObservableObject {
         progress(total, total)
     }
 
+    /// Deletes the copies the migration itself made under `root`.
+    ///
+    /// A linked model points at a file the user owns elsewhere; its entry is an
+    /// absolute path, and `fileURLs(in:)` would hand that absolute path back and
+    /// delete it. Only relative entries that stay inside `root` are ours.
     nonisolated private static func removeOwnedCopies(of models: [LocalModel], in root: URL) {
+        let rootPath = root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         for model in models {
-            for url in model.fileURLs(in: root) where !url.path.hasPrefix("/dev/") {
+            for relative in model.files where !relative.hasPrefix("/") {
+                let url = root.appendingPathComponent(relative).standardizedFileURL
+                guard url.path.hasPrefix(prefix) else { continue }
                 try? FileManager.default.removeItem(at: url)
             }
             if let namespace = model.ownedNamespaceDirectory(in: root) {
@@ -320,7 +487,17 @@ final class LocalModelStore: ObservableObject {
     // MARK: - Hugging Face Token
 
     func getHuggingFaceToken() -> String? {
-        LocalKeychainHelper.loadHuggingFaceToken()
+        switch LocalKeychainHelper.loadHuggingFaceTokenResult() {
+        case .success(let token):
+            return token
+        case .failure(let error):
+            // A locked or denied Keychain must not look like an empty token:
+            // callers would silently send an unauthenticated request.
+            hfTokenError = error.localizedDescription
+            lastError = error.localizedDescription
+            NSLog("LocalModelStore: Keychain read failed: %@", String(describing: error))
+            return nil
+        }
     }
 
     /// Saves or removes the token. Throws when the Keychain refused the write so
@@ -329,15 +506,19 @@ final class LocalModelStore: ObservableObject {
         if let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             let status = LocalKeychainHelper.saveHuggingFaceToken(token)
             guard status == errSecSuccess else {
+                hfTokenError = LocalStorageError.keychain(status).localizedDescription
                 throw LocalStorageError.keychain(status)
             }
             hfTokenConfigured = true
+            hfTokenError = nil
         } else {
             let status = LocalKeychainHelper.deleteHuggingFaceToken()
             guard status == errSecSuccess else {
+                hfTokenError = LocalStorageError.keychain(status).localizedDescription
                 throw LocalStorageError.keychain(status)
             }
             hfTokenConfigured = false
+            hfTokenError = nil
         }
     }
 
@@ -894,14 +1075,34 @@ final class LocalModelStore: ObservableObject {
                 }
             }
             registryError = nil
+            // A readable registry ends the previous recovery event, so the next
+            // corruption backs up its own bytes instead of reusing the old URL.
+            registryBackupURL = nil
             self.models = loaded
             if repaired { saveRegistry() }
             if directoryOverride == nil { scheduleMetadataRepair() }
         } catch {
             if registryBackupURL == nil {
-                let backup = registryFileURL.appendingPathExtension("unreadable-\(UUID().uuidString).bak")
-                if (try? fileManager.copyItem(at: registryFileURL, to: backup)) != nil {
+                let stamp = Self.backupTimestamp()
+                let backup = registryFileURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("registry.corrupt-\(stamp).json")
+                do {
+                    let corrupt = try Data(contentsOf: registryFileURL)
+                    try Self.writeAtomically(corrupt, to: backup)
+                } catch {
+                    NSLog(
+                        "LocalModelStore: could not back up the corrupt registry: %@",
+                        String(describing: error)
+                    )
+                    try? fileManager.copyItem(at: registryFileURL, to: backup)
+                }
+                if fileManager.fileExists(atPath: backup.path) {
                     registryBackupURL = backup
+                    NSLog(
+                        "LocalModelStore: corrupt registry backed up to %@",
+                        backup.lastPathComponent
+                    )
                 }
             }
             // Retain a last-known-good catalog in memory; first launch has none.
@@ -972,21 +1173,86 @@ final class LocalModelStore: ObservableObject {
     func saveRegistry() -> Bool {
         guard canWriteRegistry, isStorageUsable else { return false }
         ensureDirectoriesExist()
+        registryWriteGeneration &+= 1
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(models)
-            try data.write(to: registryFileURL, options: .atomic)
+            let data = try Self.encodeRegistry(models)
+            let url = registryFileURL
+            // The same serial queue serves background status writes, so a
+            // queued one always lands before this save.
+            try registryIOQueue.sync {
+                try Self.writeAtomically(data, to: url)
+            }
             return true
         } catch {
+            reportRegistrySaveFailure(error)
             return false
         }
+    }
+
+    /// Writes the registry without blocking the caller.
+    ///
+    /// Status changes are frequent and a catalogue write with fsync must not
+    /// stall a frame. The shared serial queue keeps these bytes ordered with
+    /// later synchronous saves, and the snapshot is taken before the hop so the
+    /// main-actor array is never touched from the queue.
+    private func saveRegistryInBackground(for modelID: String, status: ModelRuntimeStatus) {
+        guard canWriteRegistry, isStorageUsable else { return }
+        ensureDirectoriesExist()
+        let data: Data
+        do {
+            data = try Self.encodeRegistry(models)
+        } catch {
+            reportRegistrySaveFailure(error)
+            return
+        }
+        registryWriteGeneration &+= 1
+        let generation = registryWriteGeneration
+        let url = registryFileURL
+        registryIOQueue.async { [weak self] in
+            do {
+                try Self.writeAtomically(data, to: url)
+            } catch {
+                NSLog(
+                    "LocalModelStore: registry write failed for model %@ (status %@): %@",
+                    modelID, String(describing: status), String(describing: error)
+                )
+                Task { @MainActor [weak self] in
+                    guard let self, generation == self.registryWriteGeneration else { return }
+                    self.lastError = String(
+                        format: L("The Local AI registry could not be saved: %@"),
+                        error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    nonisolated private static func encodeRegistry(_ models: [LocalModel]) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(models)
+    }
+
+    private func reportRegistrySaveFailure(_ error: Error) {
+        let message = String(
+            format: L("The Local AI registry could not be saved: %@"),
+            error.localizedDescription
+        )
+        lastError = message
+        NSLog("LocalModelStore: registry save failed: %@", String(describing: error))
     }
 
     @discardableResult
     func addOrUpdateModel(_ model: LocalModel) -> Bool {
         guard canWriteRegistry else { return false }
+        // A malformed settings row would be clamped by the engine or stop it
+        // from starting, so it is rejected before it reaches the registry.
+        if let reason = model.userSettings.validate() {
+            lastError = reason
+            NSLog("LocalModelStore: refused settings for %@: %@", model.id, reason)
+            return false
+        }
         let previous = models
         if let idx = models.firstIndex(where: { $0.id == model.id }) {
             models[idx] = model
@@ -1013,7 +1279,9 @@ final class LocalModelStore: ObservableObject {
                 activeModelId = nil
             }
         }
-        saveRegistry()
+        // The row is visible immediately; persistence happens behind the UI and
+        // logs its own failure with the model id and status.
+        saveRegistryInBackground(for: id, status: status)
     }
 
     /// Resets every live-engine state to `installed`. Called when the router is

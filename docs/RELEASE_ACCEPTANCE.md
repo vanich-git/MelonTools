@@ -1,9 +1,9 @@
 # Release acceptance — Melon Tools 6.0.0
 
-This plan targets the **stable 6.0.0** promotion. The 6.0.0-rc.4 prerelease is
-published after the automated checks only (CI build on both platforms, docs
-lint `--release 6.0.0-rc.4 --preflight`, artifact/checksum verification); every
-manual row below stays open until stable 6.0.0 is promoted.
+This plan targets the **stable 6.0.0** promotion. The 6.0.0-rc.5 build is a
+local, unpublished one (`MacOS/build.sh`, `Windows/build-windows.sh`, hashes in
+`packaging/README.md`); every manual row below stays open until stable 6.0.0
+is promoted.
 
 This checklist is the release gate for the Windows/macOS audit
 ([`AUDIT_WINDOWS_MACOS_2026-11-04.md`](AUDIT_WINDOWS_MACOS_2026-11-04.md)).

@@ -76,6 +76,62 @@ final class HuggingFaceCatalogTests: XCTestCase {
         XCTAssertFalse(fenced.contains { $0.header != nil })
     }
 
+    func testReadmeHTMLIsRewrittenIntoMarkdown() {
+        let card = """
+        <p align="center"><img src="https://example.com/logo.png" alt="Logo"></p>
+
+        <a href="https://example.com/docs">Docs</a> and <a href="javascript:alert(1)">bad</a>
+
+        <table><tr><th>Quant</th><th>Size</th></tr><tr><td>Q4_K_M</td><td>4 GB</td></tr></table>
+
+        <details><summary>More</summary>Hidden text</details>
+
+        ```
+        <div>kept as code</div>
+        ```
+        """
+        let markdown = HFReadmeView.htmlToMarkdown(card)
+        XCTAssertFalse(markdown.contains("<p"), markdown)
+        XCTAssertFalse(markdown.contains("<img"), markdown)
+        XCTAssertFalse(markdown.contains("<table"), markdown)
+        XCTAssertTrue(markdown.contains("[Logo](https://example.com/logo.png)"), markdown)
+        XCTAssertTrue(markdown.contains("[Docs](https://example.com/docs)"), markdown)
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("<a href=\"https://example.com\"><img src=\"https://example.com/badge.png\" alt=\"Badge\"></a>"), "[Badge](https://example.com)")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("<a href=\"https://example.com\"><img src=\"https://example.com/badge.png\"></a>"), "")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("<a href=\"javascript:alert(1)\"><img src=\"https://example.com/badge.png\" alt=\"Badge\"></a>"), "")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("[![Qwen Chat](https://img.shields.io/badge/x)](https://chat.qwen.ai)"), "[Qwen Chat](https://chat.qwen.ai)")
+        XCTAssertTrue(markdown.contains("Hidden text"), markdown)
+        XCTAssertTrue(markdown.contains("<div>kept as code</div>"), markdown)
+
+        let sections = HFReadmeView.sections(markdown)
+        XCTAssertEqual(sections.first(where: { $0.header != nil })?.header, ["Quant", "Size"])
+        XCTAssertEqual(sections.first(where: { $0.header != nil })?.rows, [["Q4_K_M", "4 GB"]])
+        XCTAssertFalse(markdown.contains("javascript:"), markdown)
+    }
+
+    func testReadmeHTMLEntitiesDecodeOnce() {
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("Tom &amp; Jerry"), "Tom & Jerry")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("a &amp;lt; b"), "a &lt; b")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("a &lt;b&gt; c"), "a <b> c")
+        XCTAssertEqual(HFReadmeView.htmlToMarkdown("&#65;&#x42;"), "AB")
+    }
+
+    func testReadmeDropsHTMLComments() {
+        let card = """
+        <!-- ### quantize_version: 2 -->
+        # About
+        Model card text.
+        <!-- provided-files -->
+        """
+        let markdown = HFReadmeView.htmlToMarkdown(card)
+        XCTAssertFalse(markdown.contains("<!--"), markdown)
+        XCTAssertFalse(markdown.contains("quantize_version"), markdown)
+        XCTAssertFalse(markdown.contains("provided-files"), markdown)
+        XCTAssertTrue(markdown.contains("# About"), markdown)
+        XCTAssertTrue(markdown.contains("Model card text."), markdown)
+        XCTAssertTrue(HFReadmeView.htmlToMarkdown("```\n<!-- kept -->\n```").contains("<!-- kept -->"))
+    }
+
     func testRepositoryParserRejectsForeignURLsAndUnsafeIDs() {
         XCTAssertNil(HuggingFaceService.repositoryID(from: "https://example.com/owner/repo"))
         XCTAssertNil(HuggingFaceService.repositoryID(from: "https://fake-huggingface.co/owner/repo"))

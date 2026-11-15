@@ -2,7 +2,10 @@
 
 use super::hardware::{calculate_memory_estimation, detect_hardware, MemoryEstimation};
 use super::local_models::LocalModelStore;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,23 +120,108 @@ struct HFRepoResponse {
     gguf: Option<serde_json::Value>,
 }
 
+/// Upper bound on cached publishers. The catalogue can surface thousands of
+/// owners over a long session; an unbounded map would grow with every page.
+const AVATAR_CACHE_LIMIT: usize = 512;
+
+/// Publisher → avatar URL plus insertion order, so the oldest entries can be
+/// evicted once the cache reaches its limit.
+struct AvatarCache {
+    entries: HashMap<String, Option<String>>,
+    order: VecDeque<String>,
+}
+
+impl AvatarCache {
+    fn get(&self, owner: &str) -> Option<&Option<String>> {
+        self.entries.get(owner)
+    }
+
+    fn insert(&mut self, owner: String, url: Option<String>) {
+        if self.entries.insert(owner.clone(), url).is_none() {
+            self.order.push_back(owner);
+        }
+        while self.entries.len() > AVATAR_CACHE_LIMIT {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
+}
+
+/// Outcome of resolving one publisher's avatar.
+enum AvatarLookup {
+    Found(String),
+    /// Both endpoints answered successfully (2xx or 404) and the Hub has no
+    /// avatar for this publisher. Cacheable: it is the real answer.
+    Absent,
+    /// Network error, 429/5xx or a malformed body. Never cached, so a retry
+    /// after the rate limit or an outage can still succeed.
+    Failed,
+}
+
+impl AvatarLookup {
+    /// `Some(entry)` goes into the cache; `None` must be resolved again later.
+    fn cache_entry(&self) -> Option<Option<String>> {
+        match self {
+            AvatarLookup::Found(url) => Some(Some(url.clone())),
+            AvatarLookup::Absent => Some(None),
+            AvatarLookup::Failed => None,
+        }
+    }
+
+    fn into_url(self) -> Option<String> {
+        match self {
+            AvatarLookup::Found(url) => Some(url),
+            AvatarLookup::Absent | AvatarLookup::Failed => None,
+        }
+    }
+}
+
+/// Publisher → avatar URL (`None` = Hub has no avatar for them). Shared across
+/// every page render, so switching models or sorting the catalogue costs no
+/// extra Hub requests.
+fn avatar_cache() -> &'static Mutex<AvatarCache> {
+    static CACHE: OnceLock<Mutex<AvatarCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        Mutex::new(AvatarCache {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        })
+    })
+}
+
 pub struct HuggingFaceService;
 
 impl HuggingFaceService {
     const BASE_URL: &'static str = "https://huggingface.co/api";
 
-    fn search_url(query: &str, limit: usize, sort: &str, offset: usize) -> Result<url::Url, String> {
+    fn search_url(
+        query: &str,
+        limit: usize,
+        sort: &str,
+        offset: usize,
+    ) -> Result<url::Url, String> {
         let sort = match sort {
             "downloads" | "likes" | "lastModified" | "trendingScore" => sort,
             _ => return Err("Unsupported Hugging Face sort order".to_string()),
         };
-        let mut url = url::Url::parse(&format!("{}/models", Self::BASE_URL)).map_err(|e| e.to_string())?;
+        let mut url =
+            url::Url::parse(&format!("{}/models", Self::BASE_URL)).map_err(|e| e.to_string())?;
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("filter", "gguf").append_pair("full", "true").append_pair("sort", sort)
-                .append_pair("direction", "-1").append_pair("limit", &limit.clamp(1, 100).to_string());
-            if offset > 0 { pairs.append_pair("offset", &offset.to_string()); }
-            if !query.trim().is_empty() { pairs.append_pair("search", query.trim()); }
+            pairs
+                .append_pair("filter", "gguf")
+                .append_pair("full", "true")
+                .append_pair("sort", sort)
+                .append_pair("direction", "-1")
+                .append_pair("limit", &limit.clamp(1, 100).to_string());
+            if offset > 0 {
+                pairs.append_pair("offset", &offset.to_string());
+            }
+            if !query.trim().is_empty() {
+                pairs.append_pair("search", query.trim());
+            }
         }
         Ok(url)
     }
@@ -171,9 +259,133 @@ impl HuggingFaceService {
         Ok(results)
     }
 
+    /// Avatars for every publisher on a rendered page, resolved in one call.
+    ///
+    /// The Hub answers on `/api/organizations/<owner>/avatar` or
+    /// `/api/users/<owner>/avatar` with JSON, not image bytes, so each owner
+    /// costs up to two requests. Results are cached for the process lifetime,
+    /// including the "no avatar" answer: a catalogue re-render must not repeat
+    /// the same lookups for the same handful of publishers.
+    pub async fn avatars(owners: Vec<String>, token: Option<&str>) -> HashMap<String, String> {
+        let cache = avatar_cache();
+        let mut known: HashMap<String, String> = HashMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        {
+            let cache = cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for owner in owners {
+                let owner = owner.trim().to_string();
+                if owner.is_empty() {
+                    continue;
+                }
+                if let Some(hit) = cache.get(&owner) {
+                    if let Some(url) = hit {
+                        known.insert(owner, url.clone());
+                    }
+                    continue;
+                }
+                if !pending.contains(&owner) {
+                    pending.push(owner);
+                }
+            }
+        }
+        if pending.is_empty() {
+            return known;
+        }
+
+        let token = token.map(str::to_string);
+        let resolved: Vec<(String, AvatarLookup)> =
+            futures_util::stream::iter(pending.into_iter().map(|owner| {
+                let token = token.clone();
+                async move {
+                    let lookup = Self::lookup_avatar(&owner, token.as_deref()).await;
+                    (owner, lookup)
+                }
+            }))
+            .buffer_unordered(4)
+            .collect()
+            .await;
+
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (owner, lookup) in resolved {
+            if let Some(entry) = lookup.cache_entry() {
+                cache.insert(owner.clone(), entry);
+            }
+            if let Some(url) = lookup.into_url() {
+                known.insert(owner, url);
+            }
+        }
+        known
+    }
+
+    async fn lookup_avatar(owner: &str, token: Option<&str>) -> AvatarLookup {
+        let Some(client) = super::external_client().ok() else {
+            return AvatarLookup::Failed;
+        };
+        // A publisher without an avatar answers 404 on both endpoints; that is
+        // the Hub's answer, so it may be cached. Anything else (network error,
+        // throttling, 5xx, garbage body) must stay retryable.
+        let mut cacheable = true;
+        for kind in ["organizations", "users"] {
+            let url = format!("{}/{}/{}", Self::BASE_URL, kind, owner);
+            let mut request = client
+                .get(format!("{url}/avatar"))
+                .header("Accept", "application/json")
+                .timeout(std::time::Duration::from_secs(8));
+            if let Some(value) = token.filter(|value| !value.trim().is_empty()) {
+                request = request.bearer_auth(value.trim());
+            }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(_) => {
+                    cacheable = false;
+                    continue;
+                }
+            };
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                continue;
+            }
+            if !response.status().is_success() {
+                cacheable = false;
+                continue;
+            }
+            let json = match response.json::<serde_json::Value>().await {
+                Ok(json) => json,
+                Err(_) => {
+                    cacheable = false;
+                    continue;
+                }
+            };
+            if let Some(url) = json.get("avatarUrl").and_then(|value| value.as_str()) {
+                // The renderer puts this straight into an `<img src>`; only
+                // an absolute HTTPS URL is safe to hand over.
+                if url.starts_with("https://") {
+                    return AvatarLookup::Found(url.to_string());
+                }
+            }
+        }
+        if cacheable {
+            AvatarLookup::Absent
+        } else {
+            AvatarLookup::Failed
+        }
+    }
+
     pub fn validate_repository_id(repo_id: &str) -> Result<(), String> {
         let parts: Vec<_> = repo_id.split('/').collect();
-        if parts.len() != 2 || parts.iter().any(|part| part.is_empty() || *part == "." || *part == ".." || !part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))) {
+        if parts.len() != 2
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || *part == "."
+                    || *part == ".."
+                    || !part
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            })
+        {
             return Err("Invalid Hugging Face repository identifier".to_string());
         }
         Ok(())
@@ -250,17 +462,41 @@ impl HuggingFaceService {
             .unwrap_or_else(|| repo_id.split('/').next().unwrap_or("").to_string());
 
         let card = repo.card_data.as_ref();
-        let description = repo.description.or_else(|| card.and_then(|c| c["description"].as_str().map(str::to_string))).unwrap_or_default();
-        let license = card.and_then(|c| c["license"].as_str().map(str::to_string))
-            .or_else(|| repo.tags.as_ref().and_then(|tags| tags.iter().find_map(|tag| tag.strip_prefix("license:").map(str::to_string))));
-        let architecture = repo.gguf.as_ref().and_then(|c| c["architecture"].as_str().map(str::to_string))
-            .or_else(|| repo.config.as_ref().and_then(|c| c["model_type"].as_str().or_else(|| c["architectures"][0].as_str()).map(str::to_string)));
-        let parameters = repo.gguf.as_ref().and_then(|c| c["total"].as_u64())
+        let description = repo
+            .description
+            .or_else(|| card.and_then(|c| c["description"].as_str().map(str::to_string)))
+            .unwrap_or_default();
+        let license = card
+            .and_then(|c| c["license"].as_str().map(str::to_string))
+            .or_else(|| {
+                repo.tags.as_ref().and_then(|tags| {
+                    tags.iter()
+                        .find_map(|tag| tag.strip_prefix("license:").map(str::to_string))
+                })
+            });
+        let architecture = repo
+            .gguf
+            .as_ref()
+            .and_then(|c| c["architecture"].as_str().map(str::to_string))
+            .or_else(|| {
+                repo.config.as_ref().and_then(|c| {
+                    c["model_type"]
+                        .as_str()
+                        .or_else(|| c["architectures"][0].as_str())
+                        .map(str::to_string)
+                })
+            });
+        let parameters = repo
+            .gguf
+            .as_ref()
+            .and_then(|c| c["total"].as_u64())
             .or_else(|| repo.safetensors.as_ref().and_then(|c| c["total"].as_u64()));
         // A model card is optional; its absence must not hide downloadable files.
         // Stream with a hard bound instead of buffering arbitrary remote content.
         let readme_url = HFGGUFFile::resolve_url(repo_id, "README.md");
-        let mut request = client.get(readme_url).timeout(std::time::Duration::from_secs(12));
+        let mut request = client
+            .get(readme_url)
+            .timeout(std::time::Duration::from_secs(12));
         if let Some(token) = token.filter(|t| !t.trim().is_empty()) {
             request = request.bearer_auth(token.trim());
         }
@@ -268,7 +504,9 @@ impl HuggingFaceService {
             Ok(mut response) if response.status().is_success() => {
                 let mut bytes = Vec::new();
                 while let Ok(Some(chunk)) = response.chunk().await {
-                    if bytes.len() + chunk.len() > 512 * 1024 { break; }
+                    if bytes.len() + chunk.len() > 512 * 1024 {
+                        break;
+                    }
                     bytes.extend_from_slice(&chunk);
                 }
                 Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -328,8 +566,17 @@ mod tests {
     #[test]
     fn repository_ids_reject_traversal_and_urls() {
         assert!(super::HuggingFaceService::validate_repository_id("org/model-v1.5").is_ok());
-        for id in ["../repo", "org/..", "https://example.com/repo", "org/repo/extra", "org/repo?x"] {
-            assert!(super::HuggingFaceService::validate_repository_id(id).is_err(), "{id}");
+        for id in [
+            "../repo",
+            "org/..",
+            "https://example.com/repo",
+            "org/repo/extra",
+            "org/repo?x",
+        ] {
+            assert!(
+                super::HuggingFaceService::validate_repository_id(id).is_err(),
+                "{id}"
+            );
         }
     }
 
@@ -337,9 +584,13 @@ mod tests {
     fn search_response_accepts_hugging_face_last_modified_key() {
         let row: super::HFModelSearchResult = serde_json::from_value(serde_json::json!({
             "id": "org/model", "lastModified": "2026-11-05T00:00:00Z"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(row.last_modified.as_deref(), Some("2026-11-05T00:00:00Z"));
-        assert_eq!(serde_json::to_value(row).unwrap()["lastModified"], "2026-11-05T00:00:00Z");
+        assert_eq!(
+            serde_json::to_value(row).unwrap()["lastModified"],
+            "2026-11-05T00:00:00Z"
+        );
     }
 
     /// "F16" is a substring of "BF16"; matching in declaration order labels
@@ -414,5 +665,20 @@ mod tests {
         // The Hugging Face spelling must not leak into the wire contract.
         assert!(json.get("rfilename").is_none());
         assert!(json.get("id").is_none());
+    }
+
+    /// A throttled or failed avatar request must stay retryable: caching it as
+    /// "this publisher has no avatar" would hide the picture for the rest of
+    /// the process lifetime.
+    #[test]
+    fn failed_avatar_lookups_are_not_cached() {
+        use super::AvatarLookup;
+
+        assert_eq!(
+            AvatarLookup::Found("https://cdn.example/a.png".to_string()).cache_entry(),
+            Some(Some("https://cdn.example/a.png".to_string()))
+        );
+        assert_eq!(AvatarLookup::Absent.cache_entry(), Some(None));
+        assert_eq!(AvatarLookup::Failed.cache_entry(), None);
     }
 }
