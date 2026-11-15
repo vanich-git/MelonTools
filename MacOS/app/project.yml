@@ -80,7 +80,7 @@ targets:
     settings:
       base:
         MARKETING_VERSION: "6.0.1"
-        CURRENT_PROJECT_VERSION: "71"
+        CURRENT_PROJECT_VERSION: "72"
         GENERATE_INFOPLIST_FILE: "NO"
         CODE_SIGN_ENTITLEMENTS: MelonTools/MelonTools.entitlements
       configs:
