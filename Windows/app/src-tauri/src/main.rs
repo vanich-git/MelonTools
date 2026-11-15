@@ -1796,7 +1796,10 @@ async fn antigravity_metrics(state: State<'_, AppState>) -> Result<Value, String
 
 /// Disconnects every Antigravity account: removes only the engine-written
 /// `antigravity*.json` auth files and reports what is left.
+// The argument list mirrors the IPC payload the account sheet sends, so the
+// signature is the contract rather than a refactoring accident.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn antigravity_account_action(
     state: State<'_, AppState>,
     action: String,
@@ -3021,8 +3024,10 @@ mod tests {
 
     #[test]
     fn island_counts_enabled_nvidia_with_key() {
-        let mut settings = super::settings::Settings::default();
-        settings.claude_enabled = false;
+        let mut settings = super::settings::Settings {
+            claude_enabled: false,
+            ..Default::default()
+        };
         let initial = super::island_provider_count(&settings, 0);
         settings.nvidia_key = "test-key".to_string();
         settings.nvidia_enabled = false;

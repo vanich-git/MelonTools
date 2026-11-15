@@ -145,14 +145,15 @@ const OPENCODE_MODELS: &[(&str, &str)] = &[
     ("qwen3.8-flash", "Qwen3.8 Flash"),
 ];
 
-pub fn write_config(settings: &Settings) -> Result<(), String> {
-    write_config_from(|| settings.clone(), false).map(|_| ())
-}
-
 /// Reads the live settings while holding the config write lock, so the snapshot
 /// that is rendered is the snapshot that is written. Passing an already cloned
 /// `Settings` leaves a window where a concurrent save replaces the file with
 /// newer values and this call then overwrites it with the older clone.
+#[cfg(test)]
+pub fn write_config(settings: &Settings) -> Result<(), String> {
+    write_config_from(|| settings.clone(), false).map(|_| ())
+}
+
 pub fn write_config_current<F>(load: F) -> Result<(), String>
 where
     F: FnOnce() -> Settings,
@@ -240,6 +241,7 @@ pub fn config_generation() -> u64 {
 /// acknowledge is exactly the failure a retry has to repair, and the
 /// idempotent path would suppress it as "nothing changed". Settings saves and
 /// catalogue refreshes keep the ordinary coalesced path.
+#[cfg(test)]
 pub fn write_config_forced(settings: &Settings) -> Result<ConfigPublication, String> {
     write_config_from(|| settings.clone(), true)
 }
@@ -331,6 +333,7 @@ fn config_needs_write(proposed: &str, last_written: Option<&str>, file_exists: b
 
 /// Writes the config only when the generated YAML differs from what this
 /// process last handed to the engine. Returns whether the file was replaced.
+#[cfg(test)]
 fn write_config_if_changed(path: &std::path::Path, contents: &str) -> Result<bool, String> {
     write_config_if_changed_with(path, contents, false)
 }
@@ -338,10 +341,12 @@ fn write_config_if_changed(path: &std::path::Path, contents: &str) -> Result<boo
 /// Same write, but a matching generation is not a reason to skip: the engine
 /// may have missed the previous notification. Returns `true` whenever the file
 /// was replaced.
+#[cfg(test)]
 fn write_config_if_changed_forced(path: &std::path::Path, contents: &str) -> Result<bool, String> {
     write_config_if_changed_with(path, contents, true)
 }
 
+#[cfg(test)]
 fn write_config_if_changed_with(
     path: &std::path::Path,
     contents: &str,
@@ -528,6 +533,7 @@ pub(crate) const USER_AGENT: &str = concat!("MelonTools/", env!("CARGO_PKG_VERSI
 /// ride `openai-compatibility`; the Anthropic API-key fallback rides `claude`.
 /// Every section is emitted from this one builder — a second root would break
 /// the engine config. Returns an empty string when nothing is configured.
+#[cfg(test)]
 pub fn api_keys_yaml(settings: &Settings) -> String {
     local_api_keys_yaml(settings).0
 }
@@ -1510,7 +1516,7 @@ where
     let _ = crate::catalog::refresh_for_start().await;
     let settings = load();
     if health(settings.port, &settings.api_key).await {
-        write_config_current(|| load())?;
+        write_config_current(&load)?;
         let current = load();
         // The probe above used the snapshot from before the write. A save can
         // change the port, key or management secret while it runs; adopting
@@ -1534,7 +1540,7 @@ where
         }
     }
 
-    write_config_current(|| load())?;
+    write_config_current(&load)?;
     let current = load();
     sync_accounts(&current)?;
 
@@ -2278,7 +2284,7 @@ pub async fn reload_config(
             text.chars().take(300).collect::<String>()
         ))
     })?;
-    wait_reload_applied(&client, port, management_secret, &digest).await
+    wait_reload_applied(client, port, management_secret, &digest).await
 }
 
 // MARK: - End-to-end check
