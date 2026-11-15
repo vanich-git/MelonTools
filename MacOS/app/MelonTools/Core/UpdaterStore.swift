@@ -406,10 +406,10 @@ final class UpdaterStore: ObservableObject {
             try await downloadRange(route: route, start: 0, end: route.total - 1, to: parts[0], meter: meter)
         } else {
             let last = count - 1
-            async let first = downloadRange(route: route, start: 0, end: partSize - 1, to: parts[0], meter: meter)
-            async let second = downloadRange(route: route, start: partSize, end: partSize * 2 - 1, to: parts[1], meter: meter)
-            async let third = downloadRange(route: route, start: partSize * 2, end: partSize * 3 - 1, to: parts[2], meter: meter)
-            async let fourth = downloadRange(route: route, start: partSize * 3, end: route.total - 1, to: parts[last], meter: meter)
+            async let first: Void = downloadRange(route: route, start: 0, end: partSize - 1, to: parts[0], meter: meter)
+            async let second: Void = downloadRange(route: route, start: partSize, end: partSize * 2 - 1, to: parts[1], meter: meter)
+            async let third: Void = downloadRange(route: route, start: partSize * 2, end: partSize * 3 - 1, to: parts[2], meter: meter)
+            async let fourth: Void = downloadRange(route: route, start: partSize * 3, end: route.total - 1, to: parts[last], meter: meter)
             _ = try await (first, second, third, fourth)
         }
 
