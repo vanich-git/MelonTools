@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03640F21CC61B25E98269835 /* ModelMigrationIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6FAC673CFE80F57C88AF964 /* ModelMigrationIntegrationTests.swift */; };
 		03A1C09B1E98D9A166E66227 /* MTTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 768560461E883B63C28E2ACB /* MTTheme.swift */; };
 		052AC467CDC26C91E8E724E8 /* GgufMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD524DA2CFAEA9C278E096B6 /* GgufMetadata.swift */; };
 		06E6BC70649ECDFABF6C0745 /* AntigravityAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126A58DE87AE4967867A4491 /* AntigravityAuthService.swift */; };
@@ -113,8 +114,10 @@
 		CE097608AC3926A8EDB0A484 /* LocalInferenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1018FEDB2271F094F305DB4C /* LocalInferenceService.swift */; };
 		CEFD08B35C956F4C010BFC30 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = E80C892F082A1D4524173B74 /* AppIcon.icns */; };
 		CF5A837BC671DE1E18FDC62E /* CodexService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1789B6E80C211EDD2A5C921 /* CodexService.swift */; };
+		CF9730F2927BBF18A5C226D5 /* ModelMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F33964CC137C440B0A56A95 /* ModelMigrationTests.swift */; };
 		D2B25057C961DDBAA9218046 /* ProviderUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0743C522162285FF400C341E /* ProviderUsage.swift */; };
 		D748E6111A16EAC3B35716D4 /* fetch-runtime.sh in Resources */ = {isa = PBXBuildFile; fileRef = C10C437D35CCB50260279100 /* fetch-runtime.sh */; };
+		DA4D3CE1B69603CFD4CF3E70 /* OpenRouterRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F87F84C912D379954A21F5E /* OpenRouterRoutingTests.swift */; };
 		DA5F068851218CE3C4C25420 /* CodexModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0B0D1931467CACA3EFCEBE /* CodexModelCatalog.swift */; };
 		DA68BEADDDDCD2CD1D133399 /* ModelSourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A35AB5611799383F91510547 /* ModelSourcesView.swift */; };
 		DA93B62CEA0A64DB11DE2145 /* LocalAISettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F239CE6C61DD6282BE1038D /* LocalAISettingsTab.swift */; };
@@ -165,6 +168,7 @@
 		1A1E7578393FFA2C9500DBD1 /* NotchHUDView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchHUDView.swift; sourceTree = "<group>"; };
 		1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogOverlayTests.swift; sourceTree = "<group>"; };
 		1E439C9E3BFE452A19209DFB /* DonateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DonateView.swift; sourceTree = "<group>"; };
+		1F33964CC137C440B0A56A95 /* ModelMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelMigrationTests.swift; sourceTree = "<group>"; };
 		1FDE9424C3F73CCAC9513286 /* HuggingFaceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceCatalogTests.swift; sourceTree = "<group>"; };
 		234A58730E496230D96E418C /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		2C7113F932E22E2C4B120FD1 /* CodexGatewayService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexGatewayService.swift; sourceTree = "<group>"; };
@@ -204,6 +208,7 @@
 		6715DEB6E92A8B2500D0403F /* MelonTools.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MelonTools.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6B79F16F753E7455A4ECED83 /* HuggingFaceCatalogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HuggingFaceCatalogView.swift; sourceTree = "<group>"; };
 		6BCC195BFB79F67FBF48FC75 /* SupportBundleService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleService.swift; sourceTree = "<group>"; };
+		6F87F84C912D379954A21F5E /* OpenRouterRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterRoutingTests.swift; sourceTree = "<group>"; };
 		709E38F322127AEA8A660851 /* HFModelDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HFModelDetailView.swift; sourceTree = "<group>"; };
 		713C67E4DCFB4904D6AB820F /* LocalRegistryRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalRegistryRecoveryTests.swift; sourceTree = "<group>"; };
 		72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistoryTests.swift; sourceTree = "<group>"; };
@@ -275,6 +280,7 @@
 		F0BD89B3984A9EA9369FB4FE /* LocalDownloadRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDownloadRecoveryTests.swift; sourceTree = "<group>"; };
 		F3A40DBABD02E5810C0480AC /* HFAvatarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HFAvatarService.swift; sourceTree = "<group>"; };
 		F65439F46A80ADE0BE55882F /* SchedulerRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulerRunner.swift; sourceTree = "<group>"; };
+		F6FAC673CFE80F57C88AF964 /* ModelMigrationIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelMigrationIntegrationTests.swift; sourceTree = "<group>"; };
 		F9B21B78AE9C1FC5B2A3DFD0 /* CodexAPIView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAPIView.swift; sourceTree = "<group>"; };
 		FACD01EC0F82F6F7D0B4D401 /* MTComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MTComponents.swift; sourceTree = "<group>"; };
 		FC120B6C9F0A5B1A05A9A8F6 /* AntigravityPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityPool.swift; sourceTree = "<group>"; };
@@ -469,8 +475,11 @@
 				713C67E4DCFB4904D6AB820F /* LocalRegistryRecoveryTests.swift */,
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
 				1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */,
+				F6FAC673CFE80F57C88AF964 /* ModelMigrationIntegrationTests.swift */,
+				1F33964CC137C440B0A56A95 /* ModelMigrationTests.swift */,
 				90C0EA6834CAE38EF5770925 /* NetworkProxyTests.swift */,
 				A8A1CD4A27B11A1E5AB70684 /* NotchHUDGeometryTests.swift */,
+				6F87F84C912D379954A21F5E /* OpenRouterRoutingTests.swift */,
 				43DF36EBCAF7BAC399EA4644 /* ProviderBulkImportTests.swift */,
 				78254DD46D1BE92B2CD100D3 /* ProviderDiagnosticsTests.swift */,
 				72018307FC3E927D21E062D1 /* QuotaHistoryTests.swift */,
@@ -694,8 +703,11 @@
 				421661799C60A9775A50A57A /* LocalRegistryRecoveryTests.swift in Sources */,
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
 				28E8DBB8E6BBAA563AEAD636 /* ModelCatalogOverlayTests.swift in Sources */,
+				03640F21CC61B25E98269835 /* ModelMigrationIntegrationTests.swift in Sources */,
+				CF9730F2927BBF18A5C226D5 /* ModelMigrationTests.swift in Sources */,
 				78317CA56B054EC82756B00D /* NetworkProxyTests.swift in Sources */,
 				25ADA33EB4BB343ACF63DA90 /* NotchHUDGeometryTests.swift in Sources */,
+				DA4D3CE1B69603CFD4CF3E70 /* OpenRouterRoutingTests.swift in Sources */,
 				DFECC444904DD8C2FAAC46EB /* ProviderBulkImportTests.swift in Sources */,
 				24E702E083D91A10487BC875 /* ProviderDiagnosticsTests.swift in Sources */,
 				798017E7C1267EE56940D2F4 /* QuotaHistoryTests.swift in Sources */,
@@ -986,14 +998,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 71;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "6.0.0-rc.4";
+				MARKETING_VERSION = 6.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -1005,14 +1017,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 63;
+				CURRENT_PROJECT_VERSION = 71;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = "6.0.0-rc.4";
+				MARKETING_VERSION = 6.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};

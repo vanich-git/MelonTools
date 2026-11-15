@@ -82,11 +82,9 @@ certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 
 > **6.0.0 is in development and is not published yet.** The download links
 > above, the Homebrew Cask and the winget manifests still point at the
-> published 5.5.8 artifacts. 6.0.0 adds Local AI; its draft notes live in
-> [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md), and its hashes are
-> generated from the release build by
-> `scripts/verify_release_checksums.py --stage` — never copied from a local
-> development build.
+> published 5.5.8 artifacts. 6.0.0 adds Local AI, custom API providers and a
+> usage view; its notes live in [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md)
+> and are promoted only after the release build has been staged and verified.
 
 - **Windows opens reliably.** The large card is a second, already-sized window. Clicking the compact pill shows it and hides the pill; no WebView2 resize is involved.
 - **CSS state collision fixed.** The old `.expanded` rule also matched `<body>`, so the whole panel document painted nothing. The body state is now `island-open` and the hide rule is scoped to `.island > .expanded`.

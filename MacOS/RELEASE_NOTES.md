@@ -1,3 +1,191 @@
+# Melon Tools 6.0.0
+
+Stable release for macOS and Windows. 6.0.0 is published as "latest": it
+replaces 5.5.7 in Homebrew and winget after the promotion workflow has proved
+that the staged manifests describe these exact bytes, and the in-app updaters
+offer it because they read `/releases/latest`.
+
+> **Read before installing**
+>
+> - **macOS: ad-hoc signed, not notarized.** Gatekeeper blocks the first
+>   launch. Use right-click and Open (or System Settings, Privacy & Security,
+>   Open Anyway) only after the downloaded file matches its `.sha256` sibling.
+>   Developer ID signing and notarization stay blocked until the Apple secrets
+>   are configured; see `packaging/README.md`.
+> - **Windows: not Authenticode-signed.** SmartScreen may show "Windows
+>   protected your PC" and refuse the first launch. Choose **More info**, then
+>   **Run anyway** only after the SHA-256 matches. The installer is per-user and
+>   does not request elevation.
+> - **Local AI is hardware-hungry.** No GGUF model is bundled: models are
+>   downloaded on demand and can be many gigabytes. Expect high RAM/VRAM use
+>   and a slow first load; throughput depends on the machine.
+> - **Verify every download.** Each asset has a `.sha256` sibling, the release
+>   body lists all digests, and `SHA256SUMS` covers the whole set.
+
+## What is in 6.0.0
+
+- **Local AI on both platforms.** Melon Tools runs GGUF models with a bundled
+  `llama-server` and exposes them through the loopback gateway
+  (`127.0.0.1:18318`), so Codex and other clients reach local models through
+  the same OpenAI-compatible endpoint.
+- **Bundled, verified runtime.** The macOS bundle ships a pinned universal
+  llama.cpp runtime (`b12099`, arm64 + x86_64) with its dylib closure and a
+  SHA-256 manifest. Runtime downloads, lipo merging, signing and manifest
+  refresh are handled by `MacOS/scripts/fetch-runtime.sh`; an arm64-only
+  runtime is rejected before the DMG is built.
+- **Model management.** A model registry with per-model directories,
+  split-model validation, resumable Hugging Face downloads, storage settings
+  and hardware recommendations. The storage layout is documented in
+  `docs/LOCAL_AI_ARCHITECTURE.md`.
+- **Codex account pool and gateway.** Multiple accounts, routing rules,
+  provider diagnostics and the Composer bridge keep working against the same
+  loopback API, now with a usage view that shows what the gateway actually did.
+- **User-defined API providers.** Any relay that speaks OpenAI Chat, OpenAI
+  Responses, Anthropic or Gemini can be added from the app on macOS and
+  Windows, without editing configuration files by hand.
+- **Release hardening.** Clean checkouts fetch and verify the runtime before
+  the first XcodeGen run; signed releases re-sign the nested runtime binaries
+  and refresh the runtime digest before the app bundle is sealed. Native
+  acceptance checks are described in `docs/RELEASE_ACCEPTANCE.md`.
+
+## What changed since 6.0.0-rc.6
+
+- **Custom providers you define yourself.** Codex, Connections now accepts a
+  provider identifier, a base URL and a wire protocol (`openai-chat`,
+  `openai-responses`, `anthropic`, `gemini`). The identifier doubles as the
+  model prefix, so `myrelay/gpt-4o` routes to that relay. The form rejects the
+  identifiers the gateway already owns, trims a trailing slash, strips a
+  duplicated `/v1` or `/v1beta` segment, and shows which path the gateway will
+  append. Model lists are fetched from `/models` with OpenAI, Anthropic and
+  Gemini envelopes all understood, and the same rules run on macOS and
+  Windows.
+- **Usage is visible instead of inferred.** The API page has a Usage card: the
+  last request with its model, provider, account, mode, status and token
+  counts, plus a short recent history. Nothing is guessed from logs; the
+  gateway reports what it served.
+- **Antigravity identities are calibrated.** The client version and changelist
+  are stored as a matched pair taken from the official build, the app never
+  auto-bumps one without the other, and the quota refresh honours the
+  per-account TTL instead of polling upstream at tick rate. Disabled accounts
+  are rendered from their stored state and never probed.
+- **Hugging Face failures are explained.** Network errors, rate limits and
+  timeouts now surface as localized messages with retry and backoff instead of
+  a silent empty list, and avatars are cached so a slow Hub does not blank the
+  catalogue.
+- **The relay is capped and timed.** Gateway handlers sit behind a 32
+  connection cap, upstream reads and writes carry explicit timeouts, and the
+  response head is bounded, so one stalled relay cannot freeze the app.
+- **Windows reload and shutdown fixes.** A failed Local AI catalogue reload no
+  longer marks the catalogue as published, the Local AI widget opens with the
+  Start menu without stealing focus, and exit is bounded by a watchdog that
+  logs instead of hanging.
+- **Smaller repairs.** Picker lists scroll under the pointer again, and Hugging
+  Face metadata comments are stripped before a model README is rendered.
+
+## What this release does not prove
+
+- **No Developer ID, no notarization.** The macOS DMG is ad-hoc signed; the
+  `spctl` and stapled-ticket checks in `MacOS/scripts/native-acceptance.sh` are
+  skipped without certificates.
+- **No Authenticode.** Windows signing steps are skipped when the certificate
+  secrets are absent, so SmartScreen reputation is untested.
+- **No interactive Windows install/upgrade/soak run.** CI builds the installer
+  and the portable executable on a native Windows runner and validates PE
+  headers, hashes and the legacy alias. Clean install, upgrade from the last
+  published build, uninstall, WebView2 IPC and DPAPI behaviour remain manual
+  checks in `docs/RELEASE_ACCEPTANCE.md`.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.0.0.dmg` (arm64 + x86_64, build 71)
+- Windows installer: `MelonTools-6.0.0-setup.exe`
+- Windows portable: `MelonTools-6.0.0-win-x64-portable.exe`
+- Digests: `SHA256SUMS` in the release assets, plus a `.sha256` sibling for
+  every file.
+
+# Melon Tools 6.0.0-rc.6
+
+Release candidate for macOS and Windows. **This is a test build, not a stable
+release.** 6.0.0-rc.6 was built locally on macOS and has not been published:
+there is no GitHub release, no tag and no download link for it. It is not
+"latest", it does not replace the stable 5.5.x line in Homebrew or winget, and
+the in-app updaters keep reading `/releases/latest`, so a 5.5.x install is
+never offered this RC. See `packaging/README.md` and
+`docs/RELEASE_ACCEPTANCE.md`.
+
+The installation caveats are unchanged: the macOS build is ad-hoc signed and
+not notarized, the Windows build is not Authenticode-signed, and no GGUF model
+is bundled.
+
+## What changed in 6.0.0-rc.6
+
+- **Picker lists scroll under the pointer again.** Trackpad and wheel scrolling
+  in a dropdown was cancelled the moment the list moved: the row sliding under
+  the cursor re-fired hover, which re-centred the list on that row. Scrolling
+  now follows keyboard navigation, type-ahead and the opening selection only,
+  so hover highlights without moving the list.
+- **Model cards no longer show raw code.** Hugging Face metadata comments
+  (`<!-- ### quantize_version: 2 -->`, `<!-- provided-files -->`) are stripped
+  before rendering on macOS and Windows, so they stop appearing as code blocks
+  above the README.
+
+### Builds
+
+- macOS universal DMG: `MelonTools-6.0.0-rc.6.dmg` (arm64 + x86_64)
+- Windows installer: `MelonTools-6.0.0-rc.6-setup.exe`
+- Windows portable: `MelonTools-6.0.0-rc.6-win-x64-portable.exe`
+
+### SHA-256
+
+| File | SHA-256 |
+|------|---------|
+| `MelonTools-6.0.0-rc.6.dmg` | `01da7e4ab1671e4315c3f9e5dcb91121e2403bf0bce98661875b6376f2d90c34` |
+| `MelonTools-6.0.0-rc.6-setup.exe` | `b186de8b4b94ca4c6102e61ceffb419875ee117336e1599b09701a79198342db` |
+| `MelonTools-6.0.0-rc.6-win-x64-portable.exe` | `98d2d9d277e8aa725943ed90deb97fdc1e8b7a71ff586821194d4833ba6a79f4` |
+
+# Melon Tools 6.0.0-rc.5
+
+Release candidate for macOS and Windows. **This is a test build, not a stable
+release.** 6.0.0-rc.5 was built locally on macOS and has not been published:
+there is no GitHub release, no tag and no download link for it. It is not
+"latest", it does not replace the stable 5.5.x line in Homebrew or winget, and
+the in-app updaters keep reading `/releases/latest`, so a 5.5.x install is
+never offered this RC. See `packaging/README.md` and
+`docs/RELEASE_ACCEPTANCE.md`.
+
+The installation caveats are unchanged: the macOS build is ad-hoc signed and
+not notarized, the Windows build is not Authenticode-signed, and no GGUF model
+is bundled.
+
+## What changed in 6.0.0-rc.5
+
+- **No native system pickers in Local AI or Hugging Face.** macOS uses the
+  app's own `MTSelect` for the catalog sort and for the model-variant chooser,
+  which now shows the quant, the size, the file name and the memory verdict in
+  one two-line row. Windows uses its in-app `details.hf-select` popover for the
+  Local AI profile and KV-cache settings.
+- **Hugging Face avatars load once and are reused.** The avatar is fetched and
+  decoded per repository instead of per row, so scrolling the catalog no
+  longer re-downloads the same image on macOS or Windows.
+- **Model cards render their badges instead of raw markup.** README HTML and
+  embedded images are rewritten into clean Markdown links and captions on both
+  platforms, so a card no longer shows `<p align="center">` glued into a
+  paragraph.
+
+### Builds
+
+- macOS universal DMG: `MelonTools-6.0.0-rc.5.dmg` (arm64 + x86_64)
+- Windows installer: `MelonTools-6.0.0-rc.5-setup.exe`
+- Windows portable: `MelonTools-6.0.0-rc.5-win-x64-portable.exe`
+
+### SHA-256
+
+| File | SHA-256 |
+|------|---------|
+| `MelonTools-6.0.0-rc.5.dmg` | `e539d0437db113064653da054ea578f91fff9282a063a346c75a6cd525bdf8cb` |
+| `MelonTools-6.0.0-rc.5-setup.exe` | `12f83cd061923ac2a141ab2969a442cd576e90368254f75ebff4500b249788c7` |
+| `MelonTools-6.0.0-rc.5-win-x64-portable.exe` | `dc9fc391ec92720e747fa44da6bb2c5719ec4cb7beb033463f46f5b820c949e9` |
+
 # Melon Tools 6.0.0-rc.4
 
 Release candidate for macOS and Windows. **This is a test build, not a stable

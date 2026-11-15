@@ -6,8 +6,12 @@ touched by the packaging scripts.
 
 ## Current status
 
-The application source tree is **6.0.0-rc.4**, published as a GitHub
-**prerelease**. The stable **6.0.0** promotion is still pending. The Homebrew
+The application source tree is **6.0.0**, prepared for the stable promotion.
+The newest local prerelease was 6.0.0-rc.6: it was produced on macOS
+(`MacOS/build.sh` plus `Windows/build-windows.sh`), never published, and its
+hashes below prove only that the local files matched the bytes listed there.
+The published 6.0.0 artifacts come from the tagged CI build, not from a
+checkout. The Homebrew
 Cask and winget manifests below still describe the last published stable
 release, 5.5.8, with its real hashes. That is deliberate: a prerelease is never
 promoted into the stable manifests, and a version number is not evidence that
@@ -25,6 +29,65 @@ The CI release workflow builds and publishes unsigned artifacts when the
 secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
+
+## 6.0.0-rc.6 (local build)
+
+Built locally on 2026-11-07 on macOS: the DMG comes from `MacOS/build.sh`
+(universal arm64 + x86_64, ad-hoc signed), the two Windows executables from
+`Windows/build-windows.sh` (cargo-xwin cross-compile for
+`x86_64-pc-windows-msvc`, NSIS bundle via the Homebrew `makensis`).
+
+This build fixes the issues reported after rc.5:
+
+- Dropdown lists scroll again. Hovering a row re-centred the list on it, so a
+  trackpad or wheel scroll was undone as soon as the content moved; scrolling
+  now follows keyboard navigation, type-ahead and the opening selection only.
+- Model cards drop Hugging Face metadata comments (`<!-- ... -->`) before
+  rendering, on macOS and Windows, so they no longer show up as code blocks.
+
+Both artifacts are unsigned: macOS is ad-hoc signed and not notarized,
+Windows has no Authenticode signature. Nothing in this directory was uploaded
+anywhere.
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-6.0.0-rc.6.dmg` | `01da7e4ab1671e4315c3f9e5dcb91121e2403bf0bce98661875b6376f2d90c34` |
+| Windows installer | `MelonTools-6.0.0-rc.6-setup.exe` | `b186de8b4b94ca4c6102e61ceffb419875ee117336e1599b09701a79198342db` |
+| Windows portable | `MelonTools-6.0.0-rc.6-win-x64-portable.exe` | `98d2d9d277e8aa725943ed90deb97fdc1e8b7a71ff586821194d4833ba6a79f4` |
+
+The DMG carries `CFBundleShortVersionString` 6.0.0-rc.6 with build 65; the
+NSIS installer keeps the numeric core 6.0.0 in its version resource.
+
+## 6.0.0-rc.5 (local build)
+
+Built locally on 2026-11-06 on macOS: the DMG comes from `MacOS/build.sh`
+(universal arm64 + x86_64, ad-hoc signed), the two Windows executables from
+`Windows/build-windows.sh` (cargo-xwin cross-compile for
+`x86_64-pc-windows-msvc`, NSIS bundle via the Homebrew `makensis`).
+
+This build fixes the issues reported after rc.4:
+
+- Local AI and Hugging Face no longer use native system pickers on either
+  platform: macOS moved the catalog sort and the model-variant chooser onto
+  `MTSelect`, Windows moved the Local AI settings dropdowns onto the in-app
+  `details.hf-select` component.
+- Hugging Face avatars are fetched and decoded once per repository and reused
+  across the catalog and detail views on macOS and Windows.
+- Model-card READMEs render badges and embedded HTML instead of gluing raw
+  markup into a paragraph, on both platforms.
+
+Both artifacts are unsigned: macOS is ad-hoc signed and not notarized,
+Windows has no Authenticode signature. Nothing in this directory was uploaded
+anywhere.
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-6.0.0-rc.5.dmg` | `e539d0437db113064653da054ea578f91fff9282a063a346c75a6cd525bdf8cb` |
+| Windows installer | `MelonTools-6.0.0-rc.5-setup.exe` | `12f83cd061923ac2a141ab2969a442cd576e90368254f75ebff4500b249788c7` |
+| Windows portable | `MelonTools-6.0.0-rc.5-win-x64-portable.exe` | `dc9fc391ec92720e747fa44da6bb2c5719ec4cb7beb033463f46f5b820c949e9` |
+
+The DMG carries `CFBundleShortVersionString` 6.0.0-rc.5 with build 64; the
+NSIS installer keeps the numeric core 6.0.0 in its version resource.
 
 ## 6.0.0-rc.4 (prerelease)
 

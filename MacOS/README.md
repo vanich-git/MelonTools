@@ -18,11 +18,11 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 
 ## What's new in 5.5.8 (latest published)
 
-> 6.0.0 is in development. Its draft notes are at the top of
-> [`RELEASE_NOTES.md`](RELEASE_NOTES.md); no 6.0.0 DMG has been published and
-> no 6.0.0 hash should be added to the distribution manifests yet. The release
-> procedure is in [`../packaging/README.md`](../packaging/README.md) and
-> [`../docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
+> **6.0.0 is in development and is not published yet.** Its notes are at the
+> top of [`RELEASE_NOTES.md`](RELEASE_NOTES.md); no 6.0.0 DMG has been
+> published and no 6.0.0 hash belongs in the distribution manifests yet. The
+> release procedure is in [`../packaging/README.md`](../packaging/README.md)
+> and [`../docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
 
 - **Build metadata.** macOS build 55; version metadata is aligned at 5.5.8.
 - The island silhouette is unchanged from 5.5.6.
@@ -554,8 +554,9 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 - **Seven routing modes**, mirroring Cockpit Tools: **Auto (recommended)**,
   **Most quota left first**, **Least quota left first**, **Top plan first**,
   **Lower plan first**, **Expiring soon first**, and **Manual order** with
-  reorder arrows. The gateway runs fill-first over the computed priorities:
-  the top account serves until it is exhausted, then the next takes over.
+  reorder arrows. The gateway runs weighted round-robin inside the regular
+  tier (backups sit one tier below and only take over once it is exhausted),
+  so requests spread across the pool instead of draining one account first.
 - **No technical paths in the UI** — raw file paths in normal screens are
   replaced with plain wording (import, route status, instances, diagnostics).
 - **Consistent naming.** The brand is simply **Fleet** everywhere in the UI.
@@ -583,8 +584,9 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
   written, and the app relaunches with the debug port so the chips reconnect.
   **Remove routing** restores the backed-up config and relaunches the app.
 - **Account routing strategies** — «Even» spreads requests across the pool
-  (round-robin); «By priority» is fill-first: the top account serves until it
-  is exhausted, then the next one. Reorder with the arrows and press
+  (round-robin); «By priority» keeps the planner order but the gateway still
+  rotates inside the regular tier, so a single account is not hammered.
+  Reorder with the arrows and press
   **Apply routing** — the gateway restarts with the new strategy and the
   priorities land in the account auth files.
 - **Solid surfaces everywhere** — Liquid Glass styling is gone from the app

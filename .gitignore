@@ -43,3 +43,21 @@ Melon_Amber_macOS*.icns
 
 # Locally built release artifacts (uploaded to GitHub Releases, never committed)
 /delivery/
+
+# Local scratch state from development runs (never committed)
+/AGENTS.md
+/.cargo-home-windows/
+/.cargo-target-windows/
+/.openrouter-xcode/
+/local-build-*/
+/MacOS/app/.derivedData/
+/MacOS/app/.testResults/
+/MacOS/app/.tmp/
+/Windows/.build-apfs.sparseimage
+/Windows/app/src-tauri/.cargo/
+/Windows/app/src-tauri/.cargo-target-windows/
+/Windows/app/src-tauri/check.exit
+/Windows/app/src-tauri/check.log
+
+# Vendored Tauri crate snapshots used by local patch experiments
+/Windows/patches/

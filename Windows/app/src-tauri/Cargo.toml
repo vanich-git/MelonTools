@@ -1,6 +1,6 @@
 [package]
 name = "melontools"
-version = "6.0.0-rc.4"
+version = "6.0.0"
 description = "Melon Tools for Windows — Codex account pool and local API gateway"
 edition = "2021"
 rust-version = "1.90"
@@ -31,6 +31,11 @@ zeroize = "1"
 uuid = { version = "1", features = ["v4"] }
 # Runtime package extraction: pure Rust, no PowerShell/BSdtar dependency.
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(unix)'.dependencies]
+# Killing the engine's whole process group: the router starts one llama-server
+# child per model and a plain `kill` on the router leaves that child running.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
