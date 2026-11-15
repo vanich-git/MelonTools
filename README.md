@@ -78,12 +78,18 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 6.0.0 (latest published)
+## What's new in 6.0.1 (latest published)
 
 > **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
 > block the first launch, so check the SHA-256 before opening the file. No GGUF
 > model is bundled: Local AI downloads models on demand. The full notes are in
 > [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **The update dialog shows real progress.** Both platforms display percent, downloaded megabytes and current speed instead of an indefinite spinner, so a long download no longer looks stuck.
+- **Updates download directly.** The release asset uses a direct connection instead of the application SOCKS proxy, with a fallback to the proxy when the direct route fails.
+- **Four parallel range requests.** The file is fetched in four parts, assembled on disk and checked once with SHA256. On the 6.0.0 DMG the same link went from about 6:45 to about 1:30.
+
+## Earlier: 6.0.0
 
 - **Local AI on both platforms.** A bundled `llama-server` runs GGUF models and publishes them through the loopback gateway at `127.0.0.1:18318`, so Codex and other clients use the same OpenAI-compatible endpoint as the cloud providers.
 - **User-defined API providers.** Any relay that speaks OpenAI Chat, OpenAI Responses, Anthropic or Gemini is added in the app; the identifier doubles as the model prefix, and the form shows which path the gateway will append.

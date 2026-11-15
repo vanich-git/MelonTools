@@ -16,11 +16,17 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 6.0.0 (latest published)
+## What's new in 6.0.1 (latest published)
 
 > **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
 > is allowed in System Settings, so verify the SHA-256 first. No GGUF model is
 > bundled. The full notes are in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **The update dialog shows real progress.** Percent, downloaded megabytes and current speed replace the indefinite spinner, so a long download no longer looks stuck.
+- **Updates download directly, in four parallel ranges.** The DMG is fetched over a direct connection instead of the application SOCKS proxy (with a proxy fallback), assembled from four parts and checked once with SHA256. On the 6.0.0 DMG the same link went from about 6:45 to about 1:30.
+- **Build metadata.** macOS build 72; version metadata is aligned at 6.0.1.
+
+## Earlier: 6.0.0
 
 - **Local AI.** A pinned universal `llama-server` (b12099, arm64 + x86_64) runs GGUF models and serves them on the loopback gateway, with a model registry, resumable downloads and split-model validation.
 - **Custom API providers and usage history.** OpenAI Chat, OpenAI Responses, Anthropic and Gemini relays are added in the app, and the API page reports the last request and recent history.
