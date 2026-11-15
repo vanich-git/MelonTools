@@ -1,3 +1,45 @@
+# Melon Tools 6.0.1
+
+Patch release for macOS and Windows with a faster in-app updater. It is built
+from the 6.0.0 sources plus the updater change in PR #14 and replaces 6.0.0 as
+"latest" once the promotion workflow has proved that the staged manifests
+describe these exact bytes.
+
+The installation caveats are unchanged: the macOS build is ad-hoc signed and
+not notarized, the Windows build is not Authenticode-signed, and no GGUF model
+is bundled.
+
+## What changed in 6.0.1
+
+- **The update dialog shows real progress.** Both platforms display percent,
+  downloaded megabytes and current speed instead of an indefinite spinner, so a
+  long download no longer looks like a hang.
+- **Updates download directly, not through the app proxy.** The asset is fetched
+  over a direct connection and falls back to the configured SOCKS proxy only
+  when the direct route fails. The release check still uses the configured
+  network path.
+- **Four parallel range requests.** The asset is split into four `Range`
+  requests, assembled on disk and checked once with SHA256. On the published
+  6.0.0 DMG the same link went from about 6:45 to about 1:30.
+
+## What this release does not prove
+
+- **No Developer ID, no notarization.** The macOS DMG is ad-hoc signed and the
+  `spctl` checks stay skipped without certificates.
+- **No Authenticode.** Windows signing steps are skipped when the certificate
+  secrets are absent, so SmartScreen reputation is untested.
+- **No interactive Windows install/upgrade/soak run.** Clean install, upgrade
+  from 6.0.0, uninstall and WebView2 IPC remain manual checks in
+  `docs/RELEASE_ACCEPTANCE.md`.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.0.1.dmg` (arm64 + x86_64, build 72)
+- Windows installer: `MelonTools-6.0.1-setup.exe`
+- Windows portable: `MelonTools-6.0.1-win-x64-portable.exe`
+- Digests: `SHA256SUMS` in the release assets, plus a `.sha256` sibling for
+  every file.
+
 # Melon Tools 6.0.0
 
 Stable release for macOS and Windows. 6.0.0 is published as "latest": it
