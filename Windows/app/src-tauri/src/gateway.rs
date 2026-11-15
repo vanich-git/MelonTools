@@ -873,13 +873,24 @@ pub fn api_keys_yaml_with_local(
 
 fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
     let config = &settings.openrouter_config;
-    let has_models = settings.openrouter_models.iter().any(|model| !model.id.trim().is_empty());
+    let has_models = settings
+        .openrouter_models
+        .iter()
+        .any(|model| !model.id.trim().is_empty());
     if !has_models {
         return;
     }
     yaml.push_str("\npayload:\n  default-raw:\n");
-    for model in settings.openrouter_models.iter().filter(|model| !model.id.trim().is_empty()) {
-        let strategy = config.models.get(&model.id).map(String::as_str).unwrap_or(config.default_strategy.as_str());
+    for model in settings
+        .openrouter_models
+        .iter()
+        .filter(|model| !model.id.trim().is_empty())
+    {
+        let strategy = config
+            .models
+            .get(&model.id)
+            .map(String::as_str)
+            .unwrap_or(config.default_strategy.as_str());
         let model_config = config.model_providers.get(&model.id);
         let sort = match strategy {
             "throughput" | "nitro" => "throughput",
@@ -889,15 +900,38 @@ fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
         let mut provider = serde_json::Map::new();
         provider.insert("sort".to_string(), json!(sort));
         provider.insert("data_collection".to_string(), json!(config.data_collection));
-        provider.insert("require_parameters".to_string(), json!(config.require_parameters));
+        provider.insert(
+            "require_parameters".to_string(),
+            json!(config.require_parameters),
+        );
         provider.insert(
             "allow_fallbacks".to_string(),
-            json!(model_config.and_then(|value| value.allow_fallbacks).unwrap_or(config.allow_fallbacks)),
+            json!(model_config
+                .and_then(|value| value.allow_fallbacks)
+                .unwrap_or(config.allow_fallbacks)),
         );
         for (key, values) in [
-            ("order", model_config.map(|value| &value.order).filter(|values| !values.is_empty()).unwrap_or(&config.order)),
-            ("only", model_config.map(|value| &value.only).filter(|values| !values.is_empty()).unwrap_or(&config.only)),
-            ("ignore", model_config.map(|value| &value.ignore).filter(|values| !values.is_empty()).unwrap_or(&config.ignore)),
+            (
+                "order",
+                model_config
+                    .map(|value| &value.order)
+                    .filter(|values| !values.is_empty())
+                    .unwrap_or(&config.order),
+            ),
+            (
+                "only",
+                model_config
+                    .map(|value| &value.only)
+                    .filter(|values| !values.is_empty())
+                    .unwrap_or(&config.only),
+            ),
+            (
+                "ignore",
+                model_config
+                    .map(|value| &value.ignore)
+                    .filter(|values| !values.is_empty())
+                    .unwrap_or(&config.ignore),
+            ),
         ] {
             if !values.is_empty() {
                 provider.insert(key.to_string(), json!(values));
@@ -906,7 +940,8 @@ fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
         if !config.quantizations.is_empty() {
             provider.insert("quantizations".to_string(), json!(config.quantizations));
         }
-        let provider_json = serde_json::to_string(&Value::Object(provider)).unwrap_or_else(|_| "{}".to_string());
+        let provider_json =
+            serde_json::to_string(&Value::Object(provider)).unwrap_or_else(|_| "{}".to_string());
         let escaped = provider_json.replace('\\', "\\\\").replace('"', "\\\"");
         yaml.push_str(&format!(
             "    - models:\n        - name: \"{}\"\n          protocol: \"openai\"\n      params:\n        provider: \"{}\"\n",
@@ -921,18 +956,28 @@ fn push_openrouter_models(yaml: &mut String, settings: &Settings) {
     }
     yaml.push_str("      models:\n");
     for model in &settings.openrouter_models {
-        let strategy = settings.openrouter_config.models.get(&model.id).map(String::as_str)
+        let strategy = settings
+            .openrouter_config
+            .models
+            .get(&model.id)
+            .map(String::as_str)
             .unwrap_or(settings.openrouter_config.default_strategy.as_str());
         let upstream = match strategy {
-            "floor" | "nitro" if !model.id.ends_with(&format!(":{}", strategy)) => format!("{}:{}", model.id, strategy),
+            "floor" | "nitro" if !model.id.ends_with(&format!(":{}", strategy)) => {
+                format!("{}:{}", model.id, strategy)
+            }
             _ => model.id.clone(),
         };
         yaml.push_str(&format!(
             "        - name: \"{}\"\n          alias: \"openrouter/{}\"\n",
-            yaml_escape(&upstream), yaml_escape(&model.id)
+            yaml_escape(&upstream),
+            yaml_escape(&model.id)
         ));
         if !model.display.trim().is_empty() {
-            yaml.push_str(&format!("          display-name: \"{}\"\n", yaml_escape(&model.display)));
+            yaml.push_str(&format!(
+                "          display-name: \"{}\"\n",
+                yaml_escape(&model.display)
+            ));
         }
         if let Some(context) = model.context_window.filter(|value| *value > 0) {
             yaml.push_str(&format!("          max-context-length: {}\n", context));
@@ -968,7 +1013,10 @@ fn push_custom_provider(
         ));
         let display = model.display.trim();
         if !display.is_empty() && display != id {
-            yaml.push_str(&format!("          display-name: \"{}\"\n", yaml_escape(display)));
+            yaml.push_str(&format!(
+                "          display-name: \"{}\"\n",
+                yaml_escape(display)
+            ));
         }
         if let Some(context) = model.context_window.filter(|value| *value > 0) {
             yaml.push_str(&format!("          max-context-length: {context}\n"));
@@ -2330,12 +2378,11 @@ mod tests {
         auth_file_name, auth_payload, base_config, config_generation, config_needs_write,
         image_matches_engine, image_starts_with, is_listening, is_listening_blocking,
         last_written_config, local_api_keys_yaml, lock_config_generation, parse_pid,
-        PRIORITY_TIER_BACKUP,
-        parse_recent_call, parse_usage_record, parse_tasklist_image, parse_tasklist_pids, priority_for,
-        quota_weight,
-        reload_acknowledged, reload_digest, servable_local_models, tail_bytes, write_config,
-        write_config_forced, write_config_if_changed, write_config_if_changed_forced,
-        write_config_if_changed_locked, yaml_escape, USER_AGENT,
+        parse_recent_call, parse_tasklist_image, parse_tasklist_pids, parse_usage_record,
+        priority_for, quota_weight, reload_acknowledged, reload_digest, servable_local_models,
+        tail_bytes, write_config, write_config_forced, write_config_if_changed,
+        write_config_if_changed_forced, write_config_if_changed_locked, yaml_escape,
+        PRIORITY_TIER_BACKUP, USER_AGENT,
     };
     use crate::settings::Settings;
     use crate::vault::Account;
@@ -2446,7 +2493,10 @@ mod tests {
         // Session affinity lives under `routing:` (it is a selection policy),
         // and only there: the retry knobs below it are root-level instead.
         assert!(yaml.contains("  session-affinity: true\n"), "{yaml}");
-        assert!(yaml.contains("  session-affinity-rebind-on: \"quota\"\n"), "{yaml}");
+        assert!(
+            yaml.contains("  session-affinity-rebind-on: \"quota\"\n"),
+            "{yaml}"
+        );
         // The embedded engine carries MacOS/patches/0001, which reads this
         // root field and (after the same patch) accepts it in v8. Dropping it
         // from the file silently disabled the user's first-token watchdog.
@@ -3166,10 +3216,30 @@ mod tests {
     fn api_keys_yaml_routes_custom_providers_into_protocol_sections() {
         let mut s = settings();
         s.custom_providers = vec![
-            custom_provider("acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true), custom_model("hidden", false)]),
-            custom_provider("acme-responses", "openai-responses", "https://responses.example/v1", vec![custom_model("gpt-5-pro", true)]),
-            custom_provider("acme-claude", "anthropic", "https://messages.example/v1", vec![custom_model("claude-sonnet", true)]),
-            custom_provider("acme-gemini", "gemini", "https://gemini.example/v1beta", vec![custom_model("gemini-pro", true)]),
+            custom_provider(
+                "acme",
+                "openai-chat",
+                "https://relay.example/v1",
+                vec![custom_model("gpt-5", true), custom_model("hidden", false)],
+            ),
+            custom_provider(
+                "acme-responses",
+                "openai-responses",
+                "https://responses.example/v1",
+                vec![custom_model("gpt-5-pro", true)],
+            ),
+            custom_provider(
+                "acme-claude",
+                "anthropic",
+                "https://messages.example/v1",
+                vec![custom_model("claude-sonnet", true)],
+            ),
+            custom_provider(
+                "acme-gemini",
+                "gemini",
+                "https://gemini.example/v1beta",
+                vec![custom_model("gemini-pro", true)],
+            ),
         ];
 
         let yaml = api_keys_yaml_test(&s);
@@ -3179,12 +3249,21 @@ mod tests {
         assert!(yaml.contains("  codex:\n"), "{yaml}");
         assert!(yaml.contains("  claude:\n"), "{yaml}");
         assert!(yaml.contains("  gemini:\n"), "{yaml}");
-        assert!(yaml.contains("    - name: \"acme\"\n      base-url: \"https://relay.example/v1\""), "{yaml}");
+        assert!(
+            yaml.contains("    - name: \"acme\"\n      base-url: \"https://relay.example/v1\""),
+            "{yaml}"
+        );
         assert!(yaml.contains("alias: \"acme/gpt-5\""), "{yaml}");
         assert!(!yaml.contains("hidden"), "{yaml}");
-        assert!(yaml.contains("base-url: \"https://messages.example\""), "{yaml}");
+        assert!(
+            yaml.contains("base-url: \"https://messages.example\""),
+            "{yaml}"
+        );
         assert!(!yaml.contains("messages.example/v1\""), "{yaml}");
-        assert!(yaml.contains("base-url: \"https://gemini.example\""), "{yaml}");
+        assert!(
+            yaml.contains("base-url: \"https://gemini.example\""),
+            "{yaml}"
+        );
         assert!(!yaml.contains("gemini.example/v1beta\""), "{yaml}");
         assert!(yaml.contains("alias: \"acme-gemini/gemini-pro\""), "{yaml}");
     }
@@ -3192,12 +3271,32 @@ mod tests {
     #[test]
     fn api_keys_yaml_skips_disabled_invalid_and_empty_custom_providers() {
         let mut s = settings();
-        let mut disabled = custom_provider("acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
+        let mut disabled = custom_provider(
+            "acme",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("gpt-5", true)],
+        );
         disabled.enabled = false;
-        let invalid_id = custom_provider("Acme", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
-        let no_models = custom_provider("empty", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", false)]);
+        let invalid_id = custom_provider(
+            "Acme",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("gpt-5", true)],
+        );
+        let no_models = custom_provider(
+            "empty",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("gpt-5", false)],
+        );
         let no_key = {
-            let mut provider = custom_provider("keyless", "openai-chat", "https://relay.example/v1", vec![custom_model("gpt-5", true)]);
+            let mut provider = custom_provider(
+                "keyless",
+                "openai-chat",
+                "https://relay.example/v1",
+                vec![custom_model("gpt-5", true)],
+            );
             provider.api_key = "   ".to_string();
             provider
         };
@@ -3465,14 +3564,18 @@ mod tests {
         let mut settings = settings();
         settings.openrouter_key = "test-key".into();
         settings.openrouter_models = vec![crate::settings::ProviderModel {
-            id: "example/model".into(), ..Default::default()
+            id: "example/model".into(),
+            ..Default::default()
         }];
         settings.openrouter_config.order = vec!["global-order".into()];
         settings.openrouter_config.only = vec!["global-only".into()];
         settings.openrouter_config.ignore = vec!["global-ignore".into()];
         settings.openrouter_config.allow_fallbacks = false;
         let override_config = serde_json::from_str(r#"{"order":["specific"]}"#).unwrap();
-        settings.openrouter_config.model_providers.insert("example/model".into(), override_config);
+        settings
+            .openrouter_config
+            .model_providers
+            .insert("example/model".into(), override_config);
         let yaml = api_keys_yaml_test(&settings);
         assert!(yaml.contains("\\\"order\\\":[\\\"specific\\\"]"));
         assert!(yaml.contains("\\\"only\\\":[\\\"global-only\\\"]"));
@@ -3492,14 +3595,29 @@ mod tests {
             display: "GPT-4o".to_string(),
             ..Default::default()
         }];
-        settings.openrouter_config.models.insert("openai/gpt-4o".to_string(), "nitro".to_string());
+        settings
+            .openrouter_config
+            .models
+            .insert("openai/gpt-4o".to_string(), "nitro".to_string());
 
         let yaml = api_keys_yaml_test(&settings);
 
-        assert!(yaml.contains("\npayload:\n  default-raw:\n"), "Payload root missing or nested incorrectly");
-        assert!(yaml.contains("    - models:\n        - name: \"openrouter/openai/gpt-4o\"\n"), "Model name pattern incorrect");
-        assert!(yaml.contains("\\\"sort\\\":\\\"throughput\\\""), "Sort strategy incorrect");
+        assert!(
+            yaml.contains("\npayload:\n  default-raw:\n"),
+            "Payload root missing or nested incorrectly"
+        );
+        assert!(
+            yaml.contains("    - models:\n        - name: \"openrouter/openai/gpt-4o\"\n"),
+            "Model name pattern incorrect"
+        );
+        assert!(
+            yaml.contains("\\\"sort\\\":\\\"throughput\\\""),
+            "Sort strategy incorrect"
+        );
         assert!(yaml.contains("        - name: \"openai/gpt-4o:nitro\"\n          alias: \"openrouter/openai/gpt-4o\"\n"), "Model mapping missing or incorrect");
-        assert!(yaml.find("\n  claude:\n").unwrap() < yaml.find("\npayload:\n").unwrap(), "Claude block should appear before payload");
+        assert!(
+            yaml.find("\n  claude:\n").unwrap() < yaml.find("\npayload:\n").unwrap(),
+            "Claude block should appear before payload"
+        );
     }
 }

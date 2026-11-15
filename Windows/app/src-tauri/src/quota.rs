@@ -834,7 +834,11 @@ async fn send_wake_request(
     }
     if !status.is_success() && status.as_u16() >= 500 {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("wake {}: {}", status.as_u16(), text.chars().take(200).collect::<String>()));
+        return Err(format!(
+            "wake {}: {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        ));
     }
     Ok(())
 }
@@ -858,11 +862,7 @@ pub async fn wake_account(
 }
 
 /// Wake specified Codex accounts.
-pub async fn wake_accounts(
-    client: &Client,
-    ids: &[String],
-    model: Option<&str>,
-) -> Vec<String> {
+pub async fn wake_accounts(client: &Client, ids: &[String], model: Option<&str>) -> Vec<String> {
     let mut errors = Vec::new();
     let accounts = vault::accounts();
     for id in ids {
@@ -1191,7 +1191,10 @@ mod tests {
 
     #[test]
     fn wake_constants_and_endpoint_are_defined() {
-        assert_eq!(super::RESPONSES_ENDPOINT, "https://chatgpt.com/backend-api/codex/responses");
+        assert_eq!(
+            super::RESPONSES_ENDPOINT,
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
         assert_eq!(super::WAKE_ORIGINATOR, "codex_cli_rs");
         assert!(super::MODELS_USER_AGENT.contains("codex_cli_rs"));
     }

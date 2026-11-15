@@ -529,12 +529,15 @@ fn generate_management_secret() -> String {
 mod tests {
     #[test]
     fn openrouter_legacy_settings_preserve_inherited_fallback() {
-        let legacy: super::Settings = serde_json::from_str(r#"{
+        let legacy: super::Settings = serde_json::from_str(
+            r#"{
             "openrouterConfig": {
                 "allowFallbacks": false,
                 "modelProviders": {"vendor/model": {"only": ["provider"]}}
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert!(!legacy.openrouter_config.allow_fallbacks);
         let model = &legacy.openrouter_config.model_providers["vendor/model"];
         assert_eq!(model.only, vec!["provider"]);
@@ -826,7 +829,10 @@ mod tests {
             encoded["customProviders"][0]["baseUrl"],
             "https://relay.example/v1"
         );
-        assert_eq!(encoded["customProviders"][0]["models"][0]["contextWindow"], 128_000);
+        assert_eq!(
+            encoded["customProviders"][0]["models"][0]["contextWindow"],
+            128_000
+        );
         let decoded: Settings = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.custom_providers, settings.custom_providers);
     }
