@@ -16,13 +16,17 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 5.5.8 (latest published)
+## What's new in 6.0.0 (latest published)
 
-> **6.0.0 is in development and is not published yet.** Its notes are at the
-> top of [`RELEASE_NOTES.md`](RELEASE_NOTES.md); no 6.0.0 DMG has been
-> published and no 6.0.0 hash belongs in the distribution manifests yet. The
-> release procedure is in [`../packaging/README.md`](../packaging/README.md)
-> and [`../docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
+> **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
+> is allowed in System Settings, so verify the SHA-256 first. No GGUF model is
+> bundled. The full notes are in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **Local AI.** A pinned universal `llama-server` (b12099, arm64 + x86_64) runs GGUF models and serves them on the loopback gateway, with a model registry, resumable downloads and split-model validation.
+- **Custom API providers and usage history.** OpenAI Chat, OpenAI Responses, Anthropic and Gemini relays are added in the app, and the API page reports the last request and recent history.
+- **Build metadata.** macOS build 71; version metadata is aligned at 6.0.0.
+
+## Earlier: 5.5.8
 
 - **Build metadata.** macOS build 55; version metadata is aligned at 5.5.8.
 - The island silhouette is unchanged from 5.5.6.

@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: vanich-git.MelonTools
-PackageVersion: 5.5.8
+PackageVersion: 6.0.0
 InstallerLocale: en-US
 MinimumOSVersion: 10.0.17763.0
 Architecture: x64
@@ -8,8 +8,8 @@ InstallerType: nullsoft
 Installers:
   - Architecture: x64
     InstallerType: nullsoft
-    InstallerUrl: https://github.com/vanich-git/MelonTools/releases/download/v5.5.8/MelonTools-5.5.8-setup.exe
-    InstallerSha256: 653D1354543FC792FB7E61FFEA25029EA5079550FBAD338F82D190E2AAEF69B6
+    InstallerUrl: https://github.com/vanich-git/MelonTools/releases/download/v6.0.0/MelonTools-6.0.0-setup.exe
+    InstallerSha256: 3880CD300F4BD40B9BE394583D9CBAC0F5458AAFCB9C9D9779755B5DA4E01B25
     InstallerSwitches:
       Silent: /S
 ManifestType: installer
