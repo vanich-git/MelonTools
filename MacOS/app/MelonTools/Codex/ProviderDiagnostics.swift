@@ -35,13 +35,26 @@ enum ProviderDiagnostics {
         var quotaUpdatedAt: [String: Date] = [:]
         /// Quota errors, verbatim as reported by the provider, keyed by id.
         var quotaErrors: [String: String] = [:]
+        /// Local inference facts. The engine can be running while the gateway
+        /// serves none of its routes; those are separate states.
+        var localAI = LocalAI()
+
+        struct LocalAI: Equatable {
+            var running = false
+            /// `local/<id>` aliases for models whose runtime is Ready.
+            var readyAliases: [String] = []
+            var engineError: String?
+            var publicationError: String?
+        }
 
         struct Keys: Equatable {
             var openRouter = false
             var openCode = false
             var deepInfra = false
+            var nvidia = false
             var vercel = false
             var zai = false
+            var commandCode = false
             var claude = false
         }
     }
@@ -60,8 +73,8 @@ enum ProviderDiagnostics {
     }
 
     static let ids = [
-        "codex", "claude", "antigravity", "openrouter", "opencode",
-        "deepinfra", "vercel", "zai",
+        "codex", "claude", "antigravity", "localai", "openrouter", "opencode",
+        "deepinfra", "nvidia", "vercel", "zai", "commandcode",
     ]
 
     static func title(for id: String) -> String {
@@ -69,11 +82,14 @@ enum ProviderDiagnostics {
         case "codex": return "Codex pool"
         case "claude": return "Claude"
         case "antigravity": return "Antigravity"
+        case "localai": return "Local AI"
         case "openrouter": return "OpenRouter"
         case "opencode": return "OpenCode"
         case "deepinfra": return "DeepInfra"
+        case "nvidia": return "NVIDIA"
         case "vercel": return "Vercel"
         case "zai": return "Z.ai"
+        case "commandcode": return "CommandCode"
         default: return id
         }
     }
@@ -129,20 +145,31 @@ enum ProviderDiagnostics {
             return models.filter { isOwned($0, by: "opencode") }.count
         case "deepinfra":
             return models.filter { isOwned($0, by: "deepinfra") }.count
+        case "nvidia":
+            return models.filter { $0.id.hasPrefix("nvidia/") || isOwned($0, by: "nvidia") }.count
         case "vercel":
             return models.filter { isOwned($0, by: "vercel") }.count
         case "zai":
             return models.filter { $0.id.hasPrefix("zai/") || isOwned($0, by: "zai") }.count
+        case "commandcode":
+            return models.filter {
+                $0.id.hasPrefix("commandcode/") || isOwned($0, by: "commandcode")
+            }.count
         default:
             return models.filter {
-                !isClaudeModel(id: $0.id, owner: $0.owner)
+                !$0.id.hasPrefix("local/")
+                    && !isClaudeModel(id: $0.id, owner: $0.owner)
                     && !isAntigravityModel(id: $0.id, owner: $0.owner)
                     && !isOwned($0, by: "openrouter")
                     && !isOwned($0, by: "opencode")
                     && !isOwned($0, by: "deepinfra")
+                    && !$0.id.hasPrefix("nvidia/")
+                    && !isOwned($0, by: "nvidia")
                     && !isOwned($0, by: "vercel")
                     && !$0.id.hasPrefix("zai/")
                     && !isOwned($0, by: "zai")
+                    && !$0.id.hasPrefix("commandcode/")
+                    && !isOwned($0, by: "commandcode")
             }.count
         }
     }
@@ -157,6 +184,9 @@ enum ProviderDiagnostics {
         let modelListOK = gatewayOK && evidence.modelsError == nil
 
         return ids.map { id in
+            if id == "localai" {
+                return localRow(evidence, gatewayOK: gatewayOK, modelListOK: modelListOK)
+            }
             var row = Row(
                 id: id,
                 title: title(for: id),
@@ -187,6 +217,59 @@ enum ProviderDiagnostics {
         }
     }
 
+    /// Local AI is not a credential-backed provider: it is Ready only when a
+    /// model is loaded *and* the gateway lists every Ready alias. Reporting the
+    /// engine as healthy while `/v1/models` is missing the routes hid the real
+    /// failure from the Connections check.
+    private static func localRow(_ evidence: Evidence, gatewayOK: Bool, modelListOK: Bool) -> Row {
+        let local = evidence.localAI
+        let served = evidence.models.filter { $0.id.hasPrefix("local/") }.map(\.id)
+        var row = Row(
+            id: "localai",
+            title: title(for: "localai"),
+            status: .idle,
+            authFileCount: 0,
+            // "Internal token" is not readiness: only Ready aliases count.
+            hasKey: !local.readyAliases.isEmpty,
+            modelCount: modelListOK ? local.readyAliases.count : nil,
+            quotaUpdatedAt: nil,
+            error: nil
+        )
+        if let engineError = local.engineError {
+            row.status = .failed
+            row.error = engineError
+            return row
+        }
+        // A publication failure is the reason the routes are missing; it must
+        // stay visible even after the engine has stopped.
+        if let publicationError = local.publicationError {
+            row.status = .failed
+            row.error = publicationError
+            return row
+        }
+        guard local.running else { return row }
+
+        if !gatewayOK {
+            row.status = .failed
+            row.error = evidence.gatewayError ?? evidence.gatewayStatusCode.map { "HTTP \($0)" }
+        } else if let modelsError = evidence.modelsError {
+            row.status = .warning
+            row.error = modelsError
+        } else if local.readyAliases.isEmpty {
+            // The engine is up but no model is loaded; there is nothing to publish.
+            row.status = .idle
+        } else {
+            let missing = local.readyAliases.filter { !served.contains($0) }
+            if missing.isEmpty {
+                row.status = .ok
+            } else {
+                row.status = .failed
+                row.error = "Missing from the gateway API: " + missing.sorted().joined(separator: ", ")
+            }
+        }
+        return row
+    }
+
     static func authFileCount(id: String, names: [String]) -> Int {
         switch id {
         case "codex":
@@ -205,8 +288,10 @@ enum ProviderDiagnostics {
         case "openrouter": return keys.openRouter
         case "opencode": return keys.openCode
         case "deepinfra": return keys.deepInfra
+        case "nvidia": return keys.nvidia
         case "vercel": return keys.vercel
         case "zai": return keys.zai
+        case "commandcode": return keys.commandCode
         case "claude": return keys.claude
         default: return false
         }
@@ -247,9 +332,20 @@ final class ProviderDiagnosticsStore: ObservableObject {
             openRouter: !sources.openRouterKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             openCode: !sources.openCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             deepInfra: !sources.deepInfraKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            nvidia: !sources.nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             vercel: !sources.vercelKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             zai: !sources.zaiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            commandCode: !sources.commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             claude: !sources.claudeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+        let inference = LocalInferenceService.shared
+        result.localAI = ProviderDiagnostics.Evidence.LocalAI(
+            running: inference.status.isRunning,
+            readyAliases: LocalModelStore.shared.models
+                .filter { $0.runtimeStatus == .ready }
+                .map { $0.id.hasPrefix("local/") ? $0.id : "local/\($0.id)" },
+            engineError: inference.engineError,
+            publicationError: inference.publicationError
         )
 
         var request = URLRequest(url: URL(string: gateway.baseURL + "/v1/models")!)

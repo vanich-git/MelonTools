@@ -1,6 +1,148 @@
 // Melon Tools — user actions (W6). Loaded before app.js; helpers and page
 // renderers are global classic-script bindings available when a method runs.
 
+/// The stored Hugging Face token lives in the backend (DPAPI on Windows), so
+/// the UI only knows the `__stored__` marker. Send `null` in that case and let
+/// the Rust side use the stored secret.
+function hfTokenArg() {
+  const token = S && S.localAi ? S.localAi.hfToken : "";
+  return token && token !== "__stored__" ? token : null;
+}
+
+/// The backend reports engine problems in English; the Local AI page is
+/// localized. Keep the technical detail, but lead with an actionable sentence.
+function localAiStartErrorText(error) {
+  const text = errorText(error);
+  if (/llama-server executable not found/i.test(text)) return t("localAiEngineMissing");
+  if (/Cannot list the official llama\.cpp builds/i.test(text)) {
+    return `${t("localAiEngineCatalogFailed")} ${text}`;
+  }
+  if (/runtime download (failed|timed out)|Runtime download/i.test(text)) {
+    return `${t("localAiEngineDownloadFailed")} ${text}`;
+  }
+  return text;
+}
+
+/// Replaces the Console rows in place instead of rebuilding the whole page.
+/// A reader who scrolled up keeps the exact position; a reader who is at the
+/// bottom follows new output.
+function updateRuntimeLogBox() {
+  const box = document.getElementById("local-ai-logs");
+  if (!box) return false;
+  const distance = box.scrollHeight - box.scrollTop - box.clientHeight;
+  const wasAtBottom = distance <= 24;
+  const previousTop = box.scrollTop;
+  const logs = S.localAi.logs || [];
+  box.innerHTML = logs.length === 0
+    ? `<span class="muted">${esc(t("localAiConsoleEmpty"))}</span>`
+    : logs.map((line) => `<div>${esc(line)}</div>`).join("");
+  box.scrollTop = wasAtBottom ? box.scrollHeight : previousTop;
+  return true;
+}
+
+/// Loads the newest 500 lines of `llama-server.log` and refreshes the Console.
+async function loadRuntimeLogs() {
+  try {
+    const logs = await window.api.localAi.runtimeLogs(500);
+    const next = Array.isArray(logs) ? logs : [];
+    S.localAi.logs = next;
+    S.localAi.logsSignature = JSON.stringify(next);
+    updateRuntimeLogBox();
+  } catch (e) {
+    // The backend logs section keeps its last good content on a read error.
+  }
+}
+
+/// The presets are the same numbers as the macOS sheet, so "Max speed" means
+/// one thing across both apps. Only values the engine actually reads are here:
+/// `auto` restores the balanced defaults instead of leaving stale numbers.
+const LOCAL_AI_PROFILE_PRESETS = {
+  auto: { contextLength: 8192, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  performance: { contextLength: 16384, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  balanced: { contextLength: 8192, gpuOffloadLayers: 999, flashAttention: true, kvCacheType: "f16" },
+  memory_saver: { contextLength: 4096, gpuOffloadLayers: 32, flashAttention: true, kvCacheType: "q4_0" },
+};
+
+/// `custom` is derived, not stored: the select must stop claiming a preset as
+/// soon as one of its four numbers no longer matches, otherwise Save would
+/// persist `performance` with a hand-edited 2048-token context.
+///
+/// `auto` and `balanced` describe the same numbers, so `current` breaks the tie
+/// — without it, picking "Auto" and saving would silently relabel the row as
+/// "Max quality".
+function localAiProfileForSettings(settings, current) {
+  const s = settings || {};
+  const matches = (id) => {
+    const preset = LOCAL_AI_PROFILE_PRESETS[id];
+    if (!preset) return false;
+    const layers = s.gpuOffloadLayers == null ? 999 : Number(s.gpuOffloadLayers);
+    return Number(s.contextLength) === preset.contextLength
+      && layers === preset.gpuOffloadLayers
+      && (s.kvCacheType || "f16") === preset.kvCacheType
+      && !!s.flashAttention === preset.flashAttention;
+  };
+  // `custom` is a deliberate choice: keep it until another preset is picked,
+  // otherwise a hand-edited number would make the select jump back on every
+  // repaint.
+  if (current === "custom") return "custom";
+  if (current && matches(current)) return current;
+  for (const id of ["performance", "memory_saver", "balanced", "auto"]) {
+    if (matches(id)) return id;
+  }
+  return "custom";
+}
+
+function customNormalizedBase(raw) {
+  return String(raw || "").trim().replace(/\/+$/, "");
+}
+
+function customBaseProblem(raw) {
+  const value = customNormalizedBase(raw);
+  if (!value) return t("customBaseRequired");
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return t("customBaseInvalid");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return t("customBaseInvalid");
+  if (!parsed.hostname) return t("customBaseInvalid");
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return t("customBaseInvalid");
+  return null;
+}
+
+/// Mirrors the Rust validation so the sheet can explain the problem before an
+/// IPC round trip. The backend repeats every check defensively.
+function customProviderProblem(draft, providers) {
+  const id = String(draft.id || "").trim();
+  if (!id) return t("customIdRequired");
+  if (!/^[a-z][a-z0-9-]{1,31}$/.test(id)) return t("customIdInvalid");
+  if (CUSTOM_RESERVED_IDS.includes(id)) return t("customIdReserved");
+  if ((providers || []).some((provider) => provider.id === id && provider.id !== draft.editing)) {
+    return t("customIdDuplicate");
+  }
+  if (!String(draft.name || "").trim()) return t("customNameRequired");
+  const baseProblem = customBaseProblem(draft.baseUrl);
+  if (baseProblem) return baseProblem;
+  if (!CUSTOM_PROTOCOLS.some((protocol) => protocol.id === draft.protocol)) return t("customProtocolInvalid");
+  if (!String(draft.apiKey || "").trim()) return t("customKeyRequired");
+  const models = draft.models || [];
+  if (!models.some((model) => model.enabled !== false && String(model.id || "").trim())) {
+    return t("customAtLeastOneModel");
+  }
+  const seen = new Set();
+  for (const model of models) {
+    const modelId = String(model.id || "").trim();
+    if (!modelId) {
+      if (model.enabled !== false) return t("customModelIdRequired");
+      continue;
+    }
+    if (seen.has(modelId)) return fmt(t("customModelDuplicate"), { id: modelId });
+    seen.add(modelId);
+  }
+  return null;
+}
+
 const A = {
   go(section) {
     S.section = section;
@@ -161,6 +303,7 @@ const A = {
         inv("gateway_recent_calls", { limit: 8 }),
         inv("autostart_get"),
         inv("scheduler_summary").catch(() => inv("scheduler_list")),
+        inv("gateway_recent_usage", { limit: 10 }),
       ]);
       const value = (index, fallback) => settled[index].status === "fulfilled"
         ? settled[index].value
@@ -178,6 +321,7 @@ const A = {
       S.calls = value(6, []);
       S.autostart = value(7, false);
       S.schedulerSummary = value(8, S.schedulerSummary);
+      S.usage = value(9, []);
     } catch (error) {
       toast(errorText(error), true);
     }
@@ -233,6 +377,10 @@ const A = {
         ["gatewayStatus", "gateway_status", () => inv("gateway_status")],
         ["gatewayCheck", "gateway_check", () => inv("gateway_check")],
         ["gatewayModels", "gateway_models", () => inv("gateway_models")],
+        // Local AI is part of the same gateway catalogue: a running model is
+        // only usable once it shows up in `local/*`.
+        ["localAiRuntime", "local_ai_runtime_status", () => inv("local_ai_runtime_status")],
+        ["localAiModels", "local_ai_models_list", () => inv("local_ai_models_list")],
         ["claudeCredentials", "claude_credentials", () => inv("claude_credentials")],
         ["claudeModels", "claude_models", () => inv("claude_models")],
         ["claudeUsage", "claude_usage", () => inv("claude_usage")],
@@ -272,6 +420,16 @@ const A = {
         gatewayIds.push(id);
       }
       const countPrefix = (prefix) => gatewayIds.filter((id) => id.startsWith(prefix)).length;
+
+      const localRuntime = data.localAiRuntime || {};
+      const localModels = Array.isArray(data.localAiModels) ? data.localAiModels : [];
+      const localReady = localModels.filter((model) => model && model.runtimeStatus === "ready").length;
+      const localReach = localRuntime.error
+        ? { text: errorText(localRuntime.error), cls: "danger" }
+        : { text: localRuntime.isRunning ? t("running") : t("stopped"), cls: localRuntime.isRunning ? "ok" : "warn" };
+      const localAuth = localRuntime.publicationError
+        ? { text: t("localAiNotPublished"), cls: "danger" }
+        : { text: `${localReady} ${t("localAiReady")}`, cls: localReady ? "ok" : "warn" };
 
       const claudeModels = data.claudeModels && Array.isArray(data.claudeModels.models)
         ? data.claudeModels.models
@@ -318,14 +476,22 @@ const A = {
           quota: { text: "—", cls: "" },
         },
         {
+          name: "Local AI", reach: localReach,
+          auth: localAuth,
+          models: countCell(has("gatewayModels") ? countPrefix("local/") : null),
+          quota: { text: "—", cls: "" },
+        },
+        {
           name: t("diagCodex"), reach: viaGateway,
           auth: { text: `${accounts.length} ${t("accountsCount")}`, cls: accounts.length ? "ok" : "warn" },
           models: countCell(has("gatewayModels")
             ? gatewayIds.filter((id) => !id.startsWith("opencode/")
               && !id.startsWith("openrouter/")
               && !id.startsWith("deepinfra/")
+              && !id.startsWith("nvidia/")
               && !id.startsWith("vercel/")
-              && !id.startsWith("zai/")).length
+              && !id.startsWith("zai/")
+              && !id.startsWith("commandcode/")).length
             : null),
           quota: codexQuota ? { text: ageText(codexQuota), cls: "ok" } : { text: "—", cls: "" },
         },
@@ -349,6 +515,12 @@ const A = {
           quota: { text: "—", cls: "" },
         },
         {
+          name: "NVIDIA", reach: viaGateway,
+          auth: keyAuth(settings.nvidiaKey),
+          models: countCell(has("gatewayModels") ? countPrefix("nvidia/") : null),
+          quota: { text: "-", cls: "" },
+        },
+        {
           name: t("vercel"), reach: viaGateway,
           auth: keyAuth(settings.vercelKey),
           models: countCell(has("gatewayModels") ? countPrefix("vercel/") : null),
@@ -360,6 +532,13 @@ const A = {
           name: t("zai"), reach: viaGateway,
           auth: keyAuth(settings.zaiKey),
           models: countCell(has("gatewayModels") ? countPrefix("zai/") : null),
+          quota: { text: "—", cls: "" },
+        },
+        {
+          name: t("commandcode"), reach: viaGateway,
+          auth: keyAuth(settings.commandcodeKey),
+          models: countCell(has("gatewayModels") ? countPrefix("commandcode/") : null),
+          // CommandCode publishes no account balance and no prices.
           quota: { text: "—", cls: "" },
         },
         {
@@ -380,6 +559,227 @@ const A = {
     });
   },
 
+  customProviderOpen(id) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const existing = id ? providers.find((provider) => provider.id === id) : null;
+    if (id && !existing) return;
+    S.customDraft = existing
+      ? {
+        editing: existing.id,
+        id: existing.id,
+        name: existing.name || "",
+        baseUrl: existing.baseUrl || "",
+        protocol: existing.protocol || "openai-chat",
+        apiKey: existing.apiKey || "",
+        enabled: existing.enabled !== false,
+        models: (existing.models || []).map((model) => ({
+          id: model.id || "",
+          display: model.display || "",
+          contextWindow: model.contextWindow || null,
+          enabled: model.enabled !== false,
+        })),
+        error: "",
+        status: "",
+        fetching: false,
+      }
+      : {
+        editing: null,
+        id: "",
+        name: "",
+        baseUrl: "",
+        protocol: "openai-chat",
+        apiKey: "",
+        enabled: true,
+        models: [],
+        error: "",
+        status: "",
+        fetching: false,
+      };
+    render(true);
+    const field = document.getElementById("custom-id");
+    if (field) field.focus();
+  },
+
+  customProviderClose() {
+    S.customDraft = null;
+    render(true);
+    const add = document.querySelector('[data-action="customProviderOpen"]');
+    if (add) add.focus();
+  },
+
+  customProviderField(field, value) {
+    const draft = S.customDraft;
+    if (!draft) return;
+    draft[field] = value;
+    draft.error = "";
+    if (field === "protocol") {
+      const hint = document.getElementById("custom-base-hint");
+      if (hint) hint.textContent = customBaseHint(value);
+    }
+  },
+
+  customModelAdd() {
+    const draft = S.customDraft;
+    if (!draft) return;
+    draft.models.push({ id: "", display: "", contextWindow: null, enabled: true });
+    customProviderModalRefresh();
+    const rows = document.querySelectorAll("#custom-models .custom-model-row");
+    const last = rows[rows.length - 1];
+    const input = last ? last.querySelector('input[data-field="id"]') : null;
+    if (input) input.focus();
+  },
+
+  customModelRemove(index) {
+    const draft = S.customDraft;
+    if (!draft || !Number.isInteger(index)) return;
+    draft.models.splice(index, 1);
+    customProviderModalRefresh();
+  },
+
+  customModelToggle(index, checked) {
+    const draft = S.customDraft;
+    if (!draft || !draft.models[index]) return;
+    draft.models[index].enabled = !!checked;
+  },
+
+  customModelField(index, field, value) {
+    const draft = S.customDraft;
+    if (!draft || !draft.models[index]) return;
+    if (field === "contextWindow") {
+      const parsed = parseInt(String(value || ""), 10);
+      draft.models[index].contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    } else {
+      draft.models[index][field] = value;
+    }
+    draft.error = "";
+  },
+
+  async customProviderFetch() {
+    const draft = S.customDraft;
+    if (!draft || draft.fetching) return;
+    const baseProblem = customBaseProblem(draft.baseUrl);
+    if (baseProblem) {
+      draft.error = baseProblem;
+      customProviderModalRefresh();
+      return;
+    }
+    if (!String(draft.apiKey || "").trim()) {
+      draft.error = t("customKeyRequired");
+      customProviderModalRefresh();
+      return;
+    }
+    draft.fetching = true;
+    draft.error = "";
+    draft.status = "";
+    customProviderModalRefresh();
+    try {
+      const result = await inv("custom_provider_models", {
+        protocol: draft.protocol,
+        baseUrl: customNormalizedBase(draft.baseUrl),
+        apiKey: String(draft.apiKey).trim(),
+      });
+      const incoming = Array.isArray(result && result.models) ? result.models : [];
+      const previous = new Map(
+        (draft.models || []).map((model) => [String(model.id || "").trim(), model]),
+      );
+      const fetched = incoming.map((model) => {
+        const old = previous.get(String(model.id || "").trim());
+        return {
+          id: String(model.id || "").trim(),
+          display: String(model.display || (old && old.display) || model.id || "").trim(),
+          contextWindow: model.contextWindow || (old && old.contextWindow) || null,
+          enabled: old ? old.enabled !== false : true,
+        };
+      });
+      const fetchedIds = new Set(fetched.map((model) => model.id));
+      const kept = (draft.models || []).filter((model) => {
+        const id = String(model.id || "").trim();
+        return id && !fetchedIds.has(id);
+      });
+      draft.models = fetched.concat(kept);
+      draft.status = fmt(t("customProviderFetchDone"), { n: fetched.length });
+    } catch (error) {
+      draft.error = errorText(error);
+    } finally {
+      draft.fetching = false;
+      customProviderModalRefresh();
+    }
+  },
+
+  async customProviderSave() {
+    const draft = S.customDraft;
+    if (!draft) return;
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const problem = customProviderProblem(draft, providers);
+    if (problem) {
+      draft.error = problem;
+      customProviderModalRefresh();
+      toast(problem, true);
+      return;
+    }
+    const providerID = String(draft.id).trim();
+    const provider = {
+      id: providerID,
+      name: String(draft.name).trim(),
+      baseUrl: customNormalizedBase(draft.baseUrl),
+      protocol: draft.protocol,
+      apiKey: String(draft.apiKey).trim(),
+      enabled: draft.enabled !== false,
+      models: (draft.models || [])
+        .filter((model) => String(model.id || "").trim())
+        .map((model) => {
+          const id = String(model.id).trim();
+          return {
+            id,
+            display: String(model.display || "").trim() || id,
+            contextWindow: model.contextWindow || null,
+            enabled: model.enabled !== false,
+            alias: `${providerID}/${id}`,
+          };
+        }),
+    };
+    const wasEditing = !!draft.editing;
+    const replacedID = wasEditing ? draft.editing : provider.id;
+    await run("custom-provider-save", async () => {
+      const next = providers
+        .filter((item) => item.id !== replacedID && item.id !== provider.id)
+        .concat(provider);
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+      S.customDraft = null;
+      toast(wasEditing ? t("customProviderSaved") : t("customProviderCreated"));
+      render(true);
+    });
+  },
+
+  async customProviderToggle(id, enabled) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    if (!providers.some((provider) => provider.id === id)) return;
+    await run(`custom-provider-toggle-${id}`, async () => {
+      const next = providers.map((provider) => (
+        provider.id === id ? { ...provider, enabled: !!enabled } : provider
+      ));
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+    });
+  },
+
+  async customProviderDelete(id) {
+    const providers = (S.settings && S.settings.customProviders) || [];
+    const provider = providers.find((item) => item.id === id);
+    if (!provider) return;
+    if (!window.confirm(fmt(t("customProviderDeleteConfirm"), { name: provider.name || provider.id }))) return;
+    await run(`custom-provider-delete-${id}`, async () => {
+      const next = providers.filter((item) => item.id !== id);
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), customProviders: next },
+      });
+      toast(t("customProviderDeleted"));
+    });
+  },
+
   codexRouteApply() {
     run("route", async () => {
       const result = await inv("codex_route_apply");
@@ -392,16 +792,20 @@ const A = {
     const openrouter = document.getElementById("or-enabled");
     const opencode = document.getElementById("oc-enabled");
     const deepinfra = document.getElementById("di-enabled");
+    const nvidia = document.getElementById("nvidia-enabled");
     const vercel = document.getElementById("vc-enabled");
     const zai = document.getElementById("zai-enabled");
+    const commandcode = document.getElementById("cc-enabled");
     const claude = document.getElementById("claude-enabled");
     S.settings = {
       ...S.settings,
       ...(openrouter ? { openrouterEnabled: openrouter.checked } : {}),
       ...(opencode ? { opencodeEnabled: opencode.checked } : {}),
       ...(deepinfra ? { deepinfraEnabled: deepinfra.checked } : {}),
+      ...(nvidia ? { nvidiaEnabled: nvidia.checked } : {}),
       ...(vercel ? { vercelEnabled: vercel.checked } : {}),
       ...(zai ? { zaiEnabled: zai.checked } : {}),
+      ...(commandcode ? { commandcodeEnabled: commandcode.checked } : {}),
       ...(claude ? { claudeEnabled: claude.checked } : {}),
     };
     inv("settings_set", { settings: S.settings })
@@ -430,6 +834,8 @@ const A = {
     run("quotas", async () => {
       const result = await inv("quota_refresh");
       S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
       else toast(`${t("refreshQuotas")}: ${t("done")}`);
@@ -440,8 +846,48 @@ const A = {
     run("quotas", async () => {
       const result = await inv("quota_refresh", { id });
       S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       await A.historyLoad();
       if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+    });
+  },
+
+  accountWake(id) {
+    run("quotas", async () => {
+      const result = await inv("account_wake", { id });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length) return;
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_selected", { ids });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSleeping() {
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_sleeping");
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
     });
   },
 
@@ -480,6 +926,13 @@ const A = {
       S.accounts = await inv("account_refresh_tokens", { id });
       toast(t("done"));
     });
+  },
+
+  launchAccountInCodex(id) {
+    if (!(S.accounts || []).some((account) => account.id === id)) return;
+    // Match macOS: open Codex through the shared gateway, not a direct login.
+    // Launching never changes currentAccountId or manual pool participation.
+    return A.codexOpen();
   },
 
   switchAccount(id) {
@@ -577,6 +1030,8 @@ const A = {
     if (!window.confirm(fmt(t("confirmDelete"), { name }))) return;
     run("delete-" + id, async () => {
       S.accounts = await inv("delete_account", { id });
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
       toast(t("done"));
     });
   },
@@ -587,13 +1042,17 @@ const A = {
     const openrouterNode = document.getElementById("or-key");
     const opencodeNode = document.getElementById("oc-key");
     const deepinfraNode = document.getElementById("di-key");
+    const nvidiaNode = document.getElementById("nvidia-key");
     const vercelNode = document.getElementById("vc-key");
     const zaiNode = document.getElementById("zai-key");
+    const commandcodeNode = document.getElementById("cc-key");
     const openrouterEnabledNode = document.getElementById("or-enabled");
     const opencodeEnabledNode = document.getElementById("oc-enabled");
     const deepinfraEnabledNode = document.getElementById("di-enabled");
+    const nvidiaEnabledNode = document.getElementById("nvidia-enabled");
     const vercelEnabledNode = document.getElementById("vc-enabled");
     const zaiEnabledNode = document.getElementById("zai-enabled");
+    const commandcodeEnabledNode = document.getElementById("cc-enabled");
     const openrouterKey = openrouterNode
       ? openrouterNode.value.trim()
       : (S.settings.openrouterKey || "");
@@ -603,12 +1062,16 @@ const A = {
     const deepinfraKey = deepinfraNode
       ? deepinfraNode.value.trim()
       : (S.settings.deepinfraKey || "");
+    const nvidiaKey = nvidiaNode ? nvidiaNode.value.trim() : (S.settings.nvidiaKey || "");
     const vercelKey = vercelNode
       ? vercelNode.value.trim()
       : (S.settings.vercelKey || "");
     const zaiKey = zaiNode
       ? zaiNode.value.trim()
       : (S.settings.zaiKey || "");
+    const commandcodeKey = commandcodeNode
+      ? commandcodeNode.value.trim()
+      : (S.settings.commandcodeKey || "");
     const openrouterEnabled = openrouterEnabledNode
       ? openrouterEnabledNode.checked
       : !!S.settings.openrouterEnabled;
@@ -618,39 +1081,96 @@ const A = {
     const deepinfraEnabled = deepinfraEnabledNode
       ? deepinfraEnabledNode.checked
       : !!S.settings.deepinfraEnabled;
+    const nvidiaEnabled = nvidiaEnabledNode ? nvidiaEnabledNode.checked : !!S.settings.nvidiaEnabled;
     const vercelEnabled = vercelEnabledNode
       ? vercelEnabledNode.checked
       : !!S.settings.vercelEnabled;
     const zaiEnabled = zaiEnabledNode
       ? zaiEnabledNode.checked
       : !!S.settings.zaiEnabled;
+    const commandcodeEnabled = commandcodeEnabledNode
+      ? commandcodeEnabledNode.checked
+      : !!S.settings.commandcodeEnabled;
+    const openrouterConfig = {
+      ...S.settings.openrouterConfig,
+      defaultStrategy: document.getElementById("or-sort")?.value ?? S.settings.openrouterConfig?.defaultStrategy ?? "price",
+      dataCollection: document.getElementById("or-data-collection")?.value ?? S.settings.openrouterConfig?.dataCollection ?? "deny",
+      requireParameters: document.getElementById("or-require-parameters")?.checked ?? S.settings.openrouterConfig?.requireParameters ?? false,
+      allowFallbacks: document.getElementById("or-fallbacks")?.checked ?? S.settings.openrouterConfig?.allowFallbacks ?? true,
+      ...Object.fromEntries(["order", "only", "ignore", "quantizations"].map((key) => {
+        const node = document.getElementById(`or-${key}`);
+        return [key, node ? node.value.split(",").map((value) => value.trim()).filter(Boolean) : (S.settings.openrouterConfig?.[key] || [])];
+      })),
+      models: { ...((S.settings.openrouterConfig || {}).models || {}) },
+      modelProviders: { ...((S.settings.openrouterConfig || {}).modelProviders || {}) },
+    };
+    const modelOrderNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-order]`)).map((node) => [node.dataset.openrouterModelOrder, node]));
+    const modelOnlyNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-only]`)).map((node) => [node.dataset.openrouterModelOnly, node]));
+    const modelIgnoreNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-ignore]`)).map((node) => [node.dataset.openrouterModelIgnore, node]));
+    const modelFallbackNodes = new Map(Array.from(document.querySelectorAll(`[data-openrouter-model-fallbacks]`)).map((node) => [node.dataset.openrouterModelFallbacks, node]));
+
+    document.querySelectorAll("[data-openrouter-model-strategy]").forEach((node) => {
+      const modelId = node.dataset.openrouterModelStrategy;
+      if (node.value) openrouterConfig.models[modelId] = node.value;
+      else delete openrouterConfig.models[modelId];
+
+      const orderNode = modelOrderNodes.get(modelId);
+      const onlyNode = modelOnlyNodes.get(modelId);
+      const ignoreNode = modelIgnoreNodes.get(modelId);
+      const fallbacksNode = modelFallbackNodes.get(modelId);
+      if (orderNode && onlyNode && ignoreNode && fallbacksNode) {
+        const order = orderNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const only = onlyNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const ignore = ignoreNode.value.split(',').map((value) => value.trim()).filter(Boolean);
+        const allowFallbacks = fallbacksNode.value === "true" ? true
+          : fallbacksNode.value === "false" ? false : null;
+        if (order.length || only.length || ignore.length || allowFallbacks !== null) {
+          openrouterConfig.modelProviders[modelId] = { order, only, ignore, allowFallbacks };
+        } else {
+          delete openrouterConfig.modelProviders[modelId];
+        }
+      }
+    });
     const previous = {
       openrouter: S.settings.openrouterKey || "",
       deepinfra: S.settings.deepinfraKey || "",
+      nvidia: S.settings.nvidiaKey || "",
       vercel: S.settings.vercelKey || "",
       zai: S.settings.zaiKey || "",
+      commandcode: S.settings.commandcodeKey || "",
     };
     run("keys", async () => {
       S.settings = await inv("settings_set", {
         settings: {
           ...S.settings,
           openrouterKey,
+          openrouterEnabled,
+          openrouterConfig,
           opencodeKey,
           deepinfraKey,
+          nvidiaKey,
           vercelKey,
           zaiKey,
-          openrouterEnabled,
+          commandcodeKey,
           opencodeEnabled,
           deepinfraEnabled,
+          nvidiaEnabled,
           vercelEnabled,
           zaiEnabled,
+          commandcodeEnabled,
         },
       });
       // Metrics and cached model lists belong to the key they were fetched
       // with; never leave the previous key's numbers on screen.
-      if (openrouterKey !== previous.openrouter) S.providers = null;
+      if (openrouterKey !== previous.openrouter) {
+        S.providers = null;
+        S.providerModelsError.openrouter = null;
+      }
       if (deepinfraKey !== previous.deepinfra) {
         S.providerModelsError.deepinfra = null;
+      }
+      if (nvidiaKey !== previous.nvidia) {
+        S.providerModelsError.nvidia = null;
       }
       if (vercelKey !== previous.vercel) {
         S.providerModelsError.vercel = null;
@@ -660,12 +1180,21 @@ const A = {
       if (zaiKey !== previous.zai) {
         S.providerModelsError.zai = null;
       }
+      if (commandcodeKey !== previous.commandcode) {
+        S.providerModelsError.commandcode = null;
+      }
       toast(t("done"));
     });
   },
 
   loadProviderModels(provider) {
-    const prefix = provider === "deepinfra" ? "di" : provider === "vercel" ? "vc" : provider;
+    const prefix =
+      provider === "deepinfra" ? "di"
+      : provider === "vercel" ? "vc"
+      : provider === "commandcode" ? "cc"
+      : provider === "opencode" ? "oc"
+      : provider === "openrouter" ? "or"
+      : provider;
     const keyNode = document.getElementById(prefix + "-key");
     const field = provider + "Key";
     const modelsField = provider + "Models";
@@ -916,6 +1445,27 @@ const A = {
     });
   },
 
+  /// Bind one account to one egress proxy. Google ties an OAuth grant to the
+  /// address it was issued from, so pinning each account to its own egress
+  /// keeps that stable and stops one banned address from sinking the pool.
+  antigravityProxy(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    const current = account.proxyUrl || "";
+    const next = window.prompt(t("proxyPrompt"), current);
+    if (next === null) return;
+    run("antigravityProxy", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "proxy",
+        name,
+        proxy: next.trim(),
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
   antigravityPause(name) {
     const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
     if (!account) return;
@@ -963,6 +1513,31 @@ const A = {
         models,
       });
       toast(result && result.ok ? t("done") : t("error"), !(result && result.ok));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityWarmup(name) {
+    const account = ((S.antigravity && S.antigravity.accounts) || []).find((item) => item.name === name);
+    if (!account) return;
+    run("antigravityWarmup", async () => {
+      const result = await inv("antigravity_account_action", {
+        action: "warmup",
+        name,
+        authIndex: account.authIndex,
+      });
+      if (!result || !result.ok) throw new Error(t("error"));
+      toast(t("done"));
+      await A.antigravityUsageLoad();
+      render();
+    });
+  },
+
+  antigravityWarmupAll() {
+    run("antigravityWarmupAll", async () => {
+      await inv("antigravity_warmup_all");
+      toast(t("done"));
       await A.antigravityUsageLoad();
       render();
     });
@@ -1086,7 +1661,7 @@ const A = {
     const parsedTimeout = parseInt(streamTimeoutNode ? streamTimeoutNode.value : "", 10);
     const streamBootstrapTimeoutSeconds = Number.isFinite(parsedTimeout)
       ? Math.max(0, Math.min(300, parsedTimeout))
-      : ((S.settings && S.settings.streamBootstrapTimeoutSeconds) ?? 60);
+      : ((S.settings && S.settings.streamBootstrapTimeoutSeconds) ?? 180);
     run("settings", async () => {
       S.settings = await inv("settings_set", {
         settings: {
@@ -1212,8 +1787,127 @@ const A = {
     }
   },
 
+  localAiConnectionsOpen() {
+    S.localAi.tab = "models";
+    A.go("local_ai");
+  },
+
+  async localAiConnectionsRefresh() {
+    try {
+      const [models, runtime] = await Promise.all([
+        window.api.localAi.modelsList(), window.api.localAi.runtimeStatus(),
+      ]);
+      S.localAi.models = models;
+      S.localAi.runtime = runtime;
+    } catch (error) {
+      S.localAi.error = errorText(error);
+    }
+    render();
+    return A.modelsLoad();
+  },
+
+  localAiConnectionsCheck() {
+    const alias = (id) => {
+      const value = String(id || "");
+      return value.startsWith("local/") ? value : `local/${value}`;
+    };
+    return run("localAiCheck", async () => {
+      let models;
+      let runtime;
+      let check;
+      try {
+        [models, runtime] = await Promise.all([
+          window.api.localAi.modelsList(),
+          window.api.localAi.runtimeStatus(),
+        ]);
+      } catch (error) {
+        // An IPC failure is not evidence of a healthy catalogue. Reporting it
+        // as a pass would tell the user everything works while the app cannot
+        // even read its own state.
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: errorText(error) }) };
+        S.localAi.connectionCheck = check;
+        render();
+        toast(check.text, true);
+        return;
+      }
+      S.localAi.models = models || [];
+      S.localAi.runtime = runtime || {};
+      S.localAi.error = null;
+      // The gateway is the public catalogue: this is what a client sees in
+      // /v1/models, independent of what the registry says.
+      const gateway = (await inv("gateway_models").catch(() => null)) || [];
+      const served = gateway
+        .map((model) => String((model && model.id) || ""))
+        .filter((id) => id.startsWith("local/"));
+      const ready = (models || [])
+        .filter((model) => model.runtimeStatus === "ready")
+        .map((model) => alias(model.id));
+      const missing = ready.filter((id) => !served.includes(id));
+      const stale = served.filter((id) => !ready.includes(id));
+      if (runtime && runtime.publicationError) {
+        // The alias may be visible while the last publication attempt still
+        // failed (a lost reload, a failed catalogue refresh). That is not a
+        // pass: the card shows the reason and the check must not contradict it.
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: runtime.publicationError }) };
+      } else if (runtime && runtime.error) {
+        check = { ok: false, text: fmt(t("localAiCheckFailed"), { error: runtime.error }) };
+      } else if (!runtime || !runtime.isRunning) {
+        check = stale.length
+          ? { ok: false, text: fmt(t("localAiCheckStale"), { models: stale.join(", ") }) }
+          : { ok: true, text: t("localAiCheckStopped") };
+      } else if (!ready.length) {
+        check = { ok: false, text: t("localAiCheckNoReady") };
+      } else if (missing.length) {
+        // A model the router serves but the gateway has not republished yet is
+        // a publication lag, not a dead engine: say which one it is.
+        const routerAliases = ((S.localAi.apiCatalogue && S.localAi.apiCatalogue.verified
+          ? S.localAi.apiCatalogue.models
+          : []) || []).map(alias);
+        const unpublished = missing.filter((id) => routerAliases.includes(id));
+        check = unpublished.length
+          ? { ok: false, text: fmt(t("localAiCheckNotPublished"), { models: unpublished.join(", ") }) }
+          : { ok: false, text: fmt(t("localAiCheckMissing"), { missing: missing.join(", ") }) };
+      } else if (stale.length) {
+        // The engine advertises an alias that no Ready row backs any more.
+        // Clients can call it and get a 404, so this is a failure even though
+        // every expected alias is present.
+        check = { ok: false, text: fmt(t("localAiCheckStale"), { models: stale.join(", ") }) };
+      } else {
+        check = { ok: true, text: fmt(t("localAiCheckOk"), { models: ready.join(", ") }) };
+      }
+      S.localAi.connectionCheck = check;
+      render();
+      if (check.ok) toast(t("done"));
+      else toast(check.text, true);
+    });
+  },
+
+  localAiApiCheck() {
+    return run("localAiApiCheck", async () => {
+      let catalogue;
+      try {
+        catalogue = await window.api.localAi.apiCatalogue();
+      } catch (error) {
+        catalogue = { models: [], verified: false, error: errorText(error) };
+      }
+      S.localAi.apiCatalogue = catalogue;
+      render();
+      if (catalogue.verified) toast(fmt(t("localAiLocalApiVerifiedToast"), { n: (catalogue.models || []).length }));
+      else toast(catalogue.error || t("localAiLocalApiUnverified"), true);
+    });
+  },
+
   modelsLoad() {
-    run("models", async () => {
+    return run("models", async () => {
+      // Connections can be opened without visiting the Local AI page first.
+      const [localModels, localRuntime, localCatalogue] = await Promise.all([
+        window.api.localAi.modelsList().catch(() => null),
+        window.api.localAi.runtimeStatus().catch(() => null),
+        window.api.localAi.apiCatalogue().catch(() => null),
+      ]);
+      if (localModels) S.localAi.models = localModels;
+      if (localRuntime) S.localAi.runtime = localRuntime;
+      if (localCatalogue) S.localAi.apiCatalogue = localCatalogue;
       let rawModels = [];
       try {
         rawModels = (await inv("gateway_models")) || [];
@@ -1272,15 +1966,51 @@ const A = {
 
   modelsSearch(value) {
     S.modelsQuery = value;
-    render();
-    setTimeout(() => {
-      const input = document.getElementById("models-search");
-      if (input) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-      }
-    }, 0);
+    const input = document.getElementById("models-search");
+    const list = document.getElementById("provider-model-list");
+    if (!list) {
+      searchClearSync(input, value);
+      render();
+      return;
+    }
+    // Repaint the rows and the count only: a full render() tore the focused
+    // input out from under the caret on every keystroke and needed a timeout
+    // to put it back.
+    list.innerHTML = providerModelRowsMarkup();
+    const count = document.getElementById("provider-models-count");
+    if (count) count.textContent = `${providerFilteredModels().length} ${t("modelsCount")}`;
+    searchClearSync(input, value);
   },
+
+  modelsClearSearch() {
+    S.modelsQuery = "";
+    const input = document.getElementById("models-search");
+    if (input) input.value = "";
+    A.modelsSearch("");
+    if (input) input.focus();
+  },
+
+  openrouterModelsSearch(value) {
+    S.openrouterModelsQuery = String(value || "");
+    const query = S.openrouterModelsQuery.trim().toLowerCase();
+    document.querySelectorAll("[data-openrouter-filter-row]").forEach((row) => {
+      row.hidden = (!!S.openrouterModelsFreeOnly && row.dataset.free !== "true") || !row.dataset.search.includes(query);
+    });
+    searchClearSync(document.getElementById("openrouter-models-search"), S.openrouterModelsQuery);
+  },
+
+  openrouterModelsClearSearch() {
+    const input = document.getElementById("openrouter-models-search");
+    if (input) input.value = "";
+    A.openrouterModelsSearch("");
+    if (input) input.focus();
+  },
+
+  openrouterModelsFreeToggle() {
+    S.openrouterModelsFreeOnly = !!document.getElementById("openrouter-models-free-only")?.checked;
+    A.openrouterModelsSearch(S.openrouterModelsQuery || "");
+  },
+
 
   // MARK: - Codex model pool
 
@@ -1309,6 +2039,7 @@ const A = {
     S.poolError = null;
     if (!S.pool) await A.poolLoad();
     render();
+    focusPoolSearch();
   },
 
   async poolOpenAccount(id) {
@@ -1323,19 +2054,48 @@ const A = {
       ? selected.slice()
       : ((S.pool && S.pool.models) || []).map((m) => m.slug);
     render();
+    focusPoolSearch();
   },
 
   poolClose() {
+    const modal = S.poolModal;
     S.poolModal = null;
     S.poolQuery = "";
     S.poolError = null;
     S.poolDraft = null;
-    render();
+    // Forced: Esc closes the dialog while focus is still inside its search
+    // field, and the edit guard would otherwise skip this render.
+    render(true);
+    // When the dialog was opened from account settings, that dialog is back on
+    // screen and must own focus, not the card behind it.
+    const settingsCard = S.accountSettings ? document.querySelector(".account-settings-card") : null;
+    const settingsField = settingsCard
+      ? settingsCard.querySelector("button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]")
+      : null;
+    if (settingsField) { settingsField.focus(); return; }
+    // Return focus to the control that opened the dialog instead of dropping it
+    // on <body>, which would restart Tab from the top of the page.
+    const accountId = modal && modal.mode === "account" ? modal.accountId : null;
+    const trigger = accountId
+      ? Array.from(document.querySelectorAll('[data-action="poolOpenAccount"]')).find((el) => el.dataset.id === accountId)
+      : null;
+    const target = trigger || document.querySelector('[data-action="poolOpen"]');
+    if (target) target.focus();
   },
 
   poolSearch(value) {
     S.poolQuery = value;
     poolModalRefresh();
+    searchClearSync(document.getElementById("pool-search"), value);
+  },
+
+  poolClearSearch() {
+    S.poolQuery = "";
+    const input = document.getElementById("pool-search");
+    if (input) input.value = "";
+    poolModalRefresh();
+    searchClearSync(input, "");
+    if (input) input.focus();
   },
 
   poolToggleGlobal(slug, enabled) {
@@ -1790,6 +2550,30 @@ const A = {
     });
   },
 
+  taskbarWidgetToggle(enabled) {
+    if (S.busy["taskbar-widget"]) return;
+    const previous = S.settings?.taskbarWidgetVisible === true;
+    // Keep sibling full-settings saves from sending the old widget value.
+    S.settings = { ...(S.settings || {}), taskbarWidgetVisible: enabled };
+    return run("taskbar-widget", async () => {
+      try {
+        S.settings = await inv("settings_set", { settings: { ...S.settings } });
+      } catch (error) {
+        S.settings = { ...S.settings, taskbarWidgetVisible: previous };
+        throw error;
+      }
+    }).finally(() => render(true));
+  },
+
+  islandAutoCollapse(seconds) {
+    if ([0, 5, 10, 15, 20].indexOf(seconds) < 0) return;
+    S.settings = { ...(S.settings || {}), islandAutoCollapseSeconds: seconds };
+    render();
+    run("island-timer", async () => {
+      S.settings = await inv("settings_set", { settings: { ...S.settings } });
+    });
+  },
+
   // Persisted per-card visibility. The optimistic update keeps the checkbox
   // responsive; a failed save surfaces as a toast.
   dashboardCardToggle(setting, enabled) {
@@ -1834,18 +2618,1124 @@ const A = {
       S.update = result;
       if (result.newer) {
         title.textContent = fmt(t("updateAvailable"), { v: result.version });
-        sub.textContent = `${(S.info && S.info.version) || ""} → ${result.version}`;
+        const installed = result.current || (S.info && S.info.version) || "";
+        sub.textContent = `${installed} → ${result.version}`;
         notes.textContent = result.notes || "";
         notes.style.display = "block";
         apply.style.display = "";
       } else {
-        title.textContent = fmt(t("updateUpToDate"), { v: result.version });
+        // The release feed can lag behind a pre-release build, so the "up to
+        // date" line names the installed version, never the published one.
+        const installed = result.current || (S.info && S.info.version) || result.version;
+        title.textContent = fmt(t("updateUpToDate"), { v: installed });
       }
       A.updateButton();
     } catch (error) {
       title.textContent = t("updateFailed");
       sub.textContent = String(error && error.message ? error.message : error);
     }
+  },
+
+  // MARK: - Local AI Actions
+
+  async localAiLoad() {
+    try {
+      const [hw, models, rt, dls, migration, install, registry, catalogue] = await Promise.all([
+        window.api.localAi.hardwareInfo().catch(() => null),
+        window.api.localAi.modelsList().catch(() => []),
+        window.api.localAi.runtimeStatus().catch(() => null),
+        window.api.localAi.downloadsList().catch(() => []),
+        window.api.localAi.migrationReport().catch(() => null),
+        window.api.localAi.runtimeInstallStatus().catch(() => null),
+        window.api.localAi.registryHealth().catch(() => null),
+        window.api.localAi.apiCatalogue().catch(() => null),
+      ]);
+      if (hw) S.localAi.hardware = hw;
+      if (models) S.localAi.models = models;
+      if (registry) S.localAi.registry = registry;
+      if (rt) S.localAi.runtime = rt;
+      if (catalogue) S.localAi.apiCatalogue = catalogue;
+      if (migration) S.localAi.migration = migration;
+      if (install) S.localAi.install = install;
+      if (dls) {
+        S.localAi.downloads = dls;
+        S.localAi.activeDownloadCount = dls.filter(isDownloadActive).length;
+      }
+      // The token never touches localStorage: the backend keeps it encrypted
+      // (DPAPI on Windows) and the UI only learns whether one is stored.
+      if (!S.localAi.hfToken) {
+        try {
+          const stored = await window.api.localAi.hfTokenStatus();
+          S.localAi.hfToken = stored ? "__stored__" : "";
+        } catch {}
+      }
+      render();
+    } catch (e) {
+      console.error("localAiLoad failed", e);
+    }
+  },
+
+  async localAiPoll() {
+    if (S.section !== "local_ai") return;
+    // A hung engine can make the status+metrics round trip outlast the 2 s
+    // interval. One in-flight poll keeps requests from stacking.
+    if (A._localAiPollBusy) return;
+    A._localAiPollBusy = true;
+    try {
+      const [rt, dls, install] = await Promise.all([
+        window.api.localAi.runtimeStatus().catch(() => null),
+        window.api.localAi.downloadsList().catch(() => null),
+        window.api.localAi.runtimeInstallStatus().catch(() => null),
+      ]);
+      let changed = false;
+      if (rt && JSON.stringify(rt) !== JSON.stringify(S.localAi.runtime)) {
+        const wasRunning = !!(S.localAi.runtime && S.localAi.runtime.isRunning);
+        S.localAi.runtime = rt;
+        // A fresh engine has a new router process, so the previous catalogue
+        // answer no longer describes it.
+        if (wasRunning !== !!rt.isRunning) S.localAi.apiCatalogue = null;
+        changed = true;
+      }
+      if (install && JSON.stringify(install) !== JSON.stringify(S.localAi.install)) {
+        S.localAi.install = install;
+        changed = true;
+      }
+      if (dls) {
+        const activeCount = dls.filter(isDownloadActive).length;
+        if (activeCount !== S.localAi.activeDownloadCount || JSON.stringify(dls) !== JSON.stringify(S.localAi.downloads)) {
+          // Transition-driven refresh: the model list is re-read exactly when
+          // the last active transfer finished, not on a guessed timer.
+          const hadActive = (S.localAi.downloads || []).some(isDownloadActive);
+          const hasActive = activeCount > 0;
+          if (hadActive && !hasActive) {
+            const models = await window.api.localAi.modelsList().catch(() => null);
+            if (models) S.localAi.models = models;
+          }
+          S.localAi.downloads = dls;
+          S.localAi.activeDownloadCount = activeCount;
+          changed = true;
+        }
+      }
+      // The direct-access card needs one answer per engine generation: the
+      // router list is stable while the process lives, and re-probing it on
+      // every poll would only add 401-free noise.
+      if (rt && rt.isRunning && S.localAi.tab === "runtime" && !S.localAi.apiCatalogue) {
+        const catalogue = await window.api.localAi.apiCatalogue().catch(() => null);
+        if (catalogue) {
+          S.localAi.apiCatalogue = catalogue;
+          changed = true;
+        }
+      }
+      // Metrics are loopback-only and unnecessary on other tabs: poll them
+      // only while the Runtime tab is visible and the engine is running.
+      if (rt && rt.isRunning && S.localAi.tab === "runtime") {
+        try {
+          const metrics = await window.api.localAi.runtimeMetrics();
+          if (JSON.stringify(metrics) !== JSON.stringify(S.localAi.metrics) || S.localAi.metricsError) {
+            S.localAi.metrics = metrics;
+            S.localAi.metricsError = null;
+            changed = true;
+          }
+        } catch (e) {
+          const message = errorText(e);
+          if (message !== S.localAi.metricsError) {
+            S.localAi.metricsError = message;
+            changed = true;
+          }
+        }
+      } else if (S.localAi.metrics || S.localAi.metricsError) {
+        S.localAi.metrics = null;
+        S.localAi.metricsError = null;
+        changed = true;
+      }
+      // The Console is the tail of the engine log. It is refreshed in place so
+      // that a full re-render cannot reset a reader's scroll position.
+      if (S.localAi.tab === "runtime") {
+        try {
+          const logs = await window.api.localAi.runtimeLogs(500);
+          const signature = JSON.stringify(logs);
+          if (signature !== S.localAi.logsSignature) {
+            S.localAi.logs = Array.isArray(logs) ? logs : [];
+            S.localAi.logsSignature = signature;
+            updateRuntimeLogBox();
+          }
+        } catch (e) {
+          // Keep the last good console when the engine log cannot be read.
+        }
+      }
+      if (changed) {
+        render();
+      }
+    } catch (e) {
+      // silent
+    } finally {
+      A._localAiPollBusy = false;
+    }
+  },
+
+  localAiTab(tab) {
+    S.localAi.tab = tab;
+    if (tab === "runtime") {
+      // Show the tail immediately instead of waiting up to a poll interval.
+      loadRuntimeLogs();
+    }
+    if (tab === "catalog" && !S.localAi.catalogSearched && !S.localAi.catalogLoading) {
+      render();
+      A.localAiHfSearch();
+    } else {
+      render();
+    }
+  },
+
+  // The search field must keep focus and caret while the list narrows, so only
+  // the result block is repainted instead of the whole board.
+  localAiSearch(query) {
+    S.localAi.searchQuery = query;
+    const input = document.getElementById("local-ai-search");
+    const list = document.getElementById("local-ai-model-list");
+    if (!list) {
+      searchClearSync(input, query);
+      render();
+      return;
+    }
+    list.innerHTML = localAiModelListMarkup();
+    searchClearSync(input, query);
+  },
+
+  localAiClearSearch() {
+    S.localAi.searchQuery = "";
+    const input = document.getElementById("local-ai-search");
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+    const list = document.getElementById("local-ai-model-list");
+    if (list) list.innerHTML = localAiModelListMarkup();
+    searchClearSync(input, "");
+  },
+
+  async localAiImport() {
+    try {
+      const selected = await inv("plugin:dialog|open", {
+        options: {
+          multiple: false,
+          directory: false,
+          filters: [{ name: "GGUF Model", extensions: ["gguf"] }],
+        },
+      });
+      const filePath = Array.isArray(selected) ? selected[0] : selected;
+      if (!filePath) return;
+      toast(t("loading"));
+      await window.api.localAi.importFile(filePath);
+      const models = await window.api.localAi.modelsList();
+      S.localAi.models = models;
+      toast(t("localAiImportSuccess"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiStart(id) {
+    if (!id) return;
+    // The Mac build starts with a bundled engine. On Windows the first start
+    // downloads it, so show the download instead of a frozen "Starting..." —
+    // the install card on the Runtime tab reads the same status object.
+    const hasEngine = Boolean(S.localAi.runtime && S.localAi.runtime.binaryPath);
+    let installPoll = null;
+    try {
+      if (hasEngine) {
+        toast(t("localAiStarting"));
+      } else {
+        toast(t("localAiEngineInstalling"));
+        installPoll = setInterval(async () => {
+          const status = await window.api.localAi.runtimeInstallStatus().catch(() => null);
+          if (!status) return;
+          S.localAi.install = status;
+          if (S.section === "local_ai") render();
+        }, 1500);
+      }
+      await window.api.localAi.startModel(id);
+      const rt = await window.api.localAi.runtimeStatus();
+      S.localAi.runtime = rt;
+      render();
+      // The Models page and Connections read the public catalogue, which the
+      // gateway rewrites asynchronously after this transition.
+      await A.modelsLoad();
+      toast(t("localAiStarted"));
+    } catch (e) {
+      toast(localAiStartErrorText(e), true);
+      const rt = await window.api.localAi.runtimeStatus().catch(() => null);
+      if (rt) S.localAi.runtime = rt;
+      render();
+    } finally {
+      if (installPoll) clearInterval(installPoll);
+    }
+  },
+
+  async localAiStop() {
+    try {
+      await window.api.localAi.stopRuntime();
+      const rt = await window.api.localAi.runtimeStatus();
+      S.localAi.runtime = rt;
+      S.localAi.metrics = null;
+      S.localAi.metricsError = null;
+      render();
+      await A.modelsLoad();
+      toast(t("localAiStopped"));
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiRuntimeCatalogOpen() {
+    S.localAi.runtimeCatalogOpen = true;
+    if (S.localAi.runtimeCatalog) {
+      render();
+      return;
+    }
+    await A.localAiRuntimeCatalogLoad();
+  },
+
+  async localAiRuntimeCatalogLoad() {
+    if (S.localAi.runtimeCatalogLoading) return;
+    S.localAi.runtimeCatalogLoading = true;
+    S.localAi.runtimeCatalogError = null;
+    render();
+    try {
+      const releases = await window.api.localAi.runtimeCatalog();
+      S.localAi.runtimeCatalog = Array.isArray(releases) ? releases : [];
+    } catch (e) {
+      S.localAi.runtimeCatalogError = errorText(e);
+    } finally {
+      S.localAi.runtimeCatalogLoading = false;
+      render();
+    }
+  },
+
+  async localAiRuntimeCatalogRefresh() {
+    await A.localAiRuntimeCatalogLoad();
+  },
+
+  localAiRuntimeCatalogClose() {
+    S.localAi.runtimeCatalogOpen = false;
+    render();
+  },
+
+  /// Picks a release asset and starts the existing installer. The catalog
+  /// modal closes so the Runtime card owns the single progress display.
+  async localAiRuntimeCatalogInstall(tag, variantId) {
+    const release = (S.localAi.runtimeCatalog || []).find((item) => item.tag === tag);
+    const variant = release && (release.variants || []).find((item) => item.id === variantId);
+    if (!variant) {
+      toast(t("localAiRuntimeCatalogError"), true);
+      return;
+    }
+    const install = S.localAi.install || {};
+    if (["downloading", "verifying", "extracting", "validating", "publishing"].includes(install.stage)) {
+      toast(t("localAiRuntimeCatalogInstalling"), true);
+      return;
+    }
+    try {
+      await window.api.localAi.runtimeInstall(variant.url, variant.sha256);
+      const status = await window.api.localAi.runtimeInstallStatus().catch(() => null);
+      if (status) S.localAi.install = status;
+      S.localAi.runtimeCatalogOpen = false;
+      toast(fmt(t("localAiRuntimeCatalogStarted"), {
+        tag: release.tag,
+        variant: localAiRuntimeVariantLabel(variant),
+      }));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiInstallRuntime() {
+    const urlInput = document.getElementById("local-ai-runtime-url");
+    const shaInput = document.getElementById("local-ai-runtime-sha");
+    const url = urlInput ? urlInput.value.trim() : "";
+    const sha256 = shaInput ? shaInput.value.trim() : "";
+    if (!url || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
+      toast(t("localAiRuntimeInstallInvalid"), true);
+      return;
+    }
+    try {
+      await window.api.localAi.runtimeInstall(url, sha256);
+      const install = await window.api.localAi.runtimeInstallStatus().catch(() => null);
+      if (install) S.localAi.install = install;
+      toast(t("localAiRuntimeInstallStarted"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiCancelRuntimeInstall() {
+    try {
+      await window.api.localAi.runtimeInstallCancel();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  /// The archive is never executed during install. Selecting the validated
+  /// binary is an explicit user action and only possible with the engine
+  /// stopped, so a running model cannot switch under an active request.
+  async localAiUseInstalledRuntime() {
+    const install = S.localAi.install;
+    const rt = S.localAi.runtime;
+    if (!install || !install.binaryPath) return;
+    if (rt && rt.isRunning) {
+      toast(t("localAiRuntimeStopFirst"), true);
+      return;
+    }
+    try {
+      await window.api.localAi.setBinaryPath(install.binaryPath);
+      if (S.localAi.hardware) S.localAi.hardware.binaryPath = install.binaryPath;
+      const status = await window.api.localAi.runtimeStatus().catch(() => null);
+      if (status) S.localAi.runtime = status;
+      toast(t("saved"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiStartRuntime() {
+    const models = S.localAi.models || [];
+    if (models.length === 0) {
+      toast(t("localAiNoModels"), true);
+      return;
+    }
+    await A.localAiStart(models[0].id);
+  },
+
+  async localAiStopRuntime() {
+    await A.localAiStop();
+  },
+
+  async localAiRestartRuntime() {
+    const cur = S.localAi.runtime && S.localAi.runtime.currentModel;
+    if (!cur) return;
+    await A.localAiStop();
+    await A.localAiStart(cur.id);
+  },
+
+  /// Copies the exact value a client must send as `model`.
+  async localAiCopyId(id) {
+    try {
+      await navigator.clipboard.writeText(id);
+      toast(t("localAiCopied"));
+    } catch {
+      toast(t("localAiCopyFailed"), true);
+    }
+  },
+
+  async localAiOpenFolder(id) {
+    let dir = (S.localAi.hardware && S.localAi.hardware.modelsDir) || "";
+    if (id) {
+      const m = (S.localAi.models || []).find((x) => x.id === id);
+      if (m && m.filePath) {
+        dir = m.filePath;
+      }
+    }
+    if (dir) {
+      try {
+        await inv("open_url", { url: dir });
+      } catch (e) {
+        toast(dir);
+      }
+    }
+  },
+
+  async localAiDelete(id) {
+    if (!id) return;
+    const m = (S.localAi.models || []).find((x) => x.id === id);
+    const name = m ? (m.displayName || m.name || m.id) : id;
+    if (!confirm(fmt(t("localAiDeleteConfirm"), { name }))) return;
+    try {
+      await window.api.localAi.deleteModel(id);
+      S.localAi.models = (S.localAi.models || []).filter((x) => x.id !== id);
+      const rt = await window.api.localAi.runtimeStatus().catch(() => null);
+      if (rt) S.localAi.runtime = rt;
+      render();
+      toast(t("localAiDeleted"));
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiSettingsModal(id) {
+    if (S.localAi.savingSettings) return;
+    const model = (S.localAi.models || []).find((m) => m.id === id);
+    if (!model) return;
+    S.localAi.estimateGeneration = (S.localAi.estimateGeneration || 0) + 1;
+    S.localAi.editingModel = JSON.parse(JSON.stringify(model));
+    S.localAi.estimate = null;
+    S.localAi.estimateError = null;
+    render();
+    // The backend reads the real layer/head geometry from the installed GGUF
+    // header; a hard-coded `totalLayers: 32` used to distort the KV estimate
+    // for every model that is not a 32-layer 4096-hidden llama.
+    A.localAiRefreshEstimate();
+  },
+
+  localAiSettingsClose() {
+    if (S.localAi.savingSettings) return;
+    S.localAi.estimateGeneration = (S.localAi.estimateGeneration || 0) + 1;
+    if (A._localAiEstimateTimer) {
+      clearTimeout(A._localAiEstimateTimer);
+      A._localAiEstimateTimer = null;
+    }
+    S.localAi.editingModel = null;
+    S.localAi.estimate = null;
+    S.localAi.estimateError = null;
+    S.localAi.estimating = false;
+    render();
+  },
+
+  localAiSystemPromptInput(value) {
+    if (!S.localAi.editingModel) return;
+    if (!S.localAi.editingModel.userSettings) S.localAi.editingModel.userSettings = {};
+    // Kept in state so a re-render (profile change, memory estimate) does not
+    // drop what the user typed but has not saved yet.
+    S.localAi.editingModel.userSettings.systemPrompt = value;
+  },
+
+  localAiProfileChange(profile) {
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    if (!m.userSettings) m.userSettings = {};
+    const s = m.userSettings;
+    const preset = LOCAL_AI_PROFILE_PRESETS[profile];
+    // `custom` means "keep the numbers I typed", so it only relabels them.
+    s.profile = preset ? profile : "custom";
+    if (preset) Object.assign(s, preset);
+    // The select still owns the focus here, and the status-poll guard skips a
+    // normal render while a form field is focused — the four inputs would keep
+    // the previous preset next to a select that already shows the new one.
+    // A repaint rebuilds the dialog, so its scroll offset would jump back to
+    // the top — the chips sit above a long form.
+    const card = document.getElementById("local-ai-settings-card");
+    const scrollTop = card ? card.scrollTop : 0;
+    render(true);
+    const nextCard = document.getElementById("local-ai-settings-card");
+    if (nextCard) nextCard.scrollTop = scrollTop;
+    const summary = document.querySelector('details[data-sync="local-ai-setting-profile"] > summary');
+    if (summary) summary.focus();
+    A.localAiRefreshEstimate();
+  },
+
+  /// Keeps a `<details>` picker, its hidden value holder and the rows in sync.
+  localAiSyncSelect(id, value) {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+    const box = document.querySelector(`details[data-sync="${id}"]`);
+    if (!box) return;
+    const buttons = [...box.querySelectorAll(".hf-select-panel [data-action]")];
+    const picked = buttons.find((button) => button.value === value);
+    const label = box.querySelector("[data-selected-label]");
+    if (label && picked) label.textContent = picked.textContent.trim();
+    buttons.forEach((button) => button.classList.toggle("selected", button.value === value));
+  },
+
+  /// KV cache picked from the custom dropdown: the estimate reads the hidden
+  /// value holder, so storing it there keeps every reader unchanged.
+  localAiKvPick(value) {
+    A.localAiSyncSelect("local-ai-setting-kv-cache", value);
+    A.localAiEstimateInput();
+  },
+
+  /// Context/KV edits change the memory figure, so they re-estimate without a
+  /// full repaint (that would drop the caret in the field being typed into).
+  localAiEstimateInput() {
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    if (!m.userSettings) m.userSettings = {};
+    const s = m.userSettings;
+    const read = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value : null;
+    };
+    const context = Number(read("local-ai-setting-context"));
+    if (Number.isFinite(context) && context > 0) s.contextLength = context;
+    const kv = read("local-ai-setting-kv-cache");
+    if (kv) s.kvCacheType = kv;
+    const layers = read("local-ai-setting-gpu-layers");
+    if (layers !== null && Number.isFinite(Number(layers)) && Number(layers) >= 0) s.gpuOffloadLayers = Number(layers);
+    const flash = document.getElementById("local-ai-setting-flash-attn");
+    if (flash) s.flashAttention = !!flash.checked;
+    // A hand-edited number no longer belongs to the preset it came from.
+    s.profile = localAiProfileForSettings(s, s.profile);
+    A.localAiSyncSelect("local-ai-setting-profile", s.profile);
+    A.localAiRefreshEstimate();
+  },
+
+  /// Asks the backend for a fresh estimate and repaints only the memory card.
+  /// Debounced because a number input fires on every keystroke and the estimate
+  /// walks the installed model's GGUF header.
+  localAiRefreshEstimate() {
+    // Invalidate at input/debounce scheduling time, not when IPC starts: an
+    // older response must not repaint during the next input's debounce window.
+    const generation = (S.localAi.estimateGeneration || 0) + 1;
+    S.localAi.estimateGeneration = generation;
+    const m = S.localAi.editingModel;
+    if (!m) return;
+    const isCurrent = () => S.localAi.estimateGeneration === generation
+      && S.localAi.editingModel === m;
+    if (A._localAiEstimateTimer) clearTimeout(A._localAiEstimateTimer);
+    S.localAi.estimating = true;
+    paintLocalAiEstimate();
+    A._localAiEstimateTimer = setTimeout(async () => {
+      if (!isCurrent()) return;
+      A._localAiEstimateTimer = null;
+      const s = m.userSettings || {};
+      const positive = (value, fallback) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n > 0 ? n : fallback;
+      };
+      try {
+        const est = await window.api.localAi.estimateMemory({
+          weightsSize: Math.max(0, Number(m.fileSize) || 0),
+          contextLength: Math.round(positive(s.contextLength, 8192)),
+          kvCacheType: s.kvCacheType || "f16",
+          batchSize: Math.round(positive(s.batchSize, 512)),
+          modelId: m.id,
+          gpuOffloadLayers: s.gpuOffloadLayers == null ? null : Number(s.gpuOffloadLayers),
+          flashAttention: s.flashAttention !== false,
+        });
+        // Includes newer settings and close/reopen of the same model id.
+        if (!isCurrent()) return;
+        S.localAi.estimate = est;
+        S.localAi.estimateError = null;
+      } catch (error) {
+        // Stale errors must not replace the newest result either.
+        if (isCurrent()) {
+          S.localAi.estimateError = errorText(error);
+        }
+      } finally {
+        if (isCurrent()) {
+          S.localAi.estimating = false;
+          paintLocalAiEstimate();
+        }
+      }
+    }, 180);
+  },
+
+  async localAiSettingsSave() {
+    const m = S.localAi.editingModel;
+    if (!m || S.localAi.savingSettings) return;
+    // The backend owns save + conditional restart, using the live runtime
+    // state rather than a potentially stale poll from this dialog.
+    S.localAi.savingSettings = true;
+    const saveButton = document.querySelector('[data-action="localAiSettingsSave"]');
+    if (saveButton) saveButton.disabled = true;
+    const value = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value : null;
+    };
+    const checked = (id) => {
+      const el = document.getElementById(id);
+      return el ? !!el.checked : null;
+    };
+    const stored = m.userSettings || {};
+
+    // A patch, not a full object: fields without an input (top-k, repeat
+    // penalty, batch size, …) keep their stored value instead of being reset
+    // to constants. `numberOrNull` keeps a deliberate 0.
+    const settings = {
+      profile: value("local-ai-setting-profile") || stored.profile || "auto",
+      contextLength: numberOrNull(value("local-ai-setting-context")),
+      maxOutputTokens: numberOrNull(value("local-ai-setting-max-tokens")),
+      gpuOffloadLayers: numberOrNull(value("local-ai-setting-gpu-layers")),
+      cpuThreads: numberOrNull(value("local-ai-setting-threads")),
+      kvCacheType: value("local-ai-setting-kv-cache") || stored.kvCacheType || "f16",
+      flashAttention: checked("local-ai-setting-flash-attn"),
+      temperature: numberOrNull(value("local-ai-setting-temp")),
+      topP: numberOrNull(value("local-ai-setting-topp")),
+    };
+    const seed = numberOrNull(value("local-ai-setting-seed"));
+    if (seed != null) settings.seed = Math.trunc(seed);
+    const reasoning = checked("local-ai-setting-reasoning");
+    if (reasoning != null) settings.reasoningEnabled = reasoning;
+    // Sent even when empty: an empty field means "use the model's own
+    // template", which clears a previously saved override.
+    const templateEl = document.getElementById("local-ai-setting-chat-template");
+    if (templateEl) settings.chatTemplate = templateEl.value.trim();
+    // Same for the prompt: an empty field clears it so the relay stops adding
+    // one to that model's requests.
+    const promptEl = document.getElementById("local-ai-setting-system-prompt");
+    if (promptEl) settings.systemPrompt = promptEl.value.trim();
+
+    // Missing inputs are `null`, which means "not edited" — not "zero".
+    Object.keys(settings).forEach((key) => {
+      if (settings[key] === null) delete settings[key];
+    });
+
+    // The select can lag behind the numbers (a preset was applied, then one
+    // field was corrected). Re-derive the profile from what is actually being
+    // saved, but keep an explicit `custom`: that is a deliberate choice.
+    if (settings.profile !== "custom") {
+      settings.profile = localAiProfileForSettings({
+        contextLength: settings.contextLength != null ? settings.contextLength : stored.contextLength,
+        gpuOffloadLayers: settings.gpuOffloadLayers != null ? settings.gpuOffloadLayers : stored.gpuOffloadLayers,
+        kvCacheType: settings.kvCacheType,
+        flashAttention: settings.flashAttention,
+      }, settings.profile);
+    }
+
+    try {
+      const updated = await window.api.localAi.saveSettings(m.id, settings);
+      const idx = (S.localAi.models || []).findIndex((x) => x.id === m.id);
+      if (idx !== -1) {
+        S.localAi.models[idx] = updated;
+      }
+      const [models, rt] = await Promise.all([
+        window.api.localAi.modelsList().catch(() => null),
+        window.api.localAi.runtimeStatus().catch(() => null),
+      ]);
+      if (models) S.localAi.models = models;
+      if (rt) S.localAi.runtime = rt;
+      if (A._localAiEstimateTimer) {
+        clearTimeout(A._localAiEstimateTimer);
+        A._localAiEstimateTimer = null;
+      }
+      S.localAi.editingModel = null;
+      S.localAi.estimate = null;
+      S.localAi.estimateError = null;
+      S.localAi.estimating = false;
+      // Close only after both persistence and the conditional restart succeed.
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    } finally {
+      S.localAi.savingSettings = false;
+      if (saveButton) saveButton.disabled = false;
+    }
+  },
+
+  /// Explicit recovery from a damaged `models.json`: the backend keeps a copy
+  /// and only then starts an empty registry.
+  async localAiRegistryRecover() {
+    try {
+      S.localAi.registry = await window.api.localAi.registryRecover();
+      const models = await window.api.localAi.modelsList().catch(() => null);
+      if (models) S.localAi.models = models;
+      toast(t("localAiRegistryRecovered"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  localAiTestModal(id) {
+    A.localAiTestStop();
+    const model = (S.localAi.models || []).find((item) => item.id === id);
+    S.localAi.testModal = {
+      modelId: id, modelName: model ? (model.displayName || model.name || id) : id,
+      prompt: "Why is the sky blue? Answer in 2 sentences.", response: "", rawResponse: "",
+      stats: localAiTestStats(), generating: false, mode: "engine", toolProbe: null,
+    };
+    render();
+  },
+
+  localAiTestClose() {
+    A.localAiTestStop();
+    S.localAi.testModal = null;
+    render();
+  },
+
+  localAiTestStop() {
+    const tm = S.localAi.testModal;
+    if (tm && tm.controller) tm.controller.abort();
+    // Keep the run owned until its finally block completes; a second start
+    // must not race an IPC model launch that cannot be aborted by fetch.
+  },
+
+  localAiTestCancel() {
+    A.localAiTestStop();
+    render();
+  },
+
+  localAiTestMode(mode) {
+    const tm = S.localAi.testModal;
+    if (tm && !tm.generating) { tm.mode = mode; render(); }
+  },
+
+  localAiTestPromptInput(value) {
+    if (S.localAi.testModal) S.localAi.testModal.prompt = value;
+  },
+
+  localAiTestSend() { return A.localAiTestRun(false); },
+  localAiTestTool() { return A.localAiTestRun(true); },
+
+  async localAiTestRun(tools) {
+    const tm = S.localAi.testModal;
+    if (!tm || tm.generating) return;
+    const input = document.getElementById("local-ai-test-prompt-input");
+    tm.prompt = input ? input.value : tm.prompt;
+    if (!tools && !tm.prompt.trim()) return;
+    const rt = S.localAi.runtime || {};
+    if ((rt.isRunning || rt.isStarting) && (rt.modelId || rt.startingModelId) !== tm.modelId) {
+      if (!confirm(t("localAiSwitchTestConfirm"))) return;
+    }
+    const controller = new AbortController();
+    tm.controller = controller;
+    tm.generating = true;
+    tm.response = ""; tm.rawResponse = ""; tm.error = null;
+    tm.hadReasoning = false; tm.truncated = false; tm.toolProbe = null;
+    tm.stats = localAiTestStats();
+    const startedAt = performance.now();
+    let lastPaint = 0;
+    const paint = () => {
+      if (S.localAi.testModal !== tm) return;
+      tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+      const box = document.getElementById("local-ai-test-response");
+      if (box) {
+        const follow = box.scrollHeight - box.scrollTop - box.clientHeight <= 32;
+        box.innerHTML = tm.response ? renderMarkdown(tm.response) : `<span class="muted">${esc(t("localAiWaitingFirstToken"))}</span>`;
+        if (follow) box.scrollTop = box.scrollHeight;
+      }
+      const metrics = document.getElementById("local-ai-test-metrics");
+      if (metrics) metrics.innerHTML = localAiTestMetricsMarkup(tm);
+    };
+    const ticker = setInterval(paint, 200);
+    render();
+    try {
+      if (!rt.isRunning || (rt.modelId || (rt.currentModel && rt.currentModel.id)) !== tm.modelId) {
+        await window.api.localAi.startModel(tm.modelId);
+      }
+      if (controller.signal.aborted) return;
+      S.localAi.runtime = await window.api.localAi.runtimeStatus();
+      if (controller.signal.aborted) return;
+      const model = (S.localAi.models || []).find((item) => item.id === tm.modelId);
+      const body = {
+        model: tm.modelId,
+        messages: [{ role: "user", content: tools ? "What is the weather in Paris? Use the get_weather tool." : tm.prompt.trim() }],
+        stream: !tools, max_tokens: 1536,
+        temperature: model && model.userSettings ? model.userSettings.temperature : 0.7,
+      };
+      if (tools) {
+        body.tools = [{ type: "function", function: { name: "get_weather",
+          description: "Get the current weather for a city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] } } }];
+        body.tool_choice = "auto";
+      } else body.stream_options = { include_usage: true };
+      const result = await window.api.localAi.testRequest({
+        runtime: S.localAi.runtime, settings: S.settings || {}, gateway: tm.mode === "gateway",
+        body, signal: controller.signal,
+        onChunk: (chunk) => {
+          localAiTestNote(tm, chunk, startedAt);
+          if (performance.now() - lastPaint > 80) { paint(); lastPaint = performance.now(); }
+        },
+      });
+      if (tools) {
+        localAiTestNote(tm, result, startedAt);
+        const call = result.choices && result.choices[0] && result.choices[0].message
+          && result.choices[0].message.tool_calls && result.choices[0].message.tool_calls[0];
+        const fn = call && call.type === "function" && call.function;
+        let args;
+        try { args = fn && JSON.parse(fn.arguments); } catch (_) {}
+        tm.toolProbe = fn && fn.name === "get_weather" && args && typeof args.city === "string" && args.city.trim()
+          ? { ok: true, name: fn.name, arguments: fn.arguments }
+          : { ok: false };
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) tm.error = localAiStartErrorText(error);
+    } finally {
+      clearInterval(ticker);
+      tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+      if (tm.controller === controller) { tm.generating = false; tm.controller = null; }
+      if (S.localAi.testModal === tm) render();
+    }
+  },
+
+  localAiHfSearchInput(val) {
+    S.localAi.catalogQuery = val;
+    // Invalidate immediately, not after debounce: stale responses never select
+    // a repository while the user is already typing the next query.
+    S.localAi.catalogGeneration = (S.localAi.catalogGeneration || 0) + 1;
+    S.localAi.catalogHasMore = false;
+    const more = document.querySelector(".hf-more");
+    if (more) more.disabled = true;
+    clearTimeout(A._hfDebounce);
+    searchClearSync(document.getElementById("hf-search"), val);
+    A._hfDebounce = setTimeout(() => A.localAiHfSearch(), 350);
+  },
+
+  localAiHfClear() {
+    clearTimeout(A._hfDebounce);
+    S.localAi.catalogQuery = "";
+    const input = document.getElementById("hf-search");
+    if (input) { input.value = ""; input.focus(); }
+    searchClearSync(input, "");
+    A.localAiHfSearch();
+  },
+
+  async localAiHfSearch(loadMore = false) {
+    const state = S.localAi;
+    const query = (state.catalogQuery || "").trim(), sort = state.catalogSort || "trendingScore";
+    if (loadMore && (state.catalogResultQuery !== query || state.catalogResultSort !== sort)) return;
+    clearTimeout(A._hfDebounce);
+    const generation = state.catalogGeneration = (state.catalogGeneration || 0) + 1;
+    const offset = loadMore ? (state.catalogNextOffset || 0) : 0;
+    state.catalogError = null;
+    state.catalogLoading = !loadMore;
+    state.catalogLoadingMore = loadMore;
+    if (!loadMore) {
+      state.catalogResults = [];
+      state.selectedRepoId = null;
+      state.repoDetails = null;
+      state.repoDetailsLoading = false;
+      state.repoDetailsError = null;
+    }
+    hfRefreshCatalog();
+    try {
+      const repositoryID = !loadMore && hfRepositoryID(query);
+      if (repositoryID) {
+        if (generation !== state.catalogGeneration) return;
+        state.catalogResults = [{ id: repositoryID, author: repositoryID.split("/")[0] }];
+        state.catalogSearched = true;
+        state.catalogHasMore = false;
+        A.localAiSelectRepo(repositoryID);
+        return;
+      }
+      const results = await window.api.localAi.hfSearch(query, 30, hfTokenArg(), sort, offset);
+      if (generation !== state.catalogGeneration) return;
+      const rows = results || [];
+      state.catalogResults = loadMore ? [...state.catalogResults, ...rows.filter(row => !state.catalogResults.some(old => old.id === row.id))] : rows;
+      state.catalogSearched = true;
+      state.catalogHasMore = rows.length === 30;
+      state.catalogResultQuery = query;
+      state.catalogResultSort = sort;
+      state.catalogNextOffset = offset + rows.length;
+    } catch (error) {
+      if (generation !== state.catalogGeneration) return;
+      state.catalogError = errorText(error);
+    } finally {
+      if (generation === state.catalogGeneration) {
+        state.catalogLoading = false;
+        state.catalogLoadingMore = false;
+        hfRefreshCatalog();
+      }
+    }
+  },
+
+  localAiHfMore() {
+    const state = S.localAi;
+    if (state.catalogHasMore && !state.catalogLoadingMore && !state.catalogLoading
+        && state.catalogResultQuery === (state.catalogQuery || "").trim()
+        && state.catalogResultSort === (state.catalogSort || "trendingScore")) A.localAiHfSearch(true);
+  },
+
+  localAiHfSort(sort) {
+    S.localAi.catalogSort = sort;
+    A.localAiHfSearch();
+  },
+
+  localAiHfCompatible() {
+    S.localAi.hfCompatibleOnly = !S.localAi.hfCompatibleOnly;
+    hfRefreshCatalog();
+  },
+
+  localAiHfVariant(filename) {
+    S.localAi.hfSelectedFile = filename;
+    hfRefreshCatalog();
+  },
+
+  localAiHfPreset(query) {
+    S.localAi.catalogQuery = query;
+    A.localAiHfSearch();
+  },
+
+  async localAiSelectRepo(repoId) {
+    const state = S.localAi;
+    const generation = state.repoDetailsGeneration = (state.repoDetailsGeneration || 0) + 1;
+    state.selectedRepoId = repoId;
+    state.hfSelectedFile = null;
+    state.repoDetailsLoading = true;
+    state.repoDetails = null;
+    state.repoDetailsError = null;
+    hfRefreshCatalog();
+    const detail = document.getElementById("hf-detail");
+    if (detail) detail.scrollTop = 0;
+    try {
+      const details = await window.api.localAi.hfModelDetails(repoId, hfTokenArg());
+      if (state.selectedRepoId !== repoId || generation !== state.repoDetailsGeneration) return;
+      state.repoDetails = details;
+    } catch (error) {
+      if (state.selectedRepoId !== repoId || generation !== state.repoDetailsGeneration) return;
+      state.repoDetailsError = errorText(error);
+    } finally {
+      if (state.selectedRepoId === repoId && generation === state.repoDetailsGeneration) {
+        state.repoDetailsLoading = false;
+        hfRefreshCatalog();
+      }
+    }
+  },
+
+  async localAiDownloadQuant(repoId, filename, size, sha256, downloadUrl) {
+    if (!repoId || !filename) return;
+    // The backend already built (and percent-encoded) the resolve URL; only
+    // fall back to a local one when an older payload has no `downloadUrl`.
+    const url = downloadUrl || `https://huggingface.co/${repoId}/resolve/main/${filename}`;
+    const quantMatch = filename.match(/(Q\d+_[A-Z0-9_]+|F16|F32|IQ\d+_[A-Z0-9_]+)/i);
+    const quantization = quantMatch ? quantMatch[1].toUpperCase() : "GGUF";
+
+    try {
+      toast(t("localAiDownloadStarting"));
+      await window.api.localAi.downloadStart({
+        repoId,
+        filename,
+        downloadUrl: url,
+        quantization,
+        token: hfTokenArg(),
+        sha256: sha256 || null,
+      });
+      toast(t("localAiDownloadStarted"));
+      S.localAi.tab = "downloads";
+      const dls = await window.api.localAi.downloadsList().catch(() => []);
+      S.localAi.downloads = dls;
+      S.localAi.activeDownloadCount = dls.filter(isDownloadActive).length;
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiCancelDownload(modelId) {
+    if (!modelId) return;
+    try {
+      await window.api.localAi.downloadCancel(modelId);
+      const dls = await window.api.localAi.downloadsList().catch(() => []);
+      S.localAi.downloads = dls;
+      S.localAi.activeDownloadCount = dls.filter(isDownloadActive).length;
+      render();
+      toast(t("localAiDownloadCancelled"));
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  /// Removes finished transfers in the backend, then re-reads the list. Only
+  /// filtering the local array made the rows reappear on the next poll.
+  async localAiClearDownloads() {
+    try {
+      await window.api.localAi.downloadsClear();
+    } catch (e) {
+      toast(errorText(e), true);
+      return;
+    }
+    const dls = await window.api.localAi.downloadsList().catch(() => []);
+    S.localAi.downloads = dls;
+    S.localAi.activeDownloadCount = dls.filter(isDownloadActive).length;
+    render();
+  },
+
+  // The backend owns the models directory location, so the honest action is to
+  // open it instead of offering a picker that could not move the files.
+  async localAiOpenModelsFolder() {
+    const dir = (S.localAi.hardware && S.localAi.hardware.modelsDir) || "";
+    if (!dir) {
+      toast(t("localAiUnknown"), true);
+      return;
+    }
+    try {
+      await inv("open_url", { url: dir });
+    } catch (e) {
+      toast(dir);
+    }
+  },
+
+  async localAiPickBinary() {
+    try {
+      const selected = await inv("plugin:dialog|open", {
+        options: {
+          directory: false,
+          multiple: false,
+          filters: [{ name: "Executable", extensions: ["exe", ""] }],
+        },
+      });
+      const binPath = Array.isArray(selected) ? selected[0] : selected;
+      if (!binPath) return;
+      const input = document.getElementById("local-ai-bin-path");
+      if (input) input.value = binPath;
+      await A.localAiSaveBinary();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiSaveBinary() {
+    const input = document.getElementById("local-ai-bin-path");
+    const path = input ? input.value.trim() : "";
+    try {
+      await window.api.localAi.setBinaryPath(path || null);
+      if (S.localAi.hardware) S.localAi.hardware.binaryPath = path;
+      toast(t("saved"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  async localAiSaveHfToken() {
+    const input = document.getElementById("local-ai-hf-token");
+    const token = input ? input.value.trim() : "";
+    try {
+      await window.api.localAi.hfTokenSet(token);
+      S.localAi.hfToken = token ? "__stored__" : "";
+      toast(t("saved"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  localAiHfTokenModal() {
+    S.localAi.showHfTokenModal = true;
+    render();
+  },
+
+  localAiHfTokenModalClose() {
+    S.localAi.showHfTokenModal = false;
+    render();
+  },
+
+  async localAiHfTokenModalSave() {
+    const input = document.getElementById("modal-hf-token-input");
+    const token = input ? input.value.trim() : "";
+    try {
+      await window.api.localAi.hfTokenSet(token);
+      S.localAi.hfToken = token ? "__stored__" : "";
+      S.localAi.showHfTokenModal = false;
+      render();
+      toast(t("saved"));
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  localAiCopyLogs() {
+    const logs = (S.localAi.logs || []).join("\n");
+    if (typeof A.copy === "function") {
+      A.copy(logs);
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(logs).then(() => toast(t("copied")));
+    }
+  },
+
+  async localAiClearLogs() {
+    try {
+      await window.api.localAi.clearRuntimeLogs();
+    } catch (e) {
+      toast(errorText(e), true);
+      return;
+    }
+    S.localAi.logs = [];
+    S.localAi.logsSignature = "[]";
+    updateRuntimeLogBox();
   },
 
   updateClose() {

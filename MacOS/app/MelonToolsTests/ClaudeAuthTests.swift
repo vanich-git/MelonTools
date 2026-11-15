@@ -149,6 +149,46 @@ final class ClaudeAuthTests: XCTestCase {
         XCTAssertEqual(json["disabled"] as? Bool, true)
     }
 
+    func testSyncAccountsKeepsEngineRotatedTokens() throws {
+        let dir = try makeTempDir()
+        var tokens = CodexTokens(id_token: "id-old", access_token: "access-old")
+        tokens.refresh_token = "refresh-old"
+        var account = CodexAccount(tokens: tokens)
+        account.email = "rotate@example.com"
+        account.lastRefresh = "2026-10-01T00:00:00Z"
+
+        try CodexGatewayService.syncAccounts([account], priorities: [:], authDir: dir)
+
+        let name = CodexGatewayService.authFileName(for: account)
+        let url = dir.appendingPathComponent(name)
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json["access_token"] = "access-new"
+        json["refresh_token"] = "refresh-new"
+        json["last_refresh"] = "2026-11-04T12:00:00Z"
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        // The vault still holds the pre-rotation pair; the sync must not put it
+        // back over the engine's newer credentials.
+        try CodexGatewayService.syncAccounts([account], priorities: [:], authDir: dir)
+
+        let merged = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(merged["access_token"] as? String, "access-new")
+        XCTAssertEqual(merged["refresh_token"] as? String, "refresh-new")
+        XCTAssertEqual(merged["last_refresh"] as? String, "2026-11-04T12:00:00Z")
+
+        let adopted = try XCTUnwrap(CodexGatewayService.tokensFromAuthFile(for: account, authDir: dir))
+        XCTAssertEqual(adopted.tokens.access_token, "access-new")
+        XCTAssertEqual(adopted.tokens.refresh_token, "refresh-new")
+        XCTAssertEqual(adopted.lastRefresh, "2026-11-04T12:00:00Z")
+    }
+
+    func testRefreshTokenReuseIsDetected() {
+        let reused = Data(#"{"error":{"code":"refresh_token_reused"}}"#.utf8)
+        let other = Data(#"{"error":{"code":"invalid_grant"}}"#.utf8)
+        XCTAssertTrue(CodexService.isRefreshTokenReused(reused))
+        XCTAssertFalse(CodexService.isRefreshTokenReused(other))
+    }
+
     // MARK: - Gateway config generation (AC6)
 
     private func claudeSource(key: String, enabled: Bool = true, modelEnabled: Bool = true) -> ModelSource {

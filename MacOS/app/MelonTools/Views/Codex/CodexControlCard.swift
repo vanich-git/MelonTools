@@ -158,14 +158,9 @@ struct CodexControlCard: View {
                     .font(MTTheme.body(12, weight: .semibold))
                     .foregroundStyle(MTTheme.textPrimary)
                 Spacer()
-                Picker("", selection: $store.routingStrategy) {
-                    ForEach(CodexRoutingStrategy.allCases) { strategy in
-                        Text(strategy.title).tag(strategy)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 260, alignment: .trailing)
+                MTSelect(selection: $store.routingStrategy, options: CodexRoutingStrategy.allCases.map {
+                    ($0, $0.title)
+                }, width: 260)
             }
             Text(store.routingStrategy.hint)
                 .font(MTTheme.mono(10))
@@ -199,7 +194,7 @@ struct CodexControlCard: View {
                     Task { await gateway.applyRouting(accounts: store.accounts, priorities: store.effectivePriorities()) }
                 }
                 Spacer()
-                Text(String(format: L("%d account(s) in the pool"), store.accounts.count))
+                Text(String(format: L("%d account(s) in the pool"), resolution.orderedIds.count))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
             }
@@ -270,12 +265,12 @@ struct CodexControlCard: View {
                 } label: {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(index == store.accounts.count - 1 ? MTTheme.textTertiary : MTTheme.textSecondary)
+                        .foregroundStyle(index == store.accounts.filter { $0.poolEnabled != false }.count - 1 ? MTTheme.textTertiary : MTTheme.textSecondary)
                         .frame(width: 22, height: 18)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(index == store.accounts.count - 1)
+                .disabled(index == store.accounts.filter { $0.poolEnabled != false }.count - 1)
                 .help(L("Lower priority"))
             }
         }

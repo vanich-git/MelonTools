@@ -10,27 +10,44 @@ struct MelonToolsApp: App {
 
     var body: some Scene {
         Window("Melon Tools", id: "main") {
-            MainView()
-                .environmentObject(appState)
-                .frame(minWidth: 1060, minHeight: 680)
-                .id(l10n.code) // full re-render on language switch
+            if AppRuntime.isTesting {
+                // The XCTest host still runs the SwiftUI app. Building MainView
+                // would eagerly construct every real service (gateway, stores,
+                // scheduler) before a test can install its temp paths.
+                Color.clear
+            } else {
+                MainView()
+                    .environmentObject(appState)
+                    .frame(minWidth: 1060, minHeight: 680)
+                    .id(l10n.code) // full re-render on language switch
+            }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
 
         MenuBarExtra {
-            MenuBarView()
-                .environmentObject(appState)
-                .id(l10n.code)
+            if AppRuntime.isTesting {
+                // MenuBarView eagerly builds CodexStore and the gateway; the
+                // XCTest host must not touch them.
+                Color.clear
+            } else {
+                MenuBarView()
+                    .environmentObject(appState)
+                    .id(l10n.code)
+            }
         } label: {
             Image(nsImage: MelonAssets.menuBarLogo)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView()
-                .environmentObject(appState)
-                .id(l10n.code)
+            if AppRuntime.isTesting {
+                Color.clear
+            } else {
+                SettingsView()
+                    .environmentObject(appState)
+                    .id(l10n.code)
+            }
         }
     }
 }
@@ -47,8 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // XCTest uses this executable as its host. Never read the real vault,
-        // rewrite ~/.codex, start the gateway or relaunch Codex during tests.
+        // rewrite ~/.codex, start the gateway or start the local engine during
+        // tests.
         guard !AppRuntime.isTesting else { return }
+        prepareLocalAI()
         Self.logger.info("launched \(ProcessInfo.processInfo.operatingSystemVersionString, privacy: .public)")
         MainActor.assumeIsolated {
             // Everything below used to run before the first frame: the vault
@@ -107,14 +126,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTimer = timer
     }
 
+    /// Loads the local registry and clears a router left behind by a crash.
+    /// It deliberately does not start llama-server or load a model: the user
+    /// starts a model explicitly from Local AI, so launching Melon Tools does
+    /// not spend gigabytes of RAM before the first request.
+    private func prepareLocalAI() {
+        Task { @MainActor in
+            // Snapshot user data before 6.0.0 rewrites anything (§19).
+            LocalAIMigration.runIfNeeded()
+            RuntimeStore.shared.reload()
+            // A previous crash can leave the router holding a model; clear it
+            // before the user starts a fresh one. The reap now runs off the
+            // main actor (async), so the first frame is not held by pgrep.
+            await LocalInferenceService.shared.reapOrphanedEngines()
+            LocalModelStore.shared.loadRegistry()
+            // Drop leftovers of a crash or force-quit. Resumable download parts
+            // are kept: their sidecar is the only thing that makes a retry safe.
+            LocalAIMigration.runMaintenance(
+                activeDownloadJobs: Set(LocalDownloadManager.shared.items.map(\.jobID))
+            )
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         Self.logger.info("terminating")
+        // The XCTest host shares this app support directory. Tearing down its
+        // UI would flush the real stores and rewrite the user's gateway config
+        // with the test key, so tests own their cleanup instead.
+        guard !AppRuntime.isTesting else { return }
         MainActor.assumeIsolated {
             updateTimer?.invalidate()
             updateTimer = nil
             CodexStore.shared.flushSave()
+            // The scheduler writes on a background queue now; quitting must
+            // not drop the last run, its history or the daily token counter.
+            SchedulerStore.shared.flushSave()
             QuotaHistoryStore.shared.flush()
             ComposerBridge.shared.shutdownForQuit()
+            // An interrupted download leaves a partially written `.part` and
+            // marks the item failed on the next launch; an interrupted unpack
+            // leaves `.download-`/`.install-` debris that maintenance only
+            // clears after 24 hours. Both are cheap to finalise here.
+            LocalDownloadManager.shared.shutdown()
+            RuntimeStore.shared.cancelInstall()
+            // A llama-server left behind keeps gigabytes of model weights
+            // resident and answers on a port the app no longer tracks, so it
+            // must not survive a clean quit.
+            LocalInferenceService.shared.stopSync()
             if UserDefaults.standard.bool(forKey: "gatewayStopOnQuit") {
                 CodexGatewayService.shared.stopSync()
             }

@@ -1,6 +1,7 @@
 {
-  "description": "Shared routing priority contract: the first ordered account gets the highest gateway priority.",
+  "description": "Shared routing priority contract: priority encodes the pool tier (regular = 2, backup = 1), not the position inside it, so the engine rotates inside a tier.",
   "orderedIds": ["first", "second", "third"],
-  "priorities": { "first": 3, "second": 2, "third": 1 },
+  "backupIds": ["third"],
+  "priorities": { "first": 2, "second": 2, "third": 1 },
   "planRank": { "free": 0, "go": 1, "plus": 2, "prolite": 3, "pro": 4, "team": 5, "enterprise": 6 }
 }

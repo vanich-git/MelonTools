@@ -10,8 +10,10 @@ import Foundation
 /// `antigravity.json` or `antigravity-<email>.json` in the gateway auth dir
 /// (fsnotify hot-reloads it). The app opens the authorization URL in the
 /// user's browser, polls the login status, and reads the auth file back for
-/// the account email and project id. Antigravity exposes no quota endpoint,
-/// so this service deliberately has no usage polling.
+/// the account email, project id and its per-account egress proxy.
+///
+/// Quota reads live in `AntigravityPoolStore`, not here: this service owns the
+/// credential lifecycle only, so a quota poll can never look like a login probe.
 @MainActor
 final class AntigravityAuthService: ObservableObject {
     static let shared = AntigravityAuthService()
@@ -45,6 +47,9 @@ final class AntigravityAuthService: ObservableObject {
         var accessToken: String?
         var projectID: String?
         var type: String?
+        /// Per-account egress proxy the engine picks up from the file. Empty
+        /// means "use the global `requests.proxy-url`".
+        var proxyURL: String?
     }
 
     /// The engine writes `antigravity-<email>.json`, or the bare
@@ -66,7 +71,11 @@ final class AntigravityAuthService: ObservableObject {
             email: root["email"] as? String,
             accessToken: root["access_token"] as? String,
             projectID: root["project_id"] as? String,
-            type: root["type"] as? String
+            type: root["type"] as? String,
+            proxyURL: (root["proxy_url"] as? String).flatMap { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
         )
     }
 

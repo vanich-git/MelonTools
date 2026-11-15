@@ -6,7 +6,9 @@
   "use strict";
 
   var api = window.melon;
-  var expanded = false;
+  var mode = window.__melonMode === "expanded" ? "expanded" : "compact";
+  var expanded = mode === "expanded";
+  if (expanded) document.body.classList.add("island-open");
   var snap = null;
   var lang = "ru";
   var active = true;
@@ -49,7 +51,8 @@
       weekShort: "7д",
       minute: "мин",
       hour: "ч",
-      now: "сейчас"
+      now: "сейчас",
+      collapse: "Свернуть"
     },
     en: {
       pool: "Codex pool",
@@ -72,7 +75,8 @@
       weekShort: "7d",
       minute: "min",
       hour: "h",
-      now: "now"
+      now: "now",
+      collapse: "Collapse"
     }
   };
 
@@ -173,108 +177,19 @@
     }
     var apiButton = document.querySelector('[data-act="api"]');
     if (apiButton) apiButton.disabled = false;
+    var closeButton = $("close-panel");
+    if (closeButton) {
+      closeButton.title = tr.collapse;
+      closeButton.setAttribute("aria-label", tr.collapse);
+    }
   }
 
-  var currentWidth = 185;
-  var currentHeight = 30;
-  var resizeFrame = null;
-  var animating = false;
-
-  function applySize(width, height) {
-    if (!api || !api.available) return;
-    api
-      .invoke("island_resize", {
-        width: Math.round(width),
-        height: Math.round(height)
-      })
-      .catch(function () {
-        // The window may be going away; a missed resize is not an error.
+  function collapsePanel() {
+    if (api && api.available) {
+      api.invoke("island_collapse").catch(function () {
+        // The panel is already closing.
       });
-  }
-
-  function resize(next, animate) {
-    var toWidth = next ? 420 : 185;
-    var toHeight = next ? 242 : 30;
-    if (resizeFrame) {
-      window.clearTimeout(resizeFrame);
-      resizeFrame = null;
     }
-    if (!animate) {
-      currentWidth = toWidth;
-      currentHeight = toHeight;
-      animating = false;
-      applySize(toWidth, toHeight);
-      return;
-    }
-    var fromWidth = currentWidth;
-    var fromHeight = currentHeight;
-    var started = performance.now();
-    var duration = next ? 220 : 180;
-    animating = true;
-    function frame(now) {
-      var t = Math.min(1, (now - started) / duration);
-      var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      currentWidth = fromWidth + (toWidth - fromWidth) * eased;
-      currentHeight = fromHeight + (toHeight - fromHeight) * eased;
-      applySize(currentWidth, currentHeight);
-      if (t < 1) {
-        resizeFrame = window.setTimeout(function () {
-          frame(performance.now());
-        }, 16);
-      } else {
-        resizeFrame = null;
-        currentWidth = toWidth;
-        currentHeight = toHeight;
-        animating = false;
-      }
-    }
-    resizeFrame = window.setTimeout(function () {
-      frame(performance.now());
-    }, 16);
-  }
-
-  var collapseTimer = null;
-  var autoCollapseTimer = null;
-  var resizeGuardUntil = 0;
-  var AUTO_COLLAPSE_MS = 15000;
-
-  function stopAutoCollapse() {
-    if (autoCollapseTimer) {
-      window.clearTimeout(autoCollapseTimer);
-      autoCollapseTimer = null;
-    }
-  }
-
-  function scheduleAutoCollapse() {
-    stopAutoCollapse();
-    autoCollapseTimer = window.setTimeout(function () {
-      autoCollapseTimer = null;
-      if (expanded) setExpanded(false);
-    }, AUTO_COLLAPSE_MS);
-  }
-
-  function setExpanded(next) {
-    if (expanded === next) return;
-    expanded = next;
-    if (next) {
-      if (collapseTimer) {
-        window.clearTimeout(collapseTimer);
-        collapseTimer = null;
-      }
-      document.body.classList.remove("closing");
-      document.body.classList.add("expanded");
-      resizeGuardUntil = Date.now() + 400;
-      resize(true, true);
-    } else {
-      stopAutoCollapse();
-      document.body.classList.add("closing");
-      collapseTimer = window.setTimeout(function () {
-        collapseTimer = null;
-        document.body.classList.remove("expanded", "closing");
-        resize(false, true);
-      }, 150);
-    }
-    render();
   }
 
   function refresh() {
@@ -297,33 +212,22 @@
   function bind() {
     if (!api || !api.available) return;
     var island = $("island");
-    // Hover must not resize the window: on Windows that makes the compact
-    // island flicker and disappear. A click opens the card; after the pointer
-    // leaves, the card waits 15 seconds before folding back to the pill.
-    island.addEventListener("mouseenter", function () {
-      stopAutoCollapse();
-    });
-    island.addEventListener("mouseleave", function () {
-      if (!expanded) return;
-      var check = function () {
-        if (!expanded) return;
-        if (animating || Date.now() < resizeGuardUntil) {
-          window.setTimeout(check, 300);
-          return;
+    if (mode === "expanded") {
+      document.body.classList.add("island-open");
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") collapsePanel();
+      });
+    } else {
+      // The compact window never resizes itself. Clicking asks Rust to show
+      // the already-built 420x242 panel window, so a WebView2 resize failure
+      // can no longer leave an empty compact strip behind.
+      island.addEventListener("click", function (event) {
+        if (event.target.closest("[data-act]")) return;
+        if (api && api.available) {
+          api.invoke("island_expand").catch(function () {});
         }
-        if (island.matches(":hover")) return;
-        scheduleAutoCollapse();
-      };
-      // Ignore the mouseleave that the native resize itself can emit.
-      check();
-    });
-    island.addEventListener("click", function (event) {
-      if (!expanded && !event.target.closest("[data-act]")) setExpanded(true);
-    });
-
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && expanded) setExpanded(false);
-    });
+      });
+    }
 
     Array.prototype.forEach.call(document.querySelectorAll("[data-act]"), function (button) {
       button.addEventListener("click", function (event) {
@@ -340,6 +244,8 @@
           api.invoke("island_toggle_api").then(done, done);
         } else if (action === "run") {
           api.invoke("island_run_next").then(done, done);
+        } else if (action === "close") {
+          api.invoke("island_collapse").then(done, done);
         }
       });
     });

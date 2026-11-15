@@ -27,6 +27,15 @@ export GOTOOLCHAIN=go1.26.10
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/melon-engine.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+SOURCE_STATUS="$(git -C "$SRC" status --porcelain --untracked-files=normal)" || {
+  echo "Cannot inspect engine source; refusing to reset or clean it." >&2
+  exit 1
+}
+if [ -n "$SOURCE_STATUS" ]; then
+  echo "Engine source has local changes; refusing to reset or clean it." >&2
+  exit 1
+fi
+
 echo "==> building pinned engine"
 (
   cd "$SRC"
@@ -46,12 +55,20 @@ python3 - "$TMP/cliproxyapi.exe" "$TMP/cliproxyapi.exe.z" "$PROVENANCE" "$PACKED
 import hashlib
 import json
 import pathlib
+import struct
 import sys
 import zlib
 
 payload_path, packed_path, provenance_path, target_path, write = sys.argv[1:6]
 write = write == "1"
 payload = pathlib.Path(payload_path).read_bytes()
+if len(payload) < 64 or payload[:2] != b"MZ":
+    raise SystemExit("Invalid gateway executable: missing DOS header")
+pe_offset = struct.unpack_from("<I", payload, 0x3c)[0]
+if pe_offset + 6 > len(payload) or payload[pe_offset:pe_offset + 4] != b"PE\0\0" or struct.unpack_from("<H", payload, pe_offset + 4)[0] != 0x8664:
+    raise SystemExit("Invalid gateway executable: expected Windows x86_64 PE")
+if b"integrate.api.nvidia.com" not in payload or b"NvidiaLimitedDo" not in payload:
+    raise SystemExit("Gateway executable does not contain the NVIDIA request limiter")
 packed = zlib.compress(payload, 9)
 provenance = json.loads(pathlib.Path(provenance_path).read_text(encoding="utf-8"))
 

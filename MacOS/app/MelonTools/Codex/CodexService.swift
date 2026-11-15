@@ -15,6 +15,7 @@ enum CodexService {
     static let deviceVerificationURL = "https://auth.openai.com/codex/device"
     static let deviceRedirectURI = "https://auth.openai.com/deviceauth/callback"
     static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    static let responsesEndpoint = URL(string: "https://chatgpt.com/backend-api/codex/responses")!
     static let subscriptionEndpoint = URL(string: "https://chatgpt.com/backend-api/subscriptions")!
     static let resetCreditsEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
     static let consumeResetCreditEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")!
@@ -38,15 +39,50 @@ enum CodexService {
         case refreshUnavailable
         case notLoggedIn
         case loopbackUnavailable
+        /// OpenAI rotates refresh tokens: once a token was exchanged, the old
+        /// one is dead. Retrying cannot succeed; the user has to sign in again.
+        case reloginRequired
 
         var errorDescription: String? {
             switch self {
-            case .http(let code, let body): return "HTTP \(code): \(body.prefix(300))"
+            case .http(let code, let body):
+                return Self.humanHTTP(code, body)
             case .decoding(let detail): return "Decode error: \(detail)"
             case .loginPending: return "Login still pending"
             case .refreshUnavailable: return "No refresh token available"
             case .notLoggedIn: return "~/.codex/auth.json not found — log in with the Codex CLI first, or use device login."
             case .loopbackUnavailable: return L("Local ports 1455 and 1457 are busy — close the other login attempt and try again.")
+            case .reloginRequired: return L("The refresh token was revoked — sign in to this account again.")
+            }
+        }
+
+        /// Plain-language reason for an HTTP status, so the account list says
+        /// *why* it stopped instead of echoing the raw provider body. The
+        /// upstream text is appended when it adds information the status alone
+        /// does not carry (a ban reason, a rate-limit reset).
+        private static func humanHTTP(_ code: Int, _ body: String) -> String {
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch code {
+            case 401:
+                return L("Login expired - sign in to this account again.")
+            case 403:
+                if detail.localizedCaseInsensitiveContains("terms of service")
+                    || detail.localizedCaseInsensitiveContains("violation") {
+                    return L("Blocked by OpenAI for a Terms of Service violation - the account cannot be used.")
+                }
+                if detail.localizedCaseInsensitiveContains("cloudflare") {
+                    return L("Blocked by Cloudflare - try again later.")
+                }
+                return L("Access denied by OpenAI (403).")
+            case 404:
+                return L("The account was not found upstream - sign in again.")
+            case 429:
+                return L("Rate limited by OpenAI - the quota window is used up.")
+            case 500...599:
+                return L("OpenAI is having trouble (server error) - this is not the account's fault.")
+            default:
+                let head = detail.isEmpty ? "" : " - " + detail.prefix(200)
+                return "HTTP \(code)\(head)"
             }
         }
     }
@@ -192,6 +228,11 @@ enum CodexService {
         ], options: [])
 
         let (data, response) = try await NetworkProxy.session().data(for: request)
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 401,
+           Self.isRefreshTokenReused(data) {
+            throw CodexError.reloginRequired
+        }
         try ensureOK(response, data)
 
         var tokens = try parseTokenResponse(data)
@@ -199,6 +240,14 @@ enum CodexService {
         if tokens.id_token == nil { tokens.id_token = account.tokens.id_token }
         if tokens.refresh_token == nil { tokens.refresh_token = refreshToken }
         return tokens
+    }
+
+    /// The token endpoint answers `401 refresh_token_reused` after another
+    /// client exchanged the same rotating token. Only a new login helps, so
+    /// the caller must not retry the request.
+    static func isRefreshTokenReused(_ data: Data) -> Bool {
+        guard let body = String(data: data, encoding: .utf8) else { return false }
+        return body.contains("refresh_token_reused")
     }
 
     /// Returns a token guaranteed fresh (refreshes when within 5 min of expiry).
@@ -462,6 +511,72 @@ enum CodexService {
     private static func effectiveAccountId(_ account: CodexAccount, tokens: CodexTokens) -> String? {
         let candidates = [account.accountId, tokens.account_id, JWT.codexClaims(idToken: tokens.id_token).accountId]
         return candidates.first { $0 != nil && !$0!.isEmpty } ?? nil
+    }
+
+    // MARK: - Wakeup
+
+    /// Send a minimal response request to activate dormant rate-limit windows.
+    /// Rotates the access token once on HTTP 401.
+    static func wakeAccount(
+        account: CodexAccount,
+        model: String? = nil
+    ) async throws -> CodexTokens {
+        let tokens = try await freshTokens(for: account)
+        do {
+            try await sendWakeRequest(account: account, tokens: tokens, model: model)
+            return tokens
+        } catch CodexError.http(401, _) {
+            let refreshed = try await refreshTokens(account)
+            var retryAccount = account
+            retryAccount.tokens = refreshed
+            try await sendWakeRequest(account: retryAccount, tokens: refreshed, model: model)
+            return refreshed
+        }
+    }
+
+    private static func sendWakeRequest(
+        account: CodexAccount,
+        tokens: CodexTokens,
+        model: String?
+    ) async throws {
+        guard let access = tokens.access_token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !access.isEmpty else {
+            throw CodexError.refreshUnavailable
+        }
+        var request = URLRequest(url: responsesEndpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("codex_cli_rs", forHTTPHeaderField: "Originator")
+        request.setValue(modelsUserAgent, forHTTPHeaderField: "User-Agent")
+        if let accountId = safeAccountId(effectiveAccountId(account, tokens: tokens)),
+           !accountId.isEmpty {
+            request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
+        }
+        let chosenModel = model ?? "gpt-5.6-luna"
+        let payload: [String: Any] = [
+            "model": chosenModel,
+            "input": [
+                [
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        ["type": "input_text", "text": "hi"]
+                    ]
+                ]
+            ],
+            "instructions": "",
+            "reasoning": ["effort": "low", "summary": "auto"],
+            "include": ["reasoning.encrypted_content"],
+            "parallel_tool_calls": true,
+            "store": false,
+            "stream": true
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await NetworkProxy.session().data(for: request)
+        try ensureOK(response, data)
     }
 
     static func fetchQuota(account: CodexAccount) async throws -> (quota: CodexQuota, tokens: CodexTokens) {

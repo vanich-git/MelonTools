@@ -12,9 +12,12 @@ function statusSignature() {
     account.id, account.current, account.blocked,
     account.hourlyRemaining, account.weeklyRemaining,
     account.hourlyResetAt, account.weeklyResetAt, account.quotaUpdatedAt,
-    account.preferredFirst, account.isBackup,
+    account.preferredFirst, account.isBackup, account.poolEnabled,
     account.resetCreditsAvailable, account.resetCreditsNextExpiry,
-    account.blockInfo && account.blockInfo.code,
+    account.displayName, account.email, account.planType, account.subscriptionActiveUntil,
+    account.hourlyReservePercent, account.weeklyReservePercent,
+    account.quotaSource, account.quotaError, account.modelAvailability, account.selectedModels,
+    account.creditsBalance, account.unlimitedCredits, account.blockInfo,
   ]);
   return JSON.stringify([
     status.running, status.port, status.requestsLastMinute,
@@ -28,6 +31,7 @@ function statusSignature() {
       S.codexApp.path, S.codexApp.savedPathValid,
     ],
     S.checkResult, S.checkPassed,
+    S.routing && [S.routing.strategy, S.routing.orderedIds, S.routing.blockedIds],
   ]);
 }
 
@@ -35,6 +39,7 @@ function statusSignature() {
 NAV.splice(0, NAV.length,
   { group: "overview", items: ["dashboard"] },
   { group: "schedulerGroup", items: ["scheduler"] },
+  { group: "local_ai", items: ["local_ai"] },
   { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
   { group: "general", items: ["settings", "donate"] },
 );
@@ -45,11 +50,42 @@ const baseOnboardingGo = A.onboardingGo;
 
 // Preserve the scroll position across background refreshes. Navigation resets
 // it explicitly in A.go below.
-render = function renderWithScroll() {
+render = function renderWithScroll(force) {
   const detail = document.querySelector(".detail");
   const scrollTop = detail ? detail.scrollTop : 0;
-  baseRender();
+  // The Console is its own scroller: a full render must not throw the reader
+  // back to the first line, and a reader parked at the bottom keeps following
+  // the newest output.
+  const logBox = document.getElementById("local-ai-logs");
+  const logTop = logBox ? logBox.scrollTop : 0;
+  const logAtBottom = logBox
+    ? logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <= 24
+    : true;
+  const hfScroll = ["hf-results", "hf-detail"].map(id => {
+    const element = document.getElementById(id);
+    return [id, element ? element.scrollTop : 0];
+  });
+  const activeField = document.activeElement && document.activeElement.closest
+    ? document.activeElement.closest(".search-field") : null;
+  const activeInput = activeField ? activeField.querySelector("input") : null;
+  const fieldFocus = activeInput && activeInput.id && typeof activeInput.selectionStart === "number"
+    ? [activeInput.id, activeInput.selectionStart, activeInput.selectionEnd]
+    : null;
+  baseRender(force);
+  for (const [id, top] of hfScroll) {
+    const element = document.getElementById(id);
+    if (element) element.scrollTop = top;
+  }
+  if (fieldFocus) {
+    const nextInput = document.getElementById(fieldFocus[0]);
+    if (nextInput) {
+      nextInput.focus();
+      nextInput.setSelectionRange(fieldFocus[1], fieldFocus[2]);
+    }
+  }
   if (detail) detail.scrollTop = scrollTop;
+  const nextLog = document.getElementById("local-ai-logs");
+  if (nextLog) nextLog.scrollTop = logAtBottom ? nextLog.scrollHeight : logTop;
   S.lastStatusSignature = statusSignature();
   const brand = document.getElementById("brand-sub");
   if (brand) brand.textContent = t("brandSub");
@@ -84,7 +120,7 @@ Object.assign(A, {
       invTimed("bridge_status", {}, timeout),
     ];
     const wantAccounts = IS_TAURI && (S.section === "dashboard" || S.section === "accounts");
-    if (wantAccounts) jobs.push(invTimed("vault_list", {}, timeout));
+    if (wantAccounts) jobs.push(invTimed("vault_list", {}, timeout), invTimed("routing_state", {}, timeout));
     if (S.section === "dashboard") {
       jobs.push(invTimed("scheduler_summary", {}, timeout).catch(() => invTimed("scheduler_list", {}, timeout)));
     }
@@ -99,6 +135,11 @@ Object.assign(A, {
     if (wantAccounts) {
       const accounts = results[index++];
       if (accounts.status === "fulfilled") S.accounts = accounts.value;
+      const routing = results[index++];
+      if (routing.status === "fulfilled") {
+        S.routing = routing.value;
+        if (routing.value.accounts) S.accounts = routing.value.accounts;
+      }
     }
     if (S.section === "dashboard") {
       const scheduler = results[index++];
@@ -147,10 +188,59 @@ Object.assign(A, {
           const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
           if (parsed && parsed.model) model = ` · ${parsed.model}`;
         } catch { /* the gateway answered with plain text */ }
-        S.checkResult = `${t("checkPassed")}${model}`;
-        S.checkPassed = true;
-        S.checkErrorDetail = null;
-        toast(t("done"));
+        // A passing gateway check only proves the Codex path works. The local
+        // catalogue is a separate contract: a Ready model must be visible in
+        // /v1/models, so check it in the same action instead of leaving the
+        // user to notice the omission by hand.
+        let localNote = "";
+        let localOk = true;
+        try {
+          const [runtime, localModels, gateway] = await Promise.all([
+            window.api.localAi.runtimeStatus(),
+            window.api.localAi.modelsList(),
+            inv("gateway_models"),
+          ]);
+          const alias = (id) => {
+            const value = String(id || "");
+            return value.startsWith("local/") ? value : `local/${value}`;
+          };
+          const ready = (localModels || [])
+            .filter((entry) => entry.runtimeStatus === "ready")
+            .map((entry) => alias(entry.id));
+          const served = (gateway || [])
+            .map((entry) => String((entry && entry.id) || ""))
+            .filter((id) => id.startsWith("local/"));
+          const missing = ready.filter((id) => !served.includes(id));
+          const stale = served.filter((id) => !ready.includes(id));
+          if (runtime && runtime.publicationError) {
+            // The gateway can answer while the last publication attempt still
+            // failed. The check must fail for the same reason the card shows.
+            localOk = false;
+            localNote = fmt(t("localAiCheckFailed"), { error: runtime.publicationError });
+          } else if (runtime && runtime.error) {
+            localOk = false;
+            localNote = fmt(t("localAiCheckFailed"), { error: runtime.error });
+          } else if (missing.length) {
+            localOk = false;
+            localNote = fmt(t("localAiCheckMissing"), { missing: missing.join(", ") });
+          } else if (stale.length) {
+            localOk = false;
+            localNote = fmt(t("localAiCheckStale"), { models: stale.join(", ") });
+          } else if (ready.length) {
+            localNote = fmt(t("localAiCheckOk"), { models: ready.join(", ") });
+          }
+        } catch (error) {
+          // Swallowing this used to turn "the app cannot read its own state"
+          // into a green check. The gateway check above already covers a
+          // stopped gateway; here the failure belongs to the local IPC path.
+          localOk = false;
+          localNote = fmt(t("localAiCheckFailed"), { error: errorText(error) });
+        }
+        S.checkResult = `${t("checkPassed")}${model}${localNote ? ` · ${localNote}` : ""}`;
+        S.checkPassed = localOk;
+        S.checkErrorDetail = localOk ? null : localNote;
+        if (localOk) toast(t("done"));
+        else toast(localNote, true);
       } catch (error) {
         S.checkResult = t("checkFailedHint");
         S.checkPassed = false;
@@ -247,41 +337,174 @@ Object.assign(A, {
     render();
   },
 
+  accountSelect(id) {
+    const selected = new Set(S.selectedAccounts || []);
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    S.selectedAccounts = [...selected];
+    render(true);
+  },
+
+  accountsSelectAll() {
+    const ids = (S.accounts || []).map((account) => account.id);
+    S.selectedAccounts = ids.every((id) => (S.selectedAccounts || []).includes(id)) ? [] : ids;
+    render(true);
+  },
+
+  accountsRefreshSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length) return;
+    return run("quotas", async () => {
+      const errors = [];
+      for (const id of ids) {
+        const result = await inv("quota_refresh", { id });
+        S.accounts = result.accounts;
+        errors.push(...(result.errors || []));
+      }
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      toast(errors.length ? errors.join("\n") : t("done"), errors.length > 0);
+    });
+  },
+
+  accountWake(id) {
+    if (!id) return;
+    return run("quotas", async () => {
+      const result = await inv("account_wake", { id });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length) return;
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_selected", { ids });
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsWakeSleeping() {
+    return run("quotas", async () => {
+      const result = await inv("accounts_wake_sleeping");
+      S.accounts = result.accounts;
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      await A.historyLoad();
+      if (result.errors && result.errors.length) toast(result.errors.join("\n"), true);
+      else toast(`${t("wake")}: ${t("done")}`);
+    });
+  },
+
+  accountsDeleteSelected() {
+    const ids = (S.selectedAccounts || []).filter((id) => S.accounts.some((account) => account.id === id));
+    if (!ids.length || !window.confirm(fmt(t("accountDeleteSelectedConfirm"), { n: ids.length }))) return;
+    return run("accounts-delete", async () => {
+      for (const id of ids) {
+        S.accounts = await inv("delete_account", { id });
+        S.selectedAccounts = (S.selectedAccounts || []).filter((selected) => selected !== id);
+      }
+      S.routing = await inv("routing_state");
+      if (S.routing.accounts) S.accounts = S.routing.accounts;
+      toast(t("done"));
+    });
+  },
+
   accountSettingsOpen(id) {
+    S.accountSettingsDraft = null;
     S.accountSettings = id;
     render();
+    document.getElementById("account-pool-enabled")?.focus();
   },
 
   accountSettingsClose() {
     S.accountSettings = null;
+    S.accountSettingsDraft = null;
     render();
+  },
+
+  accountSettingsDraftChange() {
+    const account = (S.accounts || []).find((item) => item.id === S.accountSettings);
+    if (!account) return null;
+    const draft = { ...accountSettingsValues(account) };
+    const node = (id) => document.getElementById(id);
+    for (const [key, id] of [["poolEnabled", "account-pool-enabled"], ["hourlyEnabled", "account-res-h-enabled"], ["weeklyEnabled", "account-res-w-enabled"], ["preferred", "account-preferred"], ["backup", "account-backup"]]) {
+      if (node(id)) draft[key] = node(id).checked;
+    }
+    for (const [key, suffix] of [["hourly", "h"], ["weekly", "w"]]) {
+      if (node("account-res-" + suffix)) draft[key] = node("account-res-" + suffix).value;
+      const row = node("account-res-" + suffix)?.closest(".account-limit-value");
+      if (row) row.hidden = !draft[key + "Enabled"];
+    }
+    S.accountSettingsDraft = draft;
+    return draft;
   },
 
   accountSettingsModels(id) {
+    A.accountSettingsDraftChange();
     S.accountSettings = null;
-    render();
-    A.poolOpenAccount(id);
+    S.accountSettingsReturn = id;
+    return A.poolOpenAccount(id);
+  },
+
+  poolClose() {
+    const modal = S.poolModal;
+    S.poolModal = null;
+    S.poolQuery = "";
+    S.poolError = null;
+    S.poolDraft = null;
+    if (S.accountSettingsReturn) {
+      S.accountSettings = S.accountSettingsReturn;
+      S.accountSettingsReturn = null;
+    }
+    // Forced: Esc closes the dialog while focus is still inside its search
+    // field, and the edit guard would otherwise skip the repaint.
+    render(true);
+    // When the dialog was opened from account settings, that dialog is back on
+    // screen and must own focus, not the card behind it.
+    const settingsCard = S.accountSettings ? document.querySelector(".account-settings-card") : null;
+    const settingsField = settingsCard
+      ? settingsCard.querySelector("button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]")
+      : null;
+    if (settingsField) { settingsField.focus(); return; }
+    // Put focus back on the control that opened the dialog instead of <body>.
+    const accountId = modal && modal.mode === "account" ? modal.accountId : null;
+    const trigger = accountId
+      ? Array.from(document.querySelectorAll('[data-action="poolOpenAccount"]')).find((el) => el.dataset.id === accountId)
+      : null;
+    const target = trigger || document.querySelector('[data-action="poolOpen"]');
+    if (target) target.focus();
   },
 
   accountSettingsSave(id) {
-    // Read before run(): the first render rebuilds the account page.
-    const hourlyNode = document.getElementById("account-res-h");
-    const weeklyNode = document.getElementById("account-res-w");
-    const preferredNode = document.getElementById("account-preferred");
-    const backupNode = document.getElementById("account-backup");
-    const hourly = parseInt(hourlyNode ? hourlyNode.value : "", 10);
-    const weekly = parseInt(weeklyNode ? weeklyNode.value : "", 10);
-    const preferred = !!(preferredNode && preferredNode.checked);
-    const backup = !!(backupNode && backupNode.checked);
-    run("account-settings-" + id, async () => {
+    // Capture edits before run() rebuilds the page; keep the draft on errors.
+    const draft = A.accountSettingsDraftChange();
+    if (!draft || draft.id !== id) return;
+    const hourly = Number(draft.hourly), weekly = Number(draft.weekly);
+    if ((draft.hourlyEnabled && (!Number.isInteger(hourly) || hourly < 1 || hourly > 100)) ||
+        (draft.weeklyEnabled && (!Number.isInteger(weekly) || weekly < 1 || weekly > 100))) {
+      toast(t("accountInvalidLimit"), true);
+      return;
+    }
+    return run("account-settings-" + id, async () => {
       S.accounts = await inv("save_reserves", {
-        id,
-        hourly: Number.isFinite(hourly) ? hourly : null,
-        weekly: Number.isFinite(weekly) ? weekly : null,
+        id, hourly: draft.hourlyEnabled ? hourly : null,
+        weekly: draft.weeklyEnabled ? weekly : null, poolEnabled: draft.poolEnabled,
       });
-      S.routing = await inv("set_account_role", { id, preferred, backup });
+      S.routing = await inv("set_account_role", { id, preferred: draft.preferred, backup: draft.backup });
       if (S.routing.accounts) S.accounts = S.routing.accounts;
       S.accountSettings = null;
+      S.accountSettingsDraft = null;
       toast(t("done"));
     });
   },

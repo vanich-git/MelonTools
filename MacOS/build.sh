@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 
+# Xcode's DerivedData and the DMG staging folder must not land in
+# ~/Library/Developer: build output stays off the system volume. /tmp is on the
+# boot volume (fast) and is cleared by the OS, so nothing is left behind.
+DERIVED="${DERIVED_DATA_PATH:-/tmp/MelonToolsDerivedData}"
+
 # One composer script for both platforms; keep the bundle copy in sync.
 "$ROOT/../scripts/sync-composer.sh" >/dev/null
 
@@ -36,6 +41,27 @@ mkdir -p build
   rm -f "$ROOT/build/cliproxyapi-arm64" "$ROOT/build/cliproxyapi-amd64"
 )
 
+echo "==> 1b/6 llama.cpp runtime (pinned, universal: arm64 + x86_64)"
+# Never trust an existing folder: an arm64-only runtime left by an older build
+# produces a bundle that cannot start on Intel Macs. The script checks the lipo
+# slices, the dependency closure and the signatures, rebuilds in a staging
+# folder when the runtime is stale, and swaps it in only after it passed.
+"$ROOT/scripts/fetch-runtime.sh"
+RUNTIME_ARCHS="$(lipo -archs "$ROOT/app/Resources/runtime/llama-server")"
+for ARCH in arm64 x86_64; do
+  case " $RUNTIME_ARCHS " in
+    *" $ARCH "*) ;;
+    *)
+      echo "bundled llama-server has no $ARCH slice ($RUNTIME_ARCHS)" >&2
+      exit 1
+      ;;
+  esac
+done
+# llama-server prints its build banner on stderr.
+RUNTIME_VERSION="$("$ROOT/app/Resources/runtime/llama-server" --version 2>&1 | head -1 || true)"
+[ -n "${RUNTIME_VERSION:-}" ] || RUNTIME_VERSION="unknown"
+echo "    $RUNTIME_VERSION ($RUNTIME_ARCHS)"
+
 echo "==> 2/6 app icon"
 ICON_SRC=scripts/assets/source-appicon.png
 ICONSET=build/AppIcon.iconset
@@ -53,9 +79,9 @@ echo "==> 3/6 xcode project"
 
 echo "==> 4/6 release build"
 xcodebuild -project app/MelonTools.xcodeproj -scheme MelonTools -configuration Release \
-  -derivedDataPath "$HOME/Library/Developer/MelonTools" build | tail -3
+  -derivedDataPath "$DERIVED" build | tail -3
 
-APP="$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app"
+APP="$DERIVED/Build/Products/Release/MelonTools.app"
 
 echo "==> 5/6 ad-hoc codesign"
 xattr -cr "$APP"
@@ -75,7 +101,7 @@ fi
 codesign --verify --strict "$APP" && echo "signature ok"
 
 echo "==> 6/6 dmg"
-STAGE="$HOME/Library/Developer/MelonTools/dmg-stage"
+STAGE="$DERIVED/dmg-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/Melon Tools.app"

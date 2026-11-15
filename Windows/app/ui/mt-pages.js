@@ -66,7 +66,7 @@ function dashboardPage() {
     ${cards.pool ? dashboardPoolCard(health) : ""}
     ${cards.spend ? dashboardSpendCard(usage) : ""}
   </div>
-  ${cards.trends ? dashboardTrendsCard(trends) : ""}
+  ${cards.antigravity ? dashboardAntigravityCard(S.antigravity) : ""}
   ${cards.scheduler ? dashboardSchedulerCard(schedule) : ""}
 
   <div class="card">
@@ -421,8 +421,15 @@ function cooldownReason(cooldown) {
       case "invalid_grant":
         key = "signInAgain";
         break;
+      // A 403 from Cloud Code is never billing. "payment_required" is the
+      // legacy label the engine used for the whole 403 family, so old cooldown
+      // snapshots still carry it and must explain the real cause.
+      case "tos_violation":
       case "payment_required":
-        key = "paymentRequired";
+        key = "blockedByGoogle";
+        break;
+      case "validation_required":
+        key = "accountFrozen";
         break;
       case "model_not_supported":
         key = "modelNotSupported";
@@ -434,6 +441,28 @@ function cooldownReason(cooldown) {
         key = "";
     }
   return key ? " · " + esc(t(key)) : "";
+}
+
+// Which egress this account leaves through. Credentials are stripped: the row
+// exists to show the binding, and a proxy password has no business on screen.
+function proxyLabel(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname) return url;
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ":" + parsed.port : ""}`;
+  } catch {
+    return url.replace(/\/\/[^@/]*@/, "//");
+  }
+}
+
+function antigravityEgressRow(account) {
+  const custom = !!account.proxyUrl;
+  const label = custom ? proxyLabel(account.proxyUrl) : t("globalProxy");
+  return `<div class="footnote" style="margin:2px 0 0">
+    <span class="pill ${custom ? "gold" : ""}">${esc(t("egress"))}</span>
+    <span class="mono" style="font-size:10px">${esc(label)}</span>
+  </div>`;
 }
 
 function antigravityQuotaRow(label, window) {
@@ -465,6 +494,7 @@ function antigravityCard() {
        <button class="ghost small" data-action="antigravityCancel">${t("antigravityCancel")}</button>`
     : `<button class="btn small" data-action="antigravityConnect" ${S.busy.antigravityConnect ? "disabled" : ""}>${t("addGoogleAccount")}</button>
        <button class="ghost small" data-action="antigravityRefresh" ${S.busy.antigravityUsage ? "disabled" : ""}>${t("refresh")}</button>
+       ${connected ? `<button class="ghost small" data-action="antigravityWarmupAll" ${S.busy.antigravityWarmupAll ? "disabled" : ""}>${t("warmupAll")}</button>` : ""}
        ${connected ? `<button class="ghost small" data-action="antigravityDisconnect" ${S.busy.antigravityDisconnect ? "disabled" : ""}>${t("disconnectAll")}</button>` : ""}`;
 
   const rows = accounts.map((account) => {
@@ -475,7 +505,7 @@ function antigravityCard() {
     const paused = !!account.disabled;
     const until = cooldown && cooldown.retry_at
       ? new Date(cooldown.retry_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      : "—";
+      : "-";
     return `<div class="account-row">
       <div class="row" style="gap:8px;align-items:center">
         <span class="pill ${paused ? "" : cooldown ? "warn" : "ok"}">${paused ? esc(t("paused")) : cooldown ? esc(t("quarantined")) : esc(t("antigravityConnected"))}</span>
@@ -486,14 +516,17 @@ function antigravityCard() {
         <span style="flex:1"></span>
         <button class="ghost small" title="${esc(t("raisePriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority + 1}">↑</button>
         <button class="ghost small" title="${esc(t("lowerPriority"))}" data-action="antigravityPriority" data-id="${esc(account.name)}" data-value="${account.priority - 1}">↓</button>
+        <button class="ghost small" title="${esc(t("bindProxy"))}" data-action="antigravityProxy" data-id="${esc(account.name)}">🌐</button>
+        <button class="ghost small" data-action="antigravityWarmup" data-id="${esc(account.name)}" title="${esc(t("warmupAccount"))}">${esc(t("warmup"))}</button>
         <button class="ghost small" data-action="antigravityPause" data-id="${esc(account.name)}">${paused ? esc(t("resumeAccount")) : esc(t("pauseAccount"))}</button>
         ${probeable ? `<button class="ghost small" data-action="antigravityProbe" data-id="${esc(account.name)}">${esc(t("probe"))}</button>` : ""}
         <button class="ghost small" data-action="antigravityRemove" data-id="${esc(account.name)}">${esc(t("removeAccount"))}</button>
       </div>
       ${cooldown ? `<div class="footnote" style="margin:2px 0 0;color:var(--warn)">${esc(t("quarantinedUntil"))} ${esc(until)}${cooldownReason(cooldown)}</div>` : ""}
+      ${antigravityEgressRow(account)}
       ${antigravityQuotaRow(t("geminiPool"), account.gemini)}
       ${antigravityQuotaRow(t("claudePool"), account.claude)}
-      ${!account.gemini && !account.claude && account.quotaError ? `<div class="footnote" style="margin-top:2px">${esc(account.quotaError)}</div>` : ""}
+      ${!account.gemini && !account.claude && account.quotaError ? `<div class="footnote" style="margin-top:2px;color:var(--danger)">⚠ ${esc(account.quotaError)}</div>` : ""}
     </div>`;
   }).join("");
 
@@ -611,6 +644,18 @@ function sessionProviderSpend(provider) {
 }
 
 function openRouterCard(settings) {
+  const config = settings.openrouterConfig || {};
+  const modelStrategies = config.models || {};
+  const modelProviders = config.modelProviders || {};
+  const query = String(S.openrouterModelsQuery || "").trim().toLowerCase();
+  const freeOnly = !!S.openrouterModelsFreeOnly;
+  const filteredModels = (settings.openrouterModels || []).map((m) => {
+    const id = String(m.id || "");
+    const promptPrice = m.promptPerToken ?? m.prompt_per_token;
+    const completionPrice = m.completionPerToken ?? m.completion_per_token;
+    const isFree = id.endsWith(":free") || (promptPrice === 0 && completionPrice === 0);
+    return { model: m, isFree, visible: (!freeOnly || isFree) && (!query || `${id} ${m.display || m.name || ""}`.toLowerCase().includes(query)) };
+  });
   const p = S.providers;
   const configured = !!(settings.openrouterKey || "").trim();
   const creditsTotal = finiteNumber(p && p.totalCredits);
@@ -659,27 +704,113 @@ function openRouterCard(settings) {
         <input type="password" id="or-key" value="${esc(settings.openrouterKey || "")}" placeholder="sk-or-v1-…">
       </label>
       <div class="row">
+        <label class="field" style="flex:1">
+          <span>${t("orSort")}</span>
+          <select id="or-sort">
+            <option value="price" ${config.defaultStrategy === "price" ? "selected" : ""}>${esc(t("orPrice"))}</option>
+            <option value="throughput" ${config.defaultStrategy === "throughput" ? "selected" : ""}>${esc(t("orThroughput"))}</option>
+            <option value="latency" ${config.defaultStrategy === "latency" ? "selected" : ""}>${esc(t("orLatency"))}</option>
+            <option value="floor" ${config.defaultStrategy === "floor" ? "selected" : ""}>${esc(t("orFloor"))}</option>
+            <option value="nitro" ${config.defaultStrategy === "nitro" ? "selected" : ""}>${esc(t("orNitro"))}</option>
+          </select>
+        </label>
+        <label class="field" style="flex:1">
+          <span>${t("orDataCollection")}</span>
+          <select id="or-data-collection">
+            <option value="deny" ${config.dataCollection === "deny" ? "selected" : ""}>Deny</option>
+            <option value="allow" ${config.dataCollection === "allow" ? "selected" : ""}>Allow</option>
+          </select>
+        </label>
+      </div>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+        <input type="checkbox" id="or-require-parameters" ${config.requireParameters ? "checked" : ""}>
+        <span>${t("orRequireParameters")}</span>
+      </label>
+      <label class="field">${esc(t("orOrder"))}
+        <input type="text" id="or-order" value="${esc((config.order || []).join(", "))}">
+      </label>
+      <label class="field">${esc(t("orOnly"))}
+        <input type="text" id="or-only" value="${esc((config.only || []).join(", "))}">
+      </label>
+      <label class="field">${esc(t("orIgnore"))}
+        <input type="text" id="or-ignore" value="${esc((config.ignore || []).join(", "))}">
+      </label>
+      <label class="field">${esc(t("orQuantizations"))}
+        <input type="text" id="or-quantizations" value="${esc((config.quantizations || []).join(", "))}">
+      </label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+        <input type="checkbox" id="or-fallbacks" ${config.allowFallbacks !== false ? "checked" : ""}>
+        <span>${esc(t("orFallbacks"))}</span>
+      </label>
+      <div class="stack">
+        <h3>${t("modelRouting")}</h3>
+        <div class="row" style="margin-bottom:8px">
+          ${searchField({
+            id: "openrouter-models-search",
+            value: S.openrouterModelsQuery,
+            placeholder: t("modelsSearch"),
+            action: "openrouterModelsSearch",
+            clearAction: "openrouterModelsClearSearch",
+          })}
+          <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+            <input type="checkbox" id="openrouter-models-free-only" ${S.openrouterModelsFreeOnly ? "checked" : ""} data-action="openrouterModelsFreeToggle" data-on="change">
+            <span>${t("onlyFree")}</span>
+          </label>
+        </div>
+        ${filteredModels.map(({model: m, isFree, visible}) => `
+          <div data-openrouter-filter-row class="or-model" data-search="${esc(`${m.id} ${m.display || m.name || ""}`.toLowerCase())}" data-free="${isFree}" ${visible ? "" : "hidden"}>
+          <div class="or-model-head">
+            <div class="or-model-name"><strong>${esc(m.display || m.name || m.id)}</strong><small>${esc(m.id)}${isFree ? ` · ${esc(t("freeModel"))}` : ""}</small></div>
+            <select aria-label="${esc(`${t("modelRouting")}: ${m.id}`)}" data-openrouter-model-strategy="${esc(m.id)}">
+              <option value="" ${!modelStrategies[m.id] ? "selected" : ""}>${esc(t("orDefault"))}</option>
+              <option value="price" ${modelStrategies[m.id] === "price" ? "selected" : ""}>${esc(t("orPrice"))}</option>
+              <option value="throughput" ${modelStrategies[m.id] === "throughput" ? "selected" : ""}>${esc(t("orThroughput"))}</option>
+              <option value="latency" ${modelStrategies[m.id] === "latency" ? "selected" : ""}>${esc(t("orLatency"))}</option>
+              <option value="floor" ${modelStrategies[m.id] === "floor" ? "selected" : ""}>${esc(t("orFloor"))}</option>
+              <option value="nitro" ${modelStrategies[m.id] === "nitro" ? "selected" : ""}>${esc(t("orNitro"))}</option>
+            </select>
+          </div>
+          <div class="or-model-options">
+            <input type="text" aria-label="${esc(`${t("orOrder")}: ${m.id}`)}" placeholder="${esc(t("orOrder"))}" data-openrouter-model-order="${esc(m.id)}" value="${esc(Array.isArray(modelProviders[m.id] && modelProviders[m.id].order) ? modelProviders[m.id].order.join(", ") : "")}" style="flex: 1;">
+            <input type="text" aria-label="${esc(`${t("orOnly")}: ${m.id}`)}" placeholder="${esc(t("orOnly"))}" data-openrouter-model-only="${esc(m.id)}" value="${esc(Array.isArray(modelProviders[m.id] && modelProviders[m.id].only) ? modelProviders[m.id].only.join(", ") : "")}" style="flex: 1;">
+            <input type="text" aria-label="${esc(`${t("orIgnore")}: ${m.id}`)}" placeholder="${esc(t("orIgnore"))}" data-openrouter-model-ignore="${esc(m.id)}" value="${esc(Array.isArray(modelProviders[m.id] && modelProviders[m.id].ignore) ? modelProviders[m.id].ignore.join(", ") : "")}" style="flex: 1;">
+            <label style="display:flex;align-items:center;gap:4px;white-space:nowrap">
+              <span>${esc(t("orFallbacks"))}</span>
+              <select aria-label="${esc(`${t("orFallbacks")}: ${m.id}`)}" data-openrouter-model-fallbacks="${esc(m.id)}">
+                <option value="" ${modelProviders[m.id]?.allowFallbacks == null ? "selected" : ""}>${esc(t("orDefault"))}</option>
+                <option value="true" ${modelProviders[m.id]?.allowFallbacks === true ? "selected" : ""}>${esc(t("orAllow"))}</option>
+                <option value="false" ${modelProviders[m.id]?.allowFallbacks === false ? "selected" : ""}>${esc(t("orDeny"))}</option>
+              </select>
+            </label>
+          </div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="row">
         <label class="field" style="flex-direction:row;align-items:center;gap:6px">
           <input type="checkbox" id="or-enabled" ${settings.openrouterEnabled ? "checked" : ""} data-action="providerToggleChanged" data-on="change">
           <span>${t("sourceEnabled")}</span>
         </label>
         <span class="spacer"></span>
         <button class="btn small" data-action="saveKeys">${t("save")}</button>
+        <button class="ghost small" data-action="loadProviderModels" data-id="openrouter" ${S.busy["models-openrouter"] ? "disabled" : ""}>${t("loadModels")}</button>
         <button class="ghost small" data-action="openrouterRefresh" ${S.busy.openrouter ? "disabled" : ""}>${t("refresh")}</button>
       </div>
+      ${S.providerModelsError?.openrouter ? `<div class="footnote mono">${esc(S.providerModelsError.openrouter)}</div>` : ""}
       ${historyStrip("openrouter")}
     </div>
+
   </div>`;
 }
 
 function openCodeCard(settings) {
   const configured = !!(settings.opencodeKey || "").trim();
-  const count = S.models ? S.models.filter((m) => String(m.id || "").startsWith("opencode/")).length : null;
+  const error = S.providerModelsError.opencode;
   return `
   <div class="card provider-card">
     <h2>${t("opencode")} ${providerKeyPill(configured)}</h2>
     <div class="stat-grid">
-      ${providerMetric(t("modelsAvailable"), count === null ? "—" : count)}
+      ${providerMetric(t("modelsAvailable"), providerModelCount("opencode"))}
       ${providerMetric(t("sessionSpend"), formatMoney(sessionProviderSpend("opencode")))}
     </div>
     <div class="stack" style="margin-top:12px">
@@ -693,8 +824,42 @@ function openCodeCard(settings) {
         </label>
         <span class="spacer"></span>
         <button class="btn small" data-action="saveKeys">${t("save")}</button>
+        <button class="ghost small" data-action="loadProviderModels" data-id="opencode" ${S.busy["models-opencode"] ? "disabled" : ""}>${t("loadModels")}</button>
       </div>
+      ${error ? `<div class="footnote mono">${esc(error)}</div>` : ""}
       <div class="footnote">${t("ocHint")}</div>
+    </div>
+  </div>`;
+}
+
+function commandCodeCard(settings) {
+  const configured = !!(settings.commandcodeKey || "").trim();
+  const error = S.providerModelsError.commandcode;
+  const rows = Array.isArray(settings.commandcodeModels) ? settings.commandcodeModels : [];
+  const anthropic = rows.filter((row) => row && row.anthropicOnly === true).length;
+  return `
+  <div class="card provider-card">
+    <h2>${t("commandcode")} ${providerKeyPill(configured)}</h2>
+    <div class="stat-grid">
+      ${providerMetric(t("modelsAvailable"), providerModelCount("commandcode"))}
+      ${providerMetric(t("ccAnthropicModels"), rows.length ? anthropic : "—")}
+      ${providerMetric(t("sessionSpend"), formatMoney(sessionProviderSpend("commandcode")))}
+    </div>
+    <div class="stack" style="margin-top:12px">
+      <label class="field">${t("ccKey")}
+        <input type="password" id="cc-key" value="${esc(settings.commandcodeKey || "")}" placeholder="cmd_…">
+      </label>
+      <div class="row">
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+          <input type="checkbox" id="cc-enabled" ${settings.commandcodeEnabled ? "checked" : ""} data-action="providerToggleChanged" data-on="change">
+          <span>${t("sourceEnabled")}</span>
+        </label>
+        <span class="spacer"></span>
+        <button class="btn small" data-action="saveKeys">${t("save")}</button>
+        <button class="ghost small" data-action="loadProviderModels" data-id="commandcode" ${S.busy["models-commandcode"] ? "disabled" : ""}>${t("loadModels")}</button>
+      </div>
+      ${error ? `<div class="footnote mono">${esc(error)}</div>` : ""}
+      <div class="footnote">${t("ccHint")}</div>
     </div>
   </div>`;
 }
@@ -724,6 +889,32 @@ function deepInfraCard(settings) {
       </div>
       ${error ? `<div class="footnote mono">${esc(error)}</div>` : ""}
       <div class="footnote">${t("diHint")}</div>
+    </div>
+  </div>`;
+}
+
+function nvidiaCard(settings) {
+  const configured = !!(settings.nvidiaKey || "").trim();
+  const error = S.providerModelsError.nvidia;
+  return `
+  <div class="card provider-card">
+    <h2>NVIDIA ${providerKeyPill(configured)}</h2>
+    <div class="stat-grid">${providerMetric(t("modelsAvailable"), providerModelCount("nvidia"))}</div>
+    <div class="stack" style="margin-top:12px">
+      <label class="field">${t("nvidiaKey")}
+        <input type="password" id="nvidia-key" value="${esc(settings.nvidiaKey || "")}" autocomplete="off">
+      </label>
+      <div class="row">
+        <label class="field" style="flex-direction:row;align-items:center;gap:6px">
+          <input type="checkbox" id="nvidia-enabled" ${settings.nvidiaEnabled ? "checked" : ""} data-action="providerToggleChanged" data-on="change">
+          <span>${t("sourceEnabled")}</span>
+        </label>
+        <span class="spacer"></span>
+        <button class="btn small" data-action="saveKeys">${t("save")}</button>
+        <button class="ghost small" data-action="loadProviderModels" data-id="nvidia" ${S.busy["models-nvidia"] ? "disabled" : ""}>${t("loadModels")}</button>
+      </div>
+      ${error ? `<div class="footnote mono">${esc(error)}</div>` : ""}
+      <div class="footnote">${t("nvidiaHint")}</div>
     </div>
   </div>`;
 }
@@ -893,6 +1084,13 @@ function poolModalRefresh() {
   poolModalFooterRefresh();
 }
 
+/// Opening the dialog moves focus into it: the search field is the first stop
+/// and the reason the dialog exists.
+function focusPoolSearch() {
+  const input = document.getElementById("pool-search");
+  if (input) input.focus();
+}
+
 function poolModal() {
   const modal = S.poolModal;
   if (!modal) return "";
@@ -903,14 +1101,20 @@ function poolModal() {
     ? `${t("models")} · ${account ? account.email || account.displayName : modal.accountId}`
     : t("poolTitle");
   const draftEmpty = modal.mode === "account" && !(S.poolDraft || []).length;
-  return `<div class="modal" id="pool-modal"><div class="modal-card pool-modal-card">
+  return `<div class="modal" id="pool-modal" role="dialog" aria-modal="true" aria-labelledby="pool-title"><div class="modal-card pool-modal-card">
     <div class="modal-head">
-      <h2>${esc(title)}</h2>
+      <h2 id="pool-title">${esc(title)}</h2>
       <button type="button" class="onboarding-close" title="${esc(t("poolCloseLabel"))}" aria-label="${esc(t("poolCloseLabel"))}" data-action="poolClose">×</button>
     </div>
     <div class="subtitle" style="margin-bottom:10px">${esc(t("poolSubtitle"))}</div>
     <div class="row">
-      <input type="text" id="pool-search" placeholder="${esc(t("modelsSearch"))}" value="${esc(S.poolQuery || "")}" data-action="poolSearch" data-on="input">
+      ${searchField({
+        id: "pool-search",
+        value: S.poolQuery,
+        placeholder: t("modelsSearch"),
+        action: "poolSearch",
+        clearAction: "poolClearSearch",
+      })}
       <button class="ghost small" data-action="poolRefresh" ${S.busy["pool-refresh"] ? "disabled" : ""}>${t("loadModels")}</button>
       ${modal.mode === "account" ? `<button class="ghost small" data-action="poolSelectAll">${t("poolAll")}</button>
       <button class="ghost small" data-action="poolClearAll">${t("poolClear")}</button>` : ""}
@@ -951,59 +1155,304 @@ function codexPoolCard() {
   </div>`;
 }
 
-function providersPage() {
-  const settings = S.settings || {};
+/// Aliases a client can call right now: those the gateway publishes plus the
+/// ones the local router confirmed with its own key. The router answers 401 to
+/// an unauthenticated catalogue read, so its list is only trusted when the
+/// probe carried the credential (`verified`).
+function localAiServedModels() {
+  const gateway = (S.models || [])
+    .map((model) => String((model && model.id) || ""))
+    .filter((id) => id.startsWith("local/"));
+  const catalogue = S.localAi.apiCatalogue || {};
+  const router = (catalogue.verified ? catalogue.models || [] : []).map((id) => {
+    const value = String(id || "");
+    return value.startsWith("local/") ? value : `local/${value}`;
+  });
+  return [...new Set([...gateway, ...router])];
+}
+
+function localAiConnectionCard() {
+  const rt = S.localAi.runtime || {};
+  const models = S.localAi.models || [];
+  // "Available" follows the local router as well as the gateway catalogue.
+  // The router is the thing that actually serves the model; a gateway that is
+  // still republishing used to report 0 here while requests succeeded.
+  const served = localAiServedModels();
+  return `<div class="card">
+    <h2>Local AI ${localAiEngineBadge()}</h2>
+    <div class="provider-metrics">
+      ${providerMetric(t("localAiModels"), models.length)}
+      ${providerMetric(t("modelsAvailable"), served.length)}
+    </div>
+    <div class="footnote">${esc(t("localAiConnectionHint"))}</div>
+    ${rt.currentModel ? `<div class="mono hint">${esc(rt.currentModel.displayName || rt.currentModel.id)}</div>` : ""}
+    ${rt.error ? `<div class="footnote danger">${esc(rt.error)}</div>` : ""}
+    ${rt.publicationError ? `<div class="footnote danger">${esc(rt.publicationError)}</div>` : ""}
+    ${S.localAi.connectionCheck ? `<div class="footnote ${S.localAi.connectionCheck.ok ? "ok" : "danger"}">${esc(S.localAi.connectionCheck.text)}</div>` : ""}
+    <div class="row"><span class="spacer"></span>
+      <button class="ghost small" data-action="localAiConnectionsCheck" ${S.busy && S.busy.localAiCheck ? "disabled" : ""}>${esc(t("localAiCheck"))}</button>
+      <button class="ghost small" data-action="localAiConnectionsRefresh">${esc(t("refresh"))}</button>
+      <button class="btn small" data-action="localAiConnectionsOpen">${esc(t("localAiModels"))}</button>
+    </div>
+  </div>`;
+}
+
+function providerFilteredModels() {
   const models = S.models || [];
   const query = String(S.modelsQuery || "").trim().toLowerCase();
-  const filtered = query
-    ? models.filter((m) => {
-        // Ids and display names are both searchable; the list stays deduped
-        // upstream in modelsLoad.
-        const haystack = `${m.id || ""} ${m.displayName || m.display_name || ""}`.toLowerCase();
-        return haystack.includes(query);
-      })
-    : models;
+  return models.filter((m) => {
+    if (!query) return true;
+    const haystack = `${m.id || ""} ${m.displayName || m.display_name || ""}`.toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function customProviderLabelForModel(id) {
+  const providers = (S.settings && Array.isArray(S.settings.customProviders))
+    ? S.settings.customProviders
+    : [];
+  const match = providers.find((provider) => {
+    const prefix = String(provider.id || "").trim();
+    return prefix && String(id).startsWith(prefix + "/");
+  });
+  return match ? String(match.name || match.id || "").trim() : "";
+}
+
+function providerModelRowsMarkup() {
+  return providerFilteredModels().slice(0, 400).map((m) => {
+    const id = String(m.id || "");
+    const custom = customProviderLabelForModel(id);
+    // Antigravity membership wins over the claude- prefix: it serves
+    // claude-*/gemini-*/gpt-oss ids, so prefix alone would mislabel them.
+    const provider = S.antigravityIds && S.antigravityIds.has(id)
+      ? "Antigravity"
+      : id.startsWith("local/") || m.owned_by === "melon-local-ai" || m.owned_by === "local" ? "Local AI"
+      : id.startsWith("opencode/") ? "OpenCode"
+      : id.startsWith("openrouter/") ? "OpenRouter"
+      : id.startsWith("deepinfra/") ? "DeepInfra"
+      : id.startsWith("nvidia/") ? "NVIDIA"
+      : id.startsWith("vercel/") ? "Vercel"
+      : id.startsWith("zai/") ? "Z.ai"
+      : id.startsWith("commandcode/") ? "CommandCode"
+      : custom || (id.startsWith("claude-") ? "Claude" : "OpenAI");
+    return `<div class="row" style="padding:3px 0;gap:8px">
+      <span class="pill ${provider === "OpenAI" ? "gold" : ""}">${provider}</span>
+      <span class="mono" style="font-size:11px">${esc(id)}</span>
+    </div>`;
+  }).join("") || `<div class="footnote">${t("noCalls")}</div>`;
+}
+
+// MARK: - Custom providers
+
+const CUSTOM_PROTOCOLS = [
+  { id: "openai-chat", label: "customProtocolChat" },
+  { id: "openai-responses", label: "customProtocolResponses" },
+  { id: "anthropic", label: "customProtocolAnthropic" },
+  { id: "gemini", label: "customProtocolGemini" },
+];
+
+// Mirrors RESERVED_IDENTIFIERS in src-tauri/src/custom.rs.
+const CUSTOM_RESERVED_IDS = [
+  "openrouter", "opencode", "commandcode", "deepinfra", "nvidia",
+  "vercel", "zai", "claude", "antigravity", "local", "melon-local-ai",
+];
+
+function customProtocolLabel(id) {
+  const protocol = CUSTOM_PROTOCOLS.find((item) => item.id === id);
+  return t(protocol ? protocol.label : "customProtocolChat");
+}
+
+function customBaseHint(protocol) {
+  switch (protocol) {
+    case "openai-responses": return t("customHintResponses");
+    case "anthropic": return t("customHintAnthropic");
+    case "gemini": return t("customHintGemini");
+    default: return t("customHintChat");
+  }
+}
+
+function customProviderRows(settings) {
+  const list = Array.isArray(settings.customProviders) ? settings.customProviders : [];
+  if (!list.length) {
+    return `<div class="custom-providers-empty">${esc(t("customProviderEmpty"))}</div>`;
+  }
+  return list.map((provider) => {
+    const enabled = provider.enabled !== false;
+    const models = (provider.models || []).filter((model) => model.enabled && String(model.id || "").trim());
+    return `<div class="custom-provider-row">
+      <div class="custom-provider-ident">
+        <span class="custom-provider-name">${esc(provider.name || provider.id)}</span>
+        <span class="mono">${esc(provider.id)}</span>
+      </div>
+      <span class="pill">${esc(customProtocolLabel(provider.protocol))}</span>
+      <span class="footnote">${models.length} ${esc(t("modelsCount"))}</span>
+      <span class="spacer"></span>
+      <label class="custom-provider-toggle" title="${esc(t("customProviderEnabled"))}">
+        <input type="checkbox" ${enabled ? "checked" : ""} data-action="customProviderToggle" data-id="${esc(provider.id)}" data-on="change">
+        <span class="sr-only">${esc(t("customProviderEnabled"))}</span>
+      </label>
+      <button class="ghost small" data-action="customProviderOpen" data-id="${esc(provider.id)}">${esc(t("customProviderEdit"))}</button>
+      <button class="ghost small custom-provider-delete" data-action="customProviderDelete" data-id="${esc(provider.id)}">${esc(t("customProviderDelete"))}</button>
+    </div>`;
+  }).join("");
+}
+
+function customProvidersCard(settings) {
+  const list = Array.isArray(settings.customProviders) ? settings.customProviders : [];
+  return `
+  <div class="card custom-providers-card">
+    <h2>${esc(t("customProvidersTitle"))} <span class="hint">${list.length}</span></h2>
+    <div class="row">
+      <span class="footnote">${esc(t("customProvidersHint"))}</span>
+      <span class="spacer"></span>
+      <button class="ghost small" data-action="customProviderOpen">${esc(t("customProviderAdd"))}</button>
+    </div>
+    <div class="custom-provider-list">${customProviderRows(settings)}</div>
+  </div>`;
+}
+
+function customModelRow(model, index) {
+  return `<div class="custom-model-row">
+    <input type="checkbox" ${model.enabled !== false ? "checked" : ""} data-action="customModelToggle" data-id="${index}" data-on="change" aria-label="${esc(t("customProviderEnabled"))}">
+    <input class="mono" value="${esc(model.id)}" placeholder="${esc(t("customModelId"))}" data-action="customModelField" data-id="${index}" data-field="id" data-on="input" aria-label="${esc(t("customModelId"))}">
+    <input value="${esc(model.display)}" placeholder="${esc(t("customModelDisplay"))}" data-action="customModelField" data-id="${index}" data-field="display" data-on="input" aria-label="${esc(t("customModelDisplay"))}">
+    <input type="number" min="1" step="1" value="${model.contextWindow ? esc(model.contextWindow) : ""}" placeholder="${esc(t("customModelContext"))}" data-action="customModelField" data-id="${index}" data-field="contextWindow" data-on="input" aria-label="${esc(t("customModelContext"))}">
+    <button type="button" class="ghost small custom-model-remove" data-action="customModelRemove" data-id="${index}" title="${esc(t("customModelRemove"))}" aria-label="${esc(t("customModelRemove"))}">×</button>
+  </div>`;
+}
+
+function customModelsMarkup() {
+  const draft = S.customDraft;
+  const models = draft ? draft.models || [] : [];
+  if (!models.length) {
+    return `<div class="custom-models-empty">
+      <span class="custom-models-mark">◇</span>
+      <strong>${esc(t("customModelsEmpty"))}</strong>
+      <span>${esc(t("customModelsEmptyHint"))}</span>
+    </div>`;
+  }
+  return `<div class="custom-model-head">
+    <span></span><span>${esc(t("customModelId"))}</span><span>${esc(t("customModelDisplay"))}</span><span>${esc(t("customModelContext"))}</span><span></span>
+  </div>${models.map(customModelRow).join("")}`;
+}
+
+function customProviderStatusMarkup() {
+  const draft = S.customDraft;
+  if (!draft) return "";
+  if (draft.error) return `<span class="custom-status error">${esc(draft.error)}</span>`;
+  if (draft.status) return `<span class="custom-status">${esc(draft.status)}</span>`;
+  return "";
+}
+
+function customProviderModal() {
+  const draft = S.customDraft;
+  if (!draft) return "";
+  const editing = !!draft.editing;
+  const title = editing ? t("customProviderEditTitle") : t("customProviderNewTitle");
+  const busy = S.busy["custom-provider-save"];
+  return `<div class="modal" id="custom-provider-modal" role="dialog" aria-modal="true" aria-labelledby="custom-provider-title"><div class="modal-card custom-provider-card">
+    <div class="modal-head">
+      <div>
+        <h2 id="custom-provider-title">${esc(title)}</h2>
+        <div class="modal-sub">${esc(t("customProviderSubtitle"))}</div>
+      </div>
+      <button type="button" class="onboarding-close" title="${esc(t("customProviderCancel"))}" aria-label="${esc(t("customProviderCancel"))}" data-action="customProviderClose">×</button>
+    </div>
+    <div class="custom-provider-form">
+      <div class="row custom-provider-pair">
+        <label class="field">${esc(t("customProviderId"))}
+          <input id="custom-id" value="${esc(draft.id)}" placeholder="acme-gateway" autocomplete="off" spellcheck="false" ${editing ? "disabled" : ""} data-action="customProviderField" data-field="id" data-on="input">
+          <span class="footnote">${esc(t("customProviderIdHint"))}</span>
+        </label>
+        <label class="field">${esc(t("customProviderName"))}
+          <input id="custom-name" value="${esc(draft.name)}" placeholder="Acme Gateway" autocomplete="off" data-action="customProviderField" data-field="name" data-on="input">
+        </label>
+      </div>
+      <label class="field">${esc(t("customProviderBaseUrl"))}
+        <input id="custom-base" value="${esc(draft.baseUrl)}" placeholder="https://gateway.example/v1" autocomplete="off" spellcheck="false" data-action="customProviderField" data-field="baseUrl" data-on="input">
+        <span class="footnote" id="custom-base-hint">${esc(customBaseHint(draft.protocol))}</span>
+      </label>
+      <label class="field">${esc(t("customProviderProtocol"))}
+        <select data-action="customProviderField" data-field="protocol" data-on="change">
+          ${CUSTOM_PROTOCOLS.map((protocol) => `<option value="${protocol.id}" ${draft.protocol === protocol.id ? "selected" : ""}>${esc(t(protocol.label))}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">${esc(t("customProviderKey"))}
+        <input id="custom-key" type="password" value="${esc(draft.apiKey)}" autocomplete="new-password" spellcheck="false" data-action="customProviderField" data-field="apiKey" data-on="input">
+        <span class="footnote">${esc(t("customProviderKeyHint"))}</span>
+      </label>
+      <div class="custom-models-section">
+        <div class="row">
+          <span class="custom-section-title">${esc(t("models"))}</span>
+          <span class="spacer"></span>
+          <button type="button" class="ghost small" data-action="customProviderFetch" ${draft.fetching ? "disabled" : ""}>${esc(draft.fetching ? t("customProviderFetching") : t("customProviderFetch"))}</button>
+        </div>
+        <div id="custom-models">${customModelsMarkup()}</div>
+        <button type="button" class="custom-add-model" data-action="customModelAdd">${esc(t("customProviderAddModel"))}</button>
+      </div>
+      <div id="custom-status" class="custom-status-row" role="status" aria-live="polite">${customProviderStatusMarkup()}</div>
+    </div>
+    <div class="row custom-provider-actions">
+      <button type="button" class="ghost" data-action="customProviderClose">${esc(t("cancel"))}</button>
+      <button type="button" class="btn" id="custom-save" data-action="customProviderSave" ${busy ? "disabled" : ""}>${esc(editing ? t("customProviderSave") : t("customProviderCreate"))}</button>
+    </div>
+  </div></div>`;
+}
+
+/// Patches the sheet in place after a model operation. Re-rendering the page
+/// would drop focus out of a half-typed model id.
+function customProviderModalRefresh() {
+  const draft = S.customDraft;
+  if (!draft) return;
+  const models = document.getElementById("custom-models");
+  if (models) models.innerHTML = customModelsMarkup();
+  const status = document.getElementById("custom-status");
+  if (status) status.innerHTML = customProviderStatusMarkup();
+  const fetchButton = document.querySelector('#custom-provider-modal [data-action="customProviderFetch"]');
+  if (fetchButton) {
+    fetchButton.disabled = !!draft.fetching;
+    fetchButton.textContent = draft.fetching ? t("customProviderFetching") : t("customProviderFetch");
+  }
+}
+
+function providersPage() {
+  const settings = S.settings || {};
 
   return `
   ${pageHead("codex", t("providers"), t("providersSub"))}
   ${poolPauseBanner()}
   ${codexPoolCard()}
+  ${localAiConnectionCard()}
   ${openRouterCard(settings)}
   ${openCodeCard(settings)}
+  ${commandCodeCard(settings)}
   ${deepInfraCard(settings)}
+  ${nvidiaCard(settings)}
   ${vercelCard(settings)}
   ${zaiCard(settings)}
   ${claudeCard(settings)}
   ${antigravityCard()}
+  ${customProvidersCard(settings)}
   ${diagnosticsCard()}
 
   <div class="card">
-    <h2>${t("models")} <span class="hint">${filtered.length} ${t("modelsCount")}</span></h2>
+    <h2>${t("models")} <span class="hint" id="provider-models-count">${providerFilteredModels().length} ${t("modelsCount")}</span></h2>
     <div class="row">
-      <input type="text" id="models-search" placeholder="${t("modelsSearch")}" value="${esc(S.modelsQuery || "")}" data-action="modelsSearch" data-on="input">
+      ${searchField({
+        id: "models-search",
+        value: S.modelsQuery,
+        placeholder: t("modelsSearch"),
+        action: "modelsSearch",
+        clearAction: "modelsClearSearch",
+      })}
       <button class="ghost small" data-action="modelsLoad">${t("refresh")}</button>
     </div>
-    <div style="max-height:420px;overflow:auto;margin-top:10px">
-      ${filtered.slice(0, 400).map((m) => {
-        const id = String(m.id || "");
-        // Antigravity membership wins over the claude- prefix: it serves
-        // claude-*/gemini-*/gpt-oss ids, so prefix alone would mislabel them.
-        const provider = S.antigravityIds && S.antigravityIds.has(id)
-          ? "Antigravity"
-          : id.startsWith("opencode/") ? "OpenCode"
-          : id.startsWith("openrouter/") ? "OpenRouter"
-          : id.startsWith("deepinfra/") ? "DeepInfra"
-          : id.startsWith("vercel/") ? "Vercel"
-          : id.startsWith("zai/") ? "Z.ai"
-          : id.startsWith("claude-") ? "Claude" : "OpenAI";
-        return `<div class="row" style="padding:3px 0;gap:8px">
-          <span class="pill ${provider === "OpenAI" ? "gold" : ""}">${provider}</span>
-          <span class="mono" style="font-size:11px">${esc(id)}</span>
-        </div>`;
-      }).join("") || `<div class="footnote">${t("noCalls")}</div>`}
+    <div id="provider-model-list" style="max-height:420px;overflow:auto;margin-top:10px">
+      ${providerModelRowsMarkup()}
     </div>
   </div>
-  ${poolModal()}`;
+  ${poolModal()}
+  ${customProviderModal()}`;
 }
 
 function donatePage() {
@@ -1129,7 +1578,7 @@ function settingsPage() {
     <h2>${t("qosCard")}</h2>
     <div class="stack">
       <label class="field">${t("firstTokenTimeout")}
-        <input class="small" type="number" id="set-stream-timeout" min="0" max="300" step="15" value="${settings.streamBootstrapTimeoutSeconds ?? 60}">
+        <input class="small" type="number" id="set-stream-timeout" min="0" max="300" step="15" value="${settings.streamBootstrapTimeoutSeconds ?? 180}">
       </label>
       <div class="footnote" style="margin-top:0">${t("qosHint")}</div>
     </div>
@@ -1254,8 +1703,10 @@ function schedulerGroupLabel(id) {
     case "opencode": return t("sgOpenCode");
     case "openrouter": return t("sgOpenRouter");
     case "deepinfra": return t("sgDeepInfra");
+    case "nvidia": return "NVIDIA";
     case "vercel": return t("sgVercel");
     case "zai": return t("sgZai");
+    case "commandcode": return t("sgCommandCode");
     default: return t("sgGateway");
   }
 }
@@ -1664,6 +2115,1136 @@ function schedulerModal() {
       </div>
     </div>
   </div></div>`;
+}
+
+// MARK: - Local AI (GGUF / llama-server)
+
+function localAiEngineBadge() {
+  const rt = S.localAi.runtime;
+  if (!rt) {
+    return `<span class="pill">${t("localAiStatusStopped")}</span>`;
+  }
+  if (rt.isRunning) {
+    const model = (S.localAi.models || []).find((m) => m.id === rt.modelId);
+    const modelName = model ? model.displayName || model.id : rt.modelId || "";
+    return `<span class="pill ok"><span class="dot ok"></span> ${t("localAiStatusRunning")}${modelName ? `: ${esc(modelName)}` : ""}</span>`;
+  }
+  if (rt.isStarting) {
+    return `<span class="pill warn"><span class="dot warn"></span> ${t("localAiStatusLoading")}</span>`;
+  }
+  if (rt.error) {
+    return `<span class="pill danger"><span class="dot err"></span> ${t("localAiStatusFailed")}</span>`;
+  }
+  return `<span class="pill">${t("localAiStatusStopped")}</span>`;
+}
+
+function localAiSubtabs() {
+  const current = S.localAi.tab || "models";
+  const tabs = [
+    { id: "models", label: t("localAiModels"), icon: "cpu" },
+    { id: "catalog", label: t("localAiCatalog"), icon: "cube" },
+    { id: "downloads", label: t("localAiDownloads"), icon: "download", badge: S.localAi.activeDownloadCount || 0 },
+    { id: "runtime", label: t("localAiRuntime"), icon: "terminal" },
+    { id: "settings", label: t("localAiSettings"), icon: "gear" },
+  ];
+
+  return `
+  <div class="subtabs-bar">
+    <div class="subtabs-list">
+      ${tabs.map((tab) => `
+        <button class="subtab-btn ${current === tab.id ? "active" : ""}" data-action="localAiTab" data-id="${tab.id}">
+          <span>${esc(tab.label)}</span>
+          ${tab.badge ? `<span class="badge">${tab.badge}</span>` : ""}
+        </button>
+      `).join("")}
+    </div>
+    <div class="subtabs-status">
+      ${localAiEngineBadge()}
+    </div>
+  </div>`;
+}
+
+/// True when the running engine was launched with older `userSettings` than
+/// the registry now holds. Restarting the model rewrites `models.ini` and
+/// clears it; until then the card shows "Restart required".
+function localAiPendingChanges(model) {
+  const rt = S.localAi.runtime;
+  if (!rt || !rt.isRunning || !rt.appliedSettings) return false;
+  if (!rt.currentModel || rt.currentModel.id !== model.id) return false;
+  return JSON.stringify(rt.appliedSettings) !== JSON.stringify(model.userSettings || {});
+}
+
+function localAiRegistryBanner() {
+  const health = S.localAi.registry;
+  if (!health || !health.readOnly) return "";
+  return `
+    <div class="card local-ai-registry-error">
+      <div class="card-header-row">
+        <h3>${esc(t("localAiRegistryError"))}</h3>
+        <button class="btn small danger" data-action="localAiRegistryRecover">${esc(t("localAiRegistryRecover"))}</button>
+      </div>
+      <div class="footnote">${esc(health.error || "")}</div>
+      ${health.backupPath ? `<div class="mono hint">${esc(health.backupPath)}</div>` : ""}
+    </div>`;
+}
+
+// SF-Symbols-style glyphs for the Local AI cards. The shell icon set (ICONS)
+// only carries navigation glyphs; these buttons need the Mac vocabulary.
+const LOCAL_AI_ICONS = {
+  search: '<circle cx="11" cy="11" r="7"/><path d="m16.4 16.4 4.1 4.1"/>',
+  drive: '<rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="M3 13.5h18"/>',
+  download: '<path d="M12 3v11"/><path d="m8 10.5 4 4 4-4"/><path d="M4 19.5h16"/>',
+  play: '<path d="M7 4.6 19 12 7 19.4Z" fill="currentColor" stroke="none"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.6" fill="currentColor" stroke="none"/>',
+  sparkles: '<path d="M11.5 3.5 13.3 8l4.5 1.8-4.5 1.8-1.8 4.5-1.8-4.5L5.2 9.8 9.7 8Z"/><path d="m18.3 15.4.9 2.2 2.2.9-2.2.9-.9 2.2-.9-2.2-2.2-.9 2.2-.9Z"/>',
+  gear: '<circle cx="12" cy="12" r="3.3"/><path d="M19.3 14a7.6 7.6 0 0 0 0-4l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-3.4-2L13.1 2h-2.2l-.4 3.4a7.6 7.6 0 0 0-3.4 2l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 4l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 3.4 2l.4 3.4h2.2l.4-3.4a7.6 7.6 0 0 0 3.4-2l2.4 1 2-3.4Z"/>',
+  ellipsis: '<circle cx="5.4" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.6" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
+  chevron: '<path d="m6 9.5 6 6 6-6"/>',
+  check: '<path d="m5 12.6 4.4 4.4L19 7.6"/>',
+  copy: '<rect x="9" y="9" width="11.5" height="11.5" rx="2"/><path d="M15 9V6.2A2.2 2.2 0 0 0 12.8 4H6.2A2.2 2.2 0 0 0 4 6.2v6.6A2.2 2.2 0 0 0 6.2 15H9"/>',
+  folder: '<path d="M3 6.8A1.8 1.8 0 0 1 4.8 5h4l2 2.4h6.4A1.8 1.8 0 0 1 19 9.2v8A1.8 1.8 0 0 1 17.2 19H4.8A1.8 1.8 0 0 1 3 17.2Z"/>',
+  trash: '<path d="M4 7h16"/><path d="M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7"/><path d="m6.5 7 .9 12.2A1.4 1.4 0 0 0 8.8 20.5h6.4a1.4 1.4 0 0 0 1.4-1.3L17.5 7"/>',
+  archive: '<rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5.5 9v9.3A1.7 1.7 0 0 0 7.2 20h9.6a1.7 1.7 0 0 0 1.7-1.7V9"/><path d="M10 13h4"/>',
+  book: '<path d="M4.5 5.4A2.4 2.4 0 0 1 6.9 3h12.6v14.4H6.9a2.4 2.4 0 0 0-2.4 2.4Z"/><path d="M4.5 19.8a2.4 2.4 0 0 1 2.4-2.4h12.6V21H6.9a2.4 2.4 0 0 1-2.4-1.2Z"/>',
+  layers: '<path d="M12 3 3.5 7.6 12 12.2l8.5-4.6L12 3Z"/><path d="m3.5 12.4 8.5 4.6 8.5-4.6"/>',
+  cpu: '<rect x="7.5" y="7.5" width="9" height="9" rx="1.4"/><path d="M10 2.5v3M14 2.5v3M10 18.5v3M14 18.5v3M2.5 10h3M2.5 14h3M18.5 10h3M18.5 14h3"/>',
+  wrench: '<path d="M16.2 4.2a4.6 4.6 0 0 0-5 6.6L4.6 18.3a1.9 1.9 0 0 0 2.7 2.7l7.5-6.7a4.6 4.6 0 0 0 5.8-5.7l-2.7 2.3-2.6-2.6Z"/>',
+  photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.7"/><path d="m4 18.5 5.2-5 3.8 3.6 2.8-2.4L20 18"/>',
+  x: '<path d="m6 6 12 12M18 6 6 18"/>',
+  cube: '<path d="M12 2.8 20.6 7.4v9.2L12 21.2 3.4 16.6V7.4Z"/><path d="M3.4 7.4 12 12l8.6-4.6"/><path d="M12 12v9.2"/>',
+  sidebar: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M14.5 4.5v15"/>',
+  key: '<circle cx="8.2" cy="15.8" r="4.2"/><path d="m11.3 12.7 8.2-8.2"/><path d="m16.4 7.6 2.2 2.2"/><path d="m19 5 1.6 1.6"/>',
+  heart: '<path d="M12 20.2s-7.4-4.4-7.4-9.4a4.2 4.2 0 0 1 7.4-2.6 4.2 4.2 0 0 1 7.4 2.6c0 5-7.4 9.4-7.4 9.4Z"/>',
+  retry: '<path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.5 4v5h-5"/>',
+  memory: '<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v3M12 17v3M17 17v3"/><path d="M7 11h.01M12 11h.01M17 11h.01"/>',
+  chip: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
+  downloadCircle: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v8"/><path d="m8.6 12.2 3.4 3.4 3.4-3.4"/>',
+};
+
+/// Dropdown in the app's own design language.
+///
+/// A native `<select>` is drawn by WebView2 with the system popup and a blue
+/// focus ring that CSS cannot remove, so every picker is a `<details>` popover
+/// with the same rows as the card menus.
+function localAiSettingSelect(id, options, value, action, label) {
+  const current = options.find(([optionValue]) => optionValue === value) || options[0];
+  return `<details class="hf-select hf-select-wide" data-sync="${esc(id)}"><summary aria-label="${esc(label)}">
+    <span class="hf-select-main"><strong data-selected-label>${esc(current ? current[1] : value)}</strong></span>${localAiIcon("chevron", 11)}
+  </summary><div class="local-ai-menu-panel hf-select-panel hf-variant-panel">
+    ${options.map(([optionValue, optionLabel]) => `<button class="local-ai-menu-item ${optionValue === value ? "selected" : ""}" value="${esc(optionValue)}" data-action="${esc(action)}">${esc(optionLabel)}${localAiIcon("check", 12)}</button>`).join("")}
+  </div></details>`;
+}
+
+function localAiIcon(name, size) {
+  const glyph = LOCAL_AI_ICONS[name] || "";
+  const px = size || 13;
+  return `<svg class="local-ai-icon" width="${px}" height="${px}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${glyph}</svg>`;
+}
+
+/// One search field for every list and dialog: leading glyph, a bare input and
+/// exactly one clear button. The wrapper owns the frame; the input draws none,
+/// so a WebView2 focus ring cannot stack a second border inside it. The wrapper
+/// is a plain <div>, not a <label>: a label around the clear button forwards
+/// clicks to the input, and the delegated mousedown in app.js focuses the input
+/// for clicks on the glyph and the padding instead.
+function searchField(options) {
+  const value = options.value === null || options.value === undefined ? "" : String(options.value);
+  const label = options.label || options.placeholder;
+  return `<div class="search-field">
+    ${localAiIcon("search", 13)}<input id="${esc(options.id)}" type="search" placeholder="${esc(options.placeholder)}" aria-label="${esc(label)}" value="${esc(value)}" data-action="${esc(options.action)}" data-on="input" autocomplete="off" spellcheck="false">
+    <button type="button" class="search-clear" data-action="${esc(options.clearAction)}" title="${esc(t("localAiClearSearch"))}" aria-label="${esc(t("localAiClearSearch"))}" ${value.trim() ? "" : "hidden"}>${localAiIcon("x", 12)}</button>
+  </div>`;
+}
+
+/// Keeps the clear button of a rendered search field in sync without touching
+/// the input, its caret or its focus.
+function searchClearSync(input, value) {
+  const field = input && input.closest ? input.closest(".search-field") : null;
+  const clear = field ? field.querySelector(".search-clear") : null;
+  if (clear) clear.hidden = !String(value === null || value === undefined ? "" : value).trim();
+}
+
+/// Metadata chip of the Mac card: glyph plus value, no border.
+function localAiBadge(icon, text) {
+  return `<span class="meta-badge">${localAiIcon(icon)}${esc(text)}</span>`;
+}
+
+function localAiModelsTab() {
+  const models = S.localAi.models || [];
+  const totalBytes = models.reduce((acc, m) => acc + (m.fileSize || 0), 0);
+  // macOS prints this header as `%.1f GB total`, unlike the two-decimal sizes.
+  const totalDiskStr = formatBytes(totalBytes, 1);
+
+  return `
+  <div class="local-ai-content">
+    <div class="local-ai-toolbar">
+      ${searchField({
+        id: "local-ai-search",
+        value: S.localAi.searchQuery,
+        placeholder: t("localAiSearchPlaceholder"),
+        action: "localAiSearch",
+        clearAction: "localAiClearSearch",
+      })}
+      <span class="spacer"></span>
+      <span class="meta-label">${localAiIcon("drive", 12)}${esc(fmt(t("localAiTotalDisk"), { size: totalDiskStr }))}</span>
+      <button class="btn small" data-action="localAiImport">${localAiIcon("download", 12)}${esc(t("localAiImport"))}</button>
+    </div>
+
+    ${localAiRegistryBanner()}
+
+    <div id="local-ai-model-list">${localAiModelListMarkup()}</div>
+  </div>`;
+}
+
+/// Body of the Модели tab below the toolbar. Kept separate so typing in the
+/// search field can repaint just this block: a full render() would tear the
+/// focused input out from under the caret on every keystroke.
+function localAiModelListMarkup() {
+  const models = S.localAi.models || [];
+  const q = (S.localAi.searchQuery || "").trim().toLowerCase();
+  const filtered = q
+    ? models.filter((m) => {
+        const name = (m.displayName || m.name || "").toLowerCase();
+        const id = (m.id || "").toLowerCase();
+        const quant = (m.quantization || "").toLowerCase();
+        return name.includes(q) || id.includes(q) || quant.includes(q);
+      })
+    : models;
+
+  if (filtered.length === 0) {
+    return `
+      <div class="card empty-state">
+        <div class="empty-icon">${localAiIcon("cpu", 44)}</div>
+        <h3>${esc(models.length === 0 ? t("localAiNoModels") : t("localAiNoMatches"))}</h3>
+        <p class="muted">${esc(models.length === 0 ? t("localAiNoModelsHint") : t("localAiSearchPlaceholder"))}</p>
+        <div class="row" style="justify-content:center;margin-top:16px;gap:8px">
+          ${models.length === 0
+            ? `<button class="btn" data-action="localAiImport">${localAiIcon("download", 12)}${esc(t("localAiImport"))}</button>
+               <button class="ghost" data-action="localAiTab" data-id="catalog">${esc(t("localAiBrowseHf"))}</button>`
+            : `<button class="ghost" data-action="localAiClearSearch">${esc(t("localAiClearSearch"))}</button>`}
+        </div>
+      </div>`;
+  }
+  return `<div class="local-ai-model-list">${filtered.map((m) => localAiModelCard(m)).join("")}</div>`;
+}
+
+function localAiModelCard(model) {
+  const rt = S.localAi.runtime;
+  const isRunningThis = !!(rt && rt.isRunning && rt.currentModel && rt.currentModel.id === model.id);
+  // A launch takes up to a minute while the engine maps weights; without this
+  // the Start button looked dead for the whole wait.
+  const isStartingThis = !!(rt && rt.isStarting && rt.startingModelId === model.id);
+  const isBusy = !!(rt && rt.isStarting);
+  const startError = (rt && rt.failedModelId === model.id) ? rt.error : null;
+  const userSettings = model.userSettings || {};
+  const ctx = userSettings.contextLength || 4096;
+  const sizeStr = formatBytes(model.fileSize || 0);
+  const capabilities = model.capabilities || [];
+  const badges = [
+    localAiBadge("archive", model.quantization || "GGUF"),
+    localAiBadge("drive", sizeStr),
+    localAiBadge("book", `${ctx} ctx`),
+  ];
+  if (model.backend) badges.push(localAiBadge("layers", String(model.backend)));
+  if (model.architecture) badges.push(localAiBadge("cpu", model.architecture));
+  if (capabilities.includes("tools")) badges.push(localAiBadge("wrench", "Tools"));
+  if (capabilities.includes("vision")) badges.push(localAiBadge("photo", "Vision"));
+
+  return `
+  <div class="card local-ai-card ${isRunningThis ? "active-model" : isStartingThis ? "starting-model" : ""}">
+    <div class="card-header-row">
+      <div class="card-title-group">
+        <div class="row" style="gap:6px;align-items:center">
+          <h3 class="model-name">${esc(model.displayName || model.name || model.id)}</h3>
+          ${isRunningThis ? `<span class="pill ok">${esc(t("localAiActive"))}</span>` : ""}
+          ${localAiPendingChanges(model) ? `<span class="pill warn">${esc(t("localAiPending"))}</span>` : ""}
+        </div>
+        <div class="mono hint">${esc(model.id)}</div>
+      </div>
+      <div class="card-actions">
+        ${isStartingThis ? `
+          <span class="pill warn"><span class="spinner-dot"></span>${esc(t("localAiStarting"))}</span>
+        ` : isRunningThis ? `
+          <button class="btn small" data-action="localAiStop" title="${esc(t("localAiStop"))}">
+            ${localAiIcon("stop", 11)}${esc(t("localAiStop"))}
+          </button>
+        ` : `
+          <button class="btn small ok-btn" data-action="localAiStart" data-id="${esc(model.id)}" ${isBusy ? "disabled" : ""}>
+            ${localAiIcon("play", 11)}${esc(t("localAiStart"))}
+          </button>
+        `}
+        <button class="icon-btn" data-action="localAiTestModal" data-id="${esc(model.id)}" title="${esc(t("localAiTest"))}" aria-label="${esc(t("localAiTest"))}">
+          ${localAiIcon("sparkles", 15)}
+        </button>
+        <button class="icon-btn" data-action="localAiSettingsModal" data-id="${esc(model.id)}" title="${esc(t("localAiConfigure"))}" aria-label="${esc(t("localAiConfigure"))}">
+          ${localAiIcon("gear", 15)}
+        </button>
+        <details class="local-ai-menu">
+          <summary class="icon-btn" title="${esc(t("localAiMore"))}" aria-label="${esc(t("localAiMore"))}">${localAiIcon("ellipsis", 15)}</summary>
+          <div class="local-ai-menu-panel">
+            <button class="local-ai-menu-item" data-action="localAiCopyId" data-id="${esc(model.id)}">
+              ${localAiIcon("copy", 13)}${esc(t("localAiCopyId"))}
+            </button>
+            <button class="local-ai-menu-item" data-action="localAiOpenFolder" data-id="${esc(model.id)}">
+              ${localAiIcon("folder", 13)}${esc(t("localAiOpenFolder"))}
+            </button>
+            <div class="local-ai-menu-sep"></div>
+            <button class="local-ai-menu-item danger" data-action="localAiDelete" data-id="${esc(model.id)}">
+              ${localAiIcon("trash", 13)}${esc(t("localAiDeleteModel"))}
+            </button>
+          </div>
+        </details>
+      </div>
+    </div>
+    <div class="card-meta-row">
+      ${badges.join("")}
+    </div>
+    ${isStartingThis ? `
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill indeterminate"></div>
+      </div>
+    ` : ""}
+    ${startError ? `
+      <div class="start-error">
+        <span class="start-error-icon">!</span>
+        <span class="start-error-text">${esc(startError)}</span>
+      </div>
+    ` : ""}
+  </div>`;
+}
+
+/// Recommendation badge of a catalog file: the colour dot plus the wording the
+/// Mac build shows, driven by the backend's real memory estimate.
+function localAiCompatBadge(file) {
+  const rec = (file && file.estimation && file.estimation.recommendation) || "";
+  const key = LOCAL_AI_RECOMMENDATION_KEYS[rec];
+  if (!key) return "";
+  const tint = LOCAL_AI_RECOMMENDATION_TINT[rec] || "muted";
+  return `<span class="compat-badge ${tint}"><span class="compat-dot"></span>${esc(t(key))}</span>`;
+}
+
+function localAiCatalogTab() {
+  const state = S.localAi;
+  const sorts = [["trendingScore", "recommended"], ["likes", "likes"], ["downloads", "downloads"], ["lastModified", "updated"]];
+  return `<div class="hf-catalog">
+    <aside class="hf-sidebar"><div class="hf-searchbar">${searchField({
+      id: "hf-search",
+      value: state.catalogQuery,
+      placeholder: hfText("search"),
+      action: "localAiHfSearchInput",
+      clearAction: "localAiHfClear",
+    })}<button class="icon-btn" data-action="localAiHfTokenModal" title="${esc(t("localAiHfToken"))}" aria-label="${esc(t("localAiHfToken"))}">${localAiIcon("key", 14)}</button></div>
+    <div class="hf-list-toolbar"><span id="hf-search-summary">${esc(state.catalogLoading ? t("loading") : state.catalogQuery ? `${(state.catalogResults || []).length} ${hfText("matches")}` : hfText("popular"))}</span>
+    <details class="hf-select"><summary aria-label="${esc(hfText("recommended"))}"><span>${esc(hfText((sorts.find(([value]) => value === (state.catalogSort || "trendingScore")) || sorts[0])[1]))}</span>${localAiIcon("chevron", 11)}</summary>
+      <div class="local-ai-menu-panel hf-select-panel">${sorts.map(([value, label]) => `<button class="local-ai-menu-item ${(state.catalogSort || "trendingScore") === value ? "selected" : ""}" value="${value}" data-action="localAiHfSort">${localAiIcon("check", 12)}<span>${esc(hfText(label))}</span></button>`).join("")}</div>
+    </details></div>
+    <div id="hf-results" class="hf-results">${hfCatalogResults()}</div></aside>
+    <div class="hf-detail" id="hf-detail">${hfCatalogDetail()}</div></div>`;
+}
+
+function localAiDownloadsTab() {
+  const downloads = S.localAi.downloads || [];
+
+  return `
+  <div class="local-ai-content">
+    <div class="local-ai-toolbar">
+      <h3 class="toolbar-title">${esc(t("localAiDownloadsTitle"))}</h3>
+      <span class="spacer"></span>
+      ${downloads.length === 0 ? "" : `
+        <button class="ghost small" data-action="localAiClearDownloads">
+          ${esc(t("localAiClearCompleted"))}
+        </button>
+      `}
+    </div>
+
+    ${downloads.length === 0 ? `
+      <div class="card empty-state">
+        <div class="empty-icon">${localAiIcon("downloadCircle", 44)}</div>
+        <h3>${esc(t("localAiNoDownloads"))}</h3>
+        <p class="muted">${esc(t("localAiNoDownloadsHint"))}</p>
+      </div>
+    ` : `
+      <div class="downloads-list">
+        ${downloads.map((dl) => {
+          const isDone = dl.status === "completed";
+          const isErr = dl.status === "failed";
+          const isCanceled = dl.status === "canceled";
+          const isDownloading = isDownloadActive(dl);
+          const pct = Math.round((dl.progress || 0) * 100);
+          // A server may omit the total (chunked body), so the bar switches to
+          // an indeterminate sweep instead of freezing at 0% / "0 B".
+          const hasTotal = (dl.totalBytes || 0) > 0;
+
+          return `
+            <div class="card download-card ${isDone ? "done" : isErr ? "err" : ""}">
+              <div class="card-header-row">
+                <div>
+                  <div class="download-name mono">${esc(dl.filename || dl.modelId)}</div>
+                  <div class="hint">${esc(dl.repoId || "")}</div>
+                </div>
+                <div class="card-actions">
+                  ${isDownloading ? `
+                    <button class="ghost small danger" data-action="localAiCancelDownload" data-id="${esc(dl.modelId)}">
+                      ${esc(t("localAiCancel"))}
+                    </button>
+                  ` : `
+                    <span class="pill ${isDone ? "ok" : isErr ? "danger" : ""}">${isDone ? esc(t("localAiCompleted")) : isErr ? esc(t("localAiStatusFailed")) : isCanceled ? esc(t("localAiCanceled")) : esc(dl.status)}</span>
+                  `}
+                </div>
+              </div>
+              <div class="progress-bar-wrap">
+                ${hasTotal
+                  ? `<div class="progress-bar-fill" style="width: ${pct}%"></div>`
+                  : `<div class="progress-bar-fill indeterminate"></div>`}
+              </div>
+              <div class="download-meta-row">
+                <span>${hasTotal
+                  ? `${pct}% (${formatBytes(dl.bytesDownloaded || 0)} / ${formatBytes(dl.totalBytes)})`
+                  : formatBytes(dl.bytesDownloaded || 0)}</span>
+                <span class="spacer"></span>
+                ${dl.speedFormatted ? `<span>${esc(dl.speedFormatted)}</span>` : ""}
+                ${dl.etaSeconds != null && dl.etaSeconds > 0 ? `<span>${esc(t("localAiEta"))}: ${Math.round(dl.etaSeconds)}s</span>` : ""}
+                ${dl.error ? `<span class="danger-text">${esc(dl.error)}</span>` : ""}
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `}
+  </div>`;
+}
+
+function localAiInstallStageLabel(stage) {
+  const labels = {
+    idle: "localAiStageIdle",
+    downloading: "localAiStageDownloading",
+    verifying: "localAiStageVerifying",
+    extracting: "localAiStageExtracting",
+    validating: "localAiStageValidating",
+    publishing: "localAiStagePublishing",
+    done: "localAiStageDone",
+    failed: "localAiStageFailed",
+    cancelled: "localAiStageCancelled",
+  };
+  return t(labels[stage] || "localAiStageIdle");
+}
+
+function localAiMetricsCard() {
+  const rt = S.localAi.runtime || {};
+  if (!rt.isRunning) return "";
+  const metrics = S.localAi.metrics || {};
+  const rate = (value) => (typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} tok/s` : "—");
+  const count = (value) => (typeof value === "number" && Number.isFinite(value) ? String(value) : "—");
+
+  return `
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiLiveMetrics"))}</h2>
+        <span class="pill ok">${esc(t("localAiLive"))}</span>
+      </div>
+      <div class="stat-grid" style="margin-top:12px">
+        <div class="metric"><div class="val">${rate(metrics.generatedTokensPerSecond)}</div><div class="lbl">${esc(t("localAiGeneration"))}</div></div>
+        <div class="metric"><div class="val">${rate(metrics.promptTokensPerSecond)}</div><div class="lbl">${esc(t("localAiPromptSpeed"))}</div></div>
+        <div class="metric"><div class="val">${count(metrics.generatedTokensTotal)}</div><div class="lbl">${esc(t("localAiGeneratedTokens"))}</div></div>
+        <div class="metric"><div class="val">${count(metrics.promptTokensTotal)}</div><div class="lbl">${esc(t("localAiPromptTokens"))}</div></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <span class="muted">${esc(t("localAiRequestsProcessing"))}:</span> <b>${count(metrics.requestsProcessing)}</b>
+        <span class="muted">${esc(t("localAiRequestsDeferred"))}:</span> <b>${count(metrics.requestsDeferred)}</b>
+      </div>
+      ${S.localAi.metricsError
+        ? `<div class="footnote" style="color:var(--danger)">${esc(t("localAiMetricsUnavailable"))}: ${esc(S.localAi.metricsError)}</div>`
+        : `<div class="footnote">${esc(t("localAiMetricsHint"))}</div>`}
+    </div>`;
+}
+
+function localAiRuntimeInstallBody() {
+  const install = S.localAi.install || { stage: "idle" };
+  const active = ["downloading", "verifying", "extracting", "validating", "publishing"].includes(install.stage);
+  const done = install.stage === "done";
+  const progress = Math.max(0, Math.min(1, Number(install.progress) || 0));
+  const pct = Math.round(progress * 100);
+  const bytes = typeof install.bytesDownloaded === "number" ? install.bytesDownloaded : 0;
+  const total = typeof install.totalBytes === "number" ? install.totalBytes : 0;
+  const speed = typeof install.speedBytesPerSec === "number" ? install.speedBytesPerSec : 0;
+  const rt = S.localAi.runtime || {};
+
+  return `
+    <div class="install-body">
+      <div class="row">
+        <span class="muted">${esc(t("localAiRuntimeCardTitle"))}</span>
+        <span class="spacer"></span>
+        <span class="pill ${done ? "ok" : active ? "warn" : ""}">${esc(localAiInstallStageLabel(install.stage))}</span>
+      </div>
+      <div class="footnote">${esc(t("localAiRuntimeCatalogCardHint"))}</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn small" data-action="localAiRuntimeCatalogOpen">${esc(t("localAiRuntimeBrowse"))}</button>
+      </div>
+      ${active ? `
+        <div class="progress-bar-wrap" style="margin-top:12px">
+          ${total > 0
+            ? `<div class="progress-bar-fill" style="width: ${pct}%"></div>`
+            : `<div class="progress-bar-fill indeterminate"></div>`}
+        </div>
+        <div class="row">
+          <span class="muted mono">${formatBytes(bytes)}${total > 0 ? ` / ${formatBytes(total)}` : ""}</span>
+          <span class="spacer"></span>
+          <span class="muted mono">${formatBytes(speed)}/s</span>
+          <button class="ghost small" data-action="localAiCancelRuntimeInstall">${esc(t("cancel"))}</button>
+        </div>
+      ` : ""}
+      ${done && install.binaryPath ? `
+        <div class="row" style="margin-top:10px">
+          <span class="muted">${esc(t("localAiRuntimeInstalled"))}:</span>
+          <span class="mono" style="font-size:11px;word-break:break-all">${esc(install.binaryPath)}</span>
+        </div>
+        <div class="row">
+          <button class="btn small" data-action="localAiUseInstalledRuntime" ${rt.isRunning ? "disabled" : ""}>${esc(t("localAiRuntimeUse"))}</button>
+          ${rt.isRunning ? `<span class="footnote" style="margin:0">${esc(t("localAiRuntimeStopFirst"))}</span>` : ""}
+        </div>
+      ` : ""}
+      ${install.error ? `<div class="footnote" style="color:var(--danger);margin-top:8px">${esc(install.error)}</div>` : ""}
+      <div class="divider" style="margin:14px 0"></div>
+      <div class="muted" style="font-size:12px;font-weight:600">${esc(t("localAiRuntimeManualTitle"))}</div>
+      <div class="footnote">${esc(t("localAiRuntimeInstallHint"))}</div>
+      <div class="stack" style="margin-top:10px">
+        <label class="field">${esc(t("localAiRuntimeUrl"))}
+          <input type="text" id="local-ai-runtime-url" class="mono" placeholder="https://example.com/llama-server.zip" ${active ? "disabled" : ""}>
+        </label>
+        <label class="field">${esc(t("localAiRuntimeSha"))}
+          <input type="text" id="local-ai-runtime-sha" class="mono" placeholder="64 hex characters" autocomplete="off" spellcheck="false" ${active ? "disabled" : ""}>
+        </label>
+        <div class="footnote">${esc(t("localAiRuntimeShaHint"))}</div>
+        <div class="row" style="gap:8px">
+          <button class="btn small" data-action="localAiInstallRuntime" ${active ? "disabled" : ""}>${esc(t("localAiRuntimeInstallStart"))}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function localAiRuntimeVariantLabel(variant) {
+  if (variant.id === "cpu") return t("localAiRuntimeVariantCpu");
+  if (variant.id === "vulkan") return t("localAiRuntimeVariantVulkan");
+  return variant.label || variant.id;
+}
+
+function localAiRuntimeReleaseRow(release, installing) {
+  const published = release.publishedAt ? new Date(release.publishedAt) : null;
+  const publishedText = published && !Number.isNaN(published.getTime())
+    ? published.toLocaleDateString(S.lang === "en" ? "en-US" : "ru-RU")
+    : "";
+  const variants = release.variants || [];
+
+  return `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <div class="row">
+        <b class="mono">${esc(release.tag)}</b>
+        ${release.title && release.title !== release.tag ? `<span class="muted">${esc(release.title)}</span>` : ""}
+        <span class="spacer"></span>
+        ${publishedText ? `<span class="muted" style="font-size:11px">${esc(publishedText)}</span>` : ""}
+      </div>
+      <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+        ${variants.map((variant) => `
+          <div class="row" style="gap:8px;border:1px solid var(--border);border-radius:8px;padding:6px 8px">
+            <span>${esc(localAiRuntimeVariantLabel(variant))}</span>
+            <span class="mono muted">${esc(formatBytes(variant.sizeBytes))}</span>
+            <button class="btn small" data-action="localAiRuntimeCatalogInstall" data-tag="${esc(release.tag)}" data-variant="${esc(variant.id)}" ${installing ? "disabled" : ""}>${esc(t("localAiRuntimeInstallFromCatalog"))}</button>
+          </div>`).join("")}
+      </div>
+    </div>`;
+}
+
+function localAiRuntimeCatalogMarkup() {
+  if (!S.localAi.runtimeCatalogOpen) return "";
+
+  const loading = !!S.localAi.runtimeCatalogLoading;
+  const error = S.localAi.runtimeCatalogError;
+  const releases = S.localAi.runtimeCatalog || [];
+  const install = S.localAi.install || { stage: "idle" };
+  const installing = ["downloading", "verifying", "extracting", "validating", "publishing"].includes(install.stage);
+
+  return `
+    <div class="modal-backdrop">
+      <div class="modal-card wide" id="local-ai-runtime-catalog">
+        <div class="card-header-row">
+          <div>
+            <h3>${esc(t("localAiRuntimeCatalog"))}</h3>
+            <div class="modal-sub">${esc(t("localAiRuntimeCatalogHint"))}</div>
+          </div>
+          <div class="row" style="gap:6px">
+            <button class="ghost small" data-action="localAiRuntimeCatalogRefresh" ${loading ? "disabled" : ""}>${esc(t("refresh"))}</button>
+            <button class="ghost small" data-action="localAiRuntimeCatalogClose">✕</button>
+          </div>
+        </div>
+        ${installing ? `<div class="footnote" style="color:var(--warn);margin-top:10px">${esc(t("localAiRuntimeCatalogInstalling"))}</div>` : ""}
+        ${loading ? `<div class="footnote" style="margin-top:12px">${esc(t("localAiRuntimeCatalogLoading"))}</div>` : ""}
+        ${error ? `<div class="footnote" style="color:var(--danger);margin-top:12px">${esc(t("localAiRuntimeCatalogError"))}: ${esc(error)}</div>` : ""}
+        ${!loading && !error && releases.length === 0 ? `<div class="footnote" style="margin-top:12px">${esc(t("localAiRuntimeCatalogEmpty"))}</div>` : ""}
+        <div class="stack" style="margin-top:12px">
+          ${releases.map((release) => localAiRuntimeReleaseRow(release, installing)).join("")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function localAiMigrationBanner() {
+  const report = S.localAi.migration;
+  if (!report || !report.error) return "";
+  return `
+    <div class="card pool-pause">
+      <div class="row">
+        <span class="pill danger">${esc(t("localAiMigrationError"))}</span>
+        <span class="muted" style="word-break:break-word">${esc(report.error)}</span>
+      </div>
+      ${report.backupDir ? `<div class="footnote mono">${esc(t("localAiMigrationBackup"))}: ${esc(report.backupDir)}</div>` : ""}
+      <div class="footnote">${esc(t("localAiMigrationHint"))}</div>
+    </div>`;
+}
+
+function localAiRuntimeTab() {
+  const hw = S.localAi.hardware || {};
+  const rt = S.localAi.runtime || {};
+  const logs = S.localAi.logs || [];
+  const activeModel = (S.localAi.models || []).find((m) => m.id === rt.modelId);
+  const modelName = activeModel ? activeModel.displayName || activeModel.id : rt.modelId;
+
+  // Status wording and dot colour, in the Mac vocabulary.
+  let statusText = t("localAiEngineStopped");
+  let statusTone = "";
+  if (rt.isRunning) {
+    statusText = t("localAiEngineReady");
+    statusTone = "ok";
+  } else if (rt.isStarting) {
+    statusText = t("localAiEngineStarting");
+    statusTone = "warn";
+  } else if (rt.isStopping) {
+    statusText = t("localAiEngineStopping");
+    statusTone = "warn";
+  } else if (rt.error) {
+    statusText = `${t("localAiEngineErrorPrefix")}: ${rt.error}`;
+    statusTone = "err";
+  }
+
+  const ram = formatBytes(hw.totalRam || 0);
+  const vram = hw.gpuRecommendedMaxWorkingSetSize;
+  const driver = hw.gpuDriver || "";
+  const platform = [driver, hw.osVersion].filter(Boolean).join(" · ");
+
+  return `
+  <div class="local-ai-content">
+    <div class="card runtime-status-card">
+      <div class="runtime-status-row">
+        <div class="runtime-status-box">
+          <div class="stat-label">${esc(t("localAiEngineStatus"))}</div>
+          <div class="runtime-status-value">
+            <span class="status-dot ${statusTone}"></span>
+            <span>${esc(statusText)}</span>
+          </div>
+          ${rt.isRunning && rt.port ? `<div class="mono hint">127.0.0.1:${esc(String(rt.port))}</div>` : ""}
+        </div>
+
+        <div class="runtime-divider"></div>
+
+        <div class="runtime-status-box">
+          <div class="stat-label">${esc(t("localAiActiveModel"))}</div>
+          <div class="runtime-status-value ${modelName ? "" : "muted"}">
+            <span>${modelName ? esc(modelName) : esc(t("localAiNoneLoaded"))}</span>
+          </div>
+        </div>
+
+        <span class="spacer"></span>
+
+        <div class="runtime-hw">
+          <div class="runtime-hw-line">
+            ${localAiIcon("cpu", 12)}<span>${esc(fmt(t("localAiCoresLabel"), { cpu: hw.cpuModel || "CPU", n: hw.cpuCores || 0 }))}</span>
+          </div>
+          <div class="runtime-hw-line">
+            ${localAiIcon("memory", 12)}<span>${esc(vram ? fmt(t("localAiRamGpuLabel"), { ram, gpu: formatBytes(vram) }) : fmt(t("localAiRamOnlyLabel"), { ram }))}</span>
+          </div>
+          ${platform ? `<div class="runtime-hw-line">${localAiIcon("chip", 12)}<span>${esc(platform)}</span></div>` : ""}
+        </div>
+
+        ${(rt.isRunning || rt.isStarting) ? `
+          <button class="btn small" data-action="localAiStopRuntime">
+            ${localAiIcon("stop", 11)}${esc(t("localAiStopEngine"))}
+          </button>
+        ` : ""}
+      </div>
+    </div>
+
+    ${localAiApiCard()}
+
+    ${localAiMetricsCard()}
+
+    <div class="card console-card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiConsoleTitle"))}</h2>
+        <div class="card-actions">
+          <button class="ghost small" data-action="localAiCopyLogs">${esc(t("localAiCopyLogs"))}</button>
+          <button class="ghost small" data-action="localAiClearLogs">${esc(t("localAiClearLogs"))}</button>
+        </div>
+      </div>
+      <div class="terminal-logs mono" id="local-ai-logs">
+        ${logs.length === 0 ? `<span class="muted">${esc(t("localAiConsoleEmpty"))}</span>` : logs.map((line) => `<div>${esc(line)}</div>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+/// Direct client access to the local router. The credential belongs to the
+/// llama.cpp router on `--api-key`; the gateway key from "API-сервис" is a
+/// different secret for a different port and never opens this endpoint.
+function localAiApiCard() {
+  const rt = S.localAi.runtime || {};
+  const port = rt.port || 18318;
+  const base = `http://127.0.0.1:${port}/v1`;
+  const key = rt.internalToken || "";
+  const catalogue = S.localAi.apiCatalogue || null;
+  const status = !catalogue
+    ? `<span class="pill">${esc(t("localAiLocalApiUnverified"))}</span>`
+    : catalogue.verified
+      ? `<span class="pill ok">${esc(t("localAiLocalApiVerified"))}</span>`
+      : `<span class="pill warn">${esc(catalogue.error || t("localAiLocalApiUnverified"))}</span>`;
+  const models = catalogue && catalogue.verified ? catalogue.models || [] : [];
+  return `<div class="card">
+    <div class="card-header-row">
+      <h2>${esc(t("localAiLocalApiTitle"))}</h2>
+      <div class="card-actions">
+        ${status}
+        <button class="ghost small" data-action="localAiApiCheck" ${S.busy && S.busy.localAiApiCheck ? "disabled" : ""}>${esc(t("localAiLocalApiCheck"))}</button>
+      </div>
+    </div>
+    <div class="footnote">${esc(t("localAiLocalApiHint"))}</div>
+    <table class="kv">
+      <tr><td>${esc(t("endpoint"))}</td><td><span class="mono">${esc(base)}</span> <button class="ghost small" data-action="copy" data-text='${esc(base)}'>${esc(t("copy"))}</button></td></tr>
+      <tr><td>${esc(t("apiKey"))}</td><td>${key
+        ? `<span class="mono">${esc(key)}</span> <button class="ghost small" data-action="copy" data-text='${esc(key)}'>${esc(t("copy"))}</button>`
+        : `<span class="muted">${esc(t("localAiLocalApiNoKey"))}</span>`}</td></tr>
+      <tr><td>${esc(t("localAiLocalApiModels"))}</td><td>${models.length
+        ? `<span class="mono" style="font-size:11px;word-break:break-all">${esc(models.join(", "))}</span>`
+        : `<span class="muted">${esc(t("localAiLocalApiEmpty"))}</span>`}</td></tr>
+    </table>
+    <div class="footnote">${esc(fmt(t("localAiLocalApiKeyNote"), { port }))}</div>
+  </div>`;
+}
+
+function localAiSettingsTab() {
+  const hw = S.localAi.hardware || {};
+  const rt = S.localAi.runtime || {};
+  // The engine path resolves from the live runtime status, so a runtime that
+  // was already installed before this launch still reads as present.
+  const binaryPath = rt.binaryPath || hw.binaryPath || "";
+  const modelsDir = hw.modelsDir || "";
+  const freeDisk = hw.modelsDiskFreeSpace || 0;
+  const install = S.localAi.install || { stage: "idle" };
+  const totalModelsSize = (S.localAi.models || []).reduce((acc, m) => acc + (m.fileSize || 0), 0);
+  const engineReady = Boolean(binaryPath) || install.stage === "done";
+
+  return `
+  <div class="local-ai-content">
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiStorageLocation"))}</h2>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <div class="field-label">${esc(t("localAiModelsDirectory"))}</div>
+        <div class="row">
+          <input type="text" id="local-ai-models-dir" class="mono" value="${esc(modelsDir)}" readonly>
+          <button class="btn small" data-action="localAiOpenModelsFolder">${esc(t("localAiOpenModelsFolder"))}</button>
+        </div>
+        <div class="stat-line">
+          <span>${esc(t("localAiFreeDiskSpace"))} <b>${formatBytes(freeDisk)}</b></span>
+          <span>${esc(t("localAiTotalModelsSize"))} <b>${formatBytes(totalModelsSize)}</b></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiEngineBinaryTitle"))}</h2>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <div class="field-label">${esc(t("localAiLlamaServerPath"))}</div>
+        <div class="row">
+          <input type="text" id="local-ai-bin-path" class="mono" title="${esc(binaryPath)}" value="${esc(binaryPath)}" placeholder="${esc(t("localAiBinaryAuto"))}">
+          <button class="btn small" data-action="localAiPickBinary">${esc(t("localAiBrowse"))}</button>
+          <button class="ghost small" data-action="localAiSaveBinary">${esc(t("save"))}</button>
+        </div>
+        ${binaryPath ? `<div class="footnote mono" style="word-break:break-all">${esc(binaryPath)}</div>` : ""}
+
+        <table class="runtime-table">
+          <thead>
+            <tr>
+              <th>${esc(t("localAiRuntimeColumn"))}</th>
+              <th>${esc(t("localAiVersionColumn"))}</th>
+              <th>${esc(t("localAiIntegrityColumn"))}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${engineReady ? esc(t("localAiRuntimeBundled")) : `<span class="muted">${esc(t("localAiRuntimeNotInstalled"))}</span>`}</td>
+              <td class="mono">—</td>
+              <td>${engineReady
+                ? `<span class="ok-text">${esc(t("localAiVerified"))}</span>`
+                : `<span class="muted">${esc(t("localAiNotVerified"))}</span>`}</td>
+            </tr>
+          </tbody>
+        </table>
+        ${engineReady ? `<div class="footnote ok-text">${esc(t("localAiRuntimeBundledActive"))}</div>` : ""}
+        <div class="footnote">${esc(t("localAiEngineBinaryHint"))}</div>
+
+        <div class="divider" style="margin:6px 0"></div>
+        ${localAiRuntimeInstallBody()}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiHfToken"))}</h2>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <div class="row">
+          <input type="password" id="local-ai-hf-token" value="${esc(S.localAi.hfToken || "")}" placeholder="hf_...">
+          <button class="btn small" data-action="localAiSaveHfToken">${esc(t("localAiSaveToken"))}</button>
+        </div>
+        <div class="footnote">${esc(t("localAiHfTokenHint"))}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/// Rust serializes `CompatibilityRecommendation` as a title-case English
+/// label. Printing it raw left the Russian dialog half-translated, so each
+/// value maps to a key (and to the tint its severity deserves).
+const LOCAL_AI_RECOMMENDATION_KEYS = {
+  "Recommended": "localAiRecRecommended",
+  "Fits with limitations": "localAiRecFitsWithLimitations",
+  "High memory usage": "localAiRecHighMemory",
+  "Insufficient memory": "localAiRecInsufficient",
+  "Unsupported architecture": "localAiRecUnsupported",
+  "Unknown compatibility": "localAiRecUnknown",
+};
+
+const LOCAL_AI_RECOMMENDATION_TINT = {
+  "Recommended": "ok",
+  "Fits with limitations": "warn",
+  "High memory usage": "warn",
+  "Insufficient memory": "danger",
+  "Unsupported architecture": "danger",
+  "Unknown compatibility": "",
+};
+
+/// Live memory card for the settings dialog. It is re-rendered in place after
+/// a profile change or a context/KV edit, so the numbers describe the values on
+/// screen instead of the ones the dialog opened with.
+function localAiEstimateMarkup() {
+  const est = S.localAi.estimate;
+  const error = S.localAi.estimateError;
+  const pending = !!S.localAi.estimating;
+  const header = `<h4>${esc(t("localAiMemoryEstimate"))}</h4>`;
+
+  if (!est) {
+    const note = error
+      ? fmt(t("localAiEstimateFailed"), { error })
+      : pending
+        ? t("localAiEstimating")
+        : t("localAiEstimateHint");
+    return `<div class="card" id="local-ai-estimate" style="background:rgba(255,255,255,0.02);padding:12px;margin-top:8px">
+      ${header}
+      <div class="footnote" style="margin:8px 0 0">${esc(note)}</div>
+    </div>`;
+  }
+
+  const cell = (label, bytes, cls) => `<div class="stat ${cls || ""}">
+    <span class="value">${formatBytes(bytes || 0)}</span>
+    <span class="label">${esc(label)}</span></div>`;
+  const recommendation = est.recommendation || "Unknown compatibility";
+  const recommendationKey = LOCAL_AI_RECOMMENDATION_KEYS[recommendation];
+  const tint = LOCAL_AI_RECOMMENDATION_TINT[recommendation] || "";
+  const totalTint = est.fitsInMemory ? "ok" : "danger";
+
+  return `<div class="card" id="local-ai-estimate" style="background:rgba(255,255,255,0.02);padding:12px;margin-top:8px">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+      ${header}
+      <span class="${tint ? tint + "-text" : "footnote"}" style="font-weight:600">${esc(recommendationKey ? t(recommendationKey) : recommendation)}</span>
+    </div>
+    <div class="stat-grid" style="margin-top:8px">
+      ${cell(t("localAiWeightsSize"), est.weightsBytes)}
+      ${cell(t("localAiKvSize"), est.kvCacheBytes)}
+      ${cell(t("localAiComputeBuffers"), est.computeBuffersBytes)}
+      ${cell(t("localAiOsReserve"), est.osReserveBytes)}
+      ${cell(t("localAiTotalRequired"), est.totalBytes, totalTint)}
+      ${cell(t("localAiTotalRam"), est.availableBytes)}
+      ${cell("RAM · ~", est.ramRequiredBytes == null ? est.totalBytes : est.ramRequiredBytes)}
+      ${est.gpuRequiredBytes != null ? cell("GPU · ~", est.gpuRequiredBytes) : ""}
+      ${est.gpuAvailableBytes != null ? cell("GPU budget", est.gpuAvailableBytes) : ""}
+    </div>
+    ${est.warning ? `<div class="footnote warn-text" style="margin:8px 0 0">${esc(est.warning)}</div>` : ""}
+    <div class="footnote" style="margin:8px 0 0">${esc(est.confidence === "heuristic" ? t("localAiEstimateHeuristic") : t("localAiEstimateMetadata"))}</div>
+    ${(est.assumptions || []).map((note) => `<div class="footnote">${esc(note)}</div>`).join("")}
+  </div>`;
+}
+
+/// Repaints the memory card in place. A full render would rebuild the dialog
+/// and drop the caret while the user edits the context length, and the status
+/// guard would skip it entirely while any field keeps the focus.
+function paintLocalAiEstimate() {
+  const host = document.getElementById("local-ai-estimate");
+  if (!host) return;
+  host.outerHTML = localAiEstimateMarkup();
+}
+
+function localAiSettingsModalMarkup() {
+  const model = S.localAi.editingModel;
+  if (!model) return "";
+
+  const s = model.userSettings || {};
+  // Older registries used PascalCase/spaced labels (`Performance`,
+  // `Memory Saver`) and short ids (`speed`, `quality`, `low_memory`); map them
+  // onto the enum values the select is built from.
+  const PROFILE_VALUES = {
+    auto: "auto",
+    performance: "performance",
+    speed: "performance",
+    balanced: "balanced",
+    quality: "balanced",
+    memory_saver: "memory_saver",
+    low_memory: "memory_saver",
+    custom: "custom",
+  };
+  // Labels were not always lowercase (`Memory Saver`, `Performance`), so the
+  // lookup normalises case and separators before giving up.
+  const rawProfile = String(s.profile || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const storedProfile = PROFILE_VALUES[rawProfile] || "auto";
+  // A stored label can be stale — an older build wrote `performance` with a
+  // 4096-token context. Trust the numbers the fields are about to show, and
+  // fall back to the label only for registries that predate those fields.
+  const profile = s.contextLength == null || storedProfile === "custom"
+    ? storedProfile
+    : localAiProfileForSettings({
+        contextLength: s.contextLength,
+        gpuOffloadLayers: s.gpuOffloadLayers,
+        kvCacheType: s.kvCacheType,
+        flashAttention: s.flashAttention,
+      }, storedProfile);
+  // One caption per preset: the select alone does not tell the user what
+  // "Max speed" changes, and the macOS sheet answers that right under the chips.
+  const PROFILE_HINT_KEYS = {
+    auto: "localAiProfileHintAuto",
+    performance: "localAiProfileHintSpeed",
+    balanced: "localAiProfileHintQuality",
+    memory_saver: "localAiProfileHintLowMem",
+    custom: "localAiProfileHintCustom",
+  };
+  const profileHintKey = PROFILE_HINT_KEYS[profile] || PROFILE_HINT_KEYS.auto;
+  const contextLength = s.contextLength || 4096;
+  const maxTokens = s.maxOutputTokens || 4096;
+  const gpuLayers = s.gpuOffloadLayers != null ? s.gpuOffloadLayers : 999;
+  const cpuThreads = s.cpuThreads || 4;
+  const flashAttention = !!s.flashAttention;
+  const kvCacheType = s.kvCacheType || "f16";
+  const temperature = s.temperature != null ? s.temperature : 0.7;
+  const topP = s.topP != null ? s.topP : 0.9;
+  // Seed, reasoning and the chat template are real settings the dialog never
+  // exposed, so a save used to drop them back to their defaults.
+  const seed = s.seed != null ? s.seed : "";
+  const reasoning = !!(s.reasoningEnabled != null ? s.reasoningEnabled : s.reasoning);
+  const chatTemplate = s.chatTemplate || "";
+  // Applied to served requests by the relay between the gateway and the
+  // engine, so it belongs above the engine knobs.
+  const systemPrompt = s.systemPrompt || "";
+  // Save applies engine settings by restarting this model only if it is active.
+
+  return `
+  <div class="modal-backdrop">
+    <div class="modal-card wide" id="local-ai-settings-card">
+      <div class="card-header-row">
+        <div>
+          <h3>${esc(model.displayName || model.name || model.id)}</h3>
+          <div class="mono hint">${esc(model.id)}</div>
+        </div>
+        <button class="ghost small" data-action="localAiSettingsClose" aria-label="${esc(t("localAiClose"))}" ${S.localAi.savingSettings ? "disabled" : ""}>✕</button>
+      </div>
+
+      <div class="stack" style="margin-top:16px">
+        <label class="field">${esc(t("localAiSystemPrompt"))}
+          <textarea id="local-ai-setting-system-prompt" data-action="localAiSystemPromptInput" data-on="input" rows="3" placeholder="You are a helpful assistant.">${esc(systemPrompt)}</textarea>
+          <div class="footnote">${esc(t("localAiSystemPromptHint"))}</div>
+        </label>
+
+        <label class="field">${esc(t("localAiProfile"))}
+          <input type="hidden" id="local-ai-setting-profile" value="${esc(profile)}">
+          ${localAiSettingSelect("local-ai-setting-profile", [
+            ["auto", t("localAiProfileAuto")],
+            ["performance", t("localAiProfileSpeed")],
+            ["balanced", t("localAiProfileQuality")],
+            ["memory_saver", t("localAiProfileLowMem")],
+            ["custom", t("localAiProfileCustom")],
+          ], profile, "localAiProfileChange", t("localAiProfile"))}
+          <div class="footnote">${esc(t(profileHintKey))}</div>
+        </label>
+
+        <div class="grid2">
+          <label class="field">${esc(t("localAiContext"))}
+            <input type="number" id="local-ai-setting-context" value="${contextLength}" step="512" min="512" max="131072" data-action="localAiEstimateInput" data-on="input">
+          </label>
+          <label class="field">Max Tokens
+            <input type="number" id="local-ai-setting-max-tokens" value="${maxTokens}" step="256" min="128" max="32768">
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">${esc(t("localAiGpuLayers"))} (-ngl)
+            <input type="number" id="local-ai-setting-gpu-layers" value="${gpuLayers}" min="0" max="999" data-action="localAiEstimateInput" data-on="input">
+          </label>
+          <label class="field">${esc(t("localAiThreads"))}
+            <input type="number" id="local-ai-setting-threads" value="${cpuThreads}" min="1" max="128">
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">${esc(t("localAiKvCache"))}
+            <input type="hidden" id="local-ai-setting-kv-cache" value="${esc(kvCacheType)}">
+            ${localAiSettingSelect("local-ai-setting-kv-cache", [
+              ["f32", "f32 · 32-bit"],
+              ["f16", "f16 · " + t("localAiKvFull")],
+              ["bf16", "bf16 · 16-bit"],
+              ["q8_0", "q8_0 · " + t("localAiKvBalanced")],
+              ["q5_1", "q5_1 · 5-bit"],
+              ["q5_0", "q5_0 · 5-bit"],
+              ["q4_1", "q4_1 · 4-bit"],
+              ["q4_0", "q4_0 · " + t("localAiKvLow")],
+              ["iq4_nl", "iq4_nl · 4-bit"],
+            ], kvCacheType, "localAiKvPick", t("localAiKvCache"))}
+          </label>
+          <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+            <input type="checkbox" id="local-ai-setting-flash-attn" data-action="localAiEstimateInput" data-on="change" ${flashAttention ? "checked" : ""}>
+            <span>${esc(t("localAiFlashAttn"))}</span>
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">${esc(t("localAiTemperature"))}
+            <input type="number" id="local-ai-setting-temp" value="${temperature}" step="0.05" min="0" max="2">
+          </label>
+          <label class="field">${esc(t("localAiTopP"))}
+            <input type="number" id="local-ai-setting-topp" value="${topP}" step="0.05" min="0" max="1">
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">${esc(t("localAiSeed"))}
+            <input type="number" id="local-ai-setting-seed" value="${seed}" step="1" placeholder="${esc(t("localAiSeedAuto"))}">
+          </label>
+          <label class="field" style="flex-direction:row;align-items:center;gap:8px;margin-top:20px">
+            <input type="checkbox" id="local-ai-setting-reasoning" ${reasoning ? "checked" : ""}>
+            <span>${esc(t("localAiReasoning"))}</span>
+          </label>
+        </div>
+
+        <label class="field">${esc(t("localAiChatTemplate"))}
+          <input type="text" id="local-ai-setting-chat-template" class="mono" value="${esc(chatTemplate)}" placeholder="auto">
+        </label>
+
+        ${localAiEstimateMarkup()}
+
+        <div class="row" style="justify-content:flex-end;margin-top:16px;gap:8px">
+          <button class="btn" data-action="localAiSettingsSave" ${S.localAi.savingSettings ? "disabled" : ""}>${esc(t("localAiSave"))}</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function localAiTestMetricsMarkup(m) {
+  const s = m.stats || {};
+  const metric = (label, value) => value == null ? "" : `<span class="pill">${esc(label)}: ${esc(value)}</span>`;
+  return metric(t("localAiPromptTokens"), s.promptTokens)
+    + metric(t("localAiGeneratedTokens"), s.completionTokens)
+    + metric("tok/s", s.tokensPerSec == null ? null : s.tokensPerSec.toFixed(1))
+    + metric(t("localAiPromptSpeed"), s.promptPerSec == null ? null : `${s.promptPerSec.toFixed(1)} tok/s`)
+    + metric(t("localAiPrefillTime"), s.promptMs == null ? null : `${(s.promptMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiGenerationTime"), s.generationMs == null ? null : `${(s.generationMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiFirstToken"), s.firstTokenMs == null ? null : `${(s.firstTokenMs / 1000).toFixed(2)} s`)
+    + metric(t("localAiElapsed"), s.elapsed > 0 ? `${s.elapsed.toFixed(1)} s` : null);
+}
+
+function localAiTestModalMarkup() {
+  const m = S.localAi.testModal;
+  if (!m) return "";
+  return `<div class="modal-backdrop"><div class="modal-card wide" role="dialog" aria-modal="true" aria-label="${esc(t("localAiTest"))}">
+    <div class="card-header-row">
+      <div><h3>${esc(t("localAiTest"))}: ${esc(m.modelName || m.modelId)}</h3><div class="mono hint">${esc(m.modelId)}</div></div>
+      <button class="ghost small" data-action="localAiTestClose" aria-label="${esc(t("localAiClose"))}">✕</button>
+    </div>
+    <div class="stack" style="margin-top:16px">
+      <div class="row">
+        <button class="${m.mode !== "gateway" ? "btn" : "ghost"} small" data-action="localAiTestMode" data-id="engine" ${m.generating ? "disabled" : ""}>${esc(t("localAiEngineTest"))}</button>
+        <button class="${m.mode === "gateway" ? "btn" : "ghost"} small" data-action="localAiTestMode" data-id="gateway" ${m.generating ? "disabled" : ""}>${esc(t("localAiGatewayTest"))}</button>
+      </div>
+      <label class="field">${esc(t("localAiTestPrompt"))}
+        <textarea id="local-ai-test-prompt-input" rows="3" data-action="localAiTestPromptInput" data-on="input" ${m.generating ? "disabled" : ""}>${esc(m.prompt || "")}</textarea>
+      </label>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn small" data-action="localAiTestSend" ${m.generating ? "disabled" : ""}>${esc(t(m.generating ? "localAiGenerating" : "localAiSend"))}</button>
+        <button class="ghost small" data-action="localAiTestTool" title="${esc(t("localAiToolTestHint"))}" ${m.generating ? "disabled" : ""}>${esc(t("localAiToolTest"))}</button>
+        ${m.generating ? `<button class="ghost small" data-action="localAiTestCancel">${esc(t("localAiStop"))}</button>` : ""}
+      </div>
+      <div class="row" id="local-ai-test-metrics" style="gap:6px;flex-wrap:wrap">${localAiTestMetricsMarkup(m)}</div>
+      ${m.error ? `<div class="footnote" role="alert" style="color:var(--danger)">${esc(m.error)}</div>` : ""}
+      ${m.toolProbe ? `<div class="footnote" style="color:var(${m.toolProbe.ok ? "--ok" : "--danger"})">${esc(t(m.toolProbe.ok ? "localAiToolOk" : "localAiToolFailed"))}${m.toolProbe.ok ? `: ${esc(m.toolProbe.name)}<pre>${esc(m.toolProbe.arguments)}</pre>` : ""}</div>` : ""}
+      <div class="field" style="margin-top:8px"><span class="muted">${esc(t("localAiResponse"))}</span>
+        <div id="local-ai-test-response" class="terminal-logs markdown-body" style="min-height:140px;max-height:280px;margin-top:6px;white-space:normal">${m.response ? renderMarkdown(m.response) : `<span class="muted">${esc(t(m.generating ? "localAiWaitingFirstToken" : m.hadReasoning ? "localAiNoFinalAnswer" : "localAiNoResponseYet"))}</span>`}</div>
+        ${m.truncated ? `<div class="footnote" style="color:var(--warn)">${esc(t("localAiTruncated"))}</div>` : ""}
+      </div>
+      <div class="row" style="justify-content:flex-end"><button class="ghost" data-action="localAiTestClose">${esc(t("localAiClose"))}</button></div>
+    </div>
+  </div></div>`;
+}
+
+function localAiHfTokenModalMarkup() {
+  if (!S.localAi.showHfTokenModal) return "";
+
+  return `
+  <div class="modal-backdrop">
+    <div class="modal-card">
+      <div class="card-header-row">
+        <h3>${esc(t("localAiHfToken"))}</h3>
+        <button class="ghost small" data-action="localAiHfTokenModalClose">✕</button>
+      </div>
+      <div class="stack" style="margin-top:16px">
+        <div class="footnote">${esc(t("localAiHfTokenHint"))}</div>
+        <label class="field">Token
+          <input type="password" id="modal-hf-token-input" value="${esc(S.localAi.hfToken || "")}" placeholder="hf_...">
+        </label>
+        <div class="row" style="justify-content:flex-end;margin-top:12px;gap:8px">
+          <button class="ghost" data-action="localAiHfTokenModalClose">${esc(t("cancel"))}</button>
+          <button class="btn" data-action="localAiHfTokenModalSave">${esc(t("save"))}</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function localAiPage() {
+  const tab = S.localAi.tab || "models";
+  let content = "";
+  if (tab === "models") content = localAiModelsTab();
+  else if (tab === "catalog") content = localAiCatalogTab();
+  else if (tab === "downloads") content = localAiDownloadsTab();
+  else if (tab === "runtime") content = localAiRuntimeTab();
+  else if (tab === "settings") content = localAiSettingsTab();
+
+  return `
+  ${pageHead("melon tools", t("localAi"), t("localAiSub"))}
+  ${localAiMigrationBanner()}
+  ${localAiSubtabs()}
+  ${content}
+  ${localAiSettingsModalMarkup()}
+  ${localAiTestModalMarkup()}
+  ${localAiHfTokenModalMarkup()}
+  ${localAiRuntimeCatalogMarkup()}
+  `;
 }
 
 // MARK: - Refresh guard (M3)

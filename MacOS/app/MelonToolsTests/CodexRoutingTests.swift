@@ -33,6 +33,58 @@ final class CodexRoutingTests: XCTestCase {
         return account
     }
 
+    func testManualDisableExcludesAccountInEveryRoutingMode() {
+        var disabled = account(id: "disabled", preferred: true)
+        disabled.poolEnabled = false
+        let healthy = account(id: "healthy", hourly: 50)
+        for strategy in CodexRoutingStrategy.allCases {
+            let resolution = CodexRoutingPlanner.resolve(
+                accounts: [disabled, healthy], strategy: strategy, manualOrder: [disabled.id, healthy.id]
+            )
+            XCTAssertEqual(resolution.orderedIds, [healthy.id], "\(strategy)")
+            XCTAssertNotNil(resolution.blockReasons[disabled.id])
+            XCTAssertNil(CodexRoutingPlanner.priorities(from: resolution.orderedIds)[disabled.id])
+        }
+    }
+
+    func testQuotaRecoveryAndStalenessDoNotLiftManualDisable() {
+        var disabled = account(hourly: 0, weekly: 0)
+        disabled.poolEnabled = false
+        disabled.quota?.hourlyRemainingPercent = 100
+        disabled.quota?.weeklyRemainingPercent = 100
+        for stamp in [Date(), Date.distantPast] {
+            disabled.quotaUpdatedAt = stamp
+            XCTAssertNotNil(CodexRoutingPlanner.blockReason(disabled))
+            XCTAssertTrue(CodexRoutingPlanner.resolve(accounts: [disabled], strategy: .auto, manualOrder: []).orderedIds.isEmpty)
+        }
+        disabled.poolEnabled = true
+        XCTAssertNil(CodexRoutingPlanner.blockReason(disabled))
+        XCTAssertEqual(CodexRoutingPlanner.resolve(accounts: [disabled], strategy: .auto, manualOrder: []).orderedIds, [disabled.id])
+    }
+
+    func testManualEnableStillRespectsQuotaLimits() {
+        var enabled = account(hourly: 5, hourlyReserve: 10)
+        enabled.poolEnabled = true
+        XCTAssertEqual(CodexRoutingPlanner.blockCause(enabled), .hourlyReserve)
+        XCTAssertNotNil(CodexRoutingPlanner.blockReason(enabled))
+    }
+
+    func testPoolMembershipRoundTripsAndOldAccountsDefaultToEnabled() throws {
+        let legacy = account()
+        let oldData = try JSONEncoder().encode(legacy)
+        let restored = try JSONDecoder().decode(CodexAccount.self, from: oldData)
+        XCTAssertNil(restored.poolEnabled)
+        XCTAssertNil(CodexRoutingPlanner.blockReason(restored))
+        for enabled in [false, true] {
+            var changed = legacy
+            changed.poolEnabled = enabled
+            let roundTrip = try JSONDecoder().decode(CodexAccount.self, from: JSONEncoder().encode(changed))
+            XCTAssertEqual(roundTrip.poolEnabled, enabled)
+            XCTAssertEqual(roundTrip.quota, legacy.quota)
+            XCTAssertEqual(roundTrip.tokens, legacy.tokens)
+        }
+    }
+
     func testExhaustedWeeklyWindowBlocks() {
         let account = account(hourly: 80, weekly: 0)
         XCTAssertNotNil(CodexRoutingPlanner.blockReason(account))
@@ -76,12 +128,35 @@ final class CodexRoutingTests: XCTestCase {
         XCTAssertEqual(resolution.orderedIds.last, backup.id)
     }
 
-    func testPrioritiesGiveFirstAccountHighestValue() {
+    func testPrioritiesEncodeTierNotPosition() {
         let first = account()
         let second = account()
-        let values = CodexRoutingPlanner.priorities(from: [first.id, second.id])
-        XCTAssertEqual(values[first.id], 2)
-        XCTAssertEqual(values[second.id], 1)
+        let backup = account(backup: true)
+        let values = CodexRoutingPlanner.priorities(
+            from: [first.id, second.id, backup.id], backupIds: [backup.id]
+        )
+        // Equal inside a tier: that is what lets the engine rotate.
+        XCTAssertEqual(values[first.id], CodexRoutingPlanner.regularPriority)
+        XCTAssertEqual(values[second.id], CodexRoutingPlanner.regularPriority)
+        XCTAssertEqual(values[backup.id], CodexRoutingPlanner.backupPriority)
+        XCTAssertGreaterThan(
+            CodexRoutingPlanner.regularPriority, CodexRoutingPlanner.backupPriority
+        )
+    }
+
+    func testManualOrderMovesAcrossDisabledAccountsInOneClick() {
+        let a = account(id: "a")
+        var hidden = account(id: "hidden")
+        hidden.poolEnabled = false
+        let b = account(id: "b")
+        let accounts = [a, hidden, b]
+        let order = [a.id, hidden.id, b.id]
+        let expected = [b.id, hidden.id, a.id]
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(b.id, up: true, order: order, accounts: accounts), expected)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(a.id, up: false, order: order, accounts: accounts), expected)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(a.id, up: true, order: order, accounts: accounts), order)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(b.id, up: false, order: order, accounts: accounts), order)
+        XCTAssertEqual(CodexRoutingPlanner.movingPriority(hidden.id, up: true, order: order, accounts: accounts), order)
     }
 
     func testManualOrderIsRespected() {
@@ -102,6 +177,101 @@ final class CodexRoutingTests: XCTestCase {
         XCTAssertEqual(CodexRoutingPlanner.planRank("enterprise"), 6)
         XCTAssertEqual(CodexRoutingPlanner.planRank(""), 0)
         XCTAssertEqual(CodexRoutingPlanner.planRank("unknown"), 2)
+    }
+    // MARK: - Live quota cadence (CORE-12)
+
+    /// An account blocked with no known reset used to count as “resets soon”,
+    /// so the guard polled the management API every 1.5 s for the whole life of
+    /// the block, with no traffic at all.
+    func testBlockedAccountWithUnknownResetUsesTheIdleCadence() {
+        var account = CodexAccount(tokens: CodexTokens())
+        account.quotaBlock = CodexQuotaBlock(
+            cause: .weeklyExhausted,
+            remainingPercent: 0,
+            thresholdPercent: nil,
+            resetAt: nil,
+            blockedAt: Date().addingTimeInterval(-3_600),
+            source: "gateway"
+        )
+        let now = Date()
+
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testKnownResetsKeepTheFastCadenceOnlyWhenImminent() {
+        var account = CodexAccount(tokens: CodexTokens())
+        account.quotaBlock = CodexQuotaBlock(
+            cause: .hourlyExhausted,
+            remainingPercent: 0,
+            thresholdPercent: nil,
+            resetAt: nil,
+            blockedAt: Date(),
+            source: "gateway"
+        )
+        let now = Date()
+
+        account.quotaBlock?.resetAt = now.addingTimeInterval(60)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        // A passed reset is overdue: probe it on the fast cadence.
+        account.quotaBlock?.resetAt = now.addingTimeInterval(-30)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        account.quotaBlock?.resetAt = now.addingTimeInterval(3_600)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [account]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testTrafficAndStoppedGatewayDominateTheCadence() {
+        let now = Date()
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 3, accounts: []
+            ),
+            CodexLiveQuotaCadence.active
+        )
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: false, requestsLastMinute: 3, accounts: []
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+    }
+
+    func testReserveWindowWithUnknownResetDoesNotPollFast() {
+        var nearReserve = account(hourly: 2, weekly: 50, hourlyReserve: 5)
+        nearReserve.quota?.hourlyResetAt = nil
+        let now = Date()
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [nearReserve]
+            ),
+            CodexLiveQuotaCadence.idle
+        )
+        nearReserve.quota?.hourlyResetAt = now.addingTimeInterval(120)
+        XCTAssertEqual(
+            CodexLiveQuotaCadence.interval(
+                now: now, gatewayRunning: true, requestsLastMinute: 0, accounts: [nearReserve]
+            ),
+            CodexLiveQuotaCadence.active
+        )
     }
 }
 
@@ -216,6 +386,17 @@ final class CodexPoolPauseSummaryTests: XCTestCase {
         ]))
 
         XCTAssertEqual(summary.resetAt, knownReset)
+    }
+
+    func testManualDisabledAccountsAreNeverLiftedByPoolPauseSummary() throws {
+        var disabled = account(id: "disabled", hourly: 0, weekly: 0)
+        disabled.poolEnabled = false
+        XCTAssertNil(CodexPoolPauseSummary.make(accounts: [disabled]))
+        let reserved = account(id: "reserved", hourly: 5, hourlyReserve: 10)
+        let summary = try XCTUnwrap(CodexPoolPauseSummary.make(accounts: [disabled, reserved]))
+        XCTAssertEqual(summary.causes, [reserved.id: .hourlyReserve])
+        XCTAssertTrue(summary.canLift)
+        XCTAssertNil(CodexPoolPauseSummary.make(accounts: [disabled, account(id: "usable")]))
     }
 
     func testSummaryRequiresANonEmptyFullyPausedPool() {
@@ -348,7 +529,10 @@ final class LRUCacheTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let ids = try XCTUnwrap(object["orderedIds"] as? [String])
         let expected = try XCTUnwrap(object["priorities"] as? [String: Int])
-        XCTAssertEqual(CodexRoutingPlanner.priorities(from: ids), expected)
+        let backupIds = Set(try XCTUnwrap(object["backupIds"] as? [String]))
+        XCTAssertEqual(
+            CodexRoutingPlanner.priorities(from: ids, backupIds: backupIds), expected
+        )
 
         let ranks = try XCTUnwrap(object["planRank"] as? [String: Int])
         for (plan, rank) in ranks {

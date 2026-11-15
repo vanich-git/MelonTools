@@ -82,6 +82,55 @@ pub fn codex_auth_path() -> PathBuf {
     codex_home().join("auth.json")
 }
 
+// MARK: - Local AI Storage Paths (%LOCALAPPDATA%\MelonTools or fallback)
+
+/// Root directory for Local AI models and runtime: `%LOCALAPPDATA%\MelonTools` on Windows,
+/// or `~/Library/Application Support/MelonTools` on macOS/fallback.
+pub fn local_ai_root_dir() -> PathBuf {
+    if let Ok(local_appdata) = env::var("LOCALAPPDATA") {
+        if !local_appdata.trim().is_empty() {
+            return PathBuf::from(local_appdata).join("MelonTools");
+        }
+    }
+    appdata_dir()
+}
+
+pub fn local_models_dir() -> PathBuf {
+    local_ai_root_dir().join("models")
+}
+
+pub fn local_downloads_dir() -> PathBuf {
+    local_ai_root_dir().join("downloads")
+}
+
+pub fn local_runtime_dir() -> PathBuf {
+    local_ai_root_dir().join("runtime")
+}
+
+pub fn local_metadata_dir() -> PathBuf {
+    local_ai_root_dir().join("metadata")
+}
+
+pub fn local_logs_dir() -> PathBuf {
+    local_ai_root_dir().join("logs")
+}
+
+pub fn models_registry_path() -> PathBuf {
+    local_metadata_dir().join("models.json")
+}
+
+pub fn storage_settings_path() -> PathBuf {
+    local_metadata_dir().join("storage_settings.json")
+}
+
+pub fn llama_server_exe_path() -> PathBuf {
+    if cfg!(windows) {
+        local_runtime_dir().join("llama-server.exe")
+    } else {
+        local_runtime_dir().join("llama-server")
+    }
+}
+
 /// YAML wants forward slashes: backslashes are escape characters.
 pub fn yaml_path(p: &std::path::Path) -> String {
     p.to_string_lossy().replace('\\', "/")

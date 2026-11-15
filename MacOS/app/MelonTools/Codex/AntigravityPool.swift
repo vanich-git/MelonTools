@@ -7,6 +7,31 @@ import Foundation
 /// across them. This store only projects that state into the UI: identity,
 /// per-account models, cooldowns, the two 5-hour quota pools and the catalog
 /// entries none of the connected accounts can use.
+/// The one place the Antigravity client identity is defined for the app process.
+///
+/// Google compares the advertised client against the real one, so the version and
+/// the changelist must stay a matched pair taken from the official build. The pair
+/// is calibrated, not discovered: the app never auto-bumps the version, because a
+/// version without its changelist is a stronger tell than an older version.
+enum AntigravityClientIdentity {
+    /// Official Hub release this build impersonates.
+    static let version = "2.28.0"
+    /// Changelist that ships with that release.
+    static let changeList = "1008300195"
+    /// Platform segment, matching the process architecture.
+    static var platform: String {
+        #if arch(arm64)
+        "os_type=darwin; arch=arm64"
+        #else
+        "os_type=darwin; arch=x86_64"
+        #endif
+    }
+    /// Full User-Agent for calls made from the app itself.
+    static var userAgent: String {
+        "antigravity/hub/\(version) (aidev_client; \(platform); cl=\(changeList))"
+    }
+}
+
 @MainActor
 final class AntigravityPoolStore: ObservableObject {
     static let shared = AntigravityPoolStore()
@@ -14,6 +39,7 @@ final class AntigravityPoolStore: ObservableObject {
     @Published private(set) var accounts: [AntigravityAccount] = []
     @Published private(set) var catalogOnly: [AntigravityCatalogOnlyModel] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var warmingUpAccountNames: Set<String> = []
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
 
@@ -46,7 +72,12 @@ final class AntigravityPoolStore: ObservableObject {
                 let seconds: UInt64 = busy ? 60 : 900
                 try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                 if Task.isCancelled { return }
-                await self?.refresh(forceQuota: true)
+                // Never force the quota round trip here. A forced refresh ignores the
+                // per-account TTL, so the tick rate would silently become the upstream
+                // poll rate: one fetchAvailableModels per account per minute, forever.
+                // The quota windows only move when a request actually runs, and
+                // quotaTTL already shortens the wait under load.
+                await self?.refresh(forceQuota: false)
             }
         }
     }
@@ -70,9 +101,16 @@ final class AntigravityPoolStore: ObservableObject {
 
         for file in files {
             let entry = management[file.name]
-            let models = await Self.fetchModels(name: file.name, authIndex: entry?.authIndex)
+            let disabled = entry?.disabled ?? false
+            // A disabled account is disabled on purpose: blocked upstream, paused by
+            // the operator, or awaiting re-authentication. Probing it still spends a
+            // request on a credential Google already refuses, so render the stored
+            // management state and touch no upstream endpoint for it.
+            let models = disabled ? [] : await Self.fetchModels(name: file.name, authIndex: entry?.authIndex)
             let quota: CachedQuota?
-            if !forceQuota, let cached = quotaCache[file.name], Date().timeIntervalSince(cached.fetchedAt) < quotaTTL {
+            if disabled {
+                quota = quotaCache[file.name]
+            } else if !forceQuota, let cached = quotaCache[file.name], Date().timeIntervalSince(cached.fetchedAt) < quotaTTL {
                 quota = cached
             } else {
                 let fetched = await Self.fetchQuota(for: file)
@@ -87,12 +125,13 @@ final class AntigravityPoolStore: ObservableObject {
                 projectID: file.projectID,
                 authIndex: entry?.authIndex,
                 priority: entry?.priority ?? 0,
-                disabled: entry?.disabled ?? false,
+                disabled: disabled,
                 status: entry?.status,
                 statusMessage: entry?.statusMessage,
                 unavailable: entry?.unavailable ?? false,
                 cooldowns: entry?.cooldowns ?? [],
                 modelIDs: accountModels,
+                proxyURL: file.proxyURL,
                 geminiQuota: quota?.gemini,
                 claudeQuota: quota?.claude,
                 quotaError: quota?.error
@@ -167,6 +206,135 @@ final class AntigravityPoolStore: ObservableObject {
             }
         }
         return clearedAll
+    }
+
+    // MARK: - Warmup
+
+    /// Send a minimal generate-content request to activate the 5-hour quota window
+    /// and verify account viability before heavy workloads.
+    @discardableResult
+    func warmupAccount(_ account: AntigravityAccount, model: String? = nil) async -> Bool {
+        guard !warmingUpAccountNames.contains(account.name) else { return false }
+        warmingUpAccountNames.insert(account.name)
+        defer { warmingUpAccountNames.remove(account.name) }
+
+        let success = await Self.performWarmup(
+            name: account.name,
+            model: model,
+            project: account.projectID,
+            modelIDs: account.modelIDs
+        )
+        await refresh(forceQuota: true)
+        return success
+    }
+
+    func warmupAll(model: String? = nil) async {
+        for account in accounts where !account.disabled {
+            _ = await warmupAccount(account, model: model)
+        }
+    }
+
+    private static func performWarmup(
+        name: String,
+        model: String?,
+        project: String?,
+        modelIDs: [String]
+    ) async -> Bool {
+        let files = AntigravityAuthService.authFiles()
+        guard let file = files.first(where: { $0.name == name }) else { return false }
+        var token = file.accessToken
+        var effectiveProject = file.projectID ?? project
+        if token == nil || token?.isEmpty == true {
+            _ = await AntigravityAuthService.shared.refreshCredential(name: name)
+            let refreshed = AntigravityAuthService.authFiles().first(where: { $0.name == name })
+            token = refreshed?.accessToken
+            effectiveProject = refreshed?.projectID ?? effectiveProject
+        }
+        guard let validToken = token, !validToken.isEmpty else { return false }
+
+        let chosenModel: String = {
+            if let m = model, !m.isEmpty { return m }
+            if modelIDs.contains("gemini-2.5-pro") { return "gemini-2.5-pro" }
+            if modelIDs.contains("gemini-2.5-flash") { return "gemini-2.5-flash" }
+            if let first = modelIDs.first(where: { !$0.isEmpty }) { return first }
+            return "gemini-2.5-pro"
+        }()
+
+        let outcome = await sendWarmupRequest(token: validToken, project: effectiveProject, model: chosenModel)
+        switch outcome {
+        case .ok:
+            return true
+        case .unauthorized:
+            _ = await AntigravityAuthService.shared.refreshCredential(name: name)
+            let refreshed = AntigravityAuthService.authFiles().first(where: { $0.name == name })
+            if let refreshedToken = refreshed?.accessToken, !refreshedToken.isEmpty {
+                let retryOutcome = await sendWarmupRequest(
+                    token: refreshedToken,
+                    project: refreshed?.projectID ?? effectiveProject,
+                    model: chosenModel
+                )
+                return retryOutcome == .ok
+            }
+            return false
+        case .failed:
+            return false
+        }
+    }
+
+    private enum WarmupResult {
+        case ok
+        case unauthorized
+        case failed
+    }
+
+    private static func sendWarmupRequest(
+        token: String,
+        project: String?,
+        model: String
+    ) async -> WarmupResult {
+        guard let url = URL(string: "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse") else {
+            return .failed
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(AntigravityClientIdentity.userAgent, forHTTPHeaderField: "User-Agent")
+
+        let payload: [String: Any] = [
+            "project": project ?? "",
+            "model": model,
+            "request": [
+                "contents": [
+                    [
+                        "role": "user",
+                        "parts": [
+                            ["text": "hi"]
+                        ]
+                    ]
+                ],
+                "generationConfig": [
+                    "temperature": 0,
+                    "maxOutputTokens": 1
+                ]
+            ]
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        do {
+            let (_, response) = try await NetworkProxy.session().data(for: request)
+            guard let http = response as? HTTPURLResponse else { return .failed }
+            if http.statusCode == 401 {
+                return .unauthorized
+            }
+            if (200..<300).contains(http.statusCode) {
+                return .ok
+            }
+            return .failed
+        } catch {
+            return .failed
+        }
     }
 
     /// Models whose cooldown came from the first-token watchdog. Quota and
@@ -256,6 +424,21 @@ final class AntigravityPoolStore: ObservableObject {
         return true
     }
 
+    /// Bind one account to one egress proxy.
+    ///
+    /// The engine already reads `proxy_url` out of the auth file and prefers it
+    /// over the global `requests.proxy-url`, so writing the field here is the
+    /// whole feature - no engine change and no restart. An empty string removes
+    /// the binding, which puts the account back on the global proxy.
+    static func setProxy(name: String, proxyURL: String) async -> Bool {
+        let trimmed = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body: [String: Any] = ["proxy_url": trimmed]
+        guard let request = managementRequest(path: "/auth-files/fields", method: "PATCH", body: body),
+              let (_, response) = try? await NetworkProxy.directSession().data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return false }
+        return true
+    }
+
     private static func setPriority(name: String, priority: Int) async -> Bool {
         let body: [String: Any] = ["name": name, "priority": priority]
         guard let request = managementRequest(path: "/auth-files/fields", method: "PATCH", body: body),
@@ -290,6 +473,15 @@ final class AntigravityPoolStore: ObservableObject {
 
     // MARK: - Quota
 
+    /// Outcome of one quota probe. A `retryable` failure is worth repeating
+    /// with a refreshed token; a `fatal` one (ban, missing access) is not, and
+    /// its message explains why to the user.
+    private enum QuotaProbe {
+        case ok(CachedQuota)
+        case retryable
+        case fatal(String)
+    }
+
     private static func fetchQuota(for file: AntigravityAuthService.AuthFile) async -> CachedQuota {
         var token = file.accessToken
         var project = file.projectID
@@ -301,32 +493,84 @@ final class AntigravityPoolStore: ObservableObject {
         guard let token, !token.isEmpty else {
             return CachedQuota(fetchedAt: Date(), gemini: nil, claude: nil, error: L("Sign in again to read the quota."))
         }
-        if let quota = await requestQuota(token: token, project: project) {
+        switch await requestQuota(token: token, project: project) {
+        case .ok(let quota):
             return quota
+        case .fatal(let reason):
+            return CachedQuota(fetchedAt: Date(), gemini: nil, claude: nil, error: reason)
+        case .retryable:
+            break
         }
         // A stale access token is the common failure; ask the engine to refresh
         // and retry once with the new file contents.
         _ = await AntigravityAuthService.shared.refreshCredential(name: file.name)
         let refreshed = AntigravityAuthService.authFiles().first(where: { $0.name == file.name })
-        if let refreshedToken = refreshed?.accessToken, refreshedToken != token,
-           let quota = await requestQuota(token: refreshedToken, project: refreshed?.projectID ?? project) {
-            return quota
+        if let refreshedToken = refreshed?.accessToken, refreshedToken != token {
+            switch await requestQuota(token: refreshedToken, project: refreshed?.projectID ?? project) {
+            case .ok(let quota):
+                return quota
+            case .fatal(let reason):
+                return CachedQuota(fetchedAt: Date(), gemini: nil, claude: nil, error: reason)
+            case .retryable:
+                break
+            }
         }
         return CachedQuota(fetchedAt: Date(), gemini: nil, claude: nil, error: L("Quota is unavailable right now."))
     }
 
-    private static func requestQuota(token: String, project: String?) async -> CachedQuota? {
-        guard let url = URL(string: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels") else { return nil }
+    private static func requestQuota(token: String, project: String?) async -> QuotaProbe {
+        guard let url = URL(string: "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels") else {
+            return .retryable
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64)", forHTTPHeaderField: "User-Agent")
+        request.setValue(AntigravityClientIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["project": project ?? ""])
-        guard let (data, response) = try? await NetworkProxy.session().data(for: request),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
-        return parseQuota(data: data)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await NetworkProxy.session().data(for: request)
+        } catch {
+            return .retryable
+        }
+        guard let http = response as? HTTPURLResponse else { return .retryable }
+        if (200..<300).contains(http.statusCode) {
+            guard let quota = parseQuota(data: data) else { return .retryable }
+            return .ok(quota)
+        }
+        // The body carries the real reason - a Terms-of-Service ban says so in
+        // plain text. Dropping it here is what turned a ban into "unavailable".
+        let body = String(data: data, encoding: .utf8) ?? ""
+        if let reason = Self.finalReason(status: http.statusCode, body: body) {
+            return .fatal(reason)
+        }
+        return .retryable
+    }
+
+    /// User-facing words for an Antigravity error response, or `nil` when the
+    /// failure is worth one retry with a fresh token (401, 5xx, network blip).
+    ///
+    /// A Terms-of-Service ban is final and says so in the body - before this
+    /// existed, every non-2xx collapsed into "Quota is unavailable right now.",
+    /// which reads as a passing glitch for an account that is gone for good.
+    nonisolated static func finalReason(status: Int, body: String) -> String? {
+        let detail = body.lowercased()
+        if detail.contains("terms of service") || detail.contains("violation") {
+            return L("Blocked by Google for a Terms of Service violation - the account cannot be used.")
+        }
+        switch status {
+        case 401:
+            return nil
+        case 403:
+            return L("Access denied by Google (403) - the account cannot read its quota.")
+        case 429:
+            return L("Rate limited by Google - try again later.")
+        default:
+            return nil
+        }
     }
 
     nonisolated static func parseQuota(data: Data) -> CachedQuota? {
@@ -378,7 +622,7 @@ final class AntigravityPoolStore: ObservableObject {
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("antigravity/hub/2.24.0 (aidev_client; os_type=darwin; arch=arm64)", forHTTPHeaderField: "User-Agent")
+        request.setValue(AntigravityClientIdentity.userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["project": file.projectID ?? ""])
         guard let (_, response) = try? await NetworkProxy.session().data(for: request),
               let http = response as? HTTPURLResponse else { return false }
@@ -432,6 +676,8 @@ struct AntigravityAccount: Identifiable, Equatable {
     var unavailable: Bool
     var cooldowns: [AntigravityCooldown]
     var modelIDs: [String]
+    /// Per-account egress proxy from the auth file; nil means the global one.
+    var proxyURL: String?
     var geminiQuota: AntigravityQuotaWindow?
     var claudeQuota: AntigravityQuotaWindow?
     var quotaError: String?

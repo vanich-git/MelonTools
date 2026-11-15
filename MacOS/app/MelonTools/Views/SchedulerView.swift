@@ -144,21 +144,15 @@ struct SchedulerView: View {
                         .font(MTTheme.mono(9))
                         .foregroundStyle(MTTheme.textSecondary)
                     Spacer()
-                    Menu {
-                        ForEach(SchedulerTemplates.all) { template in
-                            Button {
+                    MTMenuButton(
+                        systemImage: "square.on.square",
+                        title: L("From template"),
+                        entries: SchedulerTemplates.all.map { template in
+                            .item(L(template.name), systemImage: "doc.text") {
                                 editorTarget = EditorTarget(task: nil, template: template)
-                            } label: {
-                                Text(L(template.name))
                             }
-                            .help(L(template.description))
                         }
-                    } label: {
-                        Label(L("From template"), systemImage: "square.on.square")
-                            .font(MTTheme.mono(10, weight: .semibold))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    )
                     MTGlassButton(title: L("New task"), systemImage: "plus", tint: MTTheme.amber) {
                         editorTarget = EditorTarget(task: nil)
                     }
@@ -189,6 +183,7 @@ struct SchedulerView: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .tint(MTTheme.emerald)
                 .controlSize(.mini)
                 .help(L("Enabled"))
             }
@@ -439,7 +434,7 @@ private struct SchedulerEditorSheet: View {
                 VStack(alignment: .leading, spacing: MTTheme.s4) {
                     field(L("Name")) {
                         TextField(L("Name"), text: $name)
-                            .textFieldStyle(.roundedBorder)
+                            .textFieldStyle(.mtInput)
                     }
 
                     field(L("Prompt")) {
@@ -471,7 +466,7 @@ private struct SchedulerEditorSheet: View {
                                             variableTitle(variable),
                                             text: binding(for: variable)
                                         )
-                                        .textFieldStyle(.roundedBorder)
+                                        .textFieldStyle(.mtInput)
                                     }
                                 }
                                 Text(L("Variables are substituted when the task is created."))
@@ -484,7 +479,7 @@ private struct SchedulerEditorSheet: View {
                     field(L("Working directory")) {
                         HStack(spacing: MTTheme.s2) {
                             TextField(L("Optional path for repository context"), text: $workingDirectory)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(10))
                             MTGlassButton(title: L("Choose…"), systemImage: "folder", size: .small, tint: MTTheme.amber) {
                                 chooseWorkingDirectory()
@@ -494,22 +489,23 @@ private struct SchedulerEditorSheet: View {
 
                     Toggle(L("Include git status, log and diff in the prompt"), isOn: $includeGitContext)
                         .toggleStyle(.switch)
+                        .tint(MTTheme.amber)
                         .font(MTTheme.body(11))
 
                     HStack(spacing: MTTheme.s3) {
                         field(L("Max tokens (0 = default)")) {
                             TextField("", value: $maxTokens, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 90)
                         }
                         field(L("Retries")) {
                             TextField("", value: $retryLimit, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 60)
                         }
                         field(L("Retry delay, min")) {
                             TextField("", value: $retryDelayMinutes, format: .number)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .frame(width: 70)
                         }
                     }
@@ -517,7 +513,7 @@ private struct SchedulerEditorSheet: View {
                     field(L("Daily token limit (0 = no limit)")) {
                         HStack(alignment: .firstTextBaseline, spacing: MTTheme.s2) {
                             TextField("", text: $dailyTokenLimitText)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 110)
                             Text(L("Tokens per calendar day. The run is skipped without a request when the limit is reached."))
@@ -539,31 +535,24 @@ private struct SchedulerEditorSheet: View {
                     }
 
                     field(L("Reasoning effort")) {
-                        Picker("", selection: $effort) {
-                            Text(L("None")).tag("")
-                            ForEach(SchedulerTask.reasoningEfforts, id: \.self) { value in
-                                Text(value).tag(value)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        MTSelect(
+                            selection: $effort,
+                            options: [(L("None"), "")] + SchedulerTask.reasoningEfforts.map { ($0, $0) },
+                            width: 200
+                        )
                     }
 
                     field(L("Schedule type")) {
-                        Picker("", selection: $scheduleKind) {
-                            ForEach(SchedulerScheduleKind.allCases) { kind in
-                                Text(kind.title).tag(kind)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
+                        MTSelect(selection: $scheduleKind, options: SchedulerScheduleKind.allCases.map {
+                            ($0, $0.title)
+                        }, width: 200)
                     }
 
                     if scheduleKind == .interval {
                         field(L("Interval")) {
                             HStack(spacing: MTTheme.s2) {
                                 TextField("", value: $intervalMinutes, format: .number)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .frame(width: 80)
                                 Text(L("minutes"))
                                     .font(MTTheme.mono(10))
@@ -580,7 +569,7 @@ private struct SchedulerEditorSheet: View {
                         field(L("Cron expression")) {
                             VStack(alignment: .leading, spacing: MTTheme.s1) {
                                 TextField("0 9 * * 1-5", text: $cronExpression)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .font(MTTheme.mono(11))
                                 Text(L("Minute hour day month weekday"))
                                     .font(MTTheme.mono(9))
@@ -601,15 +590,12 @@ private struct SchedulerEditorSheet: View {
                     }
 
                     field(L("Time zone")) {
-                        Picker("", selection: $timeZoneIdentifier) {
-                            Text(String(format: L("System (%@)"), TimeZone.current.identifier))
-                                .tag("")
-                            ForEach(TimeZone.knownTimeZoneIdentifiers.sorted(), id: \.self) { identifier in
-                                Text(identifier).tag(identifier)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        MTSearchableSelect(
+                            selection: $timeZoneIdentifier,
+                            options: [("", String(format: L("System (%@)"), TimeZone.current.identifier))] +
+                                TimeZone.knownTimeZoneIdentifiers.sorted().map { ($0, $0) },
+                            width: 320
+                        )
                     }
 
                     if let templateError {
@@ -620,6 +606,7 @@ private struct SchedulerEditorSheet: View {
 
                     Toggle(L("Enabled"), isOn: $enabled)
                         .toggleStyle(.switch)
+                        .tint(MTTheme.emerald)
                         .font(MTTheme.body(12))
 
                     VStack(alignment: .leading, spacing: MTTheme.s1) {
@@ -807,7 +794,7 @@ private struct SchedulerEditorSheet: View {
         if store.models.isEmpty {
             VStack(alignment: .leading, spacing: MTTheme.s1) {
                 TextField(L("Model id"), text: $model)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.mtInput)
                 HStack(spacing: MTTheme.s2) {
                     if store.isLoadingModels {
                         ProgressView().controlSize(.small)
@@ -824,23 +811,11 @@ private struct SchedulerEditorSheet: View {
             }
         } else {
             VStack(alignment: .leading, spacing: MTTheme.s1) {
-                Picker("", selection: $model) {
-                    if !model.isEmpty, !store.models.contains(model) {
-                        Text(model).tag(model)
-                    }
-                    ForEach(SchedulerModelGroup.allCases) { group in
-                        let ids = store.models.filter { SchedulerModelGroup.group(for: $0) == group }
-                        if !ids.isEmpty {
-                            Section(group.title) {
-                                ForEach(ids, id: \.self) { id in
-                                    Text(id).tag(id)
-                                }
-                            }
-                        }
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
+                MTSelect(
+                    selection: $model,
+                    options: store.models.map { ($0, $0) },
+                    width: 320
+                )
 
                 HStack(spacing: MTTheme.s2) {
                     Text(String(format: L("%d models"), store.models.count))

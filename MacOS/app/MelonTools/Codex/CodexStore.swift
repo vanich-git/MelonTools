@@ -263,6 +263,7 @@ struct CodexPoolPauseSummary: Equatable {
 
     /// Builds the summary when (and only when) every account is paused.
     static func make(accounts: [CodexAccount]) -> CodexPoolPauseSummary? {
+        let accounts = accounts.filter { $0.poolEnabled != false }
         guard !accounts.isEmpty else { return nil }
         let resolution = CodexRoutingPlanner.resolve(
             accounts: accounts,
@@ -326,6 +327,61 @@ struct CodexPoolPauseSummary: Equatable {
     }
 }
 
+/// Polling cadence for the live quota guard: fast only while the gateway is
+/// serving traffic or a reset is genuinely near.
+///
+/// An account blocked with an unknown reset time used to be treated as “resets
+/// soon”, so the management API was polled every 1.5 s for as long as the
+/// block lived — days for a weekly window, with no traffic (audit CORE-12).
+/// Unknown is now *not* imminent: the guard falls back to the idle cadence and
+/// `probeBlockedResets` retries with its own backoff.
+enum CodexLiveQuotaCadence {
+    /// Traffic is flowing: headers refresh the readings continuously.
+    static let active: TimeInterval = 1.5
+    /// Idle: enough to notice a wake, a manual refresh or a passed reset.
+    static let idle: TimeInterval = 15
+    /// A reset closer than this is worth watching at the active cadence.
+    static let imminentWindow: TimeInterval = 300
+
+    static func interval(
+        now: Date,
+        gatewayRunning: Bool,
+        requestsLastMinute: Int,
+        accounts: [CodexAccount]
+    ) -> TimeInterval {
+        guard gatewayRunning else { return idle }
+        if requestsLastMinute > 0 { return active }
+
+        func resetIsImminent(_ date: Date?) -> Bool {
+            // Unknown reset: not imminent. A passed reset is: the probe will
+            // lift the block on the next pass.
+            guard let date else { return false }
+            return date.timeIntervalSince(now) < imminentWindow
+        }
+
+        if accounts.contains(where: { account in
+            guard let block = account.quotaBlock else { return false }
+            return resetIsImminent(block.resetAt)
+        }) {
+            return active
+        }
+        for account in accounts {
+            guard let quota = account.quota else { continue }
+            let hourly = quota.hourlyRemainingPercent ?? 100
+            let weekly = quota.weeklyRemainingPercent ?? 100
+            let hourlyReserve = Double(account.hourlyReservePercent ?? 0)
+            let weeklyReserve = Double(account.weeklyReservePercent ?? 10)
+            if hourlyReserve > 0, hourly <= hourlyReserve + 5, resetIsImminent(quota.hourlyResetAt) {
+                return active
+            }
+            if weekly <= weeklyReserve + 5, resetIsImminent(quota.weeklyResetAt) {
+                return active
+            }
+        }
+        return idle
+    }
+}
+
 /// Codex account management: import, switch, quotas — one shared store for the whole app.
 /// Account vault lives in ~/Library/Application Support/MelonTools/codex/accounts.json (0600).
 @MainActor
@@ -337,6 +393,8 @@ final class CodexStore: ObservableObject {
     @Published private(set) var busyAccountIds: Set<String> = []
     /// Accounts with a reset-credit redemption in flight.
     @Published private(set) var resettingAccountIds: Set<String> = []
+    /// Accounts with a wakeup response request in flight.
+    @Published private(set) var wakingAccountIds: Set<String> = []
     @Published private(set) var lastMessage: String?
 
     /// High-level pool routing mode (persisted). Changing it re-applies the
@@ -398,6 +456,27 @@ final class CodexStore: ObservableObject {
     /// silently dropping fields this build does not know.
     @Published private(set) var vaultReadOnly = false
 
+    /// How the last `load()` ended. An unreadable or newer vault leaves
+    /// `accounts` empty — indistinguishable from a genuinely empty pool — so
+    /// the gateway must not treat that snapshot as authoritative. Mirroring an
+    /// empty list would prune every `codex-*.json` in the engine auth dir,
+    /// including rotated refresh tokens the vault does not have (CORE-05).
+    enum VaultLoadState: Equatable {
+        case notLoaded
+        case loaded
+        case readOnly
+        case failed
+
+        /// Only a successfully decoded vault may drive a destructive mirror
+        /// (writes plus orphan pruning). A missing file is `loaded` with an
+        /// empty pool: a fresh install still needs its first sync.
+        var allowsDestructiveGatewaySync: Bool {
+            self == .loaded
+        }
+    }
+
+    @Published private(set) var vaultLoadState: VaultLoadState = .notLoaded
+
     func load() {
         let url = URL(fileURLWithPath: vaultPath)
         vaultReadOnly = false
@@ -408,24 +487,26 @@ final class CodexStore: ObservableObject {
                    let version = object["schemaVersion"] as? Int,
                    version > PersistenceSchema.current {
                     vaultReadOnly = true
+                    vaultLoadState = .readOnly
                     lastMessage = L("This vault was written by a newer Melon Tools. Update the app before editing accounts.")
                     return
                 }
                 let vault = try JSONDecoder().decode(Vault.self, from: data)
                 accounts = vault.accounts
                 currentAccountId = vault.currentAccountId
+                vaultLoadState = .loaded
             } catch {
                 // Never let a corrupt file be overwritten by an empty save:
                 // back it up so the tokens are recoverable. Keep the newest
                 // few quarantines only; an unreadable vault must not leave
                 // hundreds of full token copies on disk forever.
-                Self.pruneCorruptBackups(in: url.deletingLastPathComponent())
-                let backup = url.deletingLastPathComponent()
-                    .appendingPathComponent("accounts.corrupt.\(Int(Date().timeIntervalSince1970)).json")
-                try? FileManager.default.moveItem(at: url, to: backup)
+                let backup = Self.preserveUnreadableVault(at: url)
+                vaultLoadState = .failed
                 lastMessage = L("Save failed") + ": " + error.localizedDescription
                     + " (" + backup.lastPathComponent + ")"
             }
+        } else {
+            vaultLoadState = .loaded
         }
         syncPriorityOrder()
         detectCurrent()
@@ -433,6 +514,18 @@ final class CodexStore: ObservableObject {
         // still-fresh reading so a stale gauge cannot lift an existing block.
         if reconcileQuotaBlocks() { save(immediately: true) }
         routingNote = routingNoteText()
+    }
+
+    /// Preserve a durable failure marker across launches. Moving the original
+    /// away would turn the next load into an authoritative empty pool and
+    /// re-enable destructive gateway pruning (CORE-05).
+    @discardableResult
+    static func preserveUnreadableVault(at url: URL) -> URL {
+        pruneCorruptBackups(in: url.deletingLastPathComponent())
+        let backup = url.deletingLastPathComponent()
+            .appendingPathComponent("accounts.corrupt.\(Int(Date().timeIntervalSince1970)).json")
+        try? FileManager.default.copyItem(at: url, to: backup)
+        return backup
     }
 
     /// Keep at most three quarantined vaults and drop files older than 30
@@ -474,10 +567,9 @@ final class CodexStore: ObservableObject {
     }
 
     func moveAccountPriority(_ id: String, up: Bool) {
-        guard let index = priorityOrder.firstIndex(of: id) else { return }
-        let target = up ? index - 1 : index + 1
-        guard priorityOrder.indices.contains(target) else { return }
-        priorityOrder.swapAt(index, target)
+        let moved = CodexRoutingPlanner.movingPriority(id, up: up, order: priorityOrder, accounts: accounts)
+        guard moved != priorityOrder else { return }
+        priorityOrder = moved
         applyRoutingIfNeeded(reason: L("order changed"))
     }
 
@@ -498,10 +590,12 @@ final class CodexStore: ObservableObject {
         return index + 1
     }
 
-    /// Gateway priorities: the first account gets the highest value — that is
-    /// what the gateway’s “fill-first” mode uses first.
+    /// Gateway priorities encode the pool tier: regular accounts share the top
+    /// value, backups the one below, and the engine rotates inside a tier.
     func effectivePriorities() -> [String: Int] {
-        CodexRoutingPlanner.priorities(from: routingResolution().orderedIds)
+        let resolution = routingResolution()
+        let backupIds = Set(accounts.filter { $0.isBackup == true }.map(\.id))
+        return CodexRoutingPlanner.priorities(from: resolution.orderedIds, backupIds: backupIds)
     }
 
     /// Banner state: non-nil only while the pool is non-empty and every
@@ -549,8 +643,11 @@ final class CodexStore: ObservableObject {
     }
 
     /// Saves per-account routing preferences and re-applies the pool order.
-    func updateRoutingSettings(_ account: CodexAccount, hourlyPercent: Int?, weeklyPercent: Int?, preferredFirst: Bool, isBackup: Bool) {
+    func updateRoutingSettings(_ account: CodexAccount, hourlyPercent: Int?, weeklyPercent: Int?, preferredFirst: Bool, isBackup: Bool, poolEnabled: Bool) {
         guard let index = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+        if poolEnabled != (accounts[index].poolEnabled != false) {
+            accounts[index].poolEnabled = poolEnabled
+        }
         accounts[index].hourlyReservePercent = (hourlyPercent ?? 0) > 0 ? hourlyPercent : nil
         accounts[index].weeklyReservePercent = (weeklyPercent ?? 0) > 0 ? weeklyPercent : nil
         accounts[index].preferredFirst = preferredFirst ? true : nil
@@ -593,7 +690,11 @@ final class CodexStore: ObservableObject {
             let selection = account.selectedModels?.sorted().joined(separator: "+") ?? "*"
             return "\(account.id):\(selection)"
         }.joined(separator: ",")
-        return ids + "|" + values + "|" + credentials + "|" + models
+        let membership = accounts.map { "\($0.id):\($0.poolEnabled != false)" }.joined(separator: ",")
+        // The auth-file weight follows the quota left, so a fresh reading must
+        // reach the gateway even when nothing else changed.
+        let weights = accounts.map { "\($0.id)=\(CodexGatewayService.quotaWeight($0))" }.joined(separator: ",")
+        return ids + "|" + values + "|" + credentials + "|" + models + "|" + membership + "|" + weights
     }
 
     private func routingNoteText() -> String? {
@@ -609,7 +710,10 @@ final class CodexStore: ObservableObject {
     }
 
     private func noteRoutingChange(reason: String) {
-        guard let note = routingNoteText() else { return }
+        guard let note = routingNoteText() else {
+            routingNote = nil
+            return
+        }
         routingNote = note
         CodexGatewayService.shared.auditLog("\(note) · \(reason)")
     }
@@ -649,6 +753,11 @@ final class CodexStore: ObservableObject {
 
     func flushSave() {
         guard !vaultReadOnly else { return }
+        // A failed load must not be replaced by an empty vault. The quarantine
+        // is the recoverable copy, and an empty file would look like a
+        // successful load on the next launch — re-enabling destructive gateway
+        // mirroring with no accounts behind it (CORE-05).
+        guard vaultLoadState != .failed else { return }
         let vault = Vault(accounts: accounts, currentAccountId: currentAccountId)
         do {
             let data = try JSONEncoder.pretty.encode(vault)
@@ -867,6 +976,7 @@ final class CodexStore: ObservableObject {
             merged.weeklyReservePercent = old.weeklyReservePercent
             merged.preferredFirst = old.preferredFirst
             merged.isBackup = old.isBackup
+            merged.poolEnabled = old.poolEnabled
             merged.selectedModels = old.selectedModels
             merged.subscriptionUpdatedAt = old.subscriptionUpdatedAt
             accounts[idx] = merged
@@ -1129,32 +1239,12 @@ final class CodexStore: ObservableObject {
     /// and a weekly block days away must not either: that used to poll the
     /// management API (and fill `gateway.log`) until the window rolled over.
     private func nextLiveQuotaDelay() -> UInt64 {
-        let gateway = CodexGatewayService.shared
-        guard gateway.isRunning else { return 15_000_000_000 }
-        if gateway.requestsLastMinute > 0 { return 1_500_000_000 }
-        let now = Date()
-        func resetSoon(_ date: Date?) -> Bool {
-            guard let date else { return true }
-            return date.timeIntervalSince(now) < 300
-        }
-        if accounts.contains(where: { account in
-            guard let block = account.quotaBlock else { return false }
-            return resetSoon(block.resetAt)
-        }) { return 1_500_000_000 }
-        for account in accounts {
-            guard let quota = account.quota else { continue }
-            let hourly = quota.hourlyRemainingPercent ?? 100
-            let weekly = quota.weeklyRemainingPercent ?? 100
-            let hourlyReserve = Double(account.hourlyReservePercent ?? 0)
-            let weeklyReserve = Double(account.weeklyReservePercent ?? 10)
-            if hourlyReserve > 0, hourly <= hourlyReserve + 5, resetSoon(quota.hourlyResetAt) {
-                return 1_500_000_000
-            }
-            if weekly <= weeklyReserve + 5, resetSoon(quota.weeklyResetAt) {
-                return 1_500_000_000
-            }
-        }
-        return 15_000_000_000
+        UInt64(CodexLiveQuotaCadence.interval(
+            now: Date(),
+            gatewayRunning: CodexGatewayService.shared.isRunning,
+            requestsLastMinute: CodexGatewayService.shared.requestsLastMinute,
+            accounts: accounts
+        ) * 1_000_000_000)
     }
 
     /// App Nap is only held off while the fast path is actually needed.
@@ -1361,13 +1451,13 @@ final class CodexStore: ObservableObject {
         for account in accounts {
             guard account.tokens.access_token?.isEmpty == false else { continue }
             guard let file = liveFile(for: account, in: files) else {
-                if account.quotaBlock != nil { fallback = true }
+                if account.poolEnabled == false || account.quotaBlock != nil { fallback = true }
                 continue
             }
             // Preserve a legacy disabled file until a fresh reading proves
             // that it can be re-enabled. A stale cache must never lift it.
-            let desired = account.quotaBlock != nil
-                || (file.disabled && account.quotaBlock == nil && !quotaIsActionable(account))
+            let desired = account.poolEnabled == false || account.quotaBlock != nil
+                || (file.disabled && account.poolEnabled == nil && account.quotaBlock == nil && !quotaIsActionable(account))
             guard file.disabled != desired else { continue }
             let ok = await gateway.setManagementAuthDisabled(
                 name: file.name,
@@ -1438,6 +1528,20 @@ final class CodexStore: ObservableObject {
         }
     }
 
+    /// Adopt a credential pair the gateway refreshed after the vault's copy.
+    /// Without this, the app exchanges an already-used refresh token and gets
+    /// `401 refresh_token_reused`, which only a new login can recover from.
+    private func adoptNewerGatewayCredentials(into account: inout CodexAccount) {
+        guard let latest = CodexGatewayService.tokensFromAuthFile(
+            for: account,
+            authDir: CodexGatewayService.authDir
+        ) else { return }
+        let local = CodexGatewayService.authDate(account.lastRefresh) ?? .distantPast
+        guard let remote = CodexGatewayService.authDate(latest.lastRefresh), remote > local else { return }
+        account.tokens = latest.tokens
+        account.lastRefresh = latest.lastRefresh
+    }
+
     func refreshQuota(for accountId: String, forceTokens: Bool = false) async {
         guard let idx = accounts.firstIndex(where: { $0.id == accountId }) else { return }
         // Timer, Accounts, Providers and Composer can all request a refresh.
@@ -1458,6 +1562,10 @@ final class CodexStore: ObservableObject {
             reservePercent: account.weeklyReservePercent
         )
         do {
+            // The engine rotates the same OAuth pair on its own schedule.
+            // Starting from the newest copy on disk avoids exchanging a
+            // refresh token that the engine already burned.
+            adoptNewerGatewayCredentials(into: &account)
             if forceTokens || account.needsRefresh {
                 // A forced refresh re-reads the id_token claims — that is how a
                 // just-renewed subscription becomes visible without waiting for
@@ -1602,6 +1710,43 @@ final class CodexStore: ObservableObject {
             await refreshQuota(for: accountId)
         } catch {
             lastMessage = L("Could not activate the reset") + ": " + error.localizedDescription
+        }
+    }
+
+    // MARK: - Wakeup
+
+    func wakeAccount(for accountId: String, model: String? = nil) async {
+        guard let account = accounts.first(where: { $0.id == accountId }) else { return }
+        guard !wakingAccountIds.contains(accountId) else { return }
+        wakingAccountIds.insert(accountId)
+        defer { wakingAccountIds.remove(accountId) }
+
+        do {
+            let tokens = try await CodexService.wakeAccount(account: account, model: model)
+            if account.tokens.access_token != tokens.access_token {
+                if let idx = accounts.firstIndex(where: { $0.id == accountId }) {
+                    accounts[idx].tokens = tokens
+                    accounts[idx].lastRefresh = ISO8601DateFormatter().string(from: Date())
+                    save(immediately: true)
+                }
+            }
+            lastMessage = String(format: L("Account %@ awakened successfully."), account.displayName)
+            await refreshQuota(for: accountId, forceTokens: true)
+        } catch {
+            lastMessage = String(format: L("Failed to wake %@: %@"), account.displayName, error.localizedDescription)
+        }
+    }
+
+    func wakeAccounts(ids: [String]) async {
+        for id in ids {
+            await wakeAccount(for: id)
+        }
+    }
+
+    func wakeSleepingAccounts() async {
+        let sleepingIds = accounts.filter { $0.quota?.hourlyWindowPresent == false }.map(\.id)
+        for id in sleepingIds {
+            await wakeAccount(for: id)
         }
     }
 

@@ -1,0 +1,59 @@
+diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
+index 7bf7ff7..a43256d 100644
+--- a/internal/api/server_routes.go
++++ b/internal/api/server_routes.go
+@@ -39,6 +39,28 @@ const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authe
+ 
+ const codexAlphaSearchSourceFormat = "codex-alpha-search"
+ 
++// sanitizeUpstreamError keeps internal endpoints out of client-visible
++// errors. A failed local runtime used to surface as
++// `Post "http://127.0.0.1:18318/v1/chat/completions": dial tcp ...`, which
++// leaks the internal port and tells the user nothing actionable.
++func sanitizeUpstreamError(err error) string {
++	if err == nil {
++		return ""
++	}
++	msg := err.Error()
++	lower := strings.ToLower(msg)
++	if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") ||
++		strings.Contains(lower, "[::1]") {
++		return "Local AI runtime is not running. Start the model in Melon Tools and retry."
++	}
++	if strings.Contains(lower, "connection refused") ||
++		strings.Contains(lower, "no such host") ||
++		strings.Contains(lower, "i/o timeout") {
++		return "Upstream provider is unavailable."
++	}
++	return msg
++}
++
+ // setupRoutes configures the API routes for the server.
+ // It defines the endpoints and associates them with their respective handlers.
+ func (s *Server) setupRoutes() {
+@@ -403,7 +425,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
+ 		for _, value := range auth.SafeResponseHeaders(err).Values("Retry-After") {
+ 			c.Writer.Header().Add("Retry-After", value)
+ 		}
+-		c.JSON(status, gin.H{"error": err.Error()})
++		c.JSON(status, gin.H{"error": sanitizeUpstreamError(err)})
+ 		return
+ 	}
+ 	if selected == nil {
+@@ -510,14 +532,14 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
+ 			if selection != nil {
+ 				selection.End("missing_base_url")
+ 			}
+-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
++			c.JSON(http.StatusServiceUnavailable, gin.H{"error": sanitizeUpstreamError(err)})
+ 			return
+ 		}
+ 		if selection != nil {
+ 			selection.End("request_failed")
+ 		}
+ 		helps.RecordAPIResponseError(ctx, cfg, err)
+-		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": err.Error()})
++		c.JSON(clienterror.HTTPStatusFromErrorOr(err, http.StatusBadGateway), gin.H{"error": sanitizeUpstreamError(err)})
+ 		return
+ 	}
+ 	closeResponseBody := func() error {

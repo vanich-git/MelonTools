@@ -1,0 +1,199 @@
+diff --git a/sdk/cliproxy/usage/telemetry_logger.go b/sdk/cliproxy/usage/telemetry_logger.go
+new file mode 100644
+index 00000000..0afa2f46
+--- /dev/null
++++ b/sdk/cliproxy/usage/telemetry_logger.go
+@@ -0,0 +1,79 @@
++package usage
++
++import (
++	"context"
++	"strings"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++)
++
++func init() {
++	RegisterPlugin(&telemetryUsagePlugin{})
++}
++
++type telemetryUsagePlugin struct{}
++
++func (p *telemetryUsagePlugin) HandleUsage(_ context.Context, record Record) {
++	if p == nil {
++		return
++	}
++
++	timestamp := record.RequestedAt
++	if timestamp.IsZero() {
++		timestamp = time.Now()
++	}
++	tsStr := timestamp.UTC().Format(time.RFC3339)
++
++	model := strings.TrimSpace(record.Model)
++	if model == "" {
++		model = strings.TrimSpace(record.ResponseModel)
++	}
++	if model == "" {
++		model = "unknown"
++	}
++	model = sanitizeTelemetryToken(model)
++
++	provider := strings.TrimSpace(record.Provider)
++	if provider == "" {
++		provider = "unknown"
++	}
++	provider = sanitizeTelemetryToken(provider)
++
++	auth := strings.TrimSpace(record.AuthID)
++	if auth == "" {
++		auth = strings.TrimSpace(record.AuthIndex)
++	}
++	if auth == "" {
++		auth = "none"
++	}
++	auth = sanitizeTelemetryToken(auth)
++
++	inputTokens := record.Detail.InputTokens
++	outputTokens := record.Detail.OutputTokens
++
++	mode := "chat"
++	if record.Stream {
++		mode = "stream"
++	}
++
++	statusCode := 200
++	if record.Failed {
++		if record.Fail.StatusCode > 0 {
++			statusCode = record.Fail.StatusCode
++		} else {
++			statusCode = 500
++		}
++	}
++
++	log.Infof("[usage] timestamp=%s model=%s provider=%s auth=%s input=%d output=%d mode=%s status=%d",
++		tsStr, model, provider, auth, inputTokens, outputTokens, mode, statusCode)
++}
++
++func sanitizeTelemetryToken(s string) string {
++	s = strings.ReplaceAll(s, " ", "_")
++	s = strings.ReplaceAll(s, "\"", "")
++	s = strings.ReplaceAll(s, "\n", "")
++	s = strings.ReplaceAll(s, "\r", "")
++	return s
++}
+diff --git a/sdk/cliproxy/usage/telemetry_logger_test.go b/sdk/cliproxy/usage/telemetry_logger_test.go
+new file mode 100644
+index 00000000..fde5abbc
+--- /dev/null
++++ b/sdk/cliproxy/usage/telemetry_logger_test.go
+@@ -0,0 +1,108 @@
++package usage
++
++import (
++	"bytes"
++	"context"
++	"strings"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++)
++
++func TestTelemetryUsagePluginHandleUsage(t *testing.T) {
++	var buf bytes.Buffer
++	originalOutput := log.StandardLogger().Out
++	originalLevel := log.StandardLogger().Level
++	log.SetOutput(&buf)
++	log.SetLevel(log.InfoLevel)
++	defer func() {
++		log.SetOutput(originalOutput)
++		log.SetLevel(originalLevel)
++	}()
++
++	plugin := &telemetryUsagePlugin{}
++	reqTime := time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)
++	record := Record{
++		RequestedAt: reqTime,
++		Model:       "claude-3-7-sonnet",
++		Provider:    "anthravity",
++		AuthID:      "test-account-1",
++		Stream:      true,
++		Failed:      false,
++		Detail: Detail{
++			InputTokens:  150,
++			OutputTokens: 320,
++		},
++	}
++
++	plugin.HandleUsage(context.Background(), record)
++
++	out := buf.String()
++	expectedSubstrings := []string{
++		"[usage]",
++		"timestamp=2026-11-10T18:00:00Z",
++		"model=claude-3-7-sonnet",
++		"provider=anthravity",
++		"auth=test-account-1",
++		"input=150",
++		"output=320",
++		"mode=stream",
++		"status=200",
++	}
++	for _, expected := range expectedSubstrings {
++		if !strings.Contains(out, expected) {
++			t.Errorf("expected output to contain %q, got: %s", expected, out)
++		}
++	}
++}
++
++func TestTelemetryUsagePluginHandleUsageFailure(t *testing.T) {
++	var buf bytes.Buffer
++	originalOutput := log.StandardLogger().Out
++	originalLevel := log.StandardLogger().Level
++	log.SetOutput(&buf)
++	log.SetLevel(log.InfoLevel)
++	defer func() {
++		log.SetOutput(originalOutput)
++		log.SetLevel(originalLevel)
++	}()
++
++	plugin := &telemetryUsagePlugin{}
++	reqTime := time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC)
++	record := Record{
++		RequestedAt: reqTime,
++		Model:       "gpt-4o",
++		Provider:    "openai",
++		AuthIndex:   "auth-index-2",
++		Stream:      false,
++		Failed:      true,
++		Fail: Failure{
++			StatusCode: 429,
++		},
++		Detail: Detail{
++			InputTokens:  42,
++			OutputTokens: 0,
++		},
++	}
++
++	plugin.HandleUsage(context.Background(), record)
++
++	out := buf.String()
++	expectedSubstrings := []string{
++		"[usage]",
++		"timestamp=2026-11-10T18:00:00Z",
++		"model=gpt-4o",
++		"provider=openai",
++		"auth=auth-index-2",
++		"input=42",
++		"output=0",
++		"mode=chat",
++		"status=429",
++	}
++	for _, expected := range expectedSubstrings {
++		if !strings.Contains(out, expected) {
++			t.Errorf("expected output to contain %q, got: %s", expected, out)
++		}
++	}
++}

@@ -6,6 +6,18 @@ touched by the packaging scripts.
 
 ## Current status
 
+The application source tree is **6.0.0**, prepared for the stable promotion.
+The newest local prerelease was 6.0.0-rc.6: it was produced on macOS
+(`MacOS/build.sh` plus `Windows/build-windows.sh`), never published, and its
+hashes below prove only that the local files matched the bytes listed there.
+The published 6.0.0 artifacts come from the tagged CI build, not from a
+checkout. The Homebrew
+Cask and winget manifests below still describe the last published stable
+release, 5.5.8, with its real hashes. That is deliberate: a prerelease is never
+promoted into the stable manifests, and a version number is not evidence that
+an artifact exists — inventing a SHA-256 would make every download check
+meaningless.
+
 **Signing and notarization are BLOCKED until real certificates are provided.**
 
 | Platform | State | Consequence |
@@ -18,21 +30,125 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 5.5.7
+## 6.0.0-rc.6 (local build)
+
+Built locally on 2026-11-07 on macOS: the DMG comes from `MacOS/build.sh`
+(universal arm64 + x86_64, ad-hoc signed), the two Windows executables from
+`Windows/build-windows.sh` (cargo-xwin cross-compile for
+`x86_64-pc-windows-msvc`, NSIS bundle via the Homebrew `makensis`).
+
+This build fixes the issues reported after rc.5:
+
+- Dropdown lists scroll again. Hovering a row re-centred the list on it, so a
+  trackpad or wheel scroll was undone as soon as the content moved; scrolling
+  now follows keyboard navigation, type-ahead and the opening selection only.
+- Model cards drop Hugging Face metadata comments (`<!-- ... -->`) before
+  rendering, on macOS and Windows, so they no longer show up as code blocks.
+
+Both artifacts are unsigned: macOS is ad-hoc signed and not notarized,
+Windows has no Authenticode signature. Nothing in this directory was uploaded
+anywhere.
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-5.5.7.dmg` | `99b2ec4ee42a34ede401ecf4b96f26b51d1d401b64ddb484f72a833a5f43c849` |
-| Windows installer | `MelonTools-5.5.7-setup.exe` | `dd9e88c3684f11c758842ea463ea17eb82d31c7d636843d16abfd0cdbaf73e7c` |
-| Windows portable | `MelonTools-5.5.7-win-x64-portable.exe` | `5f366f7c40affe43ca2df0b27b590d811db364eccc4bcdc3a7068e6dbe93c5a9` |
+| macOS DMG | `MelonTools-6.0.0-rc.6.dmg` | `01da7e4ab1671e4315c3f9e5dcb91121e2403bf0bce98661875b6376f2d90c34` |
+| Windows installer | `MelonTools-6.0.0-rc.6-setup.exe` | `b186de8b4b94ca4c6102e61ceffb419875ee117336e1599b09701a79198342db` |
+| Windows portable | `MelonTools-6.0.0-rc.6-win-x64-portable.exe` | `98d2d9d277e8aa725943ed90deb97fdc1e8b7a71ff586821194d4833ba6a79f4` |
 
-5.5.7 adds the Windows compact metrics (5-hour total, weekly total, Codex
-account count, API status dot) and a 15-second auto-fold after the pointer
-leaves the open card. A click expands the card without the tween that caused
-the resize loop. The macOS build keeps the 5.5.6 silhouette at build 54.
+The DMG carries `CFBundleShortVersionString` 6.0.0-rc.6 with build 65; the
+NSIS installer keeps the numeric core 6.0.0 in its version resource.
+
+## 6.0.0-rc.5 (local build)
+
+Built locally on 2026-11-06 on macOS: the DMG comes from `MacOS/build.sh`
+(universal arm64 + x86_64, ad-hoc signed), the two Windows executables from
+`Windows/build-windows.sh` (cargo-xwin cross-compile for
+`x86_64-pc-windows-msvc`, NSIS bundle via the Homebrew `makensis`).
+
+This build fixes the issues reported after rc.4:
+
+- Local AI and Hugging Face no longer use native system pickers on either
+  platform: macOS moved the catalog sort and the model-variant chooser onto
+  `MTSelect`, Windows moved the Local AI settings dropdowns onto the in-app
+  `details.hf-select` component.
+- Hugging Face avatars are fetched and decoded once per repository and reused
+  across the catalog and detail views on macOS and Windows.
+- Model-card READMEs render badges and embedded HTML instead of gluing raw
+  markup into a paragraph, on both platforms.
+
+Both artifacts are unsigned: macOS is ad-hoc signed and not notarized,
+Windows has no Authenticode signature. Nothing in this directory was uploaded
+anywhere.
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-6.0.0-rc.5.dmg` | `e539d0437db113064653da054ea578f91fff9282a063a346c75a6cd525bdf8cb` |
+| Windows installer | `MelonTools-6.0.0-rc.5-setup.exe` | `12f83cd061923ac2a141ab2969a442cd576e90368254f75ebff4500b249788c7` |
+| Windows portable | `MelonTools-6.0.0-rc.5-win-x64-portable.exe` | `dc9fc391ec92720e747fa44da6bb2c5719ec4cb7beb033463f46f5b820c949e9` |
+
+The DMG carries `CFBundleShortVersionString` 6.0.0-rc.5 with build 64; the
+NSIS installer keeps the numeric core 6.0.0 in its version resource.
+
+## 6.0.0-rc.4 (prerelease)
+
+A prerelease ships through the draft → GitHub prerelease path only:
+
+- `release.yml` builds both platforms, writes `prerelease: true` when the
+  version contains `-`, and leaves the release as a **draft** for a human.
+- Publishing the draft keeps it a prerelease: it never becomes "latest", so
+  the in-app updaters (which read `/releases/latest`) ignore it.
+- `release-promote.yml` and `docs_lint.py --release 6.0.0-rc.4` (without
+  `--preflight`) refuse a prerelease on purpose: Homebrew and winget describe
+  stable artifacts, and an RC must not reach `brew upgrade` or
+  `winget upgrade`.
+
+The pre-tag gate accepts a prerelease only in `--preflight` form:
+
+```bash
+python3 .github/scripts/docs_lint.py --release 6.0.0-rc.4 --preflight
+```
+
+Stable promotion is unchanged and applies to `6.0.0` only:
+
+```bash
+# release-promote.yml, after the promotion commit: the live manifests, the
+# downloaded draft assets and the staged provenance must agree.
+python3 .github/scripts/docs_lint.py --release 6.0.0
+python3 scripts/verify_release_checksums.py \
+  --artifacts draft-assets \
+  --sha256sums draft-assets/SHA256SUMS \
+  --version 6.0.0 \
+  --require-provenance
+```
+
+`--stage` generates draft metadata from real build outputs; it refuses to run
+when the DMG, NSIS setup, portable exe, or their `.sha256` siblings are
+missing, and it never writes a placeholder digest. For a prerelease,
+`--stage 6.0.0-rc.4` is used by `release.yml` to verify the uploaded draft
+assets only — its output is not committed and never edits the manifests.
+`docs_lint.py` without `--release` allows the application version to run ahead
+of the published distribution metadata and prints a note. See
+[`docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md) and
+[`docs/AUDIT_WINDOWS_MACOS_2026-11-04.md`](../docs/AUDIT_WINDOWS_MACOS_2026-11-04.md)
+(REL-03/REL-04).
+
+## Release artifacts for 5.5.8
+
+| Artifact | File name | SHA-256 |
+|----------|-----------|---------|
+| macOS DMG | `MelonTools-5.5.8.dmg` | `9567211bedb1b714bae44ad6d3df3fffb9271dbbc09d74275384575359b50bc4` |
+| Windows installer | `MelonTools-5.5.8-setup.exe` | `653d1354543fc792fb7e61ffea25029ea5079550fbad338f82d190e2aaef69b6` |
+| Windows portable | `MelonTools-5.5.8-win-x64-portable.exe` | `f1a03dc6bb432763bee5a455afec16c4bca0ebcb6f6cdc2adaac2da3e8da534a` |
+
+5.5.8 makes Windows expansion reliable: the compact pill and the 420×242 card
+are separate native windows, so showing the card never asks WebView2 to resize
+a surface. The compact line shows the 5-hour total, weekly total, Codex account count and
+API dot. The large card folds back after Immediately / 5 / 10 / 15 / 20 seconds
+(default 15) and has an explicit × button.
+The macOS build keeps the 5.5.6 silhouette at build 55.
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v5.5.7`.
+tag `v5.5.8`.
 
 ## Release artifacts for 5.0.0 (previous release)
 
@@ -88,23 +204,51 @@ notes and backfills.
 | Windows portable | `MelonTools-3.4.2-win-x64-portable.exe` | `f6e35fe81d77905b5b534f132f80f01e1770497f515d5c7c69868640237323df` |
 | Windows legacy alias | `MelonTools-3.4.2-win-x64.exe` | `f6e35fe81d77905b5b534f132f80f01e1770497f515d5c7c69868640237323df` |
 
-## Manifest bump order (prevents REL-1)
+## Manifest bump order (prevents REL-1/REL-03)
 
 The Homebrew Cask and winget manifests must describe the artifacts that are
-actually published. Never tag before this order is complete:
+actually published. The release has two phases because code signing and
+notarization timestamp the binaries during the build: the real hashes cannot be
+committed before the build, and the build must not publish unverified assets.
 
-1. Build both platforms from the release commit (CI `package` jobs).
-2. Copy the artifacts into one directory and run
-   `python3 scripts/verify_release_checksums.py --artifacts DIR --write`.
-3. Commit the resulting Cask/winget hash changes with the version bump.
-4. Run `python3 scripts/verify_release_checksums.py --artifacts DIR --version X.Y.Z`
-   and `python3 .github/scripts/docs_lint.py`; both must pass.
-5. Tag the commit. The release workflow refuses to overwrite a published
-   release and always creates a **draft** first; a human verifies the hashes
-   and promotes it.
+**Phase 1 — tag and build a draft.**
+
+1. Finish the sources: `MacOS/RELEASE_NOTES.md` must describe X.Y.Z with no
+   "draft release notes" marker, and the app/crate versions must be X.Y.Z.
+   `python3 .github/scripts/docs_lint.py --release X.Y.Z --preflight` must pass.
+   Homebrew/winget still describe the previously published version here; that
+   is expected and is not relaxed at promotion.
+2. Tag the commit. `release.yml` builds both platforms, runs
+   `verify_release_checksums.py --stage` on the real artifacts, and requires the
+   built assets to match that metadata byte for byte
+   (`--verify-staged`). It creates a **draft** release with a
+   `MelonTools-X.Y.Z-release-metadata.zip` attachment and never publishes.
+3. A human downloads the draft assets, recomputes the hashes, and reviews the
+   staged Cask/winget files inside the zip.
+
+**Phase 2 — promote the manifests, then publish.**
+
+4. Extract the attached `release-metadata/` into `packaging/staging/X.Y.Z/`,
+   copy its Cask/winget files over the committed manifests, append
+   `PACKAGING_README.section.md` to this file, and update the "what's new"
+   headings in `README.md`, `README.ru.md` and `MacOS/README.md` to X.Y.Z.
+   Commit that promotion.
+5. Run the `Release promotion` workflow (`release-promote.yml`) with the tag.
+   It refuses to continue unless:
+   - the live Cask/winget hashes equal `packaging/staging/X.Y.Z/`
+     (`--require-provenance`);
+   - the downloaded draft assets equal the live manifests and `SHA256SUMS`;
+   - the attached metadata zip is byte-identical to `packaging/staging/X.Y.Z/`;
+   - `docs_lint.py --release X.Y.Z` passes.
+   Only then does it undraft the release (and it never re-promotes an already
+   published tag).
+
+`--write` remains a low-level local helper; it does not create a draft or a
+release gate.
 
 `scripts/verify_release_checksums.py` is stdlib-only and is also called by
-`docs_lint` for the static manifest checks.
+`docs_lint` for the static manifest checks. `--write` remains available as a
+low-level helper, but it does not create a draft directory or a release gate.
 
 ## Signing secrets and repository settings
 
@@ -176,7 +320,7 @@ keychain, then calls:
 ```bash
 ./packaging/sign-macos.sh \
   "$HOME/Library/Developer/MelonTools/Build/Products/Release/MelonTools.app" \
-  "MacOS/build/MelonTools-4.0.1.dmg"
+  "MacOS/build/MelonTools-6.0.0.dmg"
 ```
 
 The script:
@@ -184,14 +328,25 @@ The script:
 1. Requires `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`; otherwise it
    prints a `SIGNING SKIPPED — macOS` block and exits 0.
 2. Finds the `Developer ID Application` identity in the keychain.
-3. Signs the gateway sidecar and the app with hardened runtime and a trusted
-   timestamp.
-4. Re-creates the DMG from the signed app.
-5. Submits the DMG with `notarytool --wait` and staples the ticket.
+3. Signs every nested Mach-O file, including
+   `Contents/Resources/runtime/llama-server` and its dylibs; ad-hoc signatures
+   from `fetch-runtime.sh` are replaced before the outer bundle is sealed.
+4. Recomputes `runtime.sha256`/`runtime.json` from the **signed** runtime bytes
+   via `fetch-runtime.sh --refresh-manifest`, then verifies it with
+   `fetch-runtime.sh --check`.
+5. Signs the app with hardened runtime and a trusted timestamp, verifies deep
+   strict signatures, and rejects any nested code that is not Developer ID
+   signed.
+6. Re-creates the DMG from the signed app and checks the runtime manifest again
+   in the staged bundle.
+7. Submits the DMG with `notarytool --wait`, fails unless the result is
+   `status: Accepted`, staples the ticket, and validates it.
 
 Set `REQUIRE_SIGNING=1` to turn a missing-secret skip into an error (useful in
 a strict local release script). The workflow itself uses the secret condition
-on the step, so a missing secret simply skips the step.
+on the step, so a missing secret simply skips the step. After signing, run
+`MacOS/scripts/native-acceptance.sh --dmg <file> --require-signed` and complete
+[`docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
 
 ## Windows signing
 
@@ -208,12 +363,21 @@ an RFC 3161 timestamp, and verifies the result. Without the two certificate
 variables it prints `SIGNING SKIPPED - Windows` and exits 0; `-Require` turns
 that skip into an error.
 
+The release and package jobs also run
+`packaging/verify-windows-artifacts.ps1 -Dist Windows/dist -Version X.Y.Z`
+(add `-RequireSignature` when a certificate exists). It checks PE x64/NSIS
+structure, the `.sha256` siblings, the legacy alias equality and Authenticode.
+It does not install or launch the app; those checks stay in
+[`docs/RELEASE_ACCEPTANCE.md`](../docs/RELEASE_ACCEPTANCE.md).
+
 ## Homebrew Cask
 
 The manifest lives at
 [`homebrew/Casks/melon-tools.rb`](homebrew/Casks/melon-tools.rb). It points at
-the DMG for the matching GitHub release and carries the published 4.0.0 DMG
-SHA-256.
+the DMG for the matching GitHub release and currently carries the published
+5.5.8 DMG SHA-256. Do not change it to 6.0.0 until the stable 6.0.0 artifacts
+are built, acceptance-checked and promoted; the 6.0.0-rc.4 prerelease is never
+promoted into this manifest.
 
 Local validation and installation:
 
@@ -247,21 +411,24 @@ still be installed manually from the GitHub release.
 
 ## Version bumps
 
-When a new release is prepared, update all of these together:
+When a new release is prepared, update the application versions together:
 
 1. `MacOS/app/project.yml` (macOS version — only the release owner changes it).
-2. `Windows/app/src-tauri/Cargo.toml` (Windows version).
-3. The Cask `version`, `url`, and `sha256`.
-4. `PackageVersion` in all three winget manifests, plus `InstallerUrl` and
-   `InstallerSha256` in the installer manifest.
+2. `Windows/app/src-tauri/Cargo.toml` and the lock file (Windows version).
+3. `MacOS/RELEASE_NOTES.md` top heading.
 
-`python3 .github/scripts/docs_lint.py` fails when these versions disagree or a
-manifest loses its 64-character SHA-256.
+Do **not** hand-edit the Cask/winget `version`, URL, or SHA-256. Build the
+artifacts and run `--stage`; the generated files carry the matching version and
+the real hashes. `docs_lint.py` without `--release` tolerates an unreleased
+application version in front of the published distribution metadata and prints
+a note; `docs_lint.py --release X.Y.Z` requires the promoted manifests, the
+generated `RELEASE_METADATA.json`/`SHA256SUMS` provenance, and updated README
+headings. It also fails when a live manifest loses its 64-character SHA-256.
 
 ## Checksums
 
 ```bash
-shasum -a 256 MacOS/build/MelonTools-4.0.1.dmg
+shasum -a 256 MacOS/build/MelonTools-X.Y.Z.dmg
 ```
 
 ```powershell

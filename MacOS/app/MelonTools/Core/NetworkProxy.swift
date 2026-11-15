@@ -49,17 +49,22 @@ enum NetworkProxy {
         if let cachedSession, cachedSession.signature == signature {
             return cachedSession.session
         }
-        let configuration = URLSessionConfiguration.default
+        let session = URLSession(configuration: externalConfiguration())
+        cachedSession = (signature, session)
+        return session
+    }
+
+    /// Shared configuration for external clients, including delegate downloads.
+    /// A new client uses the current app setting rather than inheriting a
+    /// different system/environment policy by accident.
+    static func externalConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
         if isEnabled, let proxy = activeURL(), let dictionary = proxyDictionary(for: proxy, bypass: bypass) {
             configuration.connectionProxyDictionary = dictionary
         } else {
-            // The switch is the single source of truth: without it, do not
-            // silently inherit the macOS system proxy.
             configuration.connectionProxyDictionary = [:]
         }
-        let session = URLSession(configuration: configuration)
-        cachedSession = (signature, session)
-        return session
+        return configuration
     }
 
     /// Session for loopback management/health calls: never use a proxy.

@@ -34,6 +34,57 @@ final class BackupTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
+    func testPreparingImportDoesNotCommitLiveFiles() throws {
+        let backup = root.appendingPathComponent("prepared.melon")
+        try writeJSON(sampleScheduler(), to: supportDir.appendingPathComponent("scheduler.json"))
+        _ = try BackupService.export(to: backup, password: password, supportDir: supportDir, defaults: defaults)
+        let schedulerURL = supportDir.appendingPathComponent("scheduler.json")
+        try Data("sentinel-live".utf8).write(to: schedulerURL)
+        let payload = try BackupService.prepareImport(from: backup, password: password)
+        XCTAssertEqual(try String(contentsOf: schedulerURL, encoding: .utf8), "sentinel-live")
+        _ = try BackupService.restorePayload(payload, supportDir: supportDir, defaults: defaults)
+        XCTAssertNotNil(try JSONSerialization.jsonObject(with: Data(contentsOf: schedulerURL)) as? [String: Any])
+    }
+
+    func testBackupRoundTripIncludesDurableSchedulerUsage() throws {
+        var ledger = SchedulerUsageLedger()
+        ledger.days = ["task-1": ["2026-11-04": 73_000]]
+        let usageURL = supportDir.appendingPathComponent("scheduler-usage.json")
+        try JSONEncoder().encode(ledger).write(to: usageURL)
+        let payload = try BackupService.makePayload(supportDir: supportDir, defaults: defaults)
+        XCTAssertNotNil(payload.schedulerUsage)
+        try FileManager.default.removeItem(at: usageURL)
+        _ = try BackupService.restorePayload(payload.encoded(), supportDir: supportDir, defaults: defaults)
+        XCTAssertEqual(try JSONDecoder().decode(SchedulerUsageLedger.self, from: Data(contentsOf: usageURL)), ledger)
+    }
+
+    func testRestoreNeverRefundsAlreadySpentTokens() throws {
+        var incoming = SchedulerUsageLedger()
+        incoming.days = ["task": ["2026-11-04": 2_000, "2026-11-03": 500]]
+        var live = SchedulerUsageLedger()
+        live.days = ["task": ["2026-11-04": 90_000], "other-task": ["2026-11-04": 1_000]]
+        let url = supportDir.appendingPathComponent("scheduler-usage.json")
+        try JSONEncoder().encode(live).write(to: url)
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(incoming))
+        let payload = try JSONSerialization.data(withJSONObject: ["schedulerUsage": object])
+        _ = try BackupService.restorePayload(payload, supportDir: supportDir, defaults: defaults)
+        let merged = try JSONDecoder().decode(SchedulerUsageLedger.self, from: Data(contentsOf: url))
+        XCTAssertEqual(merged.days["task"]?["2026-11-04"], 90_000)
+        XCTAssertEqual(merged.days["task"]?["2026-11-03"], 500)
+        XCTAssertEqual(merged.days["other-task"]?["2026-11-04"], 1_000)
+        _ = try BackupService.restorePayload(Data("{}".utf8), supportDir: supportDir, defaults: defaults)
+        XCTAssertEqual(try JSONDecoder().decode(SchedulerUsageLedger.self, from: Data(contentsOf: url)), merged)
+    }
+
+    func testMalformedSchedulerUsageDoesNotOverwriteLiveFiles() throws {
+        let url = supportDir.appendingPathComponent("scheduler-usage.json")
+        let bytes = Data("original".utf8)
+        try bytes.write(to: url)
+        let payload = try JSONSerialization.data(withJSONObject: ["schedulerUsage": ["days": "invalid"]])
+        XCTAssertThrowsError(try BackupService.restorePayload(payload, supportDir: supportDir, defaults: defaults))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
     // MARK: - Round trip
 
     func testExportImportRoundTripRestoresEveryComponent() throws {

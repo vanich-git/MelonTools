@@ -15,20 +15,22 @@ struct SettingsView: View {
     @AppStorage("networkProxyBypass") private var networkProxyBypass = "127.0.0.1,localhost"
     @State private var proxyURLDraft = ""
     @State private var proxyURLSaved = false
-    @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = 60
+    @AppStorage("streamBootstrapTimeoutSeconds") private var streamBootstrapTimeoutSeconds = CodexGatewayService.defaultStreamBootstrapTimeoutSeconds
     @AppStorage("quotaRefreshInterval") private var quotaRefreshInterval = 300
     @AppStorage("quotaNotifications") private var quotaNotifications = false
     @AppStorage(NotchHUDController.enabledDefaultsKey) private var notchHUDEnabled = true
     @AppStorage(NotchHUDController.styleDefaultsKey) private var notchHUDCompactStyle = NotchHUDCompactStyle.inside.rawValue
     @AppStorage("taskNotifications") private var taskNotifications = true
     @AppStorage(DashboardWidgetKey.poolHealth) private var showPoolHealth = true
-    @AppStorage(DashboardWidgetKey.quotaTrends) private var showQuotaTrends = true
+    @AppStorage(DashboardWidgetKey.antigravityPool) private var showAntigravityPool = true
     @AppStorage(DashboardWidgetKey.spend) private var showSpend = true
     @AppStorage(DashboardWidgetKey.scheduler) private var showScheduler = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
 
     @State private var backupPassword = ""
+    @State private var backupTask: Task<Void, Never>?
+    @State private var backupBusy = false
     @State private var backupNotice: String?
     @State private var backupNoticeIsError = false
     @State private var backupRefresh = 0
@@ -64,14 +66,9 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
-                            Picker("", selection: $app.appearance) {
-                                ForEach(AppState.Appearance.allCases) { style in
-                                    Text(style.title).tag(style)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 280)
+                            MTSegmented(selection: $app.appearance, options: AppState.Appearance.allCases.map {
+                                ($0, $0.title)
+                            }, width: 280)
                             .onChange(of: app.appearance) { app.applyAppearance() }
                         }
                         HStack(spacing: MTTheme.s3) {
@@ -79,14 +76,9 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
-                            Picker("", selection: $l10n.code) {
-                                ForEach(L10n.available, id: \.code) { item in
-                                    Text(item.title).tag(item.code)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 280)
+                            MTSegmented(selection: $l10n.code, options: L10n.available.map {
+                                ($0.code, $0.title)
+                            }, width: 280)
                         }
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Accent"))
@@ -107,6 +99,7 @@ struct SettingsView: View {
                                 .frame(width: 130, alignment: .leading)
                             Toggle(L("Show a compact island at the top of the screen"), isOn: $notchHUDEnabled)
                                 .toggleStyle(.switch)
+                                .tint(MTTheme.amber)
                                 .font(MTTheme.body(12))
                                 .onChange(of: notchHUDEnabled) { _, enabled in
                                     NotchHUDController.shared.setEnabled(enabled)
@@ -118,14 +111,9 @@ struct SettingsView: View {
                                     .font(MTTheme.mono(11))
                                     .foregroundStyle(MTTheme.textSecondary)
                                     .frame(width: 130, alignment: .leading)
-                                Picker("", selection: $notchHUDCompactStyle) {
-                                    ForEach(NotchHUDCompactStyle.allCases, id: \.rawValue) { style in
-                                        Text(style.title).tag(style.rawValue)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .frame(width: 280)
+                                MTSegmented(selection: $notchHUDCompactStyle, options: NotchHUDCompactStyle.allCases.map {
+                                    ($0.rawValue, $0.title)
+                                }, width: 280)
                                 .onChange(of: notchHUDCompactStyle) { _, value in
                                     NotchHUDController.shared.setCompactStyle(
                                         NotchHUDCompactStyle(rawValue: value) ?? .inside
@@ -140,6 +128,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s3) {
                         Toggle(L("Use proxy for OpenAI and providers"), isOn: $networkProxyEnabled)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         HStack(spacing: MTTheme.s3) {
                             Text(L("Proxy URL"))
@@ -148,7 +137,7 @@ struct SettingsView: View {
                                 .frame(width: 130, alignment: .leading)
                             HStack(spacing: MTTheme.s2) {
                                 TextField("socks5h://127.0.0.1:1080", text: $proxyURLDraft)
-                                    .textFieldStyle(.roundedBorder)
+                                    .textFieldStyle(.mtInput)
                                     .font(MTTheme.mono(11))
                                     .frame(width: 300)
                                     .onSubmit { saveProxyURL() }
@@ -177,7 +166,7 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             TextField("127.0.0.1,localhost", text: $networkProxyBypass)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 300)
                         }
@@ -212,11 +201,12 @@ struct SettingsView: View {
                         Toggle(L("Switch Antigravity accounts when the first token is slow"), isOn: Binding(
                             get: { streamBootstrapTimeoutSeconds > 0 },
                             set: { enabled in
-                                streamBootstrapTimeoutSeconds = enabled ? 60 : 0
+                                streamBootstrapTimeoutSeconds = enabled ? CodexGatewayService.defaultStreamBootstrapTimeoutSeconds : 0
                                 CodexGatewayService.shared.applyStreamBootstrapTimeout()
                             }
                         ))
                         .toggleStyle(.switch)
+                        .tint(MTTheme.amber)
                         .font(MTTheme.body(12))
 
                         HStack(spacing: MTTheme.s3) {
@@ -234,7 +224,7 @@ struct SettingsView: View {
                             }
                             .disabled(streamBootstrapTimeoutSeconds == 0)
                         }
-                        Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. The slow account cools down for 60 s, then 5 min, 30 min and 2 h on repeated failures."))
+                        Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. Empty heartbeat frames extend the window while the model is still thinking (up to 3x the timeout). The first strike only fails over; repeated strikes cool the account down for 60 s, 5 min and 30 min."))
                             .font(MTTheme.mono(10))
                             .foregroundStyle(MTTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -245,15 +235,19 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Show pool health"), isOn: $showPoolHealth)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
-                        Toggle(L("Show quota limits"), isOn: $showQuotaTrends)
+                        Toggle(L("Show Antigravity pool health"), isOn: $showAntigravityPool)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Show spend & top providers"), isOn: $showSpend)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Show scheduler summary"), isOn: $showScheduler)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                     }
                 }
@@ -284,9 +278,11 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
                         Toggle(L("Start the service at app launch"), isOn: $gatewayAutoStart)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Toggle(L("Stop the service on quit"), isOn: $gatewayStopOnQuit)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.cyan)
                             .font(MTTheme.body(12))
                         Text(L("When “stop on quit” is off, the service keeps running in the background and the app adopts it on the next launch."))
                             .font(MTTheme.mono(10))
@@ -306,27 +302,28 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
-                            Picker("", selection: $quotaRefreshInterval) {
-                                Text(L("Off")).tag(0)
-                                Text(L("1 min")).tag(60)
-                                Text(L("5 min")).tag(300)
-                                Text(L("15 min")).tag(900)
-                                Text(L("30 min")).tag(1800)
-                            }
-                            .labelsHidden()
-                            .frame(width: 160)
+                            MTSelect(selection: $quotaRefreshInterval, options: [
+                                (0, L("Off")),
+                                (60, L("1 min")),
+                                (300, L("5 min")),
+                                (900, L("15 min")),
+                                (1800, L("30 min")),
+                            ], width: 160)
                             .onChange(of: quotaRefreshInterval) {
                                 CodexStore.shared.startQuotaScheduler()
                             }
                         }
                         Toggle(L("Notifications when quota is low"), isOn: $quotaNotifications)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                         Toggle(L("Notifications after scheduled runs"), isOn: $taskNotifications)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                         Toggle(L("Launch at login"), isOn: $launchAtLogin)
                             .toggleStyle(.switch)
+                            .tint(MTTheme.emerald)
                             .font(MTTheme.body(12))
                             .onChange(of: launchAtLogin) { setLaunchAtLogin(launchAtLogin) }
                     }
@@ -343,9 +340,10 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             SecureField(L("Password"), text: $backupPassword)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.mtInput)
                                 .font(MTTheme.mono(11))
                                 .frame(width: 240)
+                                .disabled(backupBusy)
                         }
                         HStack(spacing: MTTheme.s2) {
                             MTGlassButton(title: L("Export backup…"), systemImage: "square.and.arrow.up", tint: MTTheme.amber, prominent: true) {
@@ -354,6 +352,15 @@ struct SettingsView: View {
                             MTGlassButton(title: L("Import backup…"), systemImage: "square.and.arrow.down", tint: MTTheme.amber) {
                                 chooseBackupToImport()
                             }
+                        }
+                        .disabled(backupBusy)
+                        if backupBusy {
+                            HStack {
+                                ProgressView().controlSize(.small)
+                                Text(L("Processing backup…"))
+                                Button(L("Cancel")) { backupTask?.cancel() }
+                            }
+                            .font(MTTheme.mono(11))
                         }
                         Text(lastBackupText)
                             .font(MTTheme.mono(10))
@@ -469,14 +476,8 @@ struct SettingsView: View {
         let destination = url.pathExtension.lowercased() == "melon"
             ? url
             : url.deletingPathExtension().appendingPathExtension("melon")
-        do {
-            let summary = try BackupService.export(to: destination, password: password)
-            backupNoticeIsError = false
-            backupNotice = L("Backup exported") + " — " + Self.backupSummaryText(summary)
-            backupRefresh += 1
-        } catch {
-            backupNoticeIsError = true
-            backupNotice = L("Backup export failed") + ": \(error.localizedDescription)"
+        runBackupOperation {
+            try BackupService.export(to: destination, password: password)
         }
     }
 
@@ -513,15 +514,69 @@ struct SettingsView: View {
             backupNotice = L("Enter a backup password.")
             return
         }
-        do {
-            let summary = try BackupService.`import`(from: url, password: password)
-            backupNoticeIsError = false
-            backupNotice = L("Backup imported") + " — " + Self.backupSummaryText(summary)
-            backupRefresh += 1
-            Task { await BackupService.reloadAfterRestore() }
-        } catch {
-            backupNoticeIsError = true
-            backupNotice = L("Backup import failed") + ": \(error.localizedDescription)"
+        runBackupOperation {
+            try BackupService.prepareImport(from: url, password: password)
+        } commit: { payload in
+            try BackupService.restorePayload(payload, supportDir: CodexStore.supportDir, defaults: .standard)
+        }
+    }
+
+    /// PBKDF2 and filesystem work must not occupy the main actor. Cancellation
+    /// is checked before the atomic commit; an in-progress PBKDF2 call itself
+    /// cannot be interrupted, but the UI remains responsive throughout it.
+    private func runBackupOperation<Value: Sendable>(
+        operation: @escaping @Sendable () throws -> Value,
+        commit: (@MainActor (Value) throws -> BackupSummary)? = nil
+    ) {
+        let importing = commit != nil
+        guard !backupBusy else { return }
+        backupBusy = true
+        backupNotice = nil
+        backupTask = Task { @MainActor in
+            var suspended = false
+            var restored = false
+            defer {
+                if suspended { SchedulerStore.shared.endBackupRestore(restored: restored) }
+                backupBusy = false
+                backupTask = nil
+            }
+            do {
+                if importing {
+                    try await SchedulerStore.shared.beginBackupRestore()
+                    suspended = true
+                } else {
+                    await SchedulerStore.shared.flushPendingWrites()
+                }
+                let worker = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    return try operation()
+                }
+                let value = try await withTaskCancellationHandler(operation: {
+                    try await worker.value
+                }, onCancel: { worker.cancel() })
+                let summary: BackupSummary
+                if let commit {
+                    try Task.checkCancellation()
+                    summary = try commit(value)
+                    restored = true
+                    // reloadAfterRestore reads all stores synchronously before
+                    // its first await, preventing delayed quota writes racing
+                    // the restore. Only the gateway restart is asynchronous.
+                    await BackupService.reloadAfterRestore()
+                } else {
+                    guard let exported = value as? BackupSummary else { return }
+                    summary = exported
+                }
+                backupNoticeIsError = false
+                backupNotice = L(importing ? "Backup imported" : "Backup exported") + " — " + Self.backupSummaryText(summary)
+                backupRefresh += 1
+            } catch is CancellationError {
+                backupNoticeIsError = false
+                backupNotice = L("Backup cancelled.")
+            } catch {
+                backupNoticeIsError = true
+                backupNotice = L(importing ? "Backup import failed" : "Backup export failed") + ": \(error.localizedDescription)"
+            }
         }
     }
 
@@ -760,7 +815,7 @@ private struct MenuBarActionRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(hovered && !disabled ? Color.white.opacity(0.09) : Color.clear)
+                    .fill(hovered && !disabled ? Color.primary.opacity(0.09) : Color.clear)
             )
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }

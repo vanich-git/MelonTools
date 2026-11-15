@@ -8,4 +8,5 @@
   (Swift) and `quota::tests::shared_quota_fixture_matches_both_platforms`
   (Rust).
 - `fixtures/routing.json` is consumed by `CodexRoutingTests` and the gateway
-  priority test; it pins descending priority and the plan-rank table.
+  priority test; it pins the tier-based priority contract (regular = 2,
+  backup = 1) and the plan-rank table.

@@ -67,6 +67,7 @@
   const PROVIDERS = Object.assign({
     openai: 'OpenAI', opencode: 'OpenCode', openrouter: 'OpenRouter',
     deepinfra: 'DeepInfra', vercel: 'Vercel', zai: 'Z.ai',
+    commandcode: 'CommandCode',
   }, CFG.providers || {});
 
   // ---------------------------------------------------------------- helpers
@@ -195,7 +196,7 @@
     pointer-events: none;
     -webkit-app-region: no-drag;
     user-select: none; -webkit-user-select: none;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   /* The palette lives on two scopes: the chips render inside the composer,
      the popover is appended to <body> — custom properties are inherited, and
@@ -305,7 +306,7 @@
     border: 0.5px solid var(--melon-pop-border);
     box-shadow: var(--melon-pop-shadow);
     color: var(--melon-fg);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     -webkit-app-region: no-drag;
     user-select: none; -webkit-user-select: none;
   }
@@ -515,6 +516,7 @@
     if (kind === 'deepinfra') return 'melon-dot-blue';
     if (kind === 'vercel') return 'melon-dot-purple';
     if (kind === 'zai') return 'melon-dot-blue';
+    if (kind === 'commandcode') return 'melon-dot-purple';
     return 'melon-dot-orange';
   }
 
@@ -742,6 +744,10 @@
       if (stats.error) body.appendChild(popRow('—', String(stats.error)));
     } else if (kind === 'zai' && stats) {
       body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
+      if (stats.error) body.appendChild(popRow('—', String(stats.error)));
+    } else if (kind === 'commandcode' && stats) {
+      body.appendChild(popRow(LABELS.models, String(stats.modelCount || 0)));
+      body.appendChild(popNote(LABELS.noPricing));
       if (stats.error) body.appendChild(popRow('—', String(stats.error)));
     } else if (kind === 'antigravity' && stats) {
       body.appendChild(popRow(LABELS.account, stats.email || LABELS.noData));

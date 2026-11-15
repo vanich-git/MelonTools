@@ -107,6 +107,22 @@ enum CodexModelCatalog {
     /// hidden entries stay, and the full base still provides the template and
     /// the pool-slug shadow protection (an unselected pool slug must never be
     /// taken over by a third-party provider).
+    private static func catalogModels(for source: ModelSource) -> [SourceModel] {
+        guard source.kind == .openRouter else { return source.selectedModels }
+        return source.selectedModels.flatMap { model in
+            var variants = [model]
+            for (enabled, suffix) in [(model.isFloorModel == true, ":floor"), (model.isNitroModel == true, ":nitro")] {
+                guard enabled, !model.id.hasSuffix(suffix) else { continue }
+                var variant = model
+                variant.id += suffix
+                variant.alias += suffix
+                variant.display = "\(model.display.isEmpty ? model.alias : model.display) (\(suffix.dropFirst()))"
+                variants.append(variant)
+            }
+            return variants
+        }
+    }
+
     static func generatedEntries(
         base entries: [[String: Any]],
         sources: [ModelSource],
@@ -120,7 +136,7 @@ enum CodexModelCatalog {
         // Every pool slug reserves its name, selected or not.
         let poolSlugs = Set(entries.compactMap { $0["slug"] as? String })
         for source in sources where source.enabled {
-            for (position, model) in source.selectedModels.enumerated() {
+            for (position, model) in catalogModels(for: source).enumerated() {
                 // Never shadow an account-pool model.
                 if poolSlugs.contains(model.alias) { continue }
                 if var entry = makeEntry(from: template, model: model, source: source) {
@@ -311,10 +327,14 @@ enum CodexModelCatalog {
         case .openCode: return 100
         case .openRouter: return 200
         case .deepInfra: return 300
+        case .nvidia: return 350
         case .vercel: return 400
         case .zai: return 500
+        case .commandCode: return 550
         case .claude: return 600
         case .antigravity: return 700
+        case .localAI: return 800
+        case .custom: return 900
         }
     }
 
@@ -324,10 +344,14 @@ enum CodexModelCatalog {
         case .openCode: return "opencode"
         case .openRouter: return "openrouter"
         case .deepInfra: return "deepinfra"
+        case .nvidia: return "nvidia"
         case .vercel: return "vercel"
         case .zai: return "zai"
+        case .commandCode: return "commandcode"
         case .claude: return "Claude"
         case .antigravity: return "Antigravity"
+        case .localAI: return "Local AI"
+        case .custom: return "Custom"
         }
     }
 
@@ -387,7 +411,7 @@ enum CodexModelCatalog {
         let base = basePickerModels(selectedPoolSlugs: selectedPoolSlugs)
         var pending: [(display: String, provider: String, title: String, slug: String)] = []
         for source in sources where source.enabled {
-            for model in source.selectedModels {
+            for model in catalogModels(for: source) {
                 pending.append((
                     display: model.display.isEmpty ? model.alias : model.display,
                     provider: providerTag(for: source.kind),
@@ -531,8 +555,12 @@ enum CodexModelCatalog {
     static func makeEntry(from template: [String: Any], model: SourceModel, source: ModelSource) -> [String: Any]? {
         guard !model.alias.isEmpty else { return nil }
         var entry = template
+        // No fabricated floor: a 2048-token local model advertised as 8000 made
+        // Codex build prompts the engine then truncated, and the auto-compact
+        // threshold was off by the same factor. `contextLength` on the source
+        // model is already the **per-slot** window.
         let templateContext = template["context_window"] as? Int ?? 128_000
-        let context = max(model.contextLength ?? templateContext, 8_000)
+        let context = max(1, model.contextLength ?? templateContext)
 
         entry["slug"] = model.alias
         let display = model.display.isEmpty ? model.alias : model.display
@@ -540,7 +568,7 @@ enum CodexModelCatalog {
         entry["description"] = "\(display) · \(source.title)"
         entry["context_window"] = context
         entry["max_context_window"] = context
-        entry["auto_compact_token_limit"] = Int(Double(context) * 0.85)
+        entry["auto_compact_token_limit"] = max(1, Int(Double(context) * 0.85))
         entry["effective_context_window_percent"] = 95
 
         // Third-party upstreams do not implement OpenAI speed tiers or hosted

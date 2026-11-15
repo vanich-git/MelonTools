@@ -12,6 +12,9 @@ const S = {
   vercel: null,
   vercelLoaded: false,
   providerModelsError: {},
+  // Custom provider sheet draft. Null while the sheet is closed; `editing` is
+  // the original identifier or null for a new provider.
+  customDraft: null,
   claude: null,
   claudeLogin: null,
   lastClaudeUsageAt: 0,
@@ -27,6 +30,7 @@ const S = {
   bridge: null,
   routing: null,
   calls: [],
+  usage: [],
   models: null,
   modelsQuery: "",
   // Codex model pool: shared OpenAI model catalog, its picker modal and the
@@ -63,4 +67,51 @@ const S = {
   dirtyField: null,
   renderDeferred: false,
   _renderResumeTimer: null,
+  // Local AI state (GGUF / llama-server inference)
+  localAi: {
+    tab: "models", // models | catalog | downloads | runtime | settings
+    hardware: null,
+    models: [],
+    /// { readOnly, error, backupPath } from the backend registry guard.
+    registry: null,
+    runtime: null,
+    /// `GET /v1/models` answered with the router key: `{ models, verified, error }`.
+    apiCatalogue: null,
+    metrics: null,
+    metricsError: null,
+    install: null,
+    runtimeCatalogOpen: false,
+    runtimeCatalog: null,
+    runtimeCatalogLoading: false,
+    runtimeCatalogError: null,
+    migration: null,
+    downloads: [],
+    catalogQuery: "",
+    catalogPreset: "all",
+    catalogSort: "trendingScore",
+    catalogError: null,
+    catalogHasMore: false,
+    catalogLoadingMore: false,
+    catalogGeneration: 0,
+    repoDetailsError: null,
+    hfSelectedFile: null,
+    hfCompatibleOnly: false,
+    catalogResults: [],
+    catalogSearched: false,
+    catalogLoading: false,
+    selectedRepoId: null,
+    repoDetails: null,
+    repoDetailsLoading: false,
+    hfToken: "",
+    activeDownloadCount: 0,
+    searchQuery: "",
+    editingModel: null, // model being edited in settings modal
+    testModal: null, // { modelId, modelName, prompt, response, generating, tokensPerSec }
+    estimate: null,
+    logs: [],
+    /// JSON of the last rendered Console tail; lets the poll skip identical
+    /// updates without re-rendering the pane.
+    logsSignature: "",
+    error: null,
+  },
 };

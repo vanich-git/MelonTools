@@ -25,6 +25,15 @@ jobs:
       - name: Install pinned XcodeGen
         run: ./.github/scripts/install-xcodegen.sh
 
+      # REL-01: app/Resources/runtime is gitignored and project.yml declares it
+      # as a folder source. Fetching it in build.sh is too late for the first
+      # xcodegen run, so populate and verify it here first.
+      - name: Fetch and verify the pinned llama.cpp runtime
+        run: ./MacOS/scripts/fetch-runtime.sh
+
+      - name: Smoke-test a clean checkout
+        run: RUNTIME_CACHE="$PWD/MacOS/build/runtime-cache" ./MacOS/scripts/test-clean-checkout.sh
+
       - name: Generate the Xcode project
         working-directory: MacOS/app
         run: xcodegen generate
@@ -62,10 +71,20 @@ jobs:
       - name: Validate shell scripts
         run: |
           set -euo pipefail
-          for file in MacOS/build.sh Windows/build-windows.sh packaging/sign-macos.sh MacOS/scripts/fetch-sources.sh; do
+          for file in MacOS/build.sh Windows/build-windows.sh packaging/sign-macos.sh \
+                      MacOS/scripts/fetch-sources.sh MacOS/scripts/fetch-runtime.sh \
+                      MacOS/scripts/test-fetch-runtime.sh \
+                      MacOS/scripts/test-clean-checkout.sh \
+                      MacOS/scripts/native-acceptance.sh; do
             bash -n "$file"
           done
-          if command -v shellcheck >/dev/null 2>&1; then shellcheck -S warning MacOS/build.sh Windows/build-windows.sh packaging/sign-macos.sh; fi
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S warning MacOS/build.sh Windows/build-windows.sh \
+              packaging/sign-macos.sh MacOS/scripts/fetch-runtime.sh \
+              MacOS/scripts/test-fetch-runtime.sh \
+              MacOS/scripts/native-acceptance.sh \
+              MacOS/scripts/test-clean-checkout.sh
+          fi
 
   package-macos:
     name: Package macOS DMG (no publish)
@@ -79,6 +98,9 @@ jobs:
       - name: Install pinned XcodeGen
         run: ./.github/scripts/install-xcodegen.sh
 
+      - name: Fetch and verify the pinned llama.cpp runtime
+        run: ./MacOS/scripts/fetch-runtime.sh
+
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
@@ -91,11 +113,21 @@ jobs:
       - name: Build the app and DMG (unsigned)
         run: ./MacOS/build.sh
 
+      - name: Native acceptance (unsigned)
+        run: |
+          set -euo pipefail
+          DMG="$(find MacOS/build -maxdepth 1 -name 'MelonTools-*.dmg' -print -quit)"
+          test -n "$DMG"
+          ./MacOS/scripts/native-acceptance.sh --dmg "$DMG" \
+            --report MacOS/build/native-acceptance.txt
+
       - name: Upload the DMG
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-package
-          path: MacOS/build/MelonTools-*.dmg
+          path: |
+            MacOS/build/MelonTools-*.dmg
+            MacOS/build/native-acceptance.txt
           if-no-files-found: error
 
   windows:
@@ -126,7 +158,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run cargo tests
         run: cargo test --locked
@@ -169,11 +201,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           if (-not (Test-Path "dist/MelonTools-$version-setup.exe")) { throw "installer missing" }
 
+      - name: Checksums and native artifact acceptance
+        working-directory: Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Select-String -Path app/src-tauri/Cargo.toml -Pattern '^version = "([0-9.]+)"').Matches[0].Groups[1].Value
+          foreach ($name in @("MelonTools-$version-win-x64-portable.exe", "MelonTools-$version-setup.exe")) {
+            $path = Join-Path "dist" $name
+            $hash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            "$hash  $name" | Set-Content -Path "$path.sha256" -Encoding ascii -NoNewline
+          }
+          & ../packaging/verify-windows-artifacts.ps1 `
+            -Dist dist -Version $version -Report dist/windows-acceptance.txt
+          if ($LASTEXITCODE -ne 0) { throw "Windows artifact acceptance failed" }
+
       - name: Upload the installer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-package
-          path: Windows/dist/MelonTools-*-setup.exe
+          path: |
+            Windows/dist/MelonTools-*-setup.exe
+            Windows/dist/MelonTools-*-setup.exe.sha256
+            Windows/dist/MelonTools-*-win-x64-portable.exe
+            Windows/dist/MelonTools-*-win-x64-portable.exe.sha256
+            Windows/dist/windows-acceptance.txt
           if-no-files-found: error
 
   engine-repro:
@@ -214,6 +266,9 @@ jobs:
 
       - name: Verify distribution manifests against checksums
         run: python scripts/verify_release_checksums.py
+
+      - name: Release gate regression tests
+        run: python scripts/test_release_checksums.py
 
       - name: Verify the embedded Windows engine
         run: python Windows/scripts/verify-engine.py

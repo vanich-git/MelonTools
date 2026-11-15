@@ -111,6 +111,10 @@ impl BackupPaths {
         self.support.join("model-sources.json")
     }
 
+    fn scheduler_usage_path(&self) -> PathBuf {
+        self.support.join("scheduler-usage.json")
+    }
+
     fn state_path(&self) -> PathBuf {
         self.support.join("backup-state.json")
     }
@@ -211,6 +215,9 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
         serde_json::from_value::<scheduler::Store>(value.clone())
             .map_err(|e| format!("the backup payload is damaged: scheduler: {e}"))?;
     }
+    // Portable daily spend. A missing object (an older backup) must not touch
+    // the live ledger; a newer schema is skipped rather than downgraded.
+    let scheduler_usage = parse_scheduler_usage(object.get("schedulerUsage"))?;
 
     let vault_value = optional_object(object.get("vault"), "vault")?;
     if let Some(value) = &vault_value {
@@ -251,6 +258,11 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
 
     // MARK: Live writes (all validation above is complete)
 
+    // Quiesce the scheduler for the whole write+merge sequence. Without this a
+    // run finishing mid-restore could record usage that the merge overwrites,
+    // and restoring `scheduler.json` under an active run would lose it.
+    let _restore_guard = scheduler::pause_for_restore()?;
+
     // Snapshot every target first. Windows cannot rename over a file the
     // engine has open, and a disk-full mid-sequence must not leave a mixed
     // settings/vault/auth profile. A read failure aborts before any write.
@@ -261,6 +273,9 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
     }
     if scheduler_value.is_some() {
         targets.push(paths.scheduler_path());
+    }
+    if scheduler_usage.is_some() {
+        targets.push(paths.scheduler_usage_path());
     }
     if vault_value.is_some() {
         targets.push(paths.vault_path());
@@ -292,6 +307,11 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
         }
         if let Some(value) = &scheduler_value {
             scheduler::save_raw_at(&paths.scheduler_path(), value)?;
+        }
+        if let Some(usage) = &scheduler_usage {
+            // Union with `max`: restoring an older backup can add spend but
+            // never lower or zero the budget already recorded on this machine.
+            scheduler::merge_usage_at(&paths.scheduler_usage_path(), usage)?;
         }
         if let Some(value) = &vault_value {
             vault::save_raw_at(&paths.vault_path(), value)?;
@@ -343,6 +363,7 @@ pub fn import_into(paths: &BackupPaths, content: &str, password: &str) -> Result
             .and_then(|value| value.as_object())
             .map(|object| object.len())
             .unwrap_or(0),
+        "schedulerUsageMerged": scheduler_usage.is_some(),
     }))
 }
 
@@ -365,12 +386,40 @@ fn set_last_backup_at(paths: &BackupPaths, at: i64) -> Result<(), String> {
 
 // MARK: - Payload: collect
 
+/// Validates the portable usage object. `None` for an older backup without
+/// one; a newer schema is ignored (with the usual update notice) instead of
+/// being downgraded or used to zero the live spend.
+fn parse_scheduler_usage(value: Option<&Value>) -> Result<Option<scheduler::UsageLedger>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let ledger: scheduler::UsageLedger = serde_json::from_value(value.clone())
+        .map_err(|e| format!("the backup payload is damaged: schedulerUsage: {e}"))?;
+    if ledger.schema_version > scheduler::USAGE_SCHEMA {
+        crate::schema::note_newer("schedulerUsage", ledger.schema_version);
+        return Ok(None);
+    }
+    scheduler::validate_usage(&ledger)
+        .map_err(|error| format!("the backup payload is damaged: schedulerUsage: {error}"))?;
+    Ok(Some(ledger))
+}
+
 fn collect_payload(paths: &BackupPaths) -> Result<Value, String> {
     let mut payload = Map::new();
 
     if let Some(scheduler) = read_valid_scheduler(&paths.scheduler_path()) {
         payload.insert("scheduler".to_string(), scheduler);
     }
+    // Always written, even when empty: the portable shape is what the macOS
+    // importer expects, and an absent key means "leave the live ledger alone".
+    let usage = scheduler::read_usage_at(&paths.scheduler_usage_path()).unwrap_or_default();
+    payload.insert(
+        "schedulerUsage".to_string(),
+        serde_json::to_value(&usage).map_err(|e| format!("scheduler usage: {e}"))?,
+    );
     if let Some(vault) = read_valid_vault(&paths.vault_path()) {
         payload.insert("vault".to_string(), vault);
     }
@@ -852,6 +901,14 @@ mod tests {
     struct TestDir {
         root: PathBuf,
         paths: BackupPaths,
+        /// `pause_for_restore` is process-wide, so backup tests touching it
+        /// must not run in parallel with each other.
+        _restore_lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn restore_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     impl Drop for TestDir {
@@ -871,7 +928,11 @@ mod tests {
             destination: root.join("downloads"),
         };
         fs::create_dir_all(&paths.support).unwrap();
-        TestDir { root, paths }
+        TestDir {
+            root,
+            paths,
+            _restore_lock: restore_test_lock(),
+        }
     }
 
     fn write_json(path: &Path, value: &Value) {
@@ -953,7 +1014,7 @@ mod tests {
             &json!("not an object"),
         );
         fs::write(
-            &paths.auths_dir().join("codex.lock"),
+            paths.auths_dir().join("codex.lock"),
             "melon-gateway-key-SECRET",
         )
         .unwrap();
@@ -1124,6 +1185,78 @@ mod tests {
 
         let model_sources = fs::read_to_string(dir.paths.model_sources_path()).unwrap();
         assert!(model_sources.contains("openrouter"));
+    }
+
+    fn usage_day(offset: i64) -> String {
+        (chrono::Local::now().date_naive() + chrono::Duration::days(offset))
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    fn usage_ledger(task_id: &str, day: &str, tokens: i64) -> scheduler::UsageLedger {
+        let mut ledger = scheduler::UsageLedger::default();
+        ledger
+            .days
+            .entry(task_id.to_string())
+            .or_default()
+            .insert(day.to_string(), tokens);
+        ledger
+    }
+
+    #[test]
+    fn restoring_a_backup_merges_usage_and_never_lowers_spend() {
+        let dir = test_dir("usage-merge");
+        seed_support(&dir.paths);
+        let usage_path = dir.paths.scheduler_usage_path();
+        let today = usage_day(0);
+        let earlier = usage_day(-1);
+        scheduler::merge_usage_at(&usage_path, &usage_ledger("task-1", &today, 100)).unwrap();
+
+        let content = export_content(&dir.paths);
+        // Spend grows after the backup was taken (a restore must not undo it).
+        scheduler::merge_usage_at(&usage_path, &usage_ledger("task-1", &today, 150)).unwrap();
+        scheduler::merge_usage_at(&usage_path, &usage_ledger("task-1", &earlier, 10)).unwrap();
+
+        let summary = import_into(&dir.paths, &content, PASSWORD).unwrap();
+        assert_eq!(summary["schedulerUsageMerged"], true);
+        let restored = scheduler::read_usage_at(&usage_path).unwrap();
+        assert_eq!(restored.schema_version, scheduler::USAGE_SCHEMA);
+        assert_eq!(
+            restored.days["task-1"][&today], 150,
+            "an older backup lowered the recorded spend"
+        );
+        assert_eq!(restored.days["task-1"][&earlier], 10);
+    }
+
+    #[test]
+    fn a_missing_or_newer_usage_object_leaves_live_spend_alone() {
+        assert!(parse_scheduler_usage(None).unwrap().is_none());
+        let newer = json!({
+            "schemaVersion": scheduler::USAGE_SCHEMA + 7,
+            "days": { "task-1": { "2026-11-04": 500 } }
+        });
+        assert!(
+            parse_scheduler_usage(Some(&newer)).unwrap().is_none(),
+            "a newer ledger must be skipped, not downgraded"
+        );
+        let valid = json!({
+            "schemaVersion": scheduler::USAGE_SCHEMA,
+            "days": { "task-1": { "2026-11-04": 500 } }
+        });
+        let parsed = parse_scheduler_usage(Some(&valid))
+            .unwrap()
+            .expect("a matching schema is restored");
+        assert_eq!(parsed.days["task-1"]["2026-11-04"], 500);
+    }
+
+    #[test]
+    fn imported_usage_rejects_negative_and_future_days() {
+        let negative =
+            json!({"schemaVersion": scheduler::USAGE_SCHEMA, "days": {"t": {"2020-01-01": -1}}});
+        let future =
+            json!({"schemaVersion": scheduler::USAGE_SCHEMA, "days": {"t": {"9999-01-01": 1}}});
+        assert!(parse_scheduler_usage(Some(&negative)).is_err());
+        assert!(parse_scheduler_usage(Some(&future)).is_err());
     }
 
     #[test]

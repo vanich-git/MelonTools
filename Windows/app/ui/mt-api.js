@@ -47,6 +47,9 @@ function demoPoolSnapshot() {
   };
 }
 
+// Browser preview keeps manual participation across independent mock calls.
+const DEMO_POOL_ENABLED = new Map();
+
 // Browser preview data (used only outside Tauri).
 function mock(cmd, args) {
   const nowSec = Date.now() / 1000;
@@ -71,6 +74,14 @@ function mock(cmd, args) {
       selectedModels: ["gpt-6.1-sol"],
     },
   ];
+  for (const account of demoAccounts) {
+    account.poolEnabled = DEMO_POOL_ENABLED.get(account.id) !== false;
+    if (!account.poolEnabled) {
+      account._quotaBlock = { blocked: account.blocked, blockInfo: account.blockInfo };
+      account.blocked = true;
+      account.blockInfo = { code: "manual_disabled" };
+    }
+  }
   const historySeries = (key, hourlyLatest, weeklyLatest) => Array.from({ length: 12 }, (_, index) => {
     const age = 11 - index;
     const drift = Math.min(age * 0.4, 6);
@@ -90,7 +101,7 @@ function mock(cmd, args) {
   ];
   const mocks = {
     app_info: { name: "Melon Tools", version: "4.0.1", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
-    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", opencodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowQuotaTrends: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
+    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", commandcodeKey: "", opencodeEnabled: true, commandcodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], opencodeModels: [], commandcodeModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowAntigravityPool: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
     codex_pool_models: () => demoPoolSnapshot(),
@@ -124,7 +135,26 @@ function mock(cmd, args) {
     switch_account: { authPath: "C:\\Users\\you\\.codex\\auth.json" },
     import_current_auth: { result: "added", accounts: demoAccounts },
     account_refresh_tokens: demoAccounts,
-    save_reserves: demoAccounts,
+    save_reserves: (a) => {
+      const account = demoAccounts.find((item) => item.id === a.id);
+      if (account) {
+        account.hourlyReservePercent = a.hourly;
+        account.weeklyReservePercent = a.weekly;
+        if (typeof a.poolEnabled === "boolean") {
+          account.poolEnabled = a.poolEnabled;
+          DEMO_POOL_ENABLED.set(account.id, a.poolEnabled);
+        }
+        if (account.poolEnabled === false) {
+          if (!account._quotaBlock) account._quotaBlock = { blocked: account.blocked, blockInfo: account.blockInfo };
+          account.blocked = true;
+          account.blockInfo = { code: "manual_disabled" };
+        } else if (account._quotaBlock) {
+          Object.assign(account, account._quotaBlock);
+          delete account._quotaBlock;
+        }
+      }
+      return demoAccounts;
+    },
     delete_account: demoAccounts,
     openrouter_refresh: { totalCredits: 30, totalUsage: 29.87, remaining: 0.13, label: "melon", usage: 0.09, limit: 1000, limitRemaining: 999.9, isFreeTier: false, status: "ok" },
     vercel_refresh: { balance: 42.5, totalUsed: 118.2, status: "ok", updatedAt: new Date().toISOString() },
@@ -138,10 +168,40 @@ function mock(cmd, args) {
           { id: "glm-5.3", display: "GLM-5.3", contextWindow: 1000000, supportsImages: false },
           { id: "glm-5.3-flash", display: "GLM-5.3 Flash", contextWindow: 1000000, supportsImages: true },
         ] }
+      : a.provider === "commandcode"
+      ? { count: 3, models: [
+          { id: "claude-sonnet-5-5", display: "Claude Sonnet 5.5", contextWindow: 1000000, anthropicOnly: true, supportsImages: true },
+          { id: "gpt-6-astra", display: "GPT-6 Astra", contextWindow: 400000, anthropicOnly: false, supportsImages: true },
+          { id: "gpt-6.1-sol", display: "GPT-6.1 Sol", contextWindow: 400000, anthropicOnly: false, supportsImages: false },
+        ] }
+      : a.provider === "opencode"
+      ? { count: 2, models: [
+          { id: "claude-fable-5", display: "Claude Fable 5", contextWindow: 200000, promptPerToken: 0.00001, completionPerToken: 0.00005, cacheReadPerToken: 0.000001, supportsImages: true },
+          { id: "gpt-6-luna", display: "GPT-6 Luna", contextWindow: 400000, supportsImages: true },
+        ] }
       : { count: 2, models: [
           { id: "anthropic/claude-sonnet-4.6", display: "Claude Sonnet 4.6", contextWindow: 200000, promptPerToken: 0.000003, completionPerToken: 0.000015, supportsImages: true },
           { id: "openai/gpt-6.1", display: "GPT-6.1", contextWindow: 400000, promptPerToken: 0.000001, completionPerToken: 0.000004, supportsImages: true },
         ] },
+    custom_provider_models: (a) => {
+      if (a.protocol === "gemini") {
+        return { count: 2, models: [
+          { id: "gemini-3.5-pro", display: "Gemini 3.5 Pro", contextWindow: 2097152 },
+          { id: "gemini-3.5-flash", display: "Gemini 3.5 Flash", contextWindow: 1048576 },
+        ] };
+      }
+      if (a.protocol === "anthropic") {
+        return { count: 2, models: [
+          { id: "claude-opus-5-5", display: "Claude Opus 5.5", contextWindow: 200000 },
+          { id: "claude-sonnet-5-5", display: "Claude Sonnet 5.5", contextWindow: 200000 },
+        ] };
+      }
+      return { count: 3, models: [
+        { id: "acme-large", display: "Acme Large", contextWindow: 262144 },
+        { id: "acme-small", display: "Acme Small", contextWindow: 131072 },
+        { id: "acme-reasoner", display: "Acme Reasoner", contextWindow: 262144 },
+      ] };
+    },
     claude_login_start: { url: "https://example.invalid/oauth/authorize?state=demo-state", state: "demo-state" },
     claude_login_status: { status: "wait" },
     claude_login_cancel: { canceled: true },
@@ -166,7 +226,12 @@ function mock(cmd, args) {
       { id: "gemini-3.1-flash-lite", displayName: "Gemini 3.1 Flash Lite" },
       { id: "gemini-3.5-flash-lite", displayName: "Gemini 3.5 Flash Lite" },
     ], count: 11 },
-    antigravity_metrics: { connected: true, email: "demo@gmail.invalid", projectId: "melon-demo-project", modelCount: 11, updatedAt: new Date().toISOString(), error: null, status: "ok" },
+    antigravity_metrics: { connected: true, email: "demo@gmail.invalid", projectId: "melon-demo-project", modelCount: 11, updatedAt: new Date().toISOString(), error: null, status: "ok", accounts: [
+      { name: "ag-demo-1", email: "one@gmail.invalid", projectId: "melon-demo-project", authIndex: "0", priority: 0, disabled: false, status: "ok", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.82 }, claude: { remaining: 0.41 }, quotaError: null },
+      { name: "ag-demo-2", email: "two@gmail.invalid", projectId: "melon-demo-project", authIndex: "1", priority: 1, disabled: false, status: "ok", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.55 }, claude: { remaining: 1 }, quotaError: null },
+      { name: "ag-demo-3", email: "three@gmail.invalid", projectId: "melon-demo-project", authIndex: "2", priority: 2, disabled: true, status: "disabled", statusMessage: null, unavailable: false, cooldowns: [], models: [], gemini: { remaining: 0.3 }, claude: { remaining: 0.2 }, quotaError: null },
+      { name: "ag-demo-4", email: "four@gmail.invalid", projectId: "melon-demo-project", authIndex: "3", priority: 3, disabled: false, status: "cooldown", statusMessage: null, unavailable: false, cooldowns: [{ scope: "account", retryAt: new Date(Date.now() + 900000).toISOString() }], models: [], gemini: { remaining: 0 }, claude: { remaining: 0.6 }, quotaError: "quota" }
+    ] },
     antigravity_disconnect: { removed: 1, remaining: 0 },
     codex_route_status: { configPath: "C:\\Users\\you\\.codex\\config.toml", provider: "melon_local_access", ours: true, catalogExists: true, catalogPath: "C:\\Users\\you\\.codex\\melon-model-catalog.json" },
     codex_route_apply: { route: { provider: "melon_local_access", ours: true, catalogExists: true }, catalogCustom: 32 },
@@ -194,6 +259,7 @@ function mock(cmd, args) {
     device_login_poll: { done: false },
     gateway_models: [{ id: "gpt-6.1-sol", owned_by: "openai" }, { id: "opencode/grok-4.7", owned_by: "opencode-go" }],
     gateway_recent_calls: [{ time: "19:19:41", status: "200", duration: "9.743s", method: "POST", path: "/v1/responses" }],
+    gateway_recent_usage: [{ timestamp: "2026-11-10T19:19:41Z", model: "claude-3-7-sonnet", provider: "anthravity", auth: "demo-account", input: 120, output: 450, mode: "stream", status: 200 }],
     scheduler_list: () => demoScheduler(),
     scheduler_save: (a) => {
       const demo = demoScheduler();
@@ -264,8 +330,83 @@ function mock(cmd, args) {
       return { path: "C:\\Users\\you\\Downloads\\MelonTools-backup-demo.melon", bytes: 20480, createdAt: DEMO_BACKUP_LAST };
     },
     backup_import: (a) => ({ schedulerTasks: 1, schedulerHistory: 3, accounts: 2, authFiles: 2, modelSourcesIncluded: true, settingsKeys: 14 }),
-    update_check: { skipped: false, version: "1.4.8", tag: "v1.4.8", newer: false, notes: "", assetName: "", assetURL: "", digest: null },
+    update_check: { skipped: false, version: "1.4.8", current: "1.4.8", tag: "v1.4.8", newer: false, notes: "", assetName: "", assetURL: "", digest: null },
     update_apply: { ok: true },
+    // Local AI GGUF / llama-server mocks for browser preview
+    local_ai_hardware_info: () => demoLocalAiHardware(),
+    local_ai_models_list: () => demoLocalAiModels(),
+    local_ai_registry_health: () => ({ readOnly: false, error: null, backupPath: null }),
+    local_ai_registry_recover: () => ({ readOnly: false, error: null, backupPath: null }),
+    local_ai_model_get: (a) => {
+      const m = demoLocalAiModels().find((x) => x.id === (a && (a.id || a.model_id)));
+      return m ? m : Promise.reject("Model not found");
+    },
+    local_ai_model_save_settings: (a) => {
+      const list = demoLocalAiModels();
+      const m = list.find((x) => x.id === (a && a.id));
+      if (!m) return Promise.reject("Model not found");
+      if (a && a.settings) m.userSettings = { ...m.userSettings, ...a.settings };
+      return m;
+    },
+    local_ai_model_delete: (a) => {
+      const id = a && a.id;
+      DEMO_LOCAL_AI_MODELS = demoLocalAiModels().filter((x) => x.id !== id);
+      if (DEMO_LOCAL_AI_RUNTIME.modelId === id) {
+        demoRuntimeStopped();
+      }
+      return null;
+    },
+    local_ai_runtime_status: () => ({ ...DEMO_LOCAL_AI_RUNTIME }),
+    local_ai_api_catalogue: () => ({ models: [], verified: false, error: "demo" }),
+    local_ai_runtime_logs: () => [],
+    local_ai_runtime_logs_clear: () => null,
+    local_ai_runtime_catalog: () => demoRuntimeCatalog(),
+    local_ai_start_model: (a) => {
+      const id = a && a.id;
+      const m = demoLocalAiModels().find((x) => x.id === id);
+      if (!m) return Promise.reject("Model not found");
+      demoLocalAiModels().forEach((model) => {
+        model.runtimeStatus = model.id === id ? "ready" : "installed";
+      });
+      demoRuntimeTransition({
+        isRunning: true,
+        isStarting: false,
+        startingModelId: null,
+        failedModelId: null,
+        error: null,
+        port: 18318,
+        modelId: id,
+        currentModel: demoRuntimeModel(id),
+        // Mirrors the Rust snapshot: the engine launched with these values.
+        appliedSettings: { ...m.userSettings },
+        state: { type: "Running", data: { port: 18318, model_id: id } },
+      });
+      return null;
+    },
+    local_ai_stop_runtime: () => {
+      demoLocalAiModels().forEach((m) => { m.runtimeStatus = "installed"; });
+      demoRuntimeStopped();
+      return null;
+    },
+    local_ai_set_binary_path: (a) => {
+      DEMO_LOCAL_AI_RUNTIME.binaryPath = (a && a.path) || null;
+      return null;
+    },
+    local_ai_hf_search: (a) => demoHfSearch((a && a.query) || ""),
+    local_ai_hf_avatars: () => ({}),
+    local_ai_hf_model_details: (a) => demoHfDetails((a && (a.repoId || a.repo_id)) || ""),
+    local_ai_download_start: (a) => demoStartDownload((a && a.request) || {}),
+    local_ai_download_cancel: (a) => demoCancelDownload((a && (a.modelId || a.model_id)) || ""),
+    local_ai_downloads_list: () => DEMO_LOCAL_AI_DOWNLOADS.slice(),
+    local_ai_downloads_clear: () => {
+      const before = DEMO_LOCAL_AI_DOWNLOADS.length;
+      DEMO_LOCAL_AI_DOWNLOADS = DEMO_LOCAL_AI_DOWNLOADS.filter(
+        (d) => d.status === "queued" || d.status === "downloading" || d.status === "paused"
+      );
+      return before - DEMO_LOCAL_AI_DOWNLOADS.length;
+    },
+    local_ai_import_file: (a) => demoImportFile((a && a.path) || ""),
+    local_ai_estimate_memory: (a) => demoMemoryEstimate((a && a.params) || {}),
     open_url: null,
   };
   const entry = mocks[cmd];
@@ -362,4 +503,494 @@ function demoFinishRun(id) {
     setTimeout(() => demoFinishRun(next), DEMO_RUN_MS);
   }
   return demo;
+}
+
+
+// Browser preview only: Local AI demo state and helpers
+let DEMO_LOCAL_AI_MODELS = null;
+let DEMO_LOCAL_AI_RUNTIME = {
+  state: "Stopped",
+  port: 18318,
+  currentModel: null,
+  modelId: null,
+  internalToken: "demo-melon-local-token-uuid",
+  isRunning: false,
+  isStarting: false,
+  startingModelId: null,
+  failedModelId: null,
+  error: null,
+  binaryPath: "C:\\Users\\you\\AppData\\Local\\MelonTools\\runtime\\llama-server.exe",
+  revision: 0,
+  appliedSettings: null,
+};
+let DEMO_LOCAL_AI_DOWNLOADS = [];
+
+// Mirrors `RuntimeStatusPayload`: `currentModel` is what the cards key off,
+// `modelId` stays as the compatibility alias, and `revision` bumps on every
+// lifecycle transition.
+function demoRuntimeModel(id) {
+  const model = demoLocalAiModels().find((x) => x.id === id);
+  if (!model) return null;
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    quantization: model.quantization,
+    fileSize: model.fileSize,
+    contextLength: model.contextLength,
+  };
+}
+
+function demoRuntimeTransition(patch) {
+  DEMO_LOCAL_AI_RUNTIME = {
+    ...DEMO_LOCAL_AI_RUNTIME,
+    ...patch,
+    revision: (DEMO_LOCAL_AI_RUNTIME.revision || 0) + 1,
+  };
+}
+
+function demoRuntimeStopped() {
+  demoRuntimeTransition({
+    isRunning: false,
+    isStarting: false,
+    startingModelId: null,
+    failedModelId: null,
+    error: null,
+    modelId: null,
+    currentModel: null,
+    appliedSettings: null,
+    state: "Stopped",
+  });
+}
+
+// Browser preview only: a small slice of the GitHub release catalog.
+function demoRuntimeCatalog() {
+  return [
+    {
+      tag: "b12102",
+      title: "b12102",
+      publishedAt: "2026-11-04T09:12:53Z",
+      variants: [
+        {
+          id: "cpu", label: "CPU (x64)", sizeBytes: 48930123,
+          sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12102/llama-b12102-bin-win-cpu-x64.zip",
+        },
+        {
+          id: "vulkan", label: "Vulkan (x64)", sizeBytes: 51234567,
+          sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12102/llama-b12102-bin-win-vulkan-x64.zip",
+        },
+      ],
+    },
+    {
+      tag: "b12101",
+      title: "b12101",
+      publishedAt: "2026-11-04T08:30:00Z",
+      variants: [
+        {
+          id: "cpu", label: "CPU (x64)", sizeBytes: 48900111,
+          sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+          url: "https://github.com/ggml-org/llama.cpp/releases/download/b12101/llama-b12101-bin-win-cpu-x64.zip",
+        },
+      ],
+    },
+  ];
+}
+
+function demoLocalAiHardware() {
+  return {
+    osVersion: "Windows 11 Pro 23H2 (Build 22631)",
+    architecture: "x86_64",
+    modelsDir: "C:\\Users\\you\\AppData\\Local\\MelonTools\\models",
+    cpuModel: "13th Gen Intel(R) Core(TM) i9-13900K",
+    cpuCores: 24,
+    totalRam: 34359738368,
+    freeRam: 21474836480,
+    gpuName: "NVIDIA GeForce RTX 4090",
+    gpuDriver: "537.58",
+    gpuHasUnifiedMemory: false,
+    gpuRecommendedMaxWorkingSetSize: 25769803776,
+    supportedBackends: ["cuda", "cpu"],
+    recommendedBackend: "cuda",
+    modelsDiskFreeSpace: 1099511627776,
+    modelsDiskTotalSpace: 2199023255552,
+  };
+}
+
+function demoLocalAiModels() {
+  if (!DEMO_LOCAL_AI_MODELS) {
+    DEMO_LOCAL_AI_MODELS = [
+      {
+        id: "qwen2.5-coder-7b-instruct-q4_k_m",
+        displayName: "Qwen 2.5 Coder 7B Instruct (Q4_K_M)",
+        provider: "Local AI",
+        source: "huggingface",
+        repoId: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        revision: "main",
+        files: ["qwen2.5-coder-7b-instruct-q4_k_m.gguf"],
+        fileSize: 4680000000,
+        quantization: "Q4_K_M",
+        format: "gguf",
+        contextLength: 32768,
+        configuredContext: 8192,
+        backend: "cuda",
+        gpuOffload: 33,
+        threads: 8,
+        runtimeStatus: "stopped",
+        capabilities: ["chat", "code", "tool_use"],
+        installedAt: "2025-01-15T12:00:00Z",
+        updatedAt: "2025-01-15T12:00:00Z",
+        lastUsedAt: null,
+        license: "Apache-2.0",
+        checksum: null,
+        userSettings: {
+          contextLength: 8192,
+          maxOutputTokens: 4096,
+          temperature: 0.7,
+          topP: 0.9,
+          topK: 40,
+          repeatPenalty: 1.1,
+          seed: null,
+          cpuThreads: 8,
+          gpuOffloadLayers: 33,
+          flashAttention: true,
+          kvCacheType: "f16",
+          batchSize: 512,
+          chatTemplate: null,
+          profile: "auto",
+          reasoningEnabled: false,
+        },
+      },
+    ];
+  }
+  return DEMO_LOCAL_AI_MODELS;
+}
+
+function demoHfSearch(query) {
+  const q = String(query).toLowerCase();
+  const presets = [
+    {
+      id: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+      author: "Qwen",
+      description: "Qwen2.5-Coder is the code-specific version of Qwen2.5, pretrained on 5.5 trillion tokens.",
+      downloads: 485200,
+      likes: 2130,
+      tags: ["code", "gguf", "qwen", "conversational"],
+      lastModified: "2024-11-20T10:00:00Z",
+    },
+    {
+      id: "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      author: "bartowski",
+      description: "Llama-3.2-3B-Instruct quantized to GGUF format with multiple quant levels.",
+      downloads: 320100,
+      likes: 850,
+      tags: ["llama", "llama-3.2", "gguf"],
+      lastModified: "2024-10-15T08:30:00Z",
+    },
+    {
+      id: "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+      author: "unsloth",
+      description: "DeepSeek R1 reasoning distilled into Qwen 2.5 7B model quantized to GGUF.",
+      downloads: 890400,
+      likes: 5400,
+      tags: ["deepseek", "reasoning", "distill", "gguf"],
+      lastModified: "2025-01-22T14:10:00Z",
+    },
+  ];
+  return presets.filter((p) => !q || p.id.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
+}
+
+// Exactly the fields `HFGGUFFile` serializes: `name`, `size`, `downloadUrl`,
+// `quantization`, `sha256`, `formattedSize`, `estimation`.
+function demoHfFile(repoId, name, size, quantization) {
+  const url = "https://huggingface.co/" + repoId + "/resolve/main/" + name;
+  return {
+    name: name,
+    size: size,
+    formattedSize: size,
+    downloadUrl: url,
+    quantization: quantization,
+    sha256: null,
+    estimation: demoMemoryEstimate({ weightsSize: size, contextLength: 8192 }),
+  };
+}
+
+function demoHfDetails(repoId) {
+  return {
+    id: repoId || "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+    author: (repoId || "").split("/")[0] || "Qwen",
+    description: "High performance open code assistant model GGUF quantization repository.",
+    downloads: 485200,
+    likes: 2130,
+    tags: ["gguf", "code"],
+    license: "Apache-2.0",
+    architecture: "qwen2",
+    parameters: 7610000000,
+    lastModified: "2026-11-04T10:00:00Z",
+    readme: "# Model card\n\nOpen-weight code assistant for local inference.\n\n## Quantizations\n\n| Quant | Size | Notes |\n| --- | --- | --- |\n| Q4_K_M | 4.36 GiB | Balanced |\n| Q5_K_M | 5.06 GiB | Higher quality |\n| Q8_0 | 7.54 GiB | Larger |\n\n```python\nprint(\"Hello from local AI\")\n```\n\n[View on Hugging Face](https://huggingface.co/)",
+    ggufFiles: [
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4680000000, "Q4_K_M"),
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q5_k_m.gguf", 5430000000, "Q5_K_M"),
+      demoHfFile(repoId, "qwen2.5-coder-7b-instruct-q8_0.gguf", 8100000000, "Q8_0"),
+    ],
+  };
+}
+
+function demoStartDownload(request) {
+  const filename = request.filename || "model.gguf";
+  const repoId = request.repoId || "";
+  const modelId = "local/" + (repoId.split("/").pop() || "model").toLowerCase() + "-" +
+    filename.replace(/\.gguf$/i, "").toLowerCase();
+  const total = 4680000000;
+  const downloaded = 1250000000;
+  const speed = 25000000;
+  const item = {
+    modelId: modelId,
+    repoId: repoId,
+    filename: filename,
+    bytesDownloaded: downloaded,
+    totalBytes: total,
+    progress: downloaded / total,
+    speedBytesPerSec: speed,
+    speedFormatted: "23.8 MB/s",
+    etaSeconds: Math.round((total - downloaded) / speed),
+    status: "downloading",
+    error: null,
+  };
+  DEMO_LOCAL_AI_DOWNLOADS = DEMO_LOCAL_AI_DOWNLOADS.filter((d) => d.modelId !== modelId);
+  DEMO_LOCAL_AI_DOWNLOADS.push(item);
+  return modelId;
+}
+
+function demoCancelDownload(modelId) {
+  const item = DEMO_LOCAL_AI_DOWNLOADS.find((d) => d.modelId === modelId);
+  if (item) {
+    item.status = "canceled";
+    item.speedBytesPerSec = 0;
+    item.speedFormatted = "";
+    item.etaSeconds = null;
+  }
+  return null;
+}
+
+function demoImportFile(path) {
+  const filename = path.split(/[\\/]/).pop() || "imported-model.gguf";
+  const id = filename.replace(/\.gguf$/i, "").toLowerCase();
+  const model = {
+    id: id,
+    displayName: filename,
+    provider: "Local AI",
+    source: "imported",
+    repoId: null,
+    revision: null,
+    files: [filename],
+    fileSize: 4200000000,
+    quantization: "Q4_K_M",
+    format: "gguf",
+    contextLength: 8192,
+    configuredContext: 8192,
+    backend: "cuda",
+    gpuOffload: null,
+    threads: null,
+    runtimeStatus: "stopped",
+    capabilities: ["chat", "code"],
+    installedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastUsedAt: null,
+    license: null,
+    checksum: null,
+    userSettings: {
+      contextLength: 8192,
+      maxOutputTokens: 4096,
+      temperature: 0.7,
+      topP: 0.9,
+      topK: 40,
+      repeatPenalty: 1.1,
+      seed: null,
+      cpuThreads: null,
+      gpuOffloadLayers: null,
+      flashAttention: true,
+      kvCacheType: "f16",
+      batchSize: 512,
+      chatTemplate: null,
+      profile: "auto",
+      reasoningEnabled: false,
+    },
+  };
+  demoLocalAiModels().push(model);
+  return model;
+}
+
+// Mirrors `MemoryEstimation`: `totalBytes` is the total required, and the
+// KV cache follows 2 * layers * kv_heads * head_dim * context * bytes.
+function demoMemoryEstimate(params) {
+  const weights = (params && params.weightsSize) || 4500000000;
+  const ctx = (params && params.contextLength) || 8192;
+  const kvType = (params && params.kvCacheType) || "f16";
+  const bytesPerElement = kvType === "q8_0" ? 1.0625 : kvType === "q4_0" ? 0.5625 : 2;
+  const kv = Math.round(2 * 28 * 8 * 128 * ctx * bytesPerElement);
+  const compute = 512 * 1024 * 1024;
+  const os = 2 * 1024 * 1024 * 1024;
+  const total = weights + kv + compute + os;
+  const available = 34359738368;
+  const fits = total <= available;
+  return {
+    weightsBytes: weights,
+    kvCacheBytes: kv,
+    computeBuffersBytes: compute,
+    osReserveBytes: os,
+    totalBytes: total,
+    availableBytes: available,
+    fitsInMemory: fits,
+    confidence: params && params.modelId ? "metadata" : "heuristic",
+    recommendation: fits ? "Recommended" : "High memory usage",
+    warning: null,
+  };
+}
+
+// Test chat protocol helpers. Counts reported tokens, never SSE chunks as
+// tokens, and never substitutes the model's scratchpad for a final answer.
+function localAiTestStats() {
+  return { promptTokens: null, completionTokens: null, tokensPerSec: null,
+    promptPerSec: null, promptMs: null, generationMs: null, firstTokenMs: null, elapsed: 0 };
+}
+
+function localAiTestNote(tm, parsed, startedAt) {
+  const choice = parsed.choices && parsed.choices[0];
+  const delta = (choice && (choice.delta || choice.message)) || {};
+  if (typeof delta.content === "string") tm.rawResponse = (tm.rawResponse || "") + delta.content;
+  if (delta.reasoning_content || delta.reasoning) tm.hadReasoning = true;
+  // Some templates put <think> in content rather than reasoning_content.
+  const raw = tm.rawResponse || "";
+  tm.response = raw.replace(/<think\b[^>]*>[\s\S]*?(?:<\/think>|$)/gi, "")
+    // A tag split across SSE events must not flash a partial scratchpad tag.
+    .replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, "");
+  if (tm.response.trim() && tm.stats.firstTokenMs == null) tm.stats.firstTokenMs = performance.now() - startedAt;
+  if (raw !== tm.response) tm.hadReasoning = true;
+  tm.truncated = tm.truncated || !!(choice && choice.finish_reason === "length");
+  const usage = parsed.usage || {};
+  const timings = parsed.timings || {};
+  const pick = (...values) => values.find((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+  for (const [key, values] of Object.entries({
+    promptTokens: [usage.prompt_tokens, timings.prompt_n],
+    completionTokens: [usage.completion_tokens, timings.predicted_n],
+    tokensPerSec: [timings.predicted_per_second], promptPerSec: [timings.prompt_per_second],
+    promptMs: [timings.prompt_ms], generationMs: [timings.predicted_ms],
+  })) {
+    const value = pick(...values);
+    if (value !== undefined) tm.stats[key] = value;
+  }
+  tm.stats.elapsed = (performance.now() - startedAt) / 1000;
+}
+
+function localAiTestError(status, body, token) {
+  let detail = body;
+  try {
+    const json = JSON.parse(body);
+    detail = json.error && (json.error.message || json.error) || json.message || body;
+  } catch (_) {}
+  detail = String(detail);
+  if (token) detail = detail.split(token).join("<redacted>");
+  detail = detail.replace(/\b(?:sk-|hf_)[A-Za-z0-9_.-]+\b/g, "<redacted>").slice(0, 600);
+  return new Error(`HTTP ${status}: ${detail}`);
+}
+
+async function localAiTestRequest({ runtime, settings, gateway, body, signal, onChunk }) {
+  const port = gateway ? settings.port : runtime.port;
+  const token = gateway ? settings.apiKey : runtime.internalToken;
+  if (!port || !token) throw new Error("Local AI endpoint is not ready");
+  if (gateway) {
+    const alias = body.model.startsWith("local/") ? body.model : `local/${body.model}`;
+    let ready = false;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (signal && signal.aborted) throw new Error("Cancelled");
+      const models = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+        signal, headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!models.ok) throw localAiTestError(models.status, await models.text(), token);
+      const catalogue = await models.json();
+      if ((catalogue.data || []).some((model) => model.id === alias)) { ready = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (!ready) throw new Error(t("localAiGatewayNotPublished"));
+    body = Object.assign({}, body, { model: alias });
+  }
+  const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST", signal,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw localAiTestError(response.status, await response.text(), token);
+  if (!body.stream) return response.json();
+  if (!response.body) throw new Error("Empty response stream");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  const line = (text) => {
+    if (!text.startsWith("data:")) return;
+    const data = text.slice(5).trim();
+    if (data === "[DONE]") { finished = true; return; }
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed.error) throw localAiTestError(200, data, token);
+      onChunk(parsed);
+    }
+  };
+  try {
+    while (!finished) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop();
+      for (const text of lines) { line(text); if (finished) break; }
+      if (done) { if (buffer && !finished) line(buffer); break; }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+const api = {
+  localAi: {
+    testRequest: localAiTestRequest,
+    hardwareInfo: () => inv("local_ai_hardware_info"),
+    modelsList: () => inv("local_ai_models_list"),
+    registryHealth: () => inv("local_ai_registry_health"),
+    registryRecover: () => inv("local_ai_registry_recover"),
+    modelGet: (id) => inv("local_ai_model_get", { id }),
+    saveSettings: (id, settings) => inv("local_ai_model_save_settings", { id, settings }),
+    deleteModel: (id) => inv("local_ai_model_delete", { id }),
+    runtimeStatus: () => inv("local_ai_runtime_status"),
+    runtimeMetrics: () => inv("local_ai_runtime_metrics"),
+    apiCatalogue: () => inv("local_ai_api_catalogue"),
+    runtimeLogs: (maxLines) => inv("local_ai_runtime_logs", { maxLines }),
+    clearRuntimeLogs: () => inv("local_ai_runtime_logs_clear"),
+    runtimeInstall: (url, sha256) => inv("local_ai_runtime_install", { url, sha256 }),
+    runtimeCatalog: () => inv("local_ai_runtime_catalog"),
+    runtimeInstallStatus: () => inv("local_ai_runtime_install_status"),
+    runtimeInstallCancel: () => inv("local_ai_runtime_install_cancel"),
+    migrationReport: () => inv("local_ai_migration_report"),
+    startModel: (id) => inv("local_ai_start_model", { id }),
+    stopRuntime: () => inv("local_ai_stop_runtime"),
+    setBinaryPath: (path) => inv("local_ai_set_binary_path", { path }),
+    hfSearch: (query, limit, token, sort = "trendingScore", offset = 0) => inv("local_ai_hf_search", { query, limit, token, sort, offset }),
+    hfModelDetails: (repoId, token) => inv("local_ai_hf_model_details", { repoId, token }),
+    hfAvatars: (owners) => inv("local_ai_hf_avatars", { owners }),
+    // One typed request object: the previous positional signature dropped the
+    // SHA-256 that `DownloadRequest` expects, so LFS digests were never checked.
+    downloadStart: (request) => inv("local_ai_download_start", { request }),
+    downloadCancel: (modelId) => inv("local_ai_download_cancel", { modelId }),
+    downloadsList: () => inv("local_ai_downloads_list"),
+    downloadsClear: () => inv("local_ai_downloads_clear"),
+    importFile: (path) => inv("local_ai_import_file", { path }),
+    estimateMemory: (params) => inv("local_ai_estimate_memory", { params }),
+    hfTokenSet: (token) => inv("local_ai_hf_token_set", { token }),
+    hfTokenStatus: () => inv("local_ai_hf_token_status"),
+    hfTokenClear: () => inv("local_ai_hf_token_clear"),
+  },
+};
+if (typeof window !== "undefined") {
+  window.api = api;
 }

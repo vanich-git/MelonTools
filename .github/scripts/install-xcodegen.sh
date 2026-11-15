@@ -10,7 +10,7 @@ DEST="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/xcodegen-${VERSION}"
 ARCHIVE="${DEST}.zip"
 
 mkdir -p "$DEST"
-curl -fsSL "$URL" -o "$ARCHIVE"
+curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 "$URL" -o "$ARCHIVE"
 echo "${SHA256}  ${ARCHIVE}" | shasum -a 256 -c -
 unzip -q -o "$ARCHIVE" -d "$DEST"
 BIN="$DEST/xcodegen/bin"

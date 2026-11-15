@@ -27,11 +27,14 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.10}"
 # Build cache off a slow volume by default.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Developer/melontools-win/target}"
 CLI_SRC="${CLI_SRC:-$ROOT/../MacOS/_sources/CLIProxyAPI}"
-VERSION="$(grep -m1 '^version' app/src-tauri/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+VERSION="$(sed -nE 's/^version = "([^"]+)"$/\1/p' app/src-tauri/Cargo.toml | head -1)"
 if [ -z "$VERSION" ]; then
   echo "Cannot read version from app/src-tauri/Cargo.toml" >&2
   exit 1
 fi
+# NSIS version resources are four numeric fields; a prerelease tag keeps its
+# numeric core there while the display name and file names keep the full version.
+VERSION_NUMERIC="${VERSION%%-*}"
 PORTABLE_EXE="dist/MelonTools-${VERSION}-win-x64-portable.exe"
 LEGACY_EXE="dist/MelonTools-${VERSION}-win-x64.exe"
 INSTALLER="dist/MelonTools-${VERSION}-setup.exe"
@@ -66,31 +69,38 @@ sign_windows_file() {
 }
 
 echo "==> 1/6 gateway sidecar (Go, windows/amd64)"
-"$ROOT/../MacOS/scripts/apply-engine-patches.sh"
 if [ -d "$CLI_SRC" ]; then
+  "$ROOT/../MacOS/scripts/apply-engine-patches.sh" "$CLI_SRC"
   mkdir -p app/src-tauri/binaries
   (cd "$CLI_SRC" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
     -o "$SIDECAR" ./cmd/server)
 else
-  echo "CLIProxyAPI sources not found at $CLI_SRC — using the embedded gateway engine"
+  echo "CLIProxyAPI sources not found at $CLI_SRC" >&2
+  exit 1
 fi
 
 if [ -f "$SIDECAR" ]; then
   echo "==> 2/6 compress the engine into the app (single-file build)"
   python3 - "$SIDECAR" "$PACKED_ENGINE" <<'PY'
+import struct
 import sys
 import zlib
 
 src, dst = sys.argv[1:]
 data = open(src, "rb").read()
+if len(data) < 64 or data[:2] != b"MZ":
+    sys.exit("Invalid gateway executable: missing DOS header")
+pe_offset = struct.unpack_from("<I", data, 0x3c)[0]
+if pe_offset + 6 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0" or struct.unpack_from("<H", data, pe_offset + 4)[0] != 0x8664:
+    sys.exit("Invalid gateway executable: expected Windows x86_64 PE")
+if b"integrate.api.nvidia.com" not in data or b"NvidiaLimitedDo" not in data:
+    sys.exit("Gateway executable does not contain the NVIDIA request limiter")
 packed = zlib.compress(data, 9)
 open(dst, "wb").write(packed)
 print(f"engine: {len(data)/1e6:.1f} MB -> {len(packed)/1e6:.1f} MB embedded")
 PY
-elif [ -f "$PACKED_ENGINE" ]; then
-  echo "==> 2/6 using the checked-in compressed gateway engine"
 else
-  echo "No gateway engine found. Fetch CLIProxyAPI sources or provide the embedded engine." >&2
+  echo "Cannot build a gateway with NVIDIA rate limiting. Fetch the CLIProxyAPI sources first." >&2
   exit 1
 fi
 
@@ -101,7 +111,7 @@ echo "==> 3/6 cargo xwin build (x86_64-pc-windows-msvc)"
   # generate_context! macro), so a UI-only edit would ship a stale frontend.
   # Touching the crate entry point forces the recompile that re-embeds it.
   touch src/main.rs
-  cargo xwin build --release --target x86_64-pc-windows-msvc
+  cargo xwin build --release --locked --target x86_64-pc-windows-msvc
 )
 
 echo "==> 4/6 collecting artifacts (single executable)"
@@ -122,6 +132,7 @@ if command -v makensis >/dev/null 2>&1; then
   rm -f "$INSTALLER"
   makensis -V2 \
     -DVERSION="$VERSION" \
+    -DVERSION_NUMERIC="$VERSION_NUMERIC" \
     -DSOURCE_EXE="../$PORTABLE_EXE" \
     installer/MelonTools.nsi
   if [ ! -f "$INSTALLER" ]; then

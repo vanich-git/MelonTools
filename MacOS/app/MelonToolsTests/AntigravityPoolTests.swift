@@ -2,6 +2,66 @@ import XCTest
 @testable import MelonTools
 
 final class AntigravityPoolTests: XCTestCase {
+
+    /// The dashboard card must agree with the Providers card: a paused account
+    /// or one in a cooldown cannot serve a request, and the two 5-hour pools
+    /// are summed separately because Antigravity has no weekly window.
+    func testDashboardHealthCountsPausedAndCoolingAccounts() {
+        func account(
+            _ name: String,
+            disabled: Bool = false,
+            cooling: Bool = false,
+            gemini: Double? = nil,
+            claude: Double? = nil,
+            error: String? = nil
+        ) -> AntigravityAccount {
+            AntigravityAccount(
+                name: name,
+                email: nil,
+                projectID: nil,
+                authIndex: nil,
+                priority: 0,
+                disabled: disabled,
+                status: nil,
+                statusMessage: nil,
+                unavailable: false,
+                cooldowns: cooling
+                    ? [AntigravityCooldown(
+                        scope: "account",
+                        modelKey: nil,
+                        reason: "quota",
+                        retryAt: nil,
+                        remainingSeconds: 60,
+                        httpStatus: nil
+                    )]
+                    : [],
+                modelIDs: [],
+                geminiQuota: gemini.map {
+                    AntigravityQuotaWindow(remaining: $0, resetAt: nil, modelIDs: [])
+                },
+                claudeQuota: claude.map {
+                    AntigravityQuotaWindow(remaining: $0, resetAt: nil, modelIDs: [])
+                },
+                quotaError: error
+            )
+        }
+
+        let accounts = [
+            account("a", gemini: 1, claude: 0.5),
+            account("b", disabled: true, gemini: 0.25, claude: 1),
+            account("c", cooling: true),
+            account("d", error: "quota"),
+        ]
+        let health = DashboardMetrics.antigravityHealth(accounts: accounts)
+
+        XCTAssertEqual(health.total, 4)
+        XCTAssertEqual(health.usable, 2)
+        XCTAssertEqual(health.paused, 2)
+        XCTAssertEqual(health.errors, 1)
+        XCTAssertEqual(health.geminiTotal ?? -1, 125, accuracy: 0.001)
+        XCTAssertEqual(health.claudeTotal ?? -1, 150, accuracy: 0.001)
+    }
+
     func testQuotaGroupsGeminiAndThirdPartyPools() throws {
         let data = Data("""
         {"models":{
@@ -74,5 +134,34 @@ final class AntigravityPoolTests: XCTestCase {
                                 remainingSeconds: 600, httpStatus: 429),
         ]
         XCTAssertTrue(AntigravityPoolStore.watchdogModels(in: cooldowns).isEmpty)
+    }
+
+    /// A banned account must say so instead of "quota unavailable": the ban is
+    /// permanent, and a passing glitch is exactly the wrong message.
+    func testTermsOfServiceBanIsFinalAndExplained() {
+        let body = #"{"error":{"code":403,"message":"This account was suspended for a violation of Terms of Service.","status":"PERMISSION_DENIED"}}"#
+        let reason = AntigravityPoolStore.finalReason(status: 403, body: body)
+        XCTAssertNotNil(reason)
+        XCTAssertTrue(reason!.contains("Terms of Service"))
+    }
+
+    /// A 401 is the stale-token case, so it must stay retryable rather than
+    /// telling the user the account is blocked.
+    func testUnauthorizedStaysRetryable() {
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 401, body: ""))
+    }
+
+    /// Transient upstream trouble and network blips are retried silently.
+    func testServerErrorsStayRetryable() {
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 500, body: "internal error"))
+        XCTAssertNil(AntigravityPoolStore.finalReason(status: 503, body: ""))
+    }
+
+    /// A plain 403 without a ban reason still explains the denial instead of
+    /// falling back to the generic "unavailable".
+    func testForbiddenWithoutBanReasonIsExplained() {
+        let reason = AntigravityPoolStore.finalReason(status: 403, body: #"{"error":{"status":"PERMISSION_DENIED"}}"#)
+        XCTAssertNotNil(reason)
+        XCTAssertFalse(reason!.isEmpty)
     }
 }

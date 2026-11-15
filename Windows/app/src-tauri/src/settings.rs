@@ -16,6 +16,89 @@ pub struct ProviderModel {
     pub completion_per_token: Option<f64>,
     pub cache_read_per_token: Option<f64>,
     pub supports_images: Option<bool>,
+    /// CommandCode: the model is served only through the Anthropic
+    /// `/messages` endpoint and must ride `api-keys.claude`.
+    pub anthropic_only: Option<bool>,
+    /// OpenRouter routing suffix: default | floor | nitro.
+    pub routing_strategy: String,
+}
+
+/// One model of a user-defined provider. The alias is stored for the UI but
+/// always recomputed from the provider identifier when the config is built.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomProviderModel {
+    pub id: String,
+    pub display: String,
+    pub context_window: Option<u64>,
+    pub enabled: bool,
+    pub alias: String,
+}
+
+/// A user-defined endpoint. `protocol` selects the gateway group:
+/// openai-chat, openai-responses, anthropic or gemini.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub protocol: String,
+    pub api_key: String,
+    pub enabled: bool,
+    pub models: Vec<CustomProviderModel>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpenRouterModelProviders {
+    pub order: Vec<String>,
+    pub only: Vec<String>,
+    pub ignore: Vec<String>,
+    pub allow_fallbacks: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OpenRouterConfig {
+    /// Routing mode: price | throughput | latency | floor | nitro.
+    pub default_strategy: String,
+    /// Provider preference list sent as OpenRouter's `provider.order`.
+    pub order: Vec<String>,
+    /// Restrict requests to this provider set (`provider.only`).
+    pub only: Vec<String>,
+    /// Exclude these providers (`provider.ignore`).
+    pub ignore: Vec<String>,
+    /// Per-model provider preferences keyed by upstream model id.
+    #[serde(default)]
+    pub model_providers: std::collections::HashMap<String, OpenRouterModelProviders>,
+    /// Whether OpenRouter may fall back to another compatible provider.
+    pub allow_fallbacks: bool,
+    /// Require provider support for the request's parameters.
+    pub require_parameters: bool,
+    /// Data collection policy: allow | deny.
+    pub data_collection: String,
+    /// Optional provider quantization preference, e.g. fp16.
+    pub quantizations: Vec<String>,
+    /// Per-model OpenRouter routing by upstream model id.
+    pub models: std::collections::HashMap<String, String>,
+}
+
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            default_strategy: "price".to_string(),
+            order: Vec::new(),
+            only: Vec::new(),
+            ignore: Vec::new(),
+            allow_fallbacks: true,
+            require_parameters: true,
+            data_collection: "deny".to_string(),
+            quantizations: Vec::new(),
+            models: std::collections::HashMap::new(),
+            model_providers: std::collections::HashMap::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -26,27 +109,43 @@ pub struct Settings {
     pub lang: String,
     pub quota_interval: u32,
     pub openrouter_key: String,
+    pub openrouter_enabled: bool,
+    pub openrouter_config: OpenRouterConfig,
     pub opencode_key: String,
+    /// CommandCode provider API key (`CMD_API_KEY`).
+    pub commandcode_key: String,
     pub deepinfra_key: String,
+    pub nvidia_key: String,
     pub vercel_key: String,
     pub zai_key: String,
-    /// opencode / openrouter / deepinfra / vercel / zai upstreams in the
-    /// gateway config.
+    /// opencode / commandcode / openrouter / deepinfra / vercel / zai
+    /// upstreams in the gateway config.
     pub opencode_enabled: bool,
-    pub openrouter_enabled: bool,
+    pub commandcode_enabled: bool,
     pub deepinfra_enabled: bool,
+    pub nvidia_enabled: bool,
     pub vercel_enabled: bool,
     pub zai_enabled: bool,
     /// Filtered model lists from the last successful key check. They are
     /// emitted explicitly into the gateway config.
     pub deepinfra_models: Vec<ProviderModel>,
+    pub nvidia_models: Vec<ProviderModel>,
     pub vercel_models: Vec<ProviderModel>,
     pub zai_models: Vec<ProviderModel>,
+    /// OpenCode and CommandCode keep their fetched catalogues too; an empty
+    /// list falls back to the built-in OpenCode set or leaves the provider
+    /// out of the config.
+    pub opencode_models: Vec<ProviderModel>,
+    pub commandcode_models: Vec<ProviderModel>,
+    /// OpenRouter models loaded from its public catalogue.
+    pub openrouter_models: Vec<ProviderModel>,
     /// Claude (Anthropic) provider: engine-managed OAuth account and/or the
     /// API-key fallback.
     pub claude_enabled: bool,
     /// Anthropic console API key — the fallback connection method.
     pub claude_api_key: String,
+    /// User-defined providers (relays, self-hosted gateways).
+    pub custom_providers: Vec<CustomProvider>,
     /// Plaintext secret for the engine management API. The engine hashes it
     /// when it loads the config, so config.yaml carries the plaintext value
     /// and management calls authenticate with it. Generated once, persisted.
@@ -68,22 +167,35 @@ pub struct Settings {
     /// Status island above the screen. Default on.
     #[serde(default = "default_island_visible")]
     pub island_visible: bool,
+    /// Seconds the expanded island stays open after the pointer leaves.
+    /// One of 0 (never), 5, 10, 15 or 20. Default 15.
+    #[serde(default = "default_island_auto_collapse_seconds")]
+    pub island_auto_collapse_seconds: u32,
+    /// Separate compact overlay next to the primary taskbar tray. Opt-in.
+    pub taskbar_widget_visible: bool,
     /// Dashboard 2.0 card visibility. Default on.
     pub dashboard_show_pool_health: bool,
-    pub dashboard_show_quota_trends: bool,
+    pub dashboard_show_antigravity_pool: bool,
     pub dashboard_show_spend: bool,
     pub dashboard_show_scheduler: bool,
     /// `<account>:<window>:<reset>` markers for reset notifications. Bounded.
     pub quota_reset_notified: Vec<String>,
-    /// Unix seconds of the last update check (auto-check is daily).
+    /// Unix seconds of the last update check (auto-check runs hourly).
     pub last_update_check: Option<i64>,
     /// Upstream network proxy. Empty URL with the switch on means system proxy.
     pub proxy_enabled: bool,
     pub proxy_url: String,
     pub proxy_bypass: String,
     /// 0 disables the first-token watchdog; the engine retries the request on
-    /// another account when no payload arrives within this window.
+    /// another account when no payload arrives within this window. 180 s is the
+    /// shipped default: thinking models can stay silent past a minute before the
+    /// first visible delta.
     pub stream_bootstrap_timeout_seconds: i64,
+    /// Set once the old 60 s default has been raised to 180 s. A user who later
+    /// picks 60 on purpose keeps it: the marker stops the migration from
+    /// running again.
+    #[serde(default)]
+    pub stream_timeout_migrated_180: bool,
     /// User-selected path to `ChatGPT.exe`. Empty means automatic discovery.
     /// The environment override stays available as a hidden fallback.
     pub codex_exe_path: String,
@@ -98,6 +210,12 @@ fn default_island_visible() -> bool {
     true
 }
 
+fn default_island_auto_collapse_seconds() -> u32 {
+    15
+}
+
+pub const ISLAND_AUTO_COLLAPSE_CHOICES: [u32; 5] = [0, 5, 10, 15, 20];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -106,20 +224,30 @@ impl Default for Settings {
             lang: "ru".to_string(),
             quota_interval: 300,
             openrouter_key: String::new(),
+            openrouter_enabled: true,
+            openrouter_config: OpenRouterConfig::default(),
             opencode_key: String::new(),
+            commandcode_key: String::new(),
             deepinfra_key: String::new(),
+            nvidia_key: String::new(),
             vercel_key: String::new(),
             zai_key: String::new(),
             opencode_enabled: true,
-            openrouter_enabled: true,
+            commandcode_enabled: true,
             deepinfra_enabled: true,
+            nvidia_enabled: true,
             vercel_enabled: true,
             zai_enabled: true,
             deepinfra_models: Vec::new(),
+            nvidia_models: Vec::new(),
             vercel_models: Vec::new(),
             zai_models: Vec::new(),
+            opencode_models: Vec::new(),
+            commandcode_models: Vec::new(),
+            openrouter_models: Vec::new(),
             claude_enabled: false,
             claude_api_key: String::new(),
+            custom_providers: Vec::new(),
             management_secret: String::new(),
             routing_strategy: "auto".to_string(),
             priority_order: Vec::new(),
@@ -128,8 +256,10 @@ impl Default for Settings {
             notify_scheduler: true,
             notify_quota_reset: true,
             island_visible: true,
+            island_auto_collapse_seconds: default_island_auto_collapse_seconds(),
+            taskbar_widget_visible: false,
             dashboard_show_pool_health: true,
-            dashboard_show_quota_trends: true,
+            dashboard_show_antigravity_pool: true,
             dashboard_show_spend: true,
             dashboard_show_scheduler: true,
             quota_reset_notified: Vec::new(),
@@ -137,7 +267,8 @@ impl Default for Settings {
             proxy_enabled: false,
             proxy_url: String::new(),
             proxy_bypass: "127.0.0.1,localhost".to_string(),
-            stream_bootstrap_timeout_seconds: 60,
+            stream_bootstrap_timeout_seconds: 180,
+            stream_timeout_migrated_180: false,
             codex_exe_path: String::new(),
             schema_version: crate::schema::CURRENT,
             schema_error: None,
@@ -149,7 +280,78 @@ impl Default for Settings {
 /// for an unchanged key and clear them when the key changes. The clear is
 /// unconditional: a UI payload may still carry the previous list while the
 /// user edits the key field.
+/// Merge a settings payload that was edited by the UI against the state it
+/// was built from (`before`) and the state as it is now (`current`).
+///
+/// The UI sends a whole `Settings` object, so a field the user did not touch
+/// is indistinguishable from one that changed elsewhere while the save was in
+/// flight (a routing command, a quota refresh, an update-check timestamp).
+/// For exactly those fields a value equal to `before` is stale and the current
+/// value wins; a value that differs from `before` is a real user edit and is
+/// applied. App-managed secrets and notification markers fall back to
+/// `current` when empty. Provider model lists are carried from `current`, not
+/// from the snapshot read before the health probe.
+pub fn merge_user_payload(payload: Settings, before: &Settings, current: &Settings) -> Settings {
+    // A whole-object payload cannot say which fields the user edited. Field by
+    // field, a value equal to the snapshot the UI built from is "not edited"
+    // and the live value wins; a different value is an edit and is kept. The
+    // comparison runs over the serialized objects so every user-visible field
+    // is covered, including ones added later.
+    let mut merged = match (
+        serde_json::to_value(&payload),
+        serde_json::to_value(before),
+        serde_json::to_value(current),
+    ) {
+        (
+            Ok(serde_json::Value::Object(mut payload)),
+            Ok(serde_json::Value::Object(base)),
+            Ok(serde_json::Value::Object(live)),
+        ) => {
+            for (key, value) in payload.iter_mut() {
+                if base.get(key).is_some_and(|base| base == value) {
+                    if let Some(live) = live.get(key) {
+                        *value = live.clone();
+                    }
+                }
+            }
+            serde_json::from_value(serde_json::Value::Object(payload)).unwrap_or_else(|_| {
+                // The payload was already typed; a round-trip failure can only
+                // come from the live value, so keep the user's object.
+                current.clone()
+            })
+        }
+        _ => payload,
+    };
+    // The management secret is app-managed: a settings payload from an older
+    // UI must not wipe the persisted value (a fresh one would invalidate every
+    // management call until the engine reloads the config).
+    if merged.api_key.trim().is_empty() {
+        merged.api_key = current.api_key.clone();
+    }
+    if merged.management_secret.trim().is_empty() {
+        merged.management_secret = current.management_secret.clone();
+    }
+    // Reset-notification markers are app-managed: an older UI payload without
+    // them must not cause the same window to be announced again.
+    if merged.quota_reset_notified.is_empty() {
+        merged.quota_reset_notified = current.quota_reset_notified.clone();
+    }
+    // The on-disk schema version is written by `save`; an old UI payload must
+    // not lower the in-memory value either.
+    merged.schema_version = current.schema_version;
+    // The one-shot timeout migration marker is app-managed too: a UI payload
+    // never carries it, so reading it from the payload would re-run the bump.
+    merged.stream_timeout_migrated_180 = current.stream_timeout_migrated_180;
+    carry_provider_models(&mut merged, current);
+    merged
+}
+
 pub fn carry_provider_models(merged: &mut Settings, old: &Settings) {
+    if merged.nvidia_key != old.nvidia_key {
+        merged.nvidia_models.clear();
+    } else if merged.nvidia_models.is_empty() {
+        merged.nvidia_models = old.nvidia_models.clone();
+    }
     if merged.deepinfra_key != old.deepinfra_key {
         merged.deepinfra_models.clear();
     } else if merged.deepinfra_models.is_empty() {
@@ -164,6 +366,21 @@ pub fn carry_provider_models(merged: &mut Settings, old: &Settings) {
         merged.zai_models.clear();
     } else if merged.zai_models.is_empty() {
         merged.zai_models = old.zai_models.clone();
+    }
+    if merged.opencode_key != old.opencode_key {
+        merged.opencode_models.clear();
+    } else if merged.opencode_models.is_empty() {
+        merged.opencode_models = old.opencode_models.clone();
+    }
+    if merged.openrouter_key != old.openrouter_key {
+        merged.openrouter_models.clear();
+    } else if merged.openrouter_models.is_empty() {
+        merged.openrouter_models = old.openrouter_models.clone();
+    }
+    if merged.commandcode_key != old.commandcode_key {
+        merged.commandcode_models.clear();
+    } else if merged.commandcode_models.is_empty() {
+        merged.commandcode_models = old.commandcode_models.clone();
     }
 }
 
@@ -216,6 +433,16 @@ pub fn load_from(path: &std::path::Path) -> Settings {
         s.management_secret = generate_management_secret();
         let _ = save_to(path, &s);
     }
+    // 60 s cut thinking models off before their first visible delta. Older
+    // builds shipped that value, so raise it once; 0 (watchdog off) and a
+    // custom value are preserved.
+    if !s.stream_timeout_migrated_180 {
+        if s.stream_bootstrap_timeout_seconds == 60 {
+            s.stream_bootstrap_timeout_seconds = 180;
+        }
+        s.stream_timeout_migrated_180 = true;
+        let _ = save_to(path, &s);
+    }
     s
 }
 
@@ -243,12 +470,14 @@ pub fn save_to(path: &std::path::Path, s: &Settings) -> Result<(), String> {
 }
 
 /// The secrets stored in `settings.json`. Vault tokens use the same helpers.
-fn secret_fields(s: &mut Settings) -> [&mut String; 8] {
+fn secret_fields(s: &mut Settings) -> [&mut String; 10] {
     [
         &mut s.api_key,
         &mut s.openrouter_key,
         &mut s.opencode_key,
+        &mut s.commandcode_key,
         &mut s.deepinfra_key,
+        &mut s.nvidia_key,
         &mut s.vercel_key,
         &mut s.zai_key,
         &mut s.claude_api_key,
@@ -261,6 +490,11 @@ fn protect_secrets(s: &mut Settings) -> Result<(), String> {
         let protected = dpapi::protect(field.as_str())?;
         *field = protected;
     }
+    // Custom provider keys are dynamic, so they cannot live in the fixed
+    // secret_fields array. Encrypt them with the same helper.
+    for provider in &mut s.custom_providers {
+        provider.api_key = dpapi::protect(provider.api_key.as_str())?;
+    }
     Ok(())
 }
 
@@ -271,6 +505,9 @@ fn unprotect_secrets(s: &mut Settings) {
     for field in secret_fields(s) {
         let plaintext = dpapi::unprotect(field.as_str()).unwrap_or_default();
         *field = plaintext;
+    }
+    for provider in &mut s.custom_providers {
+        provider.api_key = dpapi::unprotect(provider.api_key.as_str()).unwrap_or_default();
     }
 }
 
@@ -290,22 +527,90 @@ fn generate_management_secret() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn openrouter_legacy_settings_preserve_inherited_fallback() {
+        let legacy: super::Settings = serde_json::from_str(r#"{
+            "openrouterConfig": {
+                "allowFallbacks": false,
+                "modelProviders": {"vendor/model": {"only": ["provider"]}}
+            }
+        }"#).unwrap();
+        assert!(!legacy.openrouter_config.allow_fallbacks);
+        let model = &legacy.openrouter_config.model_providers["vendor/model"];
+        assert_eq!(model.only, vec!["provider"]);
+        assert_eq!(model.allow_fallbacks, None);
+        let encoded = serde_json::to_string(&legacy).unwrap();
+        let restored: super::Settings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.openrouter_config, legacy.openrouter_config);
+    }
+
+    #[test]
+    fn the_old_60s_timeout_is_raised_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "melontools-settings-timeout-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // A file written by an older build carries 60 and no migration marker.
+        let legacy = super::Settings {
+            stream_bootstrap_timeout_seconds: 60,
+            ..Default::default()
+        };
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = super::load_from(&path);
+        assert_eq!(loaded.stream_bootstrap_timeout_seconds, 180);
+        assert!(loaded.stream_timeout_migrated_180);
+
+        // The marker protects a later deliberate choice, including 60 and off.
+        for chosen in [60, 0, 45] {
+            let saved = super::Settings {
+                stream_bootstrap_timeout_seconds: chosen,
+                stream_timeout_migrated_180: true,
+                ..Default::default()
+            };
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            let loaded = super::load_from(&path);
+            assert_eq!(loaded.stream_bootstrap_timeout_seconds, chosen);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn taskbar_widget_is_opt_in_and_survives_settings_roundtrip() {
+        let legacy: super::Settings = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.taskbar_widget_visible);
+        let enabled: super::Settings =
+            serde_json::from_str(r#"{"taskbarWidgetVisible":true,"islandVisible":false}"#).unwrap();
+        assert!(enabled.taskbar_widget_visible);
+        assert!(!enabled.island_visible);
+        let stored = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(stored["taskbarWidgetVisible"], true);
+        let loaded: super::Settings = serde_json::from_value(stored).unwrap();
+        assert!(loaded.taskbar_widget_visible);
+    }
+
     use super::{
         carry_provider_models, protect_secrets, secret_fields, unprotect_secrets, ProviderModel,
         Settings,
     };
 
     fn legacy_settings() -> Settings {
-        let mut s = Settings::default();
-        s.api_key = "sk-legacy-api".to_string();
-        s.openrouter_key = "sk-or-legacy".to_string();
-        s.opencode_key = "sk-oc-legacy".to_string();
-        s.deepinfra_key = "sk-di-legacy".to_string();
-        s.vercel_key = "sk-vc-legacy".to_string();
-        s.zai_key = "id.secret-legacy".to_string();
-        s.claude_api_key = "sk-ant-legacy".to_string();
-        s.management_secret = "melon-mgmt-legacy".to_string();
-        s
+        Settings {
+            api_key: "sk-legacy-api".to_string(),
+            openrouter_key: "sk-or-legacy".to_string(),
+            opencode_key: "sk-oc-legacy".to_string(),
+            commandcode_key: "cc-legacy-key".to_string(),
+            deepinfra_key: "sk-di-legacy".to_string(),
+            nvidia_key: "nv-test-key".to_string(),
+            vercel_key: "sk-vc-legacy".to_string(),
+            zai_key: "id.secret-legacy".to_string(),
+            claude_api_key: "sk-ant-legacy".to_string(),
+            management_secret: "melon-mgmt-legacy".to_string(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -315,7 +620,9 @@ mod tests {
         assert_eq!(s.api_key, "sk-legacy-api");
         assert_eq!(s.openrouter_key, "sk-or-legacy");
         assert_eq!(s.opencode_key, "sk-oc-legacy");
+        assert_eq!(s.commandcode_key, "cc-legacy-key");
         assert_eq!(s.deepinfra_key, "sk-di-legacy");
+        assert_eq!(s.nvidia_key, "nv-test-key");
         assert_eq!(s.vercel_key, "sk-vc-legacy");
         assert_eq!(s.zai_key, "id.secret-legacy");
         assert_eq!(s.claude_api_key, "sk-ant-legacy");
@@ -346,6 +653,7 @@ mod tests {
         assert_eq!(stored.openrouter_key, original.openrouter_key);
         assert_eq!(stored.opencode_key, original.opencode_key);
         assert_eq!(stored.deepinfra_key, original.deepinfra_key);
+        assert_eq!(stored.nvidia_key, original.nvidia_key);
         assert_eq!(stored.vercel_key, original.vercel_key);
         assert_eq!(stored.zai_key, original.zai_key);
         assert_eq!(stored.claude_api_key, original.claude_api_key);
@@ -367,15 +675,17 @@ mod tests {
 
     #[test]
     fn undecryptable_secrets_become_empty() {
-        let mut s = Settings::default();
-        s.api_key = "dpapi2:AAAA".to_string();
-        s.openrouter_key = "dpapi:AAAA".to_string();
-        s.opencode_key = "dpapi:not-base64!!!".to_string();
-        s.deepinfra_key = "dpapi2:".to_string();
-        s.vercel_key = "dpapi:not-base64!!!".to_string();
-        s.zai_key = "dpapi2:".to_string();
-        s.claude_api_key = "dpapi2:".to_string();
-        s.management_secret = "dpapi:not-base64!!!".to_string();
+        let mut s = Settings {
+            api_key: "dpapi2:AAAA".to_string(),
+            openrouter_key: "dpapi:AAAA".to_string(),
+            opencode_key: "dpapi:not-base64!!!".to_string(),
+            deepinfra_key: "dpapi2:".to_string(),
+            vercel_key: "dpapi:not-base64!!!".to_string(),
+            zai_key: "dpapi2:".to_string(),
+            claude_api_key: "dpapi2:".to_string(),
+            management_secret: "dpapi:not-base64!!!".to_string(),
+            ..Default::default()
+        };
         unprotect_secrets(&mut s);
         for field in secret_fields(&mut s) {
             assert!(field.is_empty(), "ciphertext leaked: {}", field.as_str());
@@ -385,8 +695,10 @@ mod tests {
     #[test]
     fn reserved_prefix_secrets_roundtrip() {
         for value in ["dpapi:literal", "dpapi2:literal", "plain:literal"] {
-            let mut s = Settings::default();
-            s.api_key = value.to_string();
+            let mut s = Settings {
+                api_key: value.to_string(),
+                ..Default::default()
+            };
             protect_secrets(&mut s).unwrap();
             #[cfg(not(windows))]
             assert!(s.api_key.starts_with(crate::dpapi::PREFIX_PLAIN));
@@ -405,31 +717,39 @@ mod tests {
 
     #[test]
     fn cached_provider_models_follow_their_key() {
-        let mut old = Settings::default();
-        old.deepinfra_key = "di-old".to_string();
-        old.deepinfra_models = vec![cached_model("deepseek-ai/DeepSeek-V4")];
-        old.vercel_key = "vc-old".to_string();
-        old.vercel_models = vec![cached_model("anthropic/claude-sonnet-4.6")];
-        old.zai_key = "zai-old".to_string();
-        old.zai_models = vec![cached_model("glm-5.3")];
+        let old = Settings {
+            deepinfra_key: "di-old".to_string(),
+            deepinfra_models: vec![cached_model("deepseek-ai/DeepSeek-V4")],
+            nvidia_key: "nv-old".to_string(),
+            nvidia_models: vec![cached_model("vendor/model")],
+            vercel_key: "vc-old".to_string(),
+            vercel_models: vec![cached_model("anthropic/claude-sonnet-4.6")],
+            zai_key: "zai-old".to_string(),
+            zai_models: vec![cached_model("glm-5.3")],
+            ..Default::default()
+        };
 
         // An unchanged key with an empty payload keeps the cached list.
         let mut same = old.clone();
         same.deepinfra_models.clear();
+        same.nvidia_models.clear();
         same.vercel_models.clear();
         same.zai_models.clear();
         carry_provider_models(&mut same, &old);
         assert_eq!(same.deepinfra_models, old.deepinfra_models);
+        assert_eq!(same.nvidia_models, old.nvidia_models);
         assert_eq!(same.vercel_models, old.vercel_models);
         assert_eq!(same.zai_models, old.zai_models);
 
         // A new key clears the list even when the payload still carries it.
         let mut changed = old.clone();
         changed.deepinfra_key = "di-new".to_string();
+        changed.nvidia_key = "nv-new".to_string();
         changed.vercel_key = "vc-new".to_string();
         changed.zai_key = "zai-new".to_string();
         carry_provider_models(&mut changed, &old);
         assert!(changed.deepinfra_models.is_empty());
+        assert!(changed.nvidia_models.is_empty());
         assert!(changed.vercel_models.is_empty());
         assert!(changed.zai_models.is_empty());
     }
@@ -438,11 +758,12 @@ mod tests {
     fn notification_and_dashboard_toggles_default_on() {
         let s = Settings::default();
         assert!(s.notifications);
+        assert_eq!(s.island_auto_collapse_seconds, 15);
         assert!(s.notify_low_quota);
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
         assert!(s.dashboard_show_pool_health);
-        assert!(s.dashboard_show_quota_trends);
+        assert!(s.dashboard_show_antigravity_pool);
         assert!(s.dashboard_show_spend);
         assert!(s.dashboard_show_scheduler);
         assert!(s.quota_reset_notified.is_empty());
@@ -454,10 +775,11 @@ mod tests {
         assert_eq!(s.port, 19000);
         assert!(!s.notify_low_quota);
         assert!(s.notifications);
+        assert_eq!(s.island_auto_collapse_seconds, 15);
         assert!(s.notify_scheduler);
         assert!(s.notify_quota_reset);
         assert!(s.dashboard_show_pool_health);
-        assert!(s.dashboard_show_quota_trends);
+        assert!(s.dashboard_show_antigravity_pool);
         assert!(s.dashboard_show_spend);
         assert!(s.dashboard_show_scheduler);
         assert!(s.quota_reset_notified.is_empty());
@@ -468,12 +790,91 @@ mod tests {
             "notifyScheduler",
             "notifyQuotaReset",
             "dashboardShowPoolHealth",
-            "dashboardShowQuotaTrends",
+            "dashboardShowAntigravityPool",
             "dashboardShowSpend",
             "dashboardShowScheduler",
             "quotaResetNotified",
         ] {
             assert!(raw.get(key).is_some(), "missing key {key}");
         }
+    }
+
+    #[test]
+    fn custom_providers_decode_with_defaults_and_roundtrip() {
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(empty.custom_providers.is_empty());
+
+        let provider = super::CustomProvider {
+            id: "acme".to_string(),
+            name: "Acme".to_string(),
+            base_url: "https://relay.example/v1".to_string(),
+            protocol: "openai-chat".to_string(),
+            api_key: "sk-test".to_string(),
+            enabled: true,
+            models: vec![super::CustomProviderModel {
+                id: "gpt-5".to_string(),
+                display: "GPT-5".to_string(),
+                context_window: Some(128_000),
+                enabled: true,
+                alias: "acme/gpt-5".to_string(),
+            }],
+        };
+        let mut settings = Settings::default();
+        settings.custom_providers = vec![provider];
+        let encoded = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            encoded["customProviders"][0]["baseUrl"],
+            "https://relay.example/v1"
+        );
+        assert_eq!(encoded["customProviders"][0]["models"][0]["contextWindow"], 128_000);
+        let decoded: Settings = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.custom_providers, settings.custom_providers);
+    }
+
+    #[test]
+    fn a_stale_payload_keeps_fields_changed_while_the_probe_was_running() {
+        let before = super::Settings::default();
+        let mut current = before.clone();
+        current.routing_strategy = "custom".to_string();
+        current.priority_order = vec!["account-a".to_string()];
+        current.codex_exe_path = "C:/Codex/ChatGPT.exe".to_string();
+        current.last_update_check = Some(123);
+        current.management_secret = "live-secret".to_string();
+        current.api_key = "live-key".to_string();
+        current.quota_reset_notified = vec!["a:week:1".to_string()];
+        current.port = 19000;
+
+        let mut payload = before.clone();
+        payload.notifications = false;
+
+        let merged = super::merge_user_payload(payload, &before, &current);
+        assert_eq!(merged.routing_strategy, "custom");
+        assert_eq!(merged.priority_order, vec!["account-a".to_string()]);
+        assert_eq!(merged.codex_exe_path, "C:/Codex/ChatGPT.exe");
+        assert_eq!(merged.last_update_check, Some(123));
+        assert_eq!(merged.management_secret, "live-secret");
+        assert_eq!(merged.api_key, "live-key");
+        assert_eq!(merged.quota_reset_notified, vec!["a:week:1".to_string()]);
+        assert_eq!(
+            merged.port, 19000,
+            "a port edit made during the probe must survive"
+        );
+        assert!(!merged.notifications, "a real user edit must survive");
+    }
+
+    #[test]
+    fn a_real_payload_edit_wins_over_the_live_value() {
+        let before = super::Settings::default();
+        let mut current = before.clone();
+        current.routing_strategy = "custom".to_string();
+        current.codex_exe_path = "old".to_string();
+
+        let mut payload = before.clone();
+        payload.routing_strategy = "expirySoonFirst".to_string();
+        payload.codex_exe_path = "new".to_string();
+
+        let merged = super::merge_user_payload(payload, &before, &current);
+        assert_eq!(merged.routing_strategy, "expirySoonFirst");
+        assert_eq!(merged.codex_exe_path, "new");
     }
 }

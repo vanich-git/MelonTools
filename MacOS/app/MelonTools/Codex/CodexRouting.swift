@@ -178,6 +178,7 @@ enum CodexRoutingPlanner {
     /// A limit of 0 (or none) means “no limit”. Quota readings older than
     /// `quotaFreshness` never block — a stale gauge must not park an account.
     static func blockReason(_ account: CodexAccount) -> String? {
+        if account.poolEnabled == false { return L("Disabled from pool") }
         guard let cause = blockCause(account) else { return nil }
         // Prefer the persisted reading: it is what actually stopped routing,
         // even if the live gauge has moved a little since then.
@@ -274,7 +275,7 @@ enum CodexRoutingPlanner {
             return ISO8601DateFormatter().date(from: raw)
         }
 
-        let sorted = accounts.sorted { lhs, rhs in
+        let sorted = accounts.filter { $0.poolEnabled != false }.sorted { lhs, rhs in
             let leftGroup = groupKey(lhs)
             let rightGroup = groupKey(rhs)
             if leftGroup != rightGroup { return leftGroup < rightGroup }
@@ -321,16 +322,39 @@ enum CodexRoutingPlanner {
         return Resolution(orderedIds: sorted.map(\.id), blocked: blocked, blockReasons: reasons)
     }
 
-    /// Gateway priorities: the first account gets the highest number (that is
-    /// what “fill-first” uses first), the last gets 1.
-    static func priorities(from orderedIds: [String]) -> [String: Int] {
+    /// Move across enabled neighbours without losing disabled accounts' saved
+    /// slots. Hidden accounts must not consume a click in the manual queue.
+    static func movingPriority(_ id: String, up: Bool, order: [String], accounts: [CodexAccount]) -> [String] {
+        let enabled = Set(accounts.filter { $0.poolEnabled != false }.map(\.id))
+        let visible = order.filter { enabled.contains($0) }
+        guard let position = visible.firstIndex(of: id) else { return order }
+        let neighbour = up ? position - 1 : position + 1
+        guard visible.indices.contains(neighbour),
+              let source = order.firstIndex(of: id),
+              let target = order.firstIndex(of: visible[neighbour]) else { return order }
+        var result = order
+        result.swapAt(source, target)
+        return result
+    }
+
+    /// Gateway priorities encode the pool *tier*, not the position inside it.
+    /// The engine always serves the highest ready tier first and only then
+    /// balances inside that tier, so equal values are what let the load
+    /// actually rotate. Regular accounts share the top tier, backups the one
+    /// below, and accounts the planner excluded get no priority at all — they
+    /// are kept out by `disabled: true` instead.
+    static func priorities(from orderedIds: [String], backupIds: Set<String> = []) -> [String: Int] {
         var values: [String: Int] = [:]
-        let count = orderedIds.count
-        for (index, id) in orderedIds.enumerated() {
-            values[id] = count - index
+        for id in orderedIds {
+            values[id] = backupIds.contains(id) ? backupPriority : regularPriority
         }
         return values
     }
+
+    /// Tier values: a higher number wins. Backups stay one step below the
+    /// regular accounts so they only take traffic once that tier is exhausted.
+    static let regularPriority = 2
+    static let backupPriority = 1
 
     /// Rough subscription tiers for plan-based modes. Keep this table in
     /// sync with Windows `routing.rs::plan_rank`.

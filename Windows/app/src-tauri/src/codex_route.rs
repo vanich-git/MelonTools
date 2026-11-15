@@ -452,12 +452,18 @@ pub fn third_party_band(id: &str) -> Option<(&'static str, i32)> {
         Some(("openrouter", 200))
     } else if id.starts_with("deepinfra/") {
         Some(("deepinfra", 300))
+    } else if id.starts_with("nvidia/") {
+        Some(("nvidia", 350))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
         Some(("zai", 500))
+    } else if id.starts_with("commandcode/") {
+        Some(("commandcode", 550))
     } else if crate::claude::is_claude_model_id(id) {
         Some(("Claude", 600))
+    } else if id.starts_with("local/") {
+        Some(("Local AI", 800))
     } else {
         None
     }
@@ -476,12 +482,20 @@ pub fn third_party_band_for_model(entry: &Value) -> Option<(&'static str, i32)> 
         Some(("openrouter", 200))
     } else if id.starts_with("deepinfra/") {
         Some(("deepinfra", 300))
+    } else if id.starts_with("nvidia/") {
+        Some(("nvidia", 350))
     } else if id.starts_with("vercel/") {
         Some(("vercel", 400))
     } else if id.starts_with("zai/") {
         Some(("zai", 500))
+    } else if id.starts_with("commandcode/") {
+        Some(("commandcode", 550))
     } else if crate::claude::is_claude_model_id(id) {
         Some(("Claude", 600))
+    } else if id.starts_with("local/")
+        || entry.get("owned_by").and_then(|v| v.as_str()) == Some("local")
+    {
+        Some(("Local AI", 800))
     } else {
         None
     }
@@ -993,8 +1007,11 @@ fn provider_display_name(tag: &str) -> &str {
         "opencode" => "OpenCode",
         "openrouter" => "OpenRouter",
         "deepinfra" => "DeepInfra",
+        "nvidia" => "NVIDIA",
         "vercel" => "Vercel",
         "zai" => "Z.ai",
+        "commandcode" => "CommandCode",
+        "local" | "Local AI" => "Local AI",
         other => other,
     }
 }
@@ -1052,6 +1069,7 @@ fn append_third_party_catalog_entries(
     let mut vercel_index = 0usize;
     let mut claude_index = 0usize;
     let mut antigravity_index = 0usize;
+    let mut local_ai_index = 0usize;
     for entry in entries {
         let Some(id) = entry.get("id").and_then(|v| v.as_str()).map(String::from) else {
             continue;
@@ -1086,6 +1104,11 @@ fn append_third_party_catalog_entries(
             "Antigravity" => {
                 let index = antigravity_index;
                 antigravity_index += 1;
+                index
+            }
+            "Local AI" => {
+                let index = local_ai_index;
+                local_ai_index += 1;
                 index
             }
             _ => {
@@ -1246,6 +1269,22 @@ mod tests {
     }
 
     #[test]
+    fn local_ai_ids_get_band_800_and_the_local_ai_tag() {
+        assert_eq!(
+            third_party_band("local/qwen-2.5-7b"),
+            Some(("Local AI", 800))
+        );
+        assert_eq!(provider_tag("local/qwen-2.5-7b"), "Local AI");
+        assert_eq!(
+            third_party_band_for_model(&json!({
+                "id": "local/llama-3.2-3b",
+                "owned_by": "local"
+            })),
+            Some(("Local AI", 800))
+        );
+    }
+
+    #[test]
     fn antigravity_ids_get_band_700_and_the_antigravity_tag() {
         assert_eq!(
             third_party_band("gemini-3-flash"),
@@ -1311,9 +1350,14 @@ mod tests {
             Some(("vercel", 400))
         );
         assert_eq!(third_party_band("zai/glm-5.3"), Some(("zai", 500)));
+        assert_eq!(
+            third_party_band("commandcode/claude-sonnet-5-5"),
+            Some(("commandcode", 550))
+        );
         assert_eq!(provider_tag("deepinfra/x"), "deepinfra");
         assert_eq!(provider_tag("vercel/y"), "vercel");
         assert_eq!(provider_tag("zai/glm-5.3"), "zai");
+        assert_eq!(provider_tag("commandcode/gpt-6-astra"), "commandcode");
         assert_eq!(
             third_party_band_for_model(&json!({"id": "deepinfra/x", "owned_by": "deepinfra"})),
             Some(("deepinfra", 300))
@@ -1597,11 +1641,11 @@ mod tests {
     }
 
     fn pool_account(selection: Option<Vec<&str>>) -> Account {
-        let mut account = Account::default();
-        account.id = "pool-account".to_string();
-        account.selected_models =
-            selection.map(|slugs| slugs.into_iter().map(String::from).collect());
-        account
+        Account {
+            id: "pool-account".to_string(),
+            selected_models: selection.map(|slugs| slugs.into_iter().map(String::from).collect()),
+            ..Default::default()
+        }
     }
 
     fn slugs_of(entries: &[Value]) -> Vec<&str> {
@@ -1724,7 +1768,7 @@ mod tests {
         assert_eq!(selected_pool_slugs_in(&[], &visible), visible);
         assert_eq!(selected_pool_slugs_in(&[legacy], &visible), visible);
         assert_eq!(
-            selected_pool_slugs_in(&[restricted.clone()], &visible),
+            selected_pool_slugs_in(std::slice::from_ref(&restricted), &visible),
             restricted_effective
         );
 

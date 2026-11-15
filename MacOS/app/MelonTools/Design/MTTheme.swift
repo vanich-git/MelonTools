@@ -220,19 +220,41 @@ struct MTSolidButtonStyle: ButtonStyle {
     var size: MTButtonSize = .regular
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
-            .padding(.horizontal, size == .small ? 9 : 14)
-            .padding(.vertical, size == .small ? 4 : 7)
-            .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
-            .background(
-                Capsule().fill(prominent ? (tint ?? MTTheme.gold) : MTTheme.cardSoft)
-            )
-            .overlay(
-                Capsule().strokeBorder(prominent ? Color.clear : MTTheme.borderColor, lineWidth: 0.75)
-            )
-            .opacity(configuration.isPressed ? 0.78 : 1)
-            .contentShape(Capsule())
+        Chrome(configuration: configuration, tint: tint, prominent: prominent, size: size)
+    }
+
+    /// A nested view is required to read `isEnabled`: a `ButtonStyle` itself is
+    /// not a view, so an `@Environment` property on the style stays at its
+    /// default and disabled buttons kept looking active.
+    private struct Chrome: View {
+        let configuration: Configuration
+        let tint: Color?
+        let prominent: Bool
+        let size: MTButtonSize
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
+                .padding(.horizontal, size == .small ? 9 : 14)
+                .padding(.vertical, size == .small ? 4 : 7)
+                .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
+                .background(
+                    Capsule().fill(prominent ? (tint ?? MTTheme.gold) : MTTheme.cardSoft)
+                )
+                .overlay(
+                    Capsule().strokeBorder(prominent ? Color.clear : MTTheme.borderColor, lineWidth: 0.75)
+                )
+                .opacity(!isEnabled ? 0.4 : (configuration.isPressed ? 0.78 : 1))
+                .overlay(
+                    Capsule().strokeBorder(
+                        isFocused ? MTTheme.cyan.opacity(0.9) : Color.clear,
+                        lineWidth: 2
+                    )
+                )
+                .contentShape(Capsule())
+        }
     }
 }
 
@@ -247,26 +269,44 @@ struct MTGlassButtonStyle: ButtonStyle {
     var size: MTButtonSize = .regular
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
-            .padding(.horizontal, size == .small ? 9 : 14)
-            .padding(.vertical, size == .small ? 4 : 7)
-            .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
-            .background(
-                Capsule()
-                    .fill(prominent ? MTTheme.gold : MTTheme.cardSoft)
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(
-                        prominent
-                            ? AnyShapeStyle(Color.white.opacity(0.28))
-                            : AnyShapeStyle(MTTheme.borderColor),
-                        lineWidth: 0.75
+        Chrome(configuration: configuration, prominent: prominent, size: size)
+    }
+
+    private struct Chrome: View {
+        let configuration: Configuration
+        let prominent: Bool
+        let size: MTButtonSize
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .font(MTTheme.body(size == .small ? 10.5 : 12, weight: prominent ? .semibold : .medium))
+                .padding(.horizontal, size == .small ? 9 : 14)
+                .padding(.vertical, size == .small ? 4 : 7)
+                .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
+                .background(
+                    Capsule()
+                        .fill(prominent ? MTTheme.gold : MTTheme.cardSoft)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            prominent
+                                ? AnyShapeStyle(Color.white.opacity(0.28))
+                                : AnyShapeStyle(MTTheme.borderColor),
+                            lineWidth: 0.75
+                        )
+                )
+                .opacity(!isEnabled ? 0.4 : (configuration.isPressed ? 0.78 : 1))
+                .overlay(
+                    Capsule().strokeBorder(
+                        isFocused ? MTTheme.cyan.opacity(0.9) : Color.clear,
+                        lineWidth: 2
                     )
-            )
-            .opacity(configuration.isPressed ? 0.78 : 1)
-            .contentShape(Capsule())
+                )
+                .contentShape(Capsule())
+        }
     }
 }
 

@@ -52,7 +52,7 @@ const HOUR_SECONDS = 3600;
 const DAY_SECONDS = 86400;
 const DASHBOARD_CARD_SETTINGS = [
   "dashboardShowPoolHealth",
-  "dashboardShowQuotaTrends",
+  "dashboardShowAntigravityPool",
   "dashboardShowSpend",
   "dashboardShowScheduler",
 ];
@@ -87,6 +87,7 @@ function poolHealth(accounts, routing) {
     if (account.quotaError || account.needsRelogin) errors += 1;
     if (account.blocked || account.blockInfo || blockedIds.has(String(account.id))) paused += 1;
     else usable += 1;
+    if (account.poolEnabled === false) continue;
     const hourly = finiteNumber(account.hourlyRemaining);
     if (hourly !== null) { hourlySum += hourly; hourlyCount += 1; }
     const weekly = finiteNumber(account.weeklyRemaining);
@@ -172,6 +173,7 @@ function providerOfModel(model) {
   if (id.startsWith("opencode/")) return "opencode";
   if (id.startsWith("openrouter/")) return "openrouter";
   if (id.startsWith("deepinfra/")) return "deepinfra";
+  if (id.startsWith("nvidia/")) return "nvidia";
   if (id.startsWith("vercel/")) return "vercel";
   if (id.startsWith("zai/")) return "zai";
   if (id.startsWith("claude-")) return "claude";
@@ -185,6 +187,7 @@ function providerName(provider) {
     case "opencode": return t("sgOpenCode");
     case "openrouter": return t("sgOpenRouter");
     case "deepinfra": return t("sgDeepInfra");
+    case "nvidia": return "NVIDIA";
     case "vercel": return t("sgVercel");
     case "zai": return t("sgZai");
     default: return String(provider || "—");
@@ -263,7 +266,7 @@ function dashboardVisibility(settings) {
   const value = settings || {};
   return {
     pool: value.dashboardShowPoolHealth !== false,
-    trends: value.dashboardShowQuotaTrends !== false,
+    antigravity: value.dashboardShowAntigravityPool !== false,
     spend: value.dashboardShowSpend !== false,
     scheduler: value.dashboardShowScheduler !== false,
   };
@@ -273,7 +276,7 @@ function dashboardCardToggles(settings) {
   const value = settings || {};
   const cards = [
     ["dashboardShowPoolHealth", "dashCardPool"],
-    ["dashboardShowQuotaTrends", "dashCardTrends"],
+    ["dashboardShowAntigravityPool", "dashCardAntigravity"],
     ["dashboardShowSpend", "dashCardSpend"],
     ["dashboardShowScheduler", "dashCardScheduler"],
   ];
@@ -364,6 +367,7 @@ function blockText(info) {
   if (!info) return "";
   const stopped = info.blockedAt !== null && info.blockedAt !== undefined;
   switch (info.code) {
+    case "manual_disabled": return t("poolDisabled");
     case "hourly_exhausted": return stopped
       ? fmt(t("bHourlyExhaustedStopped"), { r: percentLabel(info.remaining) })
       : t("bHourly");
@@ -411,7 +415,7 @@ function poolPauseResetTime(unixTs, weekly) {
 }
 
 function poolPauseState() {
-  const accounts = S.accounts || [];
+  const accounts = (S.accounts || []).filter((account) => account && account.poolEnabled !== false);
   if (!accounts.length) return null;
   const blockedIds = new Set(((S.routing && S.routing.blockedIds) || []).map(String));
   const paused = accounts.filter((account) => account &&
@@ -516,24 +520,53 @@ const ICONS = {
   scheduler: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
   donate: '<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h5l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>',
+  local_ai: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 
 const NAV = [
-  { group: "codex", items: ["dashboard", "accounts", "api", "providers", "composer", "instances"] },
-  { group: "general", items: ["scheduler", "settings", "donate"] },
+  { group: "overview", items: ["dashboard"] },
+  { group: "schedulerGroup", items: ["scheduler"] },
+  { group: "local_ai", items: ["local_ai"] },
+  { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
+  { group: "general", items: ["settings", "donate"] },
 ];
 
 // MARK: - Render
 
-function render() {
+let localAiPollTimer = null;
+function localAiPollSync() {
+  if (S.section !== "local_ai") {
+    if (localAiPollTimer) {
+      clearInterval(localAiPollTimer);
+      localAiPollTimer = null;
+    }
+    return;
+  }
+  if (localAiPollTimer) return;
+  localAiPollTimer = setInterval(() => {
+    if (S.section !== "local_ai") {
+      clearInterval(localAiPollTimer);
+      localAiPollTimer = null;
+      return;
+    }
+    if (typeof A.localAiPoll === "function") A.localAiPoll();
+  }, 2000);
+}
+
+// `force` is the explicit "this action changed other fields" override: a
+// profile preset rewrites context/layers/KV while the `<select>` still owns the
+// focus, so the guard below would skip the repaint and the visible numbers
+// would keep the previous preset. Only controls that never accept text pass it.
+function render(force) {
   document.documentElement.lang = S.lang || "ru";
   // The queue poll lives and dies with the scheduler page: it starts on entry
   // and is cleared on exit, before any DOM work.
   schedulerQueueSync();
+  localAiPollSync();
   // Polling must not wipe an input the user is editing. User actions move
   // focus to their button first, so navigation and save operations still
   // render normally.
-  if (typeof editsInProgress === "function" && editsInProgress()) return;
+  if (!force && typeof editsInProgress === "function" && editsInProgress()) return;
   renderNav();
   renderFooter();
   const main = document.getElementById("main");
@@ -545,9 +578,13 @@ function render() {
     composer: composerPage,
     instances: instancesPage,
     scheduler: schedulerPage,
+    local_ai: typeof localAiPage === "function" ? localAiPage : () => "",
     donate: donatePage,
     settings: settingsPage,
   };
+  // The Local AI page is a working surface: its split panes and model grid
+  // use the full window width, unlike the centred reading column elsewhere.
+  main.classList.toggle("board-fluid", S.section === "local_ai");
   main.innerHTML = (pages[S.section] || dashboardPage)();
   if (S.section === "donate") renderDonateQr();
 }
@@ -569,12 +606,16 @@ function sectionLoads(section) {
       if (S.section === "providers") render();
     }).catch(() => {});
   }
-  if (section === "providers" && IS_TAURI && !S.antigravity && !S.antigravityLogin) {
+  // The dashboard carries the Antigravity pool card, so it needs the same
+  // snapshot as Providers. The demo build serves it from mt-api, hence no
+  // IS_TAURI guard here; a failure is silent and retried by the poll below.
+  if ((section === "providers" || section === "dashboard") && !S.antigravity && !S.antigravityLogin) {
     A.antigravityUsageLoad().then(() => {
-      if (S.section === "providers") render();
+      if (S.section === "providers" || S.section === "dashboard") render();
     }).catch(() => {});
   }
   if (section === "instances" && !S.instancesData) A.instancesLoad();
+  if (section === "local_ai") A.localAiLoad();
   if (section === "settings" && !S.backupLastLoaded) A.backupLastLoad();
 }
 
@@ -663,7 +704,10 @@ function actionArgs(action, el) {
     case "schedulerToggle":
       return [el.dataset.id, !!el.checked];
     case "islandToggle":
+    case "taskbarWidgetToggle":
       return [!!el.checked];
+    case "islandAutoCollapse":
+      return [Number(el.value)];
     case "notifyToggle":
     case "autostartToggle":
       return [!!el.checked];
@@ -678,10 +722,44 @@ function actionArgs(action, el) {
     case "schedulerTemplateApply":
     case "poolSearch":
     case "modelsSearch":
+    case "openrouterModelsSearch":
     case "proxyUrlChanged":
       return [el.value];
+    case "customProviderField":
+      return [el.dataset.field, el.value];
+    case "customModelField":
+      return [Number(el.dataset.id), el.dataset.field, el.value];
+    case "customModelToggle":
+      return [Number(el.dataset.id), !!el.checked];
+    case "customProviderToggle":
+      return [el.dataset.id, !!el.checked];
     case "copy":
       return [el.dataset.text || ""];
+    case "localAiTab":
+      return [el.dataset.id || el.dataset.tab || "models"];
+    case "localAiProfileChange":
+    case "localAiKvPick":
+    case "localAiSearch":
+    case "localAiHfSort":
+    case "localAiHfVariant":
+    case "localAiHfSearchInput":
+    case "localAiSystemPromptInput":
+    case "localAiTestPromptInput":
+      return [el.value];
+    case "localAiHfPreset":
+      return [el.dataset.query || el.dataset.id || ""];
+    case "localAiDownloadQuant":
+      return [
+        el.dataset.repo,
+        el.dataset.file,
+        Number(el.dataset.size || 0),
+        el.dataset.sha || null,
+        // Already percent-encoded by the backend; rebuilding it here lost the
+        // LFS redirect and mangled `#`/`?` in file names.
+        el.dataset.url || null,
+      ];
+    case "localAiRuntimeCatalogInstall":
+      return [el.dataset.tag, el.dataset.variant];
     default:
       return el.dataset.id === undefined ? [] : [el.dataset.id];
   }
@@ -703,9 +781,17 @@ function dispatchAction(el) {
 }
 
 document.addEventListener("click", (event) => {
+  // Card menus are native <details> popovers: a click anywhere else closes
+  // them, and so does picking an entry (which may not repaint the board).
+  document.querySelectorAll("details.local-ai-menu[open], details.hf-select[open]").forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
   const el = event.target.closest("[data-action]");
   if (!el || el.dataset.on) return;
   dispatchAction(el);
+  document.querySelectorAll("details.local-ai-menu[open], details.hf-select[open]").forEach((menu) => {
+    menu.open = false;
+  });
 });
 document.addEventListener("change", (event) => {
   const el = event.target.closest('[data-action][data-on="change"]');
@@ -719,6 +805,72 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target && event.target.id === "set-proxy-url") {
     event.preventDefault();
     A.saveProxyUrl();
+  }
+});
+
+// Esc clears a shared search field; on an empty field it falls through to the
+// surrounding dialog. The model pool has no other Esc handler, so close it
+// here — this also covers Escape pressed on any of its buttons.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  const field = event.target && event.target.closest ? event.target.closest(".search-field") : null;
+  const input = field ? field.querySelector("input") : null;
+  if (input && input.value) {
+    event.preventDefault();
+    const clear = field.querySelector(".search-clear");
+    if (clear) clear.click();
+    return;
+  }
+  if (document.getElementById("custom-provider-modal")) {
+    event.preventDefault();
+    A.customProviderClose();
+    return;
+  }
+  if (document.getElementById("pool-modal")) {
+    event.preventDefault();
+    A.poolClose();
+  }
+});
+
+// The shared search field is a plain box with a glyph, an input and a clear
+// button. A <label> wrapper would forward a click on that button to the input,
+// so the wrapper is a <div> and only the non-interactive parts (glyph, padding,
+// frame) move focus into the field.
+document.addEventListener("mousedown", (event) => {
+  if (event.button !== 0) return;
+  const target = event.target;
+  const field = target && target.closest ? target.closest(".search-field") : null;
+  if (!field || target.closest("input, button, a, select, textarea")) return;
+  const input = field.querySelector("input");
+  if (!input) return;
+  event.preventDefault();
+  input.focus();
+});
+
+// The pool dialog declares aria-modal but the page behind it stays in the DOM,
+// so Tab cycles inside the dialog instead of reaching the backdrop content.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const modal = document.getElementById("custom-provider-modal")
+    || document.getElementById("pool-modal");
+  if (!modal) return;
+  const focusable = Array.from(modal.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((el) => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 });
 
@@ -1091,7 +1243,7 @@ async function statusPoll() {
       A.antigravityUsageLoad().then(() => {
         S.antigravityFailures = 0;
         S.antigravityBackoffUntil = 0;
-        if (S.section === "providers" && !S.antigravityLogin) render();
+        if ((S.section === "providers" || S.section === "dashboard") && !S.antigravityLogin) render();
       }).catch(() => {
         S.antigravityFailures = Math.min(4, (S.antigravityFailures || 0) + 1);
         S.antigravityBackoffUntil = Date.now() + Math.min(300000, 30000 * Math.pow(2, S.antigravityFailures));

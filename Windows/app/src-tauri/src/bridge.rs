@@ -49,7 +49,7 @@ pub struct BridgeState {
     /// Rollout path per thread id: saves a full sessions walk every tick.
     session_path: Mutex<Option<(String, PathBuf, std::time::Instant)>>,
     /// Gateway model list for the chips (short freshness).
-    models: Mutex<Option<(Value, std::time::Instant)>>,
+    models: std::sync::Arc<Mutex<Option<(Value, std::time::Instant)>>>,
     /// OpenRouter metrics for the chips popover (5-minute freshness).
     providers: Mutex<Option<(Value, std::time::Instant)>>,
 }
@@ -60,7 +60,7 @@ impl BridgeState {
             status: Mutex::new(json!({"attached": false, "reason": "starting"})),
             discovery: Mutex::new(None),
             session_path: Mutex::new(None),
-            models: Mutex::new(None),
+            models: std::sync::Arc::new(Mutex::new(None)),
             providers: Mutex::new(None),
         }
     }
@@ -80,6 +80,17 @@ pub fn invalidate_providers(state: &BridgeState) {
     }
     if let Ok(mut guard) = state.models.lock() {
         *guard = None;
+    }
+}
+
+/// The reload watcher outlives the IPC command's borrowed AppState.
+/// Carry only the shared model cache into it, not application credentials.
+pub fn model_cache_invalidator(state: &BridgeState) -> impl Fn() + Send + 'static {
+    let models = state.models.clone();
+    move || {
+        if let Ok(mut guard) = models.lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -371,8 +382,11 @@ fn injection_source(lang: &str) -> String {
             "opencode": "OpenCode",
             "openrouter": "OpenRouter",
             "deepinfra": "DeepInfra",
+            "nvidia": "NVIDIA",
             "vercel": "Vercel",
-            "zai": "Z.ai"
+            "zai": "Z.ai",
+            "commandcode": "CommandCode",
+            "local": "Local AI"
         },
     });
     format!(
@@ -388,10 +402,16 @@ fn provider_of(model: &str) -> &'static str {
         "openrouter"
     } else if model.starts_with("deepinfra/") {
         "deepinfra"
+    } else if model.starts_with("nvidia/") {
+        "nvidia"
     } else if model.starts_with("vercel/") {
         "vercel"
     } else if model.starts_with("zai/") {
         "zai"
+    } else if model.starts_with("commandcode/") {
+        "commandcode"
+    } else if model.starts_with("local/") {
+        "local"
     } else {
         "openai"
     }
@@ -412,6 +432,10 @@ async fn status_payload(
     let mut latest = 0f64;
 
     for account in &accounts {
+        if !account.pool_enabled() {
+            paused += 1;
+            continue;
+        }
         let plan = account
             .plan_type
             .clone()
@@ -531,12 +555,18 @@ async fn picker_models(state: &BridgeState, port: u16, api_key: &str) -> Vec<Val
 /// endpoint, so its entry carries the cached model count only.
 async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Settings) -> Value {
     let openrouter_key = settings.openrouter_key.trim();
+    let opencode_key = settings.opencode_key.trim();
+    let commandcode_key = settings.commandcode_key.trim();
     let vercel_key = settings.vercel_key.trim();
     let deepinfra_key = settings.deepinfra_key.trim();
+    let nvidia_key = settings.nvidia_key.trim();
     let zai_key = settings.zai_key.trim();
     if openrouter_key.is_empty()
+        && opencode_key.is_empty()
+        && commandcode_key.is_empty()
         && vercel_key.is_empty()
         && deepinfra_key.is_empty()
+        && nvidia_key.is_empty()
         && zai_key.is_empty()
     {
         return json!({});
@@ -593,6 +623,17 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
         };
         providers.insert("vercel".to_string(), entry);
     }
+    if !nvidia_key.is_empty() {
+        providers.insert(
+            "nvidia".to_string(),
+            json!({
+                "title": "NVIDIA",
+                "modelCount": settings.nvidia_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
     if !deepinfra_key.is_empty() {
         providers.insert(
             "deepinfra".to_string(),
@@ -610,6 +651,28 @@ async fn providers_metrics(state: &BridgeState, settings: &crate::settings::Sett
             json!({
                 "title": "Z.ai",
                 "modelCount": settings.zai_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
+    if !opencode_key.is_empty() {
+        providers.insert(
+            "opencode".to_string(),
+            json!({
+                "title": "OpenCode",
+                "modelCount": settings.opencode_models.len(),
+                "updatedAt": Value::Null,
+                "error": Value::Null,
+            }),
+        );
+    }
+    if !commandcode_key.is_empty() {
+        providers.insert(
+            "commandcode".to_string(),
+            json!({
+                "title": "CommandCode",
+                "modelCount": settings.commandcode_models.len(),
                 "updatedAt": Value::Null,
                 "error": Value::Null,
             }),
@@ -1107,6 +1170,10 @@ pub fn codex_app_status(settings: &Settings) -> Value {
 
 /// First usable install path from `Get-AppxPackage` output: a non-empty line
 /// that looks like a Windows path (warnings carry no separator).
+///
+/// The Store lookup and the tests are the only callers, so a non-Windows build
+/// does not compile it at all.
+#[cfg(any(windows, test))]
 fn store_location_from_output(output: &str) -> Option<String> {
     output
         .lines()
@@ -1118,6 +1185,7 @@ fn store_location_from_output(output: &str) -> Option<String> {
 /// exe candidates inside a Store package: the current `app\` layout first,
 /// then the package root. Both ChatGPT.exe and Codex.exe names are used by
 /// the Store packages.
+#[cfg(any(windows, test))]
 fn store_exe_paths(location: &str) -> Vec<String> {
     [
         "app\\ChatGPT.exe",
@@ -1254,108 +1322,6 @@ fn kill_chatgpt_processes(force: bool) {
 
 /// Restarts the Codex app with the CDP flags (the chips need the debug port;
 /// an already running instance cannot gain the flags any other way).
-#[cfg(test)]
-mod tests {
-    use super::{
-        provider_pricing, session_cost, store_exe_paths, store_location_from_output,
-        valid_codex_exe,
-    };
-    use crate::settings::{ProviderModel, Settings};
-    use serde_json::json;
-
-    fn pricing_settings() -> Settings {
-        Settings {
-            deepinfra_models: vec![ProviderModel {
-                id: "deepseek-ai/DeepSeek-V4".to_string(),
-                display: "DeepSeek V4".to_string(),
-                prompt_per_token: Some(0.000002),
-                completion_per_token: Some(0.000004),
-                cache_read_per_token: Some(0.000001),
-                ..Default::default()
-            }],
-            vercel_models: vec![ProviderModel {
-                id: "anthropic/claude-sonnet-4.6".to_string(),
-                display: "Claude Sonnet 4.6".to_string(),
-                prompt_per_token: Some(0.000003),
-                completion_per_token: Some(0.000015),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn picked_codex_path_must_exist_and_be_an_exe() {
-        let dir = std::env::temp_dir().join(format!("melon-codex-path-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let exe = dir.join("ChatGPT.exe");
-        std::fs::write(&exe, b"stub").expect("write exe");
-        assert!(valid_codex_exe(&exe.to_string_lossy()));
-
-        let text = dir.join("ChatGPT.txt");
-        std::fs::write(&text, b"stub").expect("write txt");
-        assert!(!valid_codex_exe(&text.to_string_lossy()));
-        assert!(!valid_codex_exe(""));
-        assert!(!valid_codex_exe(&dir.join("missing.exe").to_string_lossy()));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn session_cost_prices_the_thread_at_the_last_model() {
-        let settings = pricing_settings();
-        let session = json!({
-            "model": "deepinfra/deepseek-ai/DeepSeek-V4",
-            "turns": 2,
-            "total": {"input": 1000, "cached": 400, "output": 500, "reasoning": 100, "total": 1500},
-        });
-        let cost = session_cost(&session, &settings).expect("priced model");
-        assert_eq!(cost["pricedTurns"], 2);
-        assert_eq!(cost["providers"]["deepinfra"]["input"], 1000);
-        let expected = 600.0 * 0.000002 + 400.0 * 0.000001 + 500.0 * 0.000004;
-        let actual = cost["total"].as_f64().unwrap();
-        assert!((actual - expected).abs() < 1e-12);
-    }
-
-    #[test]
-    fn session_cost_matches_display_names_and_vercel_slugs() {
-        let settings = pricing_settings();
-        assert_eq!(
-            provider_pricing(&settings, "Claude Sonnet 4.6").map(|(tag, _)| tag),
-            Some("vercel")
-        );
-        assert_eq!(
-            provider_pricing(&settings, "vercel/anthropic/claude-sonnet-4.6").map(|(tag, _)| tag),
-            Some("vercel")
-        );
-        assert!(provider_pricing(&settings, "gpt-6.1-sol").is_none());
-    }
-
-    #[test]
-    fn session_cost_without_pricing_stays_absent() {
-        let settings = Settings::default();
-        let session = json!({
-            "model": "deepinfra/deepseek-ai/DeepSeek-V4",
-            "total": {"input": 10, "cached": 0, "output": 5, "total": 15},
-        });
-        assert!(session_cost(&session, &settings).is_none());
-    }
-
-    #[test]
-    fn store_location_and_candidates_parsing() {
-        let ps_output = "warning: some powershell noise\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64\r\n";
-        assert_eq!(
-            store_location_from_output(ps_output),
-            Some("C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64".to_string())
-        );
-        assert_eq!(store_location_from_output("no backslash output"), None);
-
-        let candidates = store_exe_paths("C:\\Program Files\\WindowsApps\\OpenAI.Codex");
-        assert_eq!(candidates.len(), 4);
-        assert!(candidates[0].ends_with("ChatGPT.exe") || candidates[0].ends_with("ChatGPT.exe"));
-    }
-}
-
 pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, String> {
     let (exe, source) = resolve_codex_exe(settings).ok_or_else(|| "codex_not_found".to_string())?;
     let was_running = codex_is_running();
@@ -1434,4 +1400,112 @@ pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, 
         "restarted": was_running,
         "elevated": false,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        provider_pricing, session_cost, store_exe_paths, store_location_from_output,
+        valid_codex_exe,
+    };
+    use crate::settings::{ProviderModel, Settings};
+    use serde_json::json;
+
+    fn pricing_settings() -> Settings {
+        Settings {
+            deepinfra_models: vec![ProviderModel {
+                id: "deepseek-ai/DeepSeek-V4".to_string(),
+                display: "DeepSeek V4".to_string(),
+                prompt_per_token: Some(0.000002),
+                completion_per_token: Some(0.000004),
+                cache_read_per_token: Some(0.000001),
+                ..Default::default()
+            }],
+            vercel_models: vec![ProviderModel {
+                id: "anthropic/claude-sonnet-4.6".to_string(),
+                display: "Claude Sonnet 4.6".to_string(),
+                prompt_per_token: Some(0.000003),
+                completion_per_token: Some(0.000015),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn local_models_are_not_reported_as_openai_in_composer() {
+        assert_eq!(super::provider_of("local/qwen"), "local");
+        assert_eq!(super::provider_of("gpt-5"), "openai");
+    }
+
+    #[test]
+    fn picked_codex_path_must_exist_and_be_an_exe() {
+        let dir = std::env::temp_dir().join(format!("melon-codex-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let exe = dir.join("ChatGPT.exe");
+        std::fs::write(&exe, b"stub").expect("write exe");
+        assert!(valid_codex_exe(&exe.to_string_lossy()));
+
+        let text = dir.join("ChatGPT.txt");
+        std::fs::write(&text, b"stub").expect("write txt");
+        assert!(!valid_codex_exe(&text.to_string_lossy()));
+        assert!(!valid_codex_exe(""));
+        assert!(!valid_codex_exe(&dir.join("missing.exe").to_string_lossy()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_cost_prices_the_thread_at_the_last_model() {
+        let settings = pricing_settings();
+        let session = json!({
+            "model": "deepinfra/deepseek-ai/DeepSeek-V4",
+            "turns": 2,
+            "total": {"input": 1000, "cached": 400, "output": 500, "reasoning": 100, "total": 1500},
+        });
+        let cost = session_cost(&session, &settings).expect("priced model");
+        assert_eq!(cost["pricedTurns"], 2);
+        assert_eq!(cost["providers"]["deepinfra"]["input"], 1000);
+        let expected = 600.0 * 0.000002 + 400.0 * 0.000001 + 500.0 * 0.000004;
+        let actual = cost["total"].as_f64().unwrap();
+        assert!((actual - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn session_cost_matches_display_names_and_vercel_slugs() {
+        let settings = pricing_settings();
+        assert_eq!(
+            provider_pricing(&settings, "Claude Sonnet 4.6").map(|(tag, _)| tag),
+            Some("vercel")
+        );
+        assert_eq!(
+            provider_pricing(&settings, "vercel/anthropic/claude-sonnet-4.6").map(|(tag, _)| tag),
+            Some("vercel")
+        );
+        assert!(provider_pricing(&settings, "gpt-6.1-sol").is_none());
+    }
+
+    #[test]
+    fn session_cost_without_pricing_stays_absent() {
+        let settings = Settings::default();
+        let session = json!({
+            "model": "deepinfra/deepseek-ai/DeepSeek-V4",
+            "total": {"input": 10, "cached": 0, "output": 5, "total": 15},
+        });
+        assert!(session_cost(&session, &settings).is_none());
+    }
+
+    #[test]
+    fn store_location_and_candidates_parsing() {
+        let ps_output = "warning: some powershell noise\r\nC:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64\r\n";
+        assert_eq!(
+            store_location_from_output(ps_output),
+            Some("C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0_x64".to_string())
+        );
+        assert_eq!(store_location_from_output("no backslash output"), None);
+
+        let candidates = store_exe_paths("C:\\Program Files\\WindowsApps\\OpenAI.Codex");
+        assert_eq!(candidates.len(), 4);
+        assert!(candidates[0].ends_with("ChatGPT.exe") || candidates[0].ends_with("ChatGPT.exe"));
+    }
 }

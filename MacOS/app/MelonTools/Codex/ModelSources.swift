@@ -3,15 +3,51 @@ import Combine
 
 /// A model source is an upstream provider registered in the Melon gateway
 /// (`api-keys.openai-compatibility`). Key-based sources are OpenRouter,
-/// OpenCode, DeepInfra and the Vercel AI Gateway.
+/// OpenCode, CommandCode, DeepInfra and the Vercel AI Gateway.
 ///
 /// OpenCode Console serves every model family (GPT, Claude, Gemini, GLM, …)
 /// through its OpenAI-compatible surface, so one upstream entry is enough.
 struct ModelSource: Identifiable, Codable, Equatable {
+    /// Wire protocol of a user-defined provider. Built-in sources keep their
+    /// historical routing and leave this empty.
+    enum APIProtocol: String, Codable, CaseIterable, Identifiable {
+        case openAIChat = "openai-chat"
+        case openAIResponses = "openai-responses"
+        case anthropic
+        case gemini
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .openAIChat: return L("OpenAI Chat Completions")
+            case .openAIResponses: return L("OpenAI Responses")
+            case .anthropic: return L("Anthropic Messages")
+            case .gemini: return L("Gemini API")
+            }
+        }
+
+        /// What the gateway appends to the base URL, shown under the field so
+        /// a custom endpoint is entered at the right depth.
+        var baseURLHint: String {
+            switch self {
+            case .openAIChat: return L("API root including the version, for example https://gateway.example/v1. /chat/completions is appended.")
+            case .openAIResponses: return L("API root including the version, for example https://gateway.example/v1. /responses is appended.")
+            case .anthropic: return L("API root without /v1, for example https://api.anthropic.com. /v1/messages is appended.")
+            case .gemini: return L("API root without /v1beta, for example https://generativelanguage.googleapis.com. /v1beta/models is appended.")
+            }
+        }
+    }
+
     enum Kind: String, Codable {
         case openRouter
         case openCode
+        /// CommandCode provider API: the OpenAI-compatible models ride
+        /// `openai-compatibility`, the Claude ids served only through
+        /// `/messages` ride `api-keys.claude`.
+        case commandCode
         case deepInfra
+        case nvidia
         case vercel
         /// Z.ai GLM Coding Plan: OpenAI-compatible Coding endpoint with an
         /// API key from Personal Coding Plan → Plan Overview.
@@ -22,6 +58,11 @@ struct ModelSource: Identifiable, Codable, Equatable {
         /// Google Antigravity: OAuth-only (no key, no gateway config block);
         /// the engine serves the models from its own auth file.
         case antigravity
+        /// Local AI: local inference engine (llama-server) providing GGUF models.
+        case localAI
+        /// User-defined provider: any endpoint speaking one of the four
+        /// supported protocols. The identifier doubles as the model prefix.
+        case custom
     }
 
     var id: String
@@ -31,8 +72,12 @@ struct ModelSource: Identifiable, Codable, Equatable {
     var apiKey: String
     var enabled: Bool
     var models: [SourceModel]
+    /// Set for `.custom` sources; empty for built-ins.
+    var apiProtocol: APIProtocol? = nil
 
     var selectedModels: [SourceModel] { models.filter(\.enabled) }
+
+    var effectiveProtocol: APIProtocol { apiProtocol ?? .openAIChat }
 }
 
 /// One model inside a source. `id` is the upstream model name; `alias` is the
@@ -51,10 +96,23 @@ struct SourceModel: Identifiable, Codable, Equatable {
     var cacheReadPerToken: Double?
     /// OpenCode: the model is served by the Go subscription endpoints.
     var goTier: Bool?
+    /// CommandCode: the model is served only through the Anthropic
+    /// `/messages` endpoint, so it cannot ride `openai-compatibility`.
+    var anthropicOnly: Bool?
     /// Whether the upstream model accepts image input. `nil` means unknown
     /// (stores written before this field); the Codex catalog treats unknown
     /// as text-only.
     var supportsImages: Bool?
+    /// Provider routing configuration
+    var provider: String? = nil
+    var sortOrder: String? = nil
+    var fallback: Bool? = nil
+    var isFloorModel: Bool? = nil
+    var isNitroModel: Bool? = nil
+
+    var isOpenRouterFree: Bool {
+        id.hasSuffix(":free") || (promptPerToken == 0 && completionPerToken == 0)
+    }
 }
 
 /// One model from the Z.ai Coding Plan `/models` response, or from the
@@ -89,6 +147,13 @@ enum AntigravityModelRegistry {
     ]
 }
 
+struct OpenRouterConfig: Codable {
+    var key: String
+    var enabled: Bool
+    var providerSettings: [String: String]
+    var defaultStrategy: String
+}
+
 /// Model sources: OpenRouter, OpenCode, DeepInfra and the Vercel AI Gateway,
 /// all key-based. Persists user choices in
 /// `~/Library/Application Support/MelonTools/model-sources.json` (0600) and
@@ -108,12 +173,20 @@ final class ModelSourcesStore: ObservableObject {
     static let openCodeGoBaseURL = "https://opencode.ai/inference/go/openai/v1"
     static let openRouterModelsURL = "https://openrouter.ai/api/v1/models"
     static let openRouterBaseURL = "https://openrouter.ai/api/v1"
+    /// CommandCode provider API: one base URL serves both surfaces, and
+    /// `/models` is public (the key is validated by a completion call).
+    static let commandCodeBaseURL = "https://api.commandcode.ai/provider/v1"
+    static let commandCodeModelsURL = "https://api.commandcode.ai/provider/v1/models"
+    /// Every CommandCode model is aliased with this prefix.
+    static let commandCodeAliasPrefix = "commandcode/"
     static let appUserAgent = "MelonTools/1.4"
     /// DeepInfra's OpenAI-compatible surface. The model list is public, but the
     /// key is validated against `/v1/me` before it is saved.
     static let deepInfraModelsURL = "https://api.deepinfra.com/v1/openai/models"
     static let deepInfraBaseURL = "https://api.deepinfra.com/v1/openai"
     static let deepInfraMeURL = "https://api.deepinfra.com/v1/me"
+    static let nvidiaBaseURL = "https://integrate.api.nvidia.com/v1"
+    static let nvidiaModelsURL = "https://integrate.api.nvidia.com/v1/models"
     /// Vercel AI Gateway. `/v1/credits` validates the key and returns the
     /// team-level balance; `/v1/models` is public.
     static let vercelModelsURL = "https://ai-gateway.vercel.sh/v1/models"
@@ -128,9 +201,12 @@ final class ModelSourcesStore: ObservableObject {
     @Published private(set) var sources: [ModelSource] = [] {
         didSet { priceIndex = nil }
     }
+    @Published var openRouterConfig: OpenRouterConfig = OpenRouterConfig(key: "", enabled: true, providerSettings: [:], defaultStrategy: "price")
     @Published var openRouterKey: String = ""
     @Published var openCodeKey: String = ""
+    @Published var commandCodeKey: String = ""
     @Published var deepInfraKey: String = ""
+    @Published var nvidiaKey: String = ""
     @Published var vercelKey: String = ""
     @Published var zaiKey: String = ""
     /// Optional Anthropic API key (fallback when no OAuth account is used).
@@ -148,7 +224,21 @@ final class ModelSourcesStore: ObservableObject {
     private struct Persisted: Codable {
         var openRouterKey: String?
         var openCodeKey: String?
+        var commandCodeKey: String?
         var deepInfraKey: String?
+        var nvidiaKey: String?
+        var vercelKey: String?
+        var zaiKey: String?
+        var claudeKey: String?
+        var sources: [ModelSource]?
+    }
+    private struct PersistedNew: Codable {
+        var openRouterConfig: OpenRouterConfig?
+        var openRouterKey: String?
+        var openCodeKey: String?
+        var commandCodeKey: String?
+        var deepInfraKey: String?
+        var nvidiaKey: String?
         var vercelKey: String?
         var zaiKey: String?
         var claudeKey: String?
@@ -159,7 +249,9 @@ final class ModelSourcesStore: ObservableObject {
     private struct PersistedKeys: Codable {
         var openRouterKey: String?
         var openCodeKey: String?
+        var commandCodeKey: String?
         var deepInfraKey: String?
+        var nvidiaKey: String?
         var vercelKey: String?
         var zaiKey: String?
         var claudeKey: String?
@@ -173,34 +265,111 @@ final class ModelSourcesStore: ObservableObject {
 
     // MARK: - Persistence
 
+    /// True once the store was read successfully, or when no store exists yet.
+    /// A file that exists but decodes to neither known shape leaves this false:
+    /// writing the gateway config from an empty in-memory list would strip
+    /// every external provider.
+    private(set) var isLoaded = false
+
     func load() {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            isLoaded = true
+            return
+        }
         guard let data = try? Data(contentsOf: storeURL) else { return }
-        if let persisted = try? JSONDecoder().decode(Persisted.self, from: data) {
-            openRouterKey = persisted.openRouterKey ?? ""
+
+        // Attempt to decode as PersistedNew (current format)
+        if let persisted = try? JSONDecoder().decode(PersistedNew.self, from: data) {
+            let key = persisted.openRouterKey ?? persisted.openRouterConfig?.key ?? ""
+            openRouterKey = key
+            openRouterConfig = persisted.openRouterConfig ?? OpenRouterConfig(key: key, enabled: true, providerSettings: [:], defaultStrategy: "price")
+            openRouterConfig.key = key
             openCodeKey = persisted.openCodeKey ?? ""
+            commandCodeKey = persisted.commandCodeKey ?? ""
             deepInfraKey = persisted.deepInfraKey ?? ""
+            nvidiaKey = persisted.nvidiaKey ?? persisted.sources?.first { $0.kind == .nvidia }?.apiKey ?? ""
             vercelKey = persisted.vercelKey ?? ""
             zaiKey = persisted.zaiKey ?? persisted.sources?.first { $0.kind == .zai }?.apiKey ?? ""
             claudeKey = persisted.claudeKey ?? persisted.sources?.first { $0.kind == .claude }?.apiKey ?? ""
             sources = persisted.sources ?? []
-            // Backfill known capabilities once for stores written before the
-            // flag existed; the catalog reads the saved file at startup.
+            isLoaded = true
             let backfilled = backfillImageCapabilities()
             let migrated = migrateOpenRouterAliases()
             if backfilled || migrated { save() }
             return
         }
+
+        // Fallback to legacy Persisted (old format)
+        if let persisted = try? JSONDecoder().decode(Persisted.self, from: data) {
+            let key = persisted.openRouterKey ?? ""
+            openRouterKey = key
+            openRouterConfig = OpenRouterConfig(key: key, enabled: true, providerSettings: [:], defaultStrategy: "price")
+            openCodeKey = persisted.openCodeKey ?? ""
+            commandCodeKey = persisted.commandCodeKey ?? ""
+            deepInfraKey = persisted.deepInfraKey ?? ""
+            nvidiaKey = persisted.nvidiaKey ?? persisted.sources?.first { $0.kind == .nvidia }?.apiKey ?? ""
+            vercelKey = persisted.vercelKey ?? ""
+            zaiKey = persisted.zaiKey ?? persisted.sources?.first { $0.kind == .zai }?.apiKey ?? ""
+            claudeKey = persisted.claudeKey ?? persisted.sources?.first { $0.kind == .claude }?.apiKey ?? ""
+            sources = persisted.sources ?? []
+            isLoaded = true
+            let backfilled = backfillImageCapabilities()
+            let migrated = migrateOpenRouterAliases()
+            if backfilled || migrated { save() }
+            return
+        }
+
+        // Minimal fallback for raw key files
         if let keys = try? JSONDecoder().decode(PersistedKeys.self, from: data) {
-            openRouterKey = keys.openRouterKey ?? ""
+            let key = keys.openRouterKey ?? ""
+            openRouterKey = key
+            openRouterConfig = OpenRouterConfig(key: key, enabled: true, providerSettings: [:], defaultStrategy: "price")
             openCodeKey = keys.openCodeKey ?? ""
+            commandCodeKey = keys.commandCodeKey ?? ""
             deepInfraKey = keys.deepInfraKey ?? ""
+            nvidiaKey = keys.nvidiaKey ?? ""
             vercelKey = keys.vercelKey ?? ""
             zaiKey = keys.zaiKey ?? ""
             claudeKey = keys.claudeKey ?? ""
+            isLoaded = true
         }
     }
 
+    /// Debounced auto-apply. Selecting a model must reach `/v1/models`
+    /// without a manual "Apply": the engine hot-reloads `config.yaml`, so the
+    /// only missing piece was writing it after every change.
+    private var autoApplyWork: DispatchWorkItem?
+    private var isApplying = false
+
+    /// Users can turn it off in Settings; on by default.
+    static var autoApplyEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: "azureModelAutoApply") as? Bool ?? true
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "azureModelAutoApply") }
+    }
+
+    private func scheduleAutoApply() {
+        guard Self.autoApplyEnabled, !isApplying else { return }
+        autoApplyWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                guard !self.isApplying else { return }
+                self.isApplying = true
+                await self.apply()
+                self.isApplying = false
+            }
+        }
+        autoApplyWork = work
+        // Coalesce a burst of clicks into one gateway rewrite.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
     func save() {
+        if let index = sources.firstIndex(where: { $0.kind == .nvidia }) {
+            sources[index].apiKey = nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         // The fallback key lives in two places by design: the editable field
         // and the claude source (`api-keys.claude` needs it on the source).
         if let index = sources.firstIndex(where: { $0.kind == .claude }) {
@@ -218,10 +387,16 @@ final class ModelSourcesStore: ObservableObject {
                 models: []
             ))
         }
-        let persisted = Persisted(
+
+        var persistedOpenRouterConfig = openRouterConfig
+        persistedOpenRouterConfig.key = openRouterKey
+        let persisted = PersistedNew(
+            openRouterConfig: persistedOpenRouterConfig,
             openRouterKey: openRouterKey,
             openCodeKey: openCodeKey,
+            commandCodeKey: commandCodeKey,
             deepInfraKey: deepInfraKey,
+            nvidiaKey: nvidiaKey,
             vercelKey: vercelKey,
             zaiKey: zaiKey,
             claudeKey: claudeKey,
@@ -231,6 +406,7 @@ final class ModelSourcesStore: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(persisted) else { return }
         try? SecureFile.write(data, to: storeURL)
+        scheduleAutoApply()
     }
 
     /// Stores written before 1.4.1 kept the raw OpenRouter id as the alias; the
@@ -271,8 +447,10 @@ final class ModelSourcesStore: ObservableObject {
                     images = Self.antigravitySupportsImages(id)
                 case .zai:
                     images = Self.zaiSupportsImages(id)
-                case .openRouter, .openCode, .deepInfra, .vercel:
+                case .openRouter, .openCode, .commandCode, .deepInfra, .nvidia, .vercel, .custom:
                     images = nil
+                case .localAI:
+                    images = false
                 }
                 guard let images else { continue }
                 sources[sourceIndex].models[modelIndex].supportsImages = images
@@ -288,7 +466,11 @@ final class ModelSourcesStore: ObservableObject {
 
     var openCodeSource: ModelSource? { sources.first { $0.id == "opencode" } }
 
+    var commandCodeSource: ModelSource? { sources.first { $0.id == "commandcode" } }
+
     var deepInfraSource: ModelSource? { sources.first { $0.id == "deepinfra" } }
+
+    var nvidiaSource: ModelSource? { sources.first { $0.id == "nvidia" } }
 
     var vercelSource: ModelSource? { sources.first { $0.id == "vercel" } }
 
@@ -298,7 +480,347 @@ final class ModelSourcesStore: ObservableObject {
 
     var antigravitySource: ModelSource? { sources.first { $0.id == "antigravity" } }
 
+    /// The local AI source as it appears to the gateway. Pure so the Ready
+    /// filter, canonical alias, relay URL, per-slot context and token can be
+    /// regression-tested without touching the user's registry.
+    nonisolated static func localAISource(
+        models: [LocalModel],
+        port: Int,
+        token: String,
+        slots: Int
+    ) -> ModelSource? {
+        // Only a model that is actually served right now may be advertised:
+        // `/v1/models` listed installed-but-stopped models, and every request to
+        // one of them failed with a raw connection error (§14.2).
+        let ready = models.filter { $0.runtimeStatus == .ready }
+        guard !ready.isEmpty else { return nil }
+        // The relay, not the router: it forwards every call and merges the
+        // model's system prompt into the request body on the way through.
+        let sourceModels = ready.map { model in
+            let alias = model.id.hasPrefix("local/") ? model.id : "local/\(model.id)"
+            // Per-slot context: `--parallel` splits the window, and clients that
+            // size their prompts from this number must see the truth.
+            return SourceModel(
+                id: model.id,
+                display: model.displayName,
+                contextLength: model.effectiveContext(parallelSlots: slots),
+                enabled: true,
+                alias: alias,
+                supportsImages: model.capabilities.contains(.vision)
+            )
+        }
+        return ModelSource(
+            id: "melon-local-ai",
+            kind: .localAI,
+            title: "Local AI",
+            baseURL: "http://127.0.0.1:\(port)/v1",
+            apiKey: token,
+            enabled: true,
+            models: sourceModels
+        )
+    }
+
+    /// Appends the local source to a base list. `effectiveSources` is only the
+    /// live wrapper; tests call this with an isolated model list.
+    nonisolated static func effectiveSources(
+        base: [ModelSource],
+        localModels: [LocalModel],
+        port: Int,
+        token: String,
+        slots: Int
+    ) -> [ModelSource] {
+        var result = base
+        if let local = localAISource(models: localModels, port: port, token: token, slots: slots) {
+            result.append(local)
+        }
+        return result
+    }
+
+    @MainActor
+    var effectiveSources: [ModelSource] {
+        Self.effectiveSources(
+            base: sources,
+            localModels: LocalModelStore.shared.models,
+            port: LocalInferenceService.shared.publishedPort,
+            token: LocalInferenceService.shared.internalToken,
+            slots: LocalInferenceService.parallelRequests
+        )
+    }
+
+
     func source(id: String) -> ModelSource? { sources.first { $0.id == id } }
+
+    // MARK: - Custom providers
+
+    var customSources: [ModelSource] { sources.filter { $0.kind == .custom } }
+
+    /// Identifiers the gateway already owns or emits itself. A custom provider
+    /// may not reuse them: the model name is the routing key.
+    nonisolated static let reservedCustomIdentifiers: Set<String> = [
+        "openrouter", "opencode", "commandcode", "deepinfra", "nvidia",
+        "vercel", "zai", "claude", "antigravity", "local", "melon-local-ai",
+    ]
+
+    /// Empty when valid, otherwise a localized reason the form can show.
+    nonisolated static func customIdentifierProblem(
+        _ raw: String,
+        sources: [ModelSource],
+        excluding: String? = nil
+    ) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return L("Enter a provider identifier.") }
+        let pattern = "^[a-z][a-z0-9-]{1,31}$"
+        guard value.range(of: pattern, options: .regularExpression) != nil else {
+            return L("Use 2-32 lowercase letters, digits or hyphens, starting with a letter.")
+        }
+        if reservedCustomIdentifiers.contains(value) {
+            return L("This identifier is reserved by a built-in provider.")
+        }
+        if sources.contains(where: { $0.kind == .custom && $0.id == value && $0.id != excluding }) {
+            return L("A provider with this identifier already exists.")
+        }
+        return nil
+    }
+
+    /// Trims, drops the trailing slash and rejects anything that is not a
+    /// plain http(s) URL with a host.
+    nonisolated static func normalizedBaseURL(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        guard !value.isEmpty,
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty,
+              components.query == nil, components.fragment == nil else { return nil }
+        return value
+    }
+
+    nonisolated static func customAlias(identifier: String, modelID: String) -> String {
+        let prefix = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else { return model }
+        return model.hasPrefix(prefix + "/") ? model : "\(prefix)/\(model)"
+    }
+
+    /// Writes a provider model row and maps that back to the stored canonical
+    /// alias, so a renamed identifier cannot leave stale routing keys behind.
+    nonisolated static func normalizedCustomModels(
+        identifier: String,
+        models: [SourceModel]
+    ) -> [SourceModel] {
+        var seen = Set<String>()
+        return models.compactMap { model in
+            let id = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, seen.insert(id).inserted else { return nil }
+            var copy = model
+            copy.id = id
+            copy.alias = customAlias(identifier: identifier, modelID: id)
+            return copy
+        }
+    }
+
+    func saveCustomSource(
+        originalID: String?,
+        identifier rawIdentifier: String,
+        title rawTitle: String,
+        baseURL rawBaseURL: String,
+        apiProtocol: ModelSource.APIProtocol,
+        apiKey rawKey: String,
+        models: [SourceModel]
+    ) -> String? {
+        let identifier = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = Self.customIdentifierProblem(identifier, sources: sources, excluding: originalID) {
+            return problem
+        }
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return L("Enter a display name.") }
+        guard let baseURL = Self.normalizedBaseURL(rawBaseURL) else {
+            return L("Enter a valid http or https base URL.")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return L("Enter an API key.") }
+        let normalizedModels = Self.normalizedCustomModels(identifier: identifier, models: models)
+        guard normalizedModels.contains(where: \.enabled) else {
+            return L("Enable at least one model.")
+        }
+
+        let existingIndex = originalID.flatMap { original in
+            sources.firstIndex { $0.kind == .custom && $0.id == original }
+        }
+        let source = ModelSource(
+            id: identifier,
+            kind: .custom,
+            title: title,
+            baseURL: baseURL,
+            apiKey: key,
+            enabled: existingIndex.map { sources[$0].enabled } ?? true,
+            models: normalizedModels,
+            apiProtocol: apiProtocol
+        )
+        if let index = existingIndex {
+            sources[index] = source
+        } else {
+            sources.append(source)
+        }
+        save()
+        scheduleAutoApply()
+        return nil
+    }
+
+    func removeCustomSource(id: String) {
+        guard sources.contains(where: { $0.kind == .custom && $0.id == id }) else { return }
+        sources.removeAll { $0.kind == .custom && $0.id == id }
+        save()
+        scheduleAutoApply()
+    }
+
+    func setCustomSourceEnabled(_ id: String, enabled: Bool) {
+        guard let index = sources.firstIndex(where: { $0.kind == .custom && $0.id == id }) else { return }
+        sources[index].enabled = enabled
+        save()
+        scheduleAutoApply()
+    }
+
+    enum CustomProviderError: LocalizedError {
+        case message(String)
+        var errorDescription: String? {
+            switch self {
+            case .message(let text): return text
+            }
+        }
+    }
+
+    /// `/models` URL for the plain protocols, with the version segment the
+    /// protocol's gateway entry expects stripped or added as needed.
+    nonisolated static func customModelsURL(
+        baseURL: String,
+        apiProtocol: ModelSource.APIProtocol
+    ) -> URL? {
+        guard var base = normalizedBaseURL(baseURL) else { return nil }
+        if base.hasSuffix("/models") { return URL(string: base) }
+        switch apiProtocol {
+        case .openAIChat, .openAIResponses:
+            base += "/models"
+        case .anthropic:
+            base += base.hasSuffix("/v1") ? "/models" : "/v1/models"
+        case .gemini:
+            if base.hasSuffix("/v1beta") || base.hasSuffix("/v1") {
+                base += "/models"
+            } else {
+                base += "/v1beta/models"
+            }
+        }
+        return URL(string: base)
+    }
+
+    /// Base URL written into the gateway config. Anthropic and Gemini append
+    /// their own version prefix, so a pasted `/v1` (or `/v1beta`) would
+    /// otherwise produce `/v1/v1/messages`.
+    nonisolated static func gatewayBaseURL(baseURL: String, apiProtocol: ModelSource.APIProtocol) -> String {
+        guard var base = normalizedBaseURL(baseURL) else { return baseURL }
+        switch apiProtocol {
+        case .anthropic:
+            if base.hasSuffix("/v1") { base.removeLast(3) }
+        case .gemini:
+            if base.hasSuffix("/v1beta") { base.removeLast(7) }
+            else if base.hasSuffix("/v1") { base.removeLast(3) }
+        case .openAIChat, .openAIResponses:
+            break
+        }
+        while base.hasSuffix("/") { base.removeLast() }
+        return base
+    }
+
+    func fetchCustomModels(
+        identifier: String,
+        baseURL: String,
+        apiProtocol: ModelSource.APIProtocol,
+        apiKey: String
+    ) async throws -> [SourceModel] {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw CustomProviderError.message(L("Enter an API key first.")) }
+        guard let url = Self.customModelsURL(baseURL: baseURL, apiProtocol: apiProtocol) else {
+            throw CustomProviderError.message(L("Enter a valid http or https base URL."))
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(Self.appUserAgent, forHTTPHeaderField: "User-Agent")
+        switch apiProtocol {
+        case .openAIChat, .openAIResponses:
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        case .anthropic:
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        case .gemini:
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
+            throw CustomProviderError.message("HTTP \(http.statusCode)" + (detail.isEmpty ? "" : ": \(detail)"))
+        }
+        let models = try Self.parseCustomModels(data, identifier: identifier)
+        guard !models.isEmpty else {
+            throw CustomProviderError.message(L("The endpoint returned no models."))
+        }
+        return models
+    }
+
+    /// Accepts the OpenAI (`data`), Anthropic (`data`) and Gemini (`models`)
+    /// envelopes. Unknown fields are ignored, so a relay with extra metadata
+    /// still works.
+    nonisolated static func parseCustomModels(_ data: Data, identifier: String) throws -> [SourceModel] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
+            throw CustomProviderError.message(L("The endpoint returned an unreadable model list."))
+        }
+        var entries: [[String: Any]] = []
+        if let array = root as? [[String: Any]] {
+            entries = array
+        } else if let object = root as? [String: Any] {
+            if let array = object["data"] as? [[String: Any]] {
+                entries = array
+            } else if let array = object["models"] as? [[String: Any]] {
+                entries = array
+            }
+        }
+        var result: [SourceModel] = []
+        var seen = Set<String>()
+        for entry in entries {
+            guard var id = (entry["id"] as? String) ?? (entry["name"] as? String) else { continue }
+            if id.hasPrefix("models/") { id.removeFirst("models/".count) }
+            id = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
+            var display = (entry["display_name"] as? String)
+                ?? (entry["displayName"] as? String)
+                ?? ((entry["name"] as? String) != id ? entry["name"] as? String : nil)
+                ?? id
+            if display.hasPrefix("models/") {
+                display.removeFirst("models/".count)
+            }
+            display = display.trimmingCharacters(in: .whitespacesAndNewlines)
+            if display.isEmpty { display = id }
+            let context = ["context_length", "context_window", "max_context_length", "max_input_tokens", "inputTokenLimit"]
+                .lazy
+                .compactMap { key -> Int? in
+                    if let number = entry[key] as? NSNumber { return number.intValue }
+                    if let string = entry[key] as? String { return Int(string) }
+                    return nil
+                }
+                .first
+            result.append(SourceModel(
+                id: id,
+                display: display,
+                contextLength: context,
+                enabled: true,
+                alias: customAlias(identifier: identifier, modelID: id)
+            ))
+        }
+        return result
+    }
 
     var selectedCount: Int { sources.reduce(0) { $0 + $1.selectedModels.count } }
 
@@ -369,21 +891,57 @@ final class ModelSourcesStore: ObservableObject {
         save()
     }
 
-    /// Picker "Images" toggle: an explicit user choice (never `nil` after a
-    /// click) that survives a store reload and a model-list refresh.
-    func setModelSupportsImages(_ sourceId: String, modelId: String, supportsImages: Bool) {
+    func setModelSupportsImages(_ sourceId: String, modelId: String, supportsImages: Bool?) {
         guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
               let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
-        guard sources[sIndex].models[mIndex].supportsImages != supportsImages else { return }
         sources[sIndex].models[mIndex].supportsImages = supportsImages
         save()
     }
 
-    func setAllModels(_ sourceId: String, enabled: Bool, matching query: String = "") {
+    func setModelProvider(_ sourceId: String, modelId: String, provider: String?) {
+        guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
+              let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
+        sources[sIndex].models[mIndex].provider = provider
+        save()
+    }
+
+    func setModelSortOrder(_ sourceId: String, modelId: String, sortOrder: String?) {
+        guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
+              let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
+        sources[sIndex].models[mIndex].sortOrder = sortOrder
+        save()
+    }
+
+    func setModelFallback(_ sourceId: String, modelId: String, fallback: Bool?) {
+        guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
+              let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
+        sources[sIndex].models[mIndex].fallback = fallback
+        save()
+    }
+
+    func setModelIsFloorModel(_ sourceId: String, modelId: String, isFloorModel: Bool?) {
+        guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
+              let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
+        sources[sIndex].models[mIndex].isFloorModel = isFloorModel
+        save()
+    }
+
+    func setModelIsNitroModel(_ sourceId: String, modelId: String, isNitroModel: Bool?) {
+        guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }),
+              let mIndex = sources[sIndex].models.firstIndex(where: { $0.id == modelId }) else { return }
+        sources[sIndex].models[mIndex].isNitroModel = isNitroModel
+        save()
+    }
+
+
+    func setAllModels(_ sourceId: String, enabled: Bool, matching query: String = "", freeOnly: Bool = false) {
         guard let sIndex = sources.firstIndex(where: { $0.id == sourceId }) else { return }
+        let query = query.trimmingCharacters(in: .whitespaces)
         for mIndex in sources[sIndex].models.indices {
-            if query.isEmpty || sources[sIndex].models[mIndex].id.localizedCaseInsensitiveContains(query)
-                || sources[sIndex].models[mIndex].display.localizedCaseInsensitiveContains(query) {
+            let model = sources[sIndex].models[mIndex]
+            guard !freeOnly || model.isOpenRouterFree else { continue }
+            if query.isEmpty || model.id.localizedCaseInsensitiveContains(query)
+                || model.display.localizedCaseInsensitiveContains(query) {
                 sources[sIndex].models[mIndex].enabled = enabled
             }
         }
@@ -406,13 +964,16 @@ final class ModelSourcesStore: ObservableObject {
     /// throttled: a model that has no price upstream must not re-fetch forever.
     func hydrateOpenRouterPrices() async {
         guard let index = sources.firstIndex(where: { $0.kind == .openRouter }) else { return }
-        let needsPrices = sources[index].models.contains {
-            $0.promptPerToken == nil || $0.completionPerToken == nil
-        }
-        guard needsPrices else { return }
+        mergeOpenRouterPricing(entries: [])
+        guard sources[index].models.contains(where: { $0.promptPerToken == nil || $0.completionPerToken == nil }) else { return }
         guard Date().timeIntervalSince(lastPriceHydration) >= 1800 else { return }
         lastPriceHydration = Date()
         guard let entries = try? await fetchModels(url: Self.openRouterModelsURL, key: "", userAgent: "MelonTools/1.4") else { return }
+        mergeOpenRouterPricing(entries: entries)
+    }
+
+    internal func mergeOpenRouterPricing(entries: [ModelList.Entry]) {
+        guard let index = sources.firstIndex(where: { $0.kind == .openRouter }) else { return }
         var pricingById: [String: ModelList.Pricing] = [:]
         for entry in entries {
             if let pricing = entry.pricing { pricingById[entry.id] = pricing }
@@ -420,7 +981,18 @@ final class ModelSourcesStore: ObservableObject {
         var changed = false
         for modelIndex in sources[index].models.indices {
             let id = sources[index].models[modelIndex].id
-            guard let pricing = pricingById[id] else { continue }
+            if id.hasSuffix(":free"), sources[index].models[modelIndex].freeTier != true {
+                sources[index].models[modelIndex].freeTier = true
+                changed = true
+            }
+            guard let pricing = pricingById[id] else {
+                let model = sources[index].models[modelIndex]
+                if model.freeTier != true, model.promptPerToken == 0, model.completionPerToken == 0 {
+                    sources[index].models[modelIndex].freeTier = true
+                    changed = true
+                }
+                continue
+            }
             if sources[index].models[modelIndex].promptPerToken == nil, let value = pricing.prompt?.value {
                 sources[index].models[modelIndex].promptPerToken = value
                 changed = true
@@ -431,6 +1003,11 @@ final class ModelSourcesStore: ObservableObject {
             }
             if sources[index].models[modelIndex].cacheReadPerToken == nil, let value = pricing.input_cache_read?.value {
                 sources[index].models[modelIndex].cacheReadPerToken = value
+                changed = true
+            }
+            let model = sources[index].models[modelIndex]
+            if model.freeTier != true, model.promptPerToken == 0, model.completionPerToken == 0 {
+                sources[index].models[modelIndex].freeTier = true
                 changed = true
             }
         }
@@ -520,6 +1097,10 @@ final class ModelSourcesStore: ObservableObject {
             let architecture: Architecture?
             let metadata: Metadata?
             let modalities: Modalities?
+            /// CommandCode publishes the protocols a model is served on
+            /// (`/chat/completions`, `/messages`, `/responses`); an empty or
+            /// absent list means OpenAI-compatible.
+            let supported_endpoints: [String]?
         }
         let data: [Entry]
     }
@@ -615,28 +1196,38 @@ final class ModelSourcesStore: ObservableObject {
         }
     }
 
-    private func mergeOpenRouter(entries: [ModelList.Entry], key: String) {
+    internal func mergeOpenRouter(entries: [ModelList.Entry], key: String) {
         let existing = openRouterSource
         var enabledById: [String: Bool] = [:]
         var imagesById: [String: Bool] = [:]
+        var settingsById: [String: SourceModel] = [:]
+
         for model in existing?.models ?? [] {
             enabledById[model.id] = model.enabled
             if let images = model.supportsImages { imagesById[model.id] = images }
+            settingsById[model.id] = model
         }
+
         let models = entries
-            .map {
-                SourceModel(
-                    id: $0.id,
-                    display: $0.name ?? $0.id,
-                    contextLength: $0.context_length,
-                    enabled: enabledById[$0.id] ?? false,
-                    alias: Self.openRouterAlias($0.id),
-                    freeTier: nil,
-                    promptPerToken: $0.pricing?.prompt?.value,
-                    completionPerToken: $0.pricing?.completion?.value,
-                    cacheReadPerToken: $0.pricing?.input_cache_read?.value,
-                    supportsImages: imagesById[$0.id]
-                        ?? Self.supportsImages(inputModalities: $0.architecture?.input_modalities)
+            .map { entry in
+                let existingModel = settingsById[entry.id]
+                return SourceModel(
+                    id: entry.id,
+                    display: entry.name ?? entry.id,
+                    contextLength: entry.context_length,
+                    enabled: enabledById[entry.id] ?? false,
+                    alias: Self.openRouterAlias(entry.id),
+                    freeTier: (entry.id.hasSuffix(":free") || (entry.pricing?.prompt?.value == 0 && entry.pricing?.completion?.value == 0) ? true : nil),
+                    promptPerToken: entry.pricing?.prompt?.value,
+                    completionPerToken: entry.pricing?.completion?.value,
+                    cacheReadPerToken: entry.pricing?.input_cache_read?.value,
+                    supportsImages: imagesById[entry.id]
+                        ?? Self.supportsImages(inputModalities: entry.architecture?.input_modalities),
+                    provider: existingModel?.provider,
+                    sortOrder: existingModel?.sortOrder,
+                    fallback: existingModel?.fallback,
+                    isFloorModel: existingModel?.isFloorModel,
+                    isNitroModel: existingModel?.isNitroModel
                 )
             }
             .sorted { $0.id.lowercased() < $1.id.lowercased() }
@@ -718,6 +1309,84 @@ final class ModelSourcesStore: ObservableObject {
         save()
     }
 
+    // MARK: - CommandCode (API key)
+
+    nonisolated static func commandCodeAlias(_ id: String) -> String {
+        id.hasPrefix(commandCodeAliasPrefix) ? id : commandCodeAliasPrefix + id
+    }
+
+    /// CommandCode serves the Claude ids only through the Anthropic
+    /// `/messages` endpoint; every other model accepts `/chat/completions`.
+    /// An empty endpoint list means OpenAI-compatible.
+    nonisolated static func commandCodeIsAnthropicOnly(_ entry: ModelList.Entry) -> Bool {
+        guard let endpoints = entry.supported_endpoints, !endpoints.isEmpty else { return false }
+        let normalized = endpoints.map { $0.lowercased() }
+        return normalized.contains("/messages") && !normalized.contains("/chat/completions")
+    }
+
+    func loadCommandCodeModels() async {
+        let key = commandCodeKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            note = L("Enter a CommandCode key first.")
+            return
+        }
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            // `/models` is public, so the key is not validated here: a wrong
+            // key surfaces as a 401 on the first routed request.
+            let entries = try await fetchModels(
+                url: Self.commandCodeModelsURL,
+                key: key,
+                userAgent: Self.appUserAgent
+            )
+            guard !entries.isEmpty else {
+                note = L("CommandCode returned no models.")
+                return
+            }
+            mergeCommandCode(entries: entries, key: key)
+            note = String(format: L("CommandCode: %d models"), entries.count)
+        } catch {
+            note = L("CommandCode did not accept the key.")
+        }
+    }
+
+    private func mergeCommandCode(entries: [ModelList.Entry], key: String) {
+        let existing = commandCodeSource
+        var enabledById: [String: Bool] = [:]
+        var imagesById: [String: Bool] = [:]
+        for model in existing?.models ?? [] {
+            enabledById[model.id] = model.enabled
+            if let images = model.supportsImages { imagesById[model.id] = images }
+        }
+        let models = entries
+            .map { entry in
+                SourceModel(
+                    id: entry.id,
+                    display: Self.displayName(id: entry.id, fallback: entry.name),
+                    contextLength: entry.context_length,
+                    enabled: enabledById[entry.id] ?? false,
+                    alias: Self.commandCodeAlias(entry.id),
+                    anthropicOnly: Self.commandCodeIsAnthropicOnly(entry),
+                    supportsImages: imagesById[entry.id]
+                        ?? Self.supportsImages(inputModalities: entry.modalities?.input)
+                )
+            }
+            .sorted { $0.id.lowercased() < $1.id.lowercased() }
+        replace(ModelSource(
+            id: "commandcode",
+            kind: .commandCode,
+            title: "CommandCode",
+            baseURL: Self.commandCodeBaseURL,
+            apiKey: key,
+            enabled: existing?.enabled ?? true,
+            models: models
+        ))
+        commandCodeKey = key
+        save()
+    }
+
     // MARK: - DeepInfra (API key)
 
     static let deepInfraAliasPrefix = "deepinfra/"
@@ -794,6 +1463,46 @@ final class ModelSourcesStore: ObservableObject {
         ))
         deepInfraKey = key
         save()
+    }
+
+    // MARK: - NVIDIA API
+
+    func loadNvidiaModels() async {
+        let key = nvidiaKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            note = L("Enter an NVIDIA API key first.")
+            return
+        }
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let entries = try await fetchModels(url: Self.nvidiaModelsURL, key: "", userAgent: Self.appUserAgent)
+            guard !entries.isEmpty else {
+                note = L("NVIDIA returned no models.")
+                return
+            }
+            let existing = nvidiaSource
+            let previous = Dictionary(uniqueKeysWithValues: (existing?.models ?? []).map { ($0.id, $0) })
+            let models = entries.map { entry in
+                SourceModel(
+                    id: entry.id,
+                    display: Self.displayName(id: entry.id, fallback: entry.name),
+                    contextLength: Self.contextLength(entry),
+                    enabled: previous[entry.id]?.enabled ?? false,
+                    alias: "nvidia/" + entry.id,
+                    freeTier: nil,
+                    supportsImages: previous[entry.id]?.supportsImages
+                )
+            }.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+            replace(ModelSource(id: "nvidia", kind: .nvidia, title: "NVIDIA", baseURL: Self.nvidiaBaseURL,
+                                apiKey: key, enabled: existing?.enabled ?? true, models: models))
+            nvidiaKey = key
+            save()
+            note = String(format: L("NVIDIA: %d models"), models.count)
+        } catch {
+            note = L("Could not load NVIDIA models.")
+        }
     }
 
     // MARK: - Vercel AI Gateway (API key)
@@ -1229,7 +1938,9 @@ final class ModelSourcesStore: ObservableObject {
     /// Antigravity is OAuth-only and likewise emits nothing.
     nonisolated static func gatewayYAML(sources: [ModelSource]) -> String {
         var compatBlocks: [String] = []
+        var codexBlocks: [String] = []
         var claudeBlocks: [String] = []
+        var geminiBlocks: [String] = []
         for source in sources where source.enabled {
             let selected = source.selectedModels
             guard !selected.isEmpty else { continue }
@@ -1238,11 +1949,85 @@ final class ModelSourcesStore: ObservableObject {
                 // account, so there is nothing to put into `api-keys`.
                 continue
             }
+            if source.kind == .localAI {
+                // Local AI is routed to the local llama-server instance
+                let key = source.apiKey.isEmpty ? "melon-local" : source.apiKey
+                // The local engine must bypass the egress proxy: a SOCKS5
+                // proxy refuses 127.0.0.1, so every local call would fail with
+                // a transport error before reaching llama-server.
+                compatBlocks.append(block(name: "melon-local-ai",
+                                          baseURL: source.baseURL,
+                                          key: key,
+                                          models: selected,
+                                          headers: nil,
+                                          proxyURL: "direct",
+                                          openRouterVariants: false))
+                continue
+            }
             if source.kind == .claude {
                 // Only the explicit API-key fallback needs a config block.
                 let key = source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !key.isEmpty else { continue }
                 claudeBlocks.append(claudeBlock(source: source, key: key, models: selected))
+                continue
+            }
+            if source.kind == .custom {
+                let key = source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { continue }
+                let protocolType = source.effectiveProtocol
+                let baseURL = Self.gatewayBaseURL(baseURL: source.baseURL, apiProtocol: protocolType)
+                switch protocolType {
+                case .openAIChat:
+                    compatBlocks.append(block(name: source.id,
+                                              baseURL: baseURL,
+                                              key: key,
+                                              models: selected,
+                                              headers: nil,
+                                              openRouterVariants: false))
+                case .openAIResponses:
+                    codexBlocks.append(block(name: source.id,
+                                             baseURL: baseURL,
+                                             key: key,
+                                             models: selected,
+                                             headers: nil,
+                                             openRouterVariants: false))
+                case .anthropic:
+                    claudeBlocks.append(claudeBlock(source: source,
+                                                    key: key,
+                                                    models: selected,
+                                                    baseURL: baseURL))
+                case .gemini:
+                    geminiBlocks.append(block(name: source.id,
+                                              baseURL: baseURL,
+                                              key: key,
+                                              models: selected,
+                                              headers: nil,
+                                              openRouterVariants: false))
+                }
+                continue
+            }
+            if source.kind == .commandCode {
+                let key = source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty else { continue }
+                // Claude ids are served only through the Anthropic `/messages`
+                // endpoint, so they need the `claude` upstream; every other
+                // model speaks `/chat/completions`.
+                let anthropicModels = selected.filter { $0.anthropicOnly == true }
+                let openAIModels = selected.filter { $0.anthropicOnly != true }
+                if !openAIModels.isEmpty {
+                    compatBlocks.append(block(name: source.id,
+                                              baseURL: source.baseURL,
+                                              key: key,
+                                              models: openAIModels,
+                                              headers: nil,
+                                              openRouterVariants: false))
+                }
+                if !anthropicModels.isEmpty {
+                    claudeBlocks.append(claudeBlock(name: "\(source.id)-anthropic",
+                                                    source: source,
+                                                    key: key,
+                                                    models: anthropicModels))
+                }
                 continue
             }
             let key = source.apiKey
@@ -1257,14 +2042,16 @@ final class ModelSourcesStore: ObservableObject {
                                               baseURL: Self.openCodeGoBaseURL,
                                               key: key,
                                               models: goModels,
-                                              headers: Self.openCodeHeaders))
+                                              headers: Self.openCodeHeaders,
+                                              openRouterVariants: false))
                 }
                 if !genericModels.isEmpty {
                     compatBlocks.append(block(name: source.id,
                                               baseURL: source.baseURL,
                                               key: key,
                                               models: genericModels,
-                                              headers: Self.openCodeHeaders))
+                                              headers: Self.openCodeHeaders,
+                                              openRouterVariants: false))
                 }
                 continue
             }
@@ -1272,35 +2059,51 @@ final class ModelSourcesStore: ObservableObject {
                                       baseURL: source.baseURL,
                                       key: key,
                                       models: selected,
-                                      headers: nil))
+                                      headers: nil,
+                                      openRouterVariants: source.kind == .openRouter))
         }
-        guard !compatBlocks.isEmpty || !claudeBlocks.isEmpty else { return "" }
-        var yaml = "\napi-keys:\n"
-        if !compatBlocks.isEmpty {
-            yaml += "  openai-compatibility:\n" + compatBlocks.joined(separator: "\n") + "\n"
-        }
-        if !claudeBlocks.isEmpty {
-            yaml += "  claude:\n" + claudeBlocks.joined(separator: "\n") + "\n"
+        var yaml = ""
+        if !compatBlocks.isEmpty || !codexBlocks.isEmpty || !claudeBlocks.isEmpty || !geminiBlocks.isEmpty {
+            yaml += "api-keys:\n"
+            if !compatBlocks.isEmpty {
+                yaml += "  openai-compatibility:\n" + compatBlocks.joined(separator: "\n") + "\n"
+            }
+            if !codexBlocks.isEmpty {
+                yaml += "  codex:\n" + codexBlocks.joined(separator: "\n") + "\n"
+            }
+            if !claudeBlocks.isEmpty {
+                yaml += "  claude:\n" + claudeBlocks.joined(separator: "\n") + "\n"
+            }
+            if !geminiBlocks.isEmpty {
+                yaml += "  gemini:\n" + geminiBlocks.joined(separator: "\n") + "\n"
+            }
         }
         let openRouterRouted = sources.contains {
             $0.enabled && $0.kind == .openRouter && !$0.selectedModels.isEmpty && !$0.apiKey.isEmpty
         }
         if openRouterRouted {
-            yaml += Self.priceRoutingYAML
+            if !yaml.isEmpty { yaml += "\n" }
+            yaml += priceRoutingYAML(sources: sources)
         }
         return yaml
     }
 
     func gatewayYAML() -> String {
-        Self.gatewayYAML(sources: sources)
+        Self.gatewayYAML(sources: effectiveSources)
     }
 
     /// One `api-keys.claude` entry (Anthropic API-key fallback): same model
     /// mapping shape as `openai-compatibility`, no `prefix` namespace.
-    private nonisolated static func claudeBlock(source: ModelSource, key: String, models: [SourceModel]) -> String {
+    private nonisolated static func claudeBlock(
+        name: String? = nil,
+        source: ModelSource,
+        key: String,
+        models: [SourceModel],
+        baseURL: String? = nil
+    ) -> String {
         var lines: [String] = []
-        lines.append("    - name: \"\(yamlEscape(source.id))\"")
-        lines.append("      base-url: \"\(yamlEscape(source.baseURL))\"")
+        lines.append("    - name: \"\(yamlEscape(name ?? source.id))\"")
+        lines.append("      base-url: \"\(yamlEscape(baseURL ?? source.baseURL))\"")
         lines.append("      keys:")
         lines.append("        - api-key: \"\(yamlEscape(key))\"")
         lines.append("      models:")
@@ -1318,7 +2121,15 @@ final class ModelSourcesStore: ObservableObject {
     }
 
     /// One `openai-compatibility` entry.
-    private nonisolated static func block(name: String, baseURL: String, key: String, models: [SourceModel], headers: [String: String]?) -> String {
+    private nonisolated static func block(
+        name: String,
+        baseURL: String,
+        key: String,
+        models: [SourceModel],
+        headers: [String: String]?,
+        proxyURL: String? = nil,
+        openRouterVariants: Bool = false
+    ) -> String {
         var lines: [String] = []
         lines.append("    - name: \"\(Self.yamlEscape(name))\"")
         lines.append("      base-url: \"\(Self.yamlEscape(baseURL))\"")
@@ -1330,32 +2141,79 @@ final class ModelSourcesStore: ObservableObject {
         }
         lines.append("      keys:")
         lines.append("        - api-key: \"\(Self.yamlEscape(key))\"")
+        if let proxyURL, !proxyURL.isEmpty {
+            lines.append("          proxy-url: \"\(Self.yamlEscape(proxyURL))\"")
+        }
         lines.append("      models:")
         for model in models {
-            lines.append("        - name: \"\(Self.yamlEscape(model.id))\"")
-            lines.append("          alias: \"\(Self.yamlEscape(model.alias))\"")
-            if model.display != model.id, !model.display.isEmpty {
-                lines.append("          display-name: \"\(Self.yamlEscape(model.display))\"")
+            var variants: [(name: String, alias: String, suffix: String?)] = [(model.id, model.alias, nil)]
+            if openRouterVariants {
+                if model.isFloorModel == true, !model.id.hasSuffix(":floor") {
+                    variants.append(("\(model.id):floor", "\(model.alias):floor", "floor"))
+                }
+                if model.isNitroModel == true, !model.id.hasSuffix(":nitro") {
+                    variants.append(("\(model.id):nitro", "\(model.alias):nitro", "nitro"))
+                }
             }
-            if let context = model.contextLength, context > 0 {
-                lines.append("          max-context-length: \(context)")
+            for variant in variants {
+                lines.append("        - name: \"\(Self.yamlEscape(variant.name))\"")
+                lines.append("          alias: \"\(Self.yamlEscape(variant.alias))\"")
+                if model.display != model.id, !model.display.isEmpty {
+                    let display = variant.suffix.map { "\(model.display) (\($0))" } ?? model.display
+                    lines.append("          display-name: \"\(Self.yamlEscape(display))\"")
+                }
+                if let context = model.contextLength, context > 0 {
+                    lines.append("          max-context-length: \(context)")
+                }
             }
         }
         return lines.joined(separator: "\n")
     }
 
-    /// OpenRouter provider routing: send `provider: {"sort": "price"}` so the
-    /// cheapest upstream providers are used first. The rule matches only the
-    /// `openrouter/*` aliases — the account pool and OpenCode stay untouched.
-    private static let priceRoutingYAML = """
-    payload:
-      default-raw:
-        - models:
-            - name: "\(openRouterAliasPrefix)*"
-              protocol: "openai"
-          params:
-            "provider": "{\\"sort\\":\\"price\\"}"
-    """
+    /// OpenRouter provider routing. Rules target the public alias names, not
+    /// the upstream ids, so they match the model names Codex sends to gateway.
+    private nonisolated static func priceRoutingYAML(sources: [ModelSource]) -> String {
+        var rules: [String] = []
+        for source in sources where source.enabled && source.kind == .openRouter {
+            for model in source.selectedModels {
+                let sort = model.sortOrder ?? "price"
+                var provider: [String: Any] = ["sort": sort == "speed" ? "throughput" : sort]
+                if let selectedProvider = model.provider, !selectedProvider.isEmpty {
+                    provider["order"] = [selectedProvider]
+                }
+                if let fallback = model.fallback { provider["allow_fallbacks"] = fallback }
+
+                let baseSort = model.id.hasSuffix(":floor") ? "price"
+                    : model.id.hasSuffix(":nitro") ? "throughput" : (sort == "speed" ? "throughput" : sort)
+                var variants: [(name: String, sort: String)] = [(model.alias, baseSort)]
+                if model.isFloorModel == true, !model.id.hasSuffix(":floor") { variants.append(("\(model.alias):floor", "price")) }
+                if model.isNitroModel == true, !model.id.hasSuffix(":nitro") { variants.append(("\(model.alias):nitro", "throughput")) }
+
+                for variant in variants {
+                    provider["sort"] = variant.sort
+                    guard let data = try? JSONSerialization.data(withJSONObject: provider, options: [.sortedKeys]),
+                          let json = String(data: data, encoding: .utf8) else { continue }
+                    let escapedJSON = json.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "\"", with: "\\\"")
+                    rules.append("""
+                        - models:
+                            - name: "\(yamlEscape(variant.name))"
+                              protocol: "openai"
+                          params:
+                            "provider": "\(escapedJSON)"
+                        """)
+                }
+            }
+        }
+
+        guard !rules.isEmpty else { return "" }
+        return """
+        payload:
+          default-raw:
+        \(rules.joined(separator: "\n").components(separatedBy: "\n").map { "    " + $0 }.joined(separator: "\n"))
+        """
+    }
+
 
     nonisolated static func yamlEscape(_ value: String) -> String {
         value
@@ -1376,7 +2234,7 @@ final class ModelSourcesStore: ObservableObject {
         do {
             let ownsRoute = CodexGatewayService.shared.codexRoute == .melon
             let count = try CodexModelCatalog.sync(
-                sources: sources,
+                sources: effectiveSources,
                 updateConfig: ownsRoute,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
@@ -1402,10 +2260,10 @@ final class ModelSourcesStore: ObservableObject {
         save()
         let gateway = CodexGatewayService.shared
         do {
-            try gateway.writeConfig()
+            try gateway.flushConfigWrite(reason: "model sources applied")
             gateway.auditLog("model sources applied (\(selectedCount) model(s) selected)")
             let count = try CodexModelCatalog.sync(
-                sources: sources,
+                sources: effectiveSources,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
             lastApply = String(format: L("Applied: %d models for Codex."), count)
