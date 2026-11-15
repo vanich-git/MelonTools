@@ -1,6 +1,7 @@
 import XCTest
 @testable import MelonTools
 
+@MainActor
 final class ModelMigrationIntegrationTests: XCTestCase {
     
     func testPersistenceRoundTrip() throws {
