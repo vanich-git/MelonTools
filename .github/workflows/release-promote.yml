@@ -85,13 +85,27 @@ jobs:
           set -euo pipefail
           V="${{ steps.version.outputs.version }}"
           mkdir -p draft-assets
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release.json
+          # A draft is not addressable by tag: GitHub creates the tag ref when
+          # the release is published, and /releases/tags/<tag> answers 404 for
+          # a draft even when the tag exists in the repository. Search the
+          # release list instead and insist on exactly one match.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
           python3 - <<'PY' > asset-ids.tsv
           import json
-          with open("release.json", encoding="utf-8") as handle:
-              release = json.load(handle)
+          import os
+          import pathlib
+
+          tag = os.environ["RELEASE_TAG"]
+          with open("releases.json", encoding="utf-8") as handle:
+              releases = json.load(handle)
+          matches = [item for item in releases if item.get("tag_name") == tag]
+          if len(matches) != 1:
+              raise SystemExit(f"expected exactly one release for {tag}, found {len(matches)}")
+          release = matches[0]
           if not release.get("draft"):
               raise SystemExit("release is already published; refusing to re-promote")
+          with pathlib.Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
+              env.write(f"RELEASE_ID={release['id']}\n")
           for asset in release.get("assets", []):
               print(f"{asset['id']}\t{asset['name']}")
           PY
@@ -157,10 +171,11 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
         run: |
           set -euo pipefail
           # Remove the build-phase "promotion pending" note from the body.
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .body \
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .body \
             | awk '
                 /^### Draft: promotion pending$/ { skipping = 1; next }
                 skipping && /^### / { skipping = 0 }
@@ -170,20 +185,32 @@ jobs:
             echo "The draft has no release body; refusing to publish untitled notes." >&2
             exit 1
           fi
-          if [ "${{ inputs.make_latest }}" = "true" ]; then
-            LATEST="--latest"
-          else
-            LATEST="--latest=false"
-          fi
-          gh release edit "$RELEASE_TAG" --draft=false "$LATEST" --notes-file release-body.md
+          # Patch by release id: the draft has no tag ref yet, so a PATCH by tag
+          # cannot find it. make_latest accepts "true", "false" or "legacy".
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open("release-body.md", encoding="utf-8") as handle:
+              body = handle.read()
+          payload = {
+              "draft": False,
+              "make_latest": os.environ["MAKE_LATEST"],
+              "body": body,
+          }
+          with open("release-patch.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle)
+          PY
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --input release-patch.json > /dev/null
 
       - name: Confirm the published state
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            --jq '{draft: .draft, prerelease: .prerelease, assets: [.assets[].name]}' > published.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --jq '{draft: .draft, prerelease: .prerelease, latest: .make_latest, assets: [.assets[].name]}' > published.json
           cat published.json
           python3 - <<'PY'
           import json
