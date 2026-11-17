@@ -1,3 +1,43 @@
+# Melon Tools 6.0.2
+
+Patch release for macOS and Windows that restores the Codex model catalog after
+the GPT-6.2 rollout. It updates the client identity used for the official
+catalog and makes the pool card load that catalog from the server on both
+platforms.
+
+## What changed in 6.0.2
+
+- **GPT-6.2 models appear in the Codex pool.** The catalog request now reports
+  Codex CLI 0.169.0 instead of 0.159.0, so the server offers `gpt-6.2-sol` and
+  `gpt-6.2-astra` to accounts that have access. Hidden entries stay hidden.
+- **"Load models" on the pool card refreshes from the server.** On macOS the
+  button used to re-read the local `models_cache.json` only; it now calls the
+  same catalog endpoint as the account editor, shows a spinner while the
+  request is in flight and reports a failure instead of doing nothing. Windows
+  already used the server-backed command and only needed the client version
+  update.
+- **Build metadata.** macOS build 73; version metadata is aligned at 6.0.2.
+
+## What this release does not prove
+
+- **No Developer ID, no notarization.** The macOS DMG is ad-hoc signed and the
+  `spctl` checks stay skipped without certificates.
+- **No Authenticode.** Windows signing steps are skipped when the certificate
+  secrets are absent, so SmartScreen reputation is untested.
+- **No interactive Windows install/upgrade/soak run.** Clean install, upgrade
+  from 6.0.1, uninstall and WebView2 IPC remain manual checks in
+  `docs/RELEASE_ACCEPTANCE.md`.
+- **Model access still depends on the account.** If the server does not offer
+  GPT-6.2 to an account, the models cannot appear in the picker.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.0.2.dmg` (arm64 + x86_64, build 73)
+- Windows installer: `MelonTools-6.0.2-setup.exe`
+- Windows portable: `MelonTools-6.0.2-win-x64-portable.exe`
+- Digests: `SHA256SUMS` in the release assets, plus a `.sha256` sibling for
+  every file.
+
 # Melon Tools 6.0.1
 
 Patch release for macOS and Windows with a faster in-app updater. It is built

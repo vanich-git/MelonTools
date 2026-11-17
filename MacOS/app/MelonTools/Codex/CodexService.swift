@@ -24,8 +24,8 @@ enum CodexService {
     static let modelsEndpoint = URL(string: "https://chatgpt.com/backend-api/codex/models")!
     /// Keep this in step with the Codex client version used by the app. The
     /// endpoint uses it to decide which model entries are visible.
-    static let modelsClientVersion = "0.159.0"
-    static let modelsUserAgent = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
+    static let modelsClientVersion = "0.169.0"
+    static let modelsUserAgent = "codex_cli_rs/0.169.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
     static let userAgent = "Codex Desktop (macOS; arm64)"
     /// The subscriptions route expects the web app's header set (verified in
     /// cockpit-tools): target-path/route + Referer + a browser user agent.

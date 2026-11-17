@@ -9,8 +9,8 @@ use serde_json::{json, Map, Value};
 use crate::{paths, quota, vault};
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/models";
-const CLIENT_VERSION: &str = "0.159.0";
-const USER_AGENT: &str = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+const CLIENT_VERSION: &str = "0.169.0";
+const USER_AGENT: &str = "codex_cli_rs/0.169.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
 
 /// Fetch the catalog with the first usable Codex account and merge it into the
 /// Codex cache. The caller then re-reads the pool, exactly like the UI.
@@ -150,6 +150,6 @@ mod tests {
         assert_eq!(value["etag"], "v1");
         assert_eq!(value["identity"]["email"], "user@example.com");
         assert_eq!(value["models"][0]["slug"], "gpt-6.1-terra");
-        assert_eq!(value["client_version"], "0.159.0");
+        assert_eq!(value["client_version"], "0.169.0");
     }
 }
