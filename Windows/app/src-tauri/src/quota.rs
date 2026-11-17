@@ -15,7 +15,7 @@ const RESET_CREDITS_ENDPOINT: &str =
 const CONSUME_RESET_CREDIT_ENDPOINT: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 const RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
-const MODELS_USER_AGENT: &str = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+const MODELS_USER_AGENT: &str = "codex_cli_rs/0.169.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
 const WAKE_ORIGINATOR: &str = "codex_cli_rs";
 const USER_AGENT: &str = "Codex Desktop (Windows)";
 const ORIGINATOR: &str = "Codex Desktop";

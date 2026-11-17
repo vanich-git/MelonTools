@@ -1971,8 +1971,8 @@ struct CodexProvidersView: View {
                         .font(MTTheme.mono(10, weight: .semibold))
                         .foregroundStyle(MTTheme.textPrimary)
                     Spacer(minLength: MTTheme.s2)
-                    MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan) {
-                        pool.refresh()
+                    MTGlassButton(title: L("Load models"), systemImage: "arrow.down.circle", tint: MTTheme.cyan, isLoading: pool.isRefreshing) {
+                        Task { await pool.refreshFromServer(accounts: store.accounts) }
                     }
                 }
                 Text(L("New models are off until you check them."))
@@ -1981,7 +1981,7 @@ struct CodexProvidersView: View {
                 Text(L("Relaunch Codex to refresh the model picker."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textTertiary)
-                if let error = poolError {
+                if let error = poolError ?? pool.refreshError {
                     Text(error)
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.danger)
