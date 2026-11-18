@@ -16,11 +16,17 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 6.0.1 (latest published)
+## What's new in 6.0.2 (latest published)
 
 > **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
 > is allowed in System Settings, so verify the SHA-256 first. No GGUF model is
 > bundled. The full notes are in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **GPT-6.2 models appear in the Codex pool.** The catalog request reports Codex CLI 0.169.0 instead of 0.159.0, which is above the 0.166.0 floor the server advertises for `gpt-6.2-sol` and `gpt-6.2-astra`.
+- **"Load models" fetches the catalog from the server.** The pool-card button re-read the local `models_cache.json` only; it now calls the catalog endpoint, shows a spinner while the request runs and reports a failure instead of doing nothing.
+- **Build metadata.** macOS build 73; version metadata is aligned at 6.0.2.
+
+## Earlier: 6.0.1
 
 - **The update dialog shows real progress.** Percent, downloaded megabytes and current speed replace the indefinite spinner, so a long download no longer looks stuck.
 - **Updates download directly, in four parallel ranges.** The DMG is fetched over a direct connection instead of the application SOCKS proxy (with a proxy fallback), assembled from four parts and checked once with SHA256. On the 6.0.0 DMG the same link went from about 6:45 to about 1:30.

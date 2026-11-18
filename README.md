@@ -78,12 +78,18 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 6.0.1 (latest published)
+## What's new in 6.0.2 (latest published)
 
 > **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
 > block the first launch, so check the SHA-256 before opening the file. No GGUF
 > model is bundled: Local AI downloads models on demand. The full notes are in
 > [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **GPT-6.2 models appear in the Codex pool.** The catalog request now reports Codex CLI 0.169.0 instead of 0.159.0, which is above the 0.166.0 floor the server advertises for `gpt-6.2-sol` and `gpt-6.2-astra`.
+- **"Load models" refreshes from the server on macOS.** The pool-card button used to re-read the local cache only; it now fetches the official catalog, shows a spinner and reports a failure. Windows already used the server-backed command.
+- **Access still depends on the account.** Hidden entries stay hidden, and the two models only appear when the signed-in account is offered them.
+
+## Earlier: 6.0.1
 
 - **The update dialog shows real progress.** Both platforms display percent, downloaded megabytes and current speed instead of an indefinite spinner, so a long download no longer looks stuck.
 - **Updates download directly.** The release asset uses a direct connection instead of the application SOCKS proxy, with a fallback to the proxy when the direct route fails.
