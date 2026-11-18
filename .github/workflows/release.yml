@@ -25,7 +25,9 @@ jobs:
     name: macOS DMG
     # Intel avoids the arm64 runner capacity queue; build.sh still builds and
     # verifies universal arm64 + x86_64 app, gateway and llama.cpp binaries.
-    runs-on: macos-15-intel
+    # macos-15-intel kept failing to acquire a hosted runner, so this job uses
+    # the other standard Intel image; the 14.0 deployment target is unchanged.
+    runs-on: macos-26-intel
     timeout-minutes: 60
     environment: release
     outputs:
