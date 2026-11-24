@@ -411,7 +411,7 @@ struct CodexProvidersView: View {
                     .controlSize(.mini)
                     .tint(MTTheme.emerald)
                     .accessibilityLabel(String(format: L("Enable %@"), route.title))
-                    .accessibilityValue(L("Включен"))
+                    .accessibilityValue(L("On"))
                 }
             }
         }
@@ -439,7 +439,7 @@ struct CodexProvidersView: View {
                 .controlSize(.mini)
                 .tint(MTTheme.emerald)
                 .accessibilityLabel(String(format: L("Enable %@"), source.title))
-                    .accessibilityValue(L("Включен"))
+                    .accessibilityValue(L("On"))
                 MTMenuButton(systemImage: "ellipsis.circle", tint: MTTheme.textSecondary, entries: [
                     .item(L("Edit"), systemImage: "pencil") {
                         customEditor = CustomProviderDraft(source: source)
@@ -531,7 +531,7 @@ struct CodexProvidersView: View {
                 .buttonStyle(.plain)
                 .help(L("Back to providers"))
                 .accessibilityLabel(L("Back to providers"))
-                    .accessibilityValue(L("Назад"))
+                    .accessibilityValue(L("Back"))
 
                 MTGlyphTile(systemImage: route.systemImage, accent: route.accent, size: 34)
                 VStack(alignment: .leading, spacing: 2) {
@@ -1069,7 +1069,7 @@ struct CodexProvidersView: View {
         .buttonStyle(.plain)
         .help(L("Images"))
         .accessibilityLabel(L("Images"))
-                    .accessibilityValue(L("Просмотр"))
+                    .accessibilityValue(L("Preview"))
         .accessibilityValue(on ? L("On") : L("Off"))
     }
 
@@ -1087,7 +1087,7 @@ struct CodexProvidersView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(model.display)
-                    .accessibilityValue(L("Модель"))
+                    .accessibilityValue(L("Model"))
             .accessibilityValue(model.enabled ? L("On") : L("Off"))
             .help(model.id)
             Spacer(minLength: MTTheme.s2)
@@ -1762,7 +1762,7 @@ extension CodexProvidersView {
         .focusable()
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.display)
-                    .accessibilityValue(L("Модель"))
+                    .accessibilityValue(L("Model"))
         .accessibilityValue("\(support)/\(total)")
         .accessibilityAddTraits(.isButton)
         .onKeyPress(.space) {

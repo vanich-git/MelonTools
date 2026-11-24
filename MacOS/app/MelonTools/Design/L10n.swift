@@ -902,6 +902,7 @@ final class L10n: ObservableObject {
         "Delete selected": "Удалить выбранные",
         "Delete selected accounts?": "Удалить выбранные аккаунты?",
         "Delete this account?": "Удалить этот аккаунт?",
+        "Preview": "Просмотр",
         "Preview truncated — the full file is larger.": "Просмотр урезан — файл больше.",
         "Write rules into this project?": "Записать правила в этот проект?",
         "Go models route through the Go endpoints (Go plan); other models use the console balance.": "Go-модели идут через Go-эндпоинты (тариф Go); остальные — с баланса консоли.",
