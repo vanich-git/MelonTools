@@ -669,10 +669,11 @@ Re-implemented from scratch on top of the official OAuth/API endpoints:
   device flow. Per-account hourly/weekly quota rings from
   `chatgpt.com/backend-api/wham/usage`, reset-credit count, one-click switch
   (writes `~/.codex/auth.json`, keeps a backup), proactive token refresh.
-- **API Service** — a local OpenAI-compatible gateway (CLIProxyAPI engine,
-  MIT, embedded) that serves your account pool on `http://127.0.0.1:18317`
-  with a generated API key. Start/stop, health check, client setup snippets.
-  Any OpenAI-compatible tool can point at it. The control card in
+- **API Service** - a local OpenAI- and Anthropic-compatible gateway
+  (CLIProxyAPI engine, MIT, embedded) that serves your account pool on
+  `http://127.0.0.1:18317` with a generated API key. Start/stop, health check,
+  client setup snippets. Any OpenAI- or Anthropic-compatible client can point
+  at it. The control card in
   **Accounts** keeps it at hand: launch the Codex app on the gateway in one
   click, switch the routing strategy, reorder account priorities.
 - **Composer Chips** — solid status chips inside the Codex app composer:

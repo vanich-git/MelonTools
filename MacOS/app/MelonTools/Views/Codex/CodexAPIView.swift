@@ -12,7 +12,7 @@ struct CodexAPIView: View {
                 MTPageHeader(
                     kicker: "codex api",
                     title: L("API Service"),
-                    subtitle: L("API subtitle")
+                    subtitle: L("A local OpenAI- and Anthropic-compatible gateway on your providers and accounts.")
                 )
 
                 CodexControlCard()
@@ -168,7 +168,7 @@ struct CodexAPIView: View {
                         gateway.rotateAPIKey()
                     }
                 }
-                Text(L("Use this key as the OpenAI API key in other tools. Rotating it updates the gateway and the Codex route; restart the service only if another client still uses the old key."))
+                Text(L("Use this key as the OpenAI API key or the Anthropic x-api-key in other tools. Rotating it updates the gateway and the Codex route; restart the service only if another client still uses the old key."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
             }
@@ -178,9 +178,12 @@ struct CodexAPIView: View {
     private var endpointsCard: some View {
         MTCard(title: L("Client setup"), systemImage: "doc.text", accent: MTTheme.violet, isBento: true) {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
-                snippet(L("Base URL"), gateway.baseURL, copy: true)
+                snippet(L("OpenAI URL"), gateway.baseURL + "/v1", copy: true)
+                snippet(L("Anthropic URL"), gateway.baseURL, copy: true)
+                snippet(L("OpenAI paths"), "/chat/completions · /responses · /models")
+                snippet(L("Anthropic paths"), "/v1/messages · /v1/messages/count_tokens")
                 snippet(L("API key"), gateway.apiKey)
-                Text(L("Any OpenAI-compatible tool can point at this service. Requests are served from the signed-in Codex accounts and are billed to your ChatGPT subscriptions."))
+                Text(L("Any OpenAI- or Anthropic-compatible client can point at this service. Requests are served from the signed-in Codex accounts and are billed to your ChatGPT subscriptions."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
             }
@@ -192,7 +195,7 @@ struct CodexAPIView: View {
             Text(label)
                 .font(MTTheme.mono(10))
                 .foregroundStyle(MTTheme.textSecondary)
-                .frame(width: 90, alignment: .leading)
+                .frame(width: 110, alignment: .leading)
             Text(value)
                 .font(MTTheme.mono(11))
                 .foregroundStyle(MTTheme.textPrimary)

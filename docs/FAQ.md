@@ -23,8 +23,9 @@ see [packaging/README.md](../packaging/README.md).
 | Vercel AI Gateway | AI Gateway API key | Team balance and `vercel/*` language models. |
 
 Selected models from every provider appear in the Codex model picker. The local
-gateway exposes an OpenAI-compatible API on `127.0.0.1:18317` by default; the
-port is configurable in Settings.
+gateway exposes OpenAI- and Anthropic-compatible APIs on `127.0.0.1:18317` by
+default (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`,
+`/v1/messages/count_tokens`); the port is configurable in Settings.
 
 ### Do I need an API key for Claude or Antigravity?
 

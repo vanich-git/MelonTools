@@ -11,7 +11,7 @@ signing/notarization rules once Developer ID credentials exist.
 - **Local first.** The app has no Melon Tools backend, no telemetry endpoint,
   and no maintainer-operated relay. Account credentials and provider keys stay
   on the device.
-- **Loopback services.** The OpenAI-compatible gateway and the Codex DevTools
+- **Loopback services.** The OpenAI- and Anthropic-compatible gateway and the Codex DevTools
   bridge listen on `127.0.0.1` only.
 - **Direct provider calls.** Requests go to the providers the user configures
   (OpenAI/Codex, Anthropic, Google, OpenRouter, OpenCode, DeepInfra and Vercel AI

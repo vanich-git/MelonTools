@@ -25,7 +25,7 @@
 
 ## What Melon Tools does
 
-Melon Tools is a desktop companion for people who work with Codex every day. It keeps your Codex accounts in a local vault, shows live quota, and runs a small OpenAI-compatible gateway on `127.0.0.1:18317` so Codex and other tools can use the accounts you configured.
+Melon Tools is a desktop companion for people who work with Codex every day. It keeps your Codex accounts in a local vault, shows live quota, and runs a small OpenAI- and Anthropic-compatible gateway on `127.0.0.1:18317` so Codex and other tools can use the accounts you configured.
 
 It also connects third-party model providers, labels every model in the Codex picker, keeps Codex working through transient capacity errors, and runs prompt-based tasks on a schedule while the app sits in the menu bar or tray.
 
@@ -37,7 +37,7 @@ Everything runs on your machine. Credentials stay local, the gateway listens on 
 |---|---|
 | **Codex account pool** | Add Codex accounts to a local vault, refresh usage, enable or disable accounts, and route requests across the pool. |
 | **Quota at a glance** | Per-account and pooled quota with reset times, the 5-hour window, and a quota-aware guard that pauses automation before limits run out. |
-| **Local OpenAI-compatible gateway** | A loopback gateway on `127.0.0.1:18317` with an API key you control, usage metrics and an audit log. |
+| **Local OpenAI- and Anthropic-compatible gateway** | A loopback gateway on `127.0.0.1:18317` with OpenAI Chat Completions, Responses and Anthropic Messages endpoints, an API key you control, usage metrics and an audit log. |
 | **Model providers** | Claude and Google Antigravity use OAuth; OpenRouter, OpenCode, DeepInfra, Vercel AI Gateway and Z.ai GLM Coding Plan connect with an API key. |
 | **Antigravity pool** | Connect several Google accounts, see each account's models and 5-hour quota, pause or refresh one account, and let the engine fail over when the first token is slow. |
 | **Codex composer chips** | Account and usage chips inside the Codex composer, so the active account and remaining quota stay visible while you prompt. |

@@ -98,7 +98,8 @@ Object.assign(DICT.ru, {
   "stale": "устарела",
   "history": "История",
   "historyHint": "Остаток квоты по последним обновлениям.",
-  "apiSub": "Локальный OpenAI-совместимый шлюз на ваших провайдерах и аккаунтах.",
+  "apiSub": "Локальный OpenAI- и Anthropic-совместимый шлюз на ваших провайдерах и аккаунтах.",
+  "openAiCompatible": "OpenAI-совместимый", "anthropicCompatible": "Anthropic-совместимый",
   "endpoint": "Адрес",
   "apiKey": "Ключ",
   "copy": "Копировать",
@@ -128,11 +129,11 @@ Object.assign(DICT.ru, {
   "openCodex": "Открыть Codex",
   "launchCodex": "Запустить Codex",
   "configuration": "Параметры",
-  "apiKeyHint": "Этот ключ используется как API-ключ OpenAI в других инструментах.",
+  "apiKeyHint": "Этот ключ используется как API-ключ OpenAI или Anthropic x-api-key в других инструментах.",
   "rotateKey": "Сменить ключ",
   "rotateKeyHint": "Новый ключ обновляет шлюз и маршрут Codex. Перезапустите сервис, если другой клиент ещё держит старый ключ.",
   "rotateKeyConfirm": "Сгенерировать новый ключ доступа? Старый перестанет работать после перезапуска сервиса.",
-  "clientHint": "Любой OpenAI-совместимый инструмент может обращаться к этому сервису. Запросы обслуживаются аккаунтами Codex и расходуют вашу подписку ChatGPT.",
+  "clientHint": "Любой OpenAI- или Anthropic-совместимый клиент может работать через этот сервис. Запросы обслуживаются вашими аккаунтами Codex и тарифицируются подпиской ChatGPT.",
   "routingMode": "Режим роутинга",
   "manage": "Управление",
   "checkPassed": "Проверка пройдена",
@@ -709,7 +710,8 @@ Object.assign(DICT.en, {
   "stale": "stale",
   "history": "History",
   "historyHint": "Quota remaining across recent refreshes.",
-  "apiSub": "A local OpenAI-compatible gateway on your providers and accounts.",
+  "apiSub": "A local OpenAI- and Anthropic-compatible gateway on your providers and accounts.",
+  "openAiCompatible": "OpenAI-compatible", "anthropicCompatible": "Anthropic-compatible",
   "endpoint": "Base URL",
   "apiKey": "Key",
   "copy": "Copy",
@@ -739,11 +741,11 @@ Object.assign(DICT.en, {
   "openCodex": "Open Codex",
   "launchCodex": "Launch Codex",
   "configuration": "Configuration",
-  "apiKeyHint": "Use this key as the OpenAI API key in other tools.",
+  "apiKeyHint": "Use this key as the OpenAI API key or the Anthropic x-api-key in other tools.",
   "rotateKey": "Rotate key",
   "rotateKeyHint": "A new key updates the gateway and the Codex route. Restart the service if another client still uses the old key.",
   "rotateKeyConfirm": "Generate a new access key? The old one stops working after the service restarts.",
-  "clientHint": "Any OpenAI-compatible tool can point at this service. Requests are served from the Codex accounts and are billed to your ChatGPT subscriptions.",
+  "clientHint": "Any OpenAI- or Anthropic-compatible client can point at this service. Requests are served from the signed-in Codex accounts and are billed to your ChatGPT subscriptions.",
   "routingMode": "Routing mode",
   "manage": "Manage",
   "checkPassed": "Check passed",
@@ -2440,7 +2442,8 @@ function apiPage() {
     <details class="advanced">
       <summary>${t("technicalDetails")}</summary>
       <div class="advanced-body">
-        <div class="footnote mono">${esc(base)}/chat/completions · /responses · /models</div>
+        <div class="footnote mono">${t("openAiCompatible")}: ${esc(base)}/chat/completions · /responses · /models</div>
+        <div class="footnote mono">${t("anthropicCompatible")}: ${esc(base.replace(/\/v1$/, ""))}/v1/messages · /v1/messages/count_tokens</div>
         <div class="footnote mono">${esc(status.logPath || "—")}</div>
         <div class="footnote mono">${esc(status.dataDir || "—")}</div>
         ${bridge && bridge.reason ? `<div class="footnote mono">${esc(bridge.reason)}</div>` : ""}

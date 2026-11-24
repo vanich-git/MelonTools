@@ -329,8 +329,9 @@ function apiPage() {
   <div class="card">
     <h2>${t("endpointsTitle")}</h2>
     <table class="kv">
-      <tr><td>OpenAI-compatible</td><td>${esc(base)}/chat/completions · /responses · /models</td></tr>
-      <tr><td>${t("apiKey")}</td><td>Authorization: Bearer ${esc(settings.apiKey || "…")}</td></tr>
+      <tr><td>${t("openAiCompatible")}</td><td>${esc(base)}/chat/completions · /responses · /models</td></tr>
+      <tr><td>${t("anthropicCompatible")}</td><td>${esc(base.replace(/\/v1$/, ""))}/v1/messages · /v1/messages/count_tokens</td></tr>
+      <tr><td>${t("apiKey")}</td><td>Authorization: Bearer ${esc(settings.apiKey || "…")} · x-api-key: ${esc(settings.apiKey || "…")}</td></tr>
     </table>
   </div>
 
