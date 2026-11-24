@@ -317,7 +317,7 @@ struct LocalAISettingsTab: View {
                                 .textFieldStyle(.mtInput)
                                 .font(MTTheme.body(12))
 
-                            MTGlassButton(title: L("Save Token"), size: .regular, tint: MTTheme.amber, prominent: true) {
+                            MTGlassButton(title: L("Save Token"), size: .regular, tint: MTTheme.cyan, prominent: true) {
                                 saveToken()
                             }
                             .disabled(hfToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

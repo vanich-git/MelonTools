@@ -857,7 +857,7 @@ struct DashboardView: View {
                     }
                 }
                 MTGlassButton(title: L("Open"), systemImage: "arrow.right", tint: MTTheme.cyan) {
-                    selection = .codexAPI
+                    GatewayDeepLink.openAPI(selection: $selection)
                 }
             }
         }
@@ -867,8 +867,12 @@ struct DashboardView: View {
 
     private func tokens(_ value: Int) -> String {
         let n = Double(value)
-        if n >= 1_000_000 { return String(format: "%.1fM", n / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.0fK", n / 1_000) }
+        if n >= 1_000_000 {
+            return (n / 1_000_000).formatted(.number.precision(.fractionLength(1))) + " " + L("M")
+        }
+        if n >= 1_000 {
+            return (n / 1_000).formatted(.number.precision(.fractionLength(0))) + " " + L("K")
+        }
         return "\(value)"
     }
 

@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Melon Tools Design System.
-/// Apple-style neutral grays, a single golden-melon accent, SF Pro / SF Mono,
+/// Apple-style neutral grays, a cyan primary accent, SF Pro / SF Mono,
 /// solid card and button surfaces (no Liquid Glass).
 enum MTTheme {
 
@@ -21,7 +21,7 @@ enum MTTheme {
 
     // MARK: - Accent & Multi-Accent Palette (Apple Liquid Glass)
 
-    /// The primary golden-melon accent.
+    /// Golden-melon brand and warning accent.
     static let gold = Color(hex: 0xF59E0B)
     /// Golden melon alias for amber.
     static let amber = Color(hex: 0xF59E0B)
@@ -213,7 +213,7 @@ enum MTButtonSize {
     case small
 }
 
-/// Button chrome: solid capsule — golden fill for prominent, soft surface for secondary.
+/// Button chrome: solid capsule - accent fill for prominent, soft surface for secondary.
 struct MTSolidButtonStyle: ButtonStyle {
     var tint: Color? = nil
     var prominent = false
@@ -233,6 +233,7 @@ struct MTSolidButtonStyle: ButtonStyle {
         let size: MTButtonSize
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.isFocused) private var isFocused
+        @State private var isHovering = false
 
         var body: some View {
             configuration.label
@@ -241,7 +242,11 @@ struct MTSolidButtonStyle: ButtonStyle {
                 .padding(.vertical, size == .small ? 4 : 7)
                 .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
                 .background(
-                    Capsule().fill(prominent ? (tint ?? MTTheme.gold) : MTTheme.cardSoft)
+                    Capsule().fill(
+                        prominent
+                            ? (tint ?? MTTheme.cyan)
+                            : (isHovering ? MTTheme.borderColor.opacity(0.55) : MTTheme.cardSoft)
+                    )
                 )
                 .overlay(
                     Capsule().strokeBorder(prominent ? Color.clear : MTTheme.borderColor, lineWidth: 0.75)
@@ -254,30 +259,33 @@ struct MTSolidButtonStyle: ButtonStyle {
                     )
                 )
                 .contentShape(Capsule())
+                .onHover { isHovering = $0 }
         }
     }
 }
 
 /// Glass Button style: pill with a specular edge.
 ///
-/// Prominent buttons are always painted in the golden melon accent — the call to
-/// action of a screen is amber, not a per-screen colour. Secondary buttons stay on
-/// the card surface so the primary action is the only amber thing in the row.
+/// Prominent buttons take their accent from the call site and fall back to cyan.
+/// Secondary buttons stay on the card surface so the primary action is the only
+/// filled control in the row.
 struct MTGlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
     var prominent: Bool = false
     var size: MTButtonSize = .regular
 
     func makeBody(configuration: Configuration) -> some View {
-        Chrome(configuration: configuration, prominent: prominent, size: size)
+        Chrome(configuration: configuration, tint: tint, prominent: prominent, size: size)
     }
 
     private struct Chrome: View {
         let configuration: Configuration
+        let tint: Color?
         let prominent: Bool
         let size: MTButtonSize
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.isFocused) private var isFocused
+        @State private var isHovering = false
 
         var body: some View {
             configuration.label
@@ -287,7 +295,11 @@ struct MTGlassButtonStyle: ButtonStyle {
                 .foregroundStyle(prominent ? MTTheme.onGold : MTTheme.textPrimary)
                 .background(
                     Capsule()
-                        .fill(prominent ? MTTheme.gold : MTTheme.cardSoft)
+                        .fill(
+                            prominent
+                                ? (tint ?? MTTheme.cyan)
+                                : (isHovering ? MTTheme.borderColor.opacity(0.55) : MTTheme.cardSoft)
+                        )
                 )
                 .overlay(
                     Capsule()
@@ -306,6 +318,7 @@ struct MTGlassButtonStyle: ButtonStyle {
                     )
                 )
                 .contentShape(Capsule())
+                .onHover { isHovering = $0 }
         }
     }
 }

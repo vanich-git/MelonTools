@@ -117,13 +117,99 @@ final class CodexGatewayService: ObservableObject {
         }
     }
 
-    /// Credential selection strategy (`routing.strategy` in config.yaml) is
-    /// fixed to “weighted-round-robin”: the engine rotates inside the highest
-    /// ready priority tier and weights the picks, so the load spreads across
-    /// the whole pool instead of draining one account at a time. Tier
-    /// membership and the weight per account come from the auth files that the
-    /// pool planner writes (`priority` = tier, `weight` = share).
-    static let gatewayRoutingStrategy = "weighted-round-robin"
+    /// Credential selection strategy (`routing.strategy` in config.yaml).
+    ///
+    /// The default, “weighted-round-robin”, rotates inside the highest ready
+    /// priority tier and weights the picks, so the load spreads across the
+    /// whole pool instead of draining one account at a time. Tier membership
+    /// and the weight per account come from the auth files that the pool
+    /// planner writes (`priority` = tier, `weight` = share).
+    enum GatewayStrategy: String, CaseIterable, Identifiable {
+        case weighted
+        case roundRobin
+        case fillFirst
+
+        var id: String { rawValue }
+
+        var engineValue: String {
+            switch self {
+            case .weighted: return "weighted-round-robin"
+            case .roundRobin: return "round-robin"
+            case .fillFirst: return "fill-first"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .weighted: return L("Weighted round-robin")
+            case .roundRobin: return L("Round-robin")
+            case .fillFirst: return L("Fill first")
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .weighted:
+                return L("Spreads requests inside the highest ready tier, weighted by each account's share.")
+            case .roundRobin:
+                return L("Rotates credentials in order, regardless of the cached quota.")
+            case .fillFirst:
+                return L("Uses the first ready credential until it fails, then moves to the next one.")
+            }
+        }
+    }
+
+    private static let strategyKey = "gatewayRoutingStrategy"
+    private static let affinityKey = "gatewaySessionAffinity"
+    private static let affinityTTLKey = "gatewaySessionAffinityTTL"
+    private static let retryKey = "gatewayRequestRetry"
+    private static let cooldownKey = "gatewayTransientCooldown"
+
+    static var gatewayStrategy: GatewayStrategy {
+        get {
+            let raw = UserDefaults.standard.string(forKey: strategyKey) ?? ""
+            return GatewayStrategy(rawValue: raw) ?? .weighted
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: strategyKey) }
+    }
+
+    /// Engine value written to `routing.strategy`.
+    static var gatewayRoutingStrategy: String { gatewayStrategy.engineValue }
+
+    static var gatewaySessionAffinity: Bool {
+        get {
+            UserDefaults.standard.object(forKey: affinityKey) as? Bool ?? true
+        }
+        set { UserDefaults.standard.set(newValue, forKey: affinityKey) }
+    }
+
+    static var gatewaySessionAffinityTTL: String {
+        get { UserDefaults.standard.string(forKey: affinityTTLKey) ?? "2h" }
+        set { UserDefaults.standard.set(newValue, forKey: affinityTTLKey) }
+    }
+
+    static var gatewayRequestRetry: Int {
+        get {
+            guard UserDefaults.standard.object(forKey: retryKey) != nil else { return 2 }
+            return UserDefaults.standard.integer(forKey: retryKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: retryKey) }
+    }
+
+    static var gatewayTransientCooldown: Int {
+        get {
+            guard UserDefaults.standard.object(forKey: cooldownKey) != nil else { return 60 }
+            return UserDefaults.standard.integer(forKey: cooldownKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: cooldownKey) }
+    }
+
+    /// Writes the routing block again after the Routing screen changes it.
+    func applyRoutingSettings() {
+        guard isRunning else { return }
+        scheduleConfigWrite(reason: "routing settings")
+        auditLog("routing settings changed: strategy=\(Self.gatewayRoutingStrategy) affinity=\(Self.gatewaySessionAffinity)")
+    }
 
     /// Auth-file collision guard: two accounts whose display names sanitize to
     /// the same string would silently overwrite each other's gateway file and
@@ -434,18 +520,25 @@ final class CodexGatewayService: ObservableObject {
           # Keep one conversation on one account. Without this every turn may land on
           # a different credential, which splits the upstream cache and makes a single
           # conversation look like many unrelated clients.
-          session-affinity: true
-          session-affinity-ttl: "2h"
-          session-affinity-subagents: true
-          # Quota and auth failures must move the session; transient stream errors
-          # should not, or a long conversation would be reshuffled on a hiccup.
-          session-affinity-rebind-on: "quota"
+          session-affinity: \(Self.gatewaySessionAffinity ? "true" : "false")
+          session-affinity-ttl: "\(Self.gatewaySessionAffinityTTL)"
+          session-affinity-subagents: \(Self.gatewaySessionAffinity ? "true" : "false")
+          # Any failed attempt moves the conversation to another account. Binding
+          # the rebind to quota errors only meant a plain 5xx or a timeout kept
+          # the session pinned to a broken credential, and the same hiccup came
+          # back on the next turn. With a retry budget of two the cost of moving
+          # is one extra request, and the alternative is a visible 503.
+          session-affinity-rebind-on: "any"
 
-        # One retry only. Every extra attempt is another request on an account that
-        # may already be flagged, and a 403 never becomes a 200 by retrying it.
-        request-retry: 1
+        # Two attempts before the client sees a failure. A single retry turned
+        # any upstream hiccup into a 503, because the first failing account was
+        # also the only one tried. The second attempt lands on a different
+        # account and the third covers a stale credential that still looked
+        # healthy. A 403 never becomes a 200 by retrying, and the auth-failure
+        # cooldown below keeps repeat offenders out of the pool.
+        request-retry: \(Self.gatewayRequestRetry)
         max-retry-interval: 30
-        transient-error-cooldown-seconds: 60
+        transient-error-cooldown-seconds: \(Self.gatewayTransientCooldown)
 
         # Fail over before the client commits when the first token is slow.
         stream-bootstrap-timeout-seconds: \(Self.streamBootstrapTimeoutSeconds)
@@ -1472,6 +1565,9 @@ final class CodexGatewayService: ObservableObject {
                 usageHistory.insert(usage, at: 0)
                 if usageHistory.count > 30 { usageHistory.removeLast(usageHistory.count - 30) }
                 lastUsage = usage
+                // Durable history for the Usage screen. The store de-duplicates
+                // by request signature, so a replayed log tail is harmless.
+                UsageStore.shared.record(usage)
             }
             if let metric = Self.parseQoSLine(line) {
                 qosHistory.insert(metric, at: 0)

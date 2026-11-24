@@ -130,6 +130,12 @@ fn create_no_window(_cmd: &mut Command) {
 
 // MARK: - Config
 
+/// Built-in OpenCode catalogue, also listed on the routing page when the
+/// provider has no fetched model list yet.
+pub(crate) fn opencode_builtin_models() -> &'static [(&'static str, &'static str)] {
+    OPENCODE_MODELS
+}
+
 const OPENCODE_MODELS: &[(&str, &str)] = &[
     ("claude-haiku-5-5", "Claude Haiku 5.5"),
     ("deepseek-v4-pro", "DeepSeek V4 Pro"),
@@ -299,6 +305,13 @@ fn render_publication(settings: &Settings) -> Result<ConfigPublication, String> 
         &auth_dir,
         &settings.management_secret,
         settings.stream_bootstrap_timeout_seconds,
+        &RoutingTuning {
+            affinity: settings.session_affinity,
+            affinity_ttl: settings.session_affinity_ttl,
+            retry: settings.request_retry,
+            cooldown: settings.transient_cooldown,
+            strategy: engine_strategy(&settings.gateway_strategy),
+        },
     );
     yaml.push_str(&crate::catalog::config_block());
     let (local_block, local_models) = local_api_keys_yaml(settings);
@@ -453,12 +466,31 @@ where
 /// The fixed part of config.yaml. `secret` is the plaintext management secret:
 /// the engine bcrypt-hashes it on load and every management call authenticates
 /// with the plaintext value.
+pub(crate) struct RoutingTuning {
+    pub affinity: bool,
+    pub affinity_ttl: u32,
+    pub retry: u32,
+    pub cooldown: u32,
+    pub strategy: &'static str,
+}
+
+/// The engine spelling of the gateway strategy. `weighted` is the default the
+/// macOS app falls back to, so an unknown value must not reach the config.
+pub(crate) fn engine_strategy(value: &str) -> &'static str {
+    match value {
+        "roundRobin" => "round-robin",
+        "fillFirst" => "fill-first",
+        _ => "weighted-round-robin",
+    }
+}
+
 fn base_config(
     port: u16,
     api_key: &str,
     auth_dir: &str,
     secret: &str,
     stream_bootstrap_timeout_seconds: i64,
+    tuning: &RoutingTuning,
 ) -> String {
     // Canonical v8 layout. `PUT /v0/management/config.yaml` accepted the legacy
     // spelling and silently rewrote it, while `PUT /v8/management/config.yaml`
@@ -485,24 +517,29 @@ management:
   disable-control-panel: true
   disable-auto-update-panel: true
 routing:
-  strategy: "weighted-round-robin"
+  strategy: "{strategy}"
   # Keep one conversation on one account. Without it every turn may land on a
   # different credential, which splits the upstream cache and makes a single
   # conversation look like many unrelated clients.
-  session-affinity: true
-  session-affinity-ttl: "2h"
-  session-affinity-subagents: true
-  # Quota and auth failures must move the session; a transient stream error
-  # should not, or a long conversation gets reshuffled on a hiccup.
-  session-affinity-rebind-on: "quota"
+  session-affinity: {affinity}
+  session-affinity-ttl: "{ttl}"
+  session-affinity-subagents: {affinity}
+  # Any failed attempt moves the conversation to another account. Binding the
+  # rebind to quota errors only meant a plain 5xx or a timeout kept the session
+  # pinned to a broken credential, and the same hiccup came back on the next
+  # turn. With a retry budget of two the cost of moving is one extra request,
+  # and the alternative is a visible 503.
+  session-affinity-rebind-on: "any"
 # These three are root-level fields in the engine config; nesting them under
 # `routing:` makes them unreadable and silently drops the tuning. The v8 loader
 # decodes with KnownFields(true), so a wrong shape is not ignored politely.
-# One retry only: every extra attempt is another request on an account that may
-# already be flagged, and a 403 never becomes a 200 by retrying it.
-request-retry: 1
+# Two attempts before the client sees a failure. A single retry turned any
+# upstream hiccup into a 503, because the first failing account was also the
+# only one tried. The second attempt lands on a different account and the third
+# covers a stale credential that still looked healthy inside the cooldown window.
+request-retry: {retry}
 max-retry-interval: 30
-transient-error-cooldown-seconds: 60
+transient-error-cooldown-seconds: {cooldown}
 requests:
   proxy-url: "{proxy}"
 "#,
@@ -512,6 +549,11 @@ requests:
         secret = yaml_escape(secret),
         proxy = yaml_escape(&crate::proxy::engine_url()),
         stream_bootstrap_timeout_seconds = stream_bootstrap_timeout_seconds.max(0),
+        affinity = tuning.affinity,
+        ttl = format_affinity_ttl(tuning.affinity_ttl),
+        retry = tuning.retry.min(5),
+        cooldown = tuning.cooldown.min(600),
+        strategy = tuning.strategy,
     )
 }
 
@@ -590,6 +632,20 @@ pub fn api_keys_yaml_with_local(
     local_models: &[crate::local_ai::LocalModel],
     local_port: u16,
     local_token: &str,
+) -> String {
+    // Model groups rewrite aliases; the store is read once per config build.
+    let groups = crate::routing_groups::load();
+    api_keys_yaml_with_groups(settings, local_models, local_port, local_token, &groups)
+}
+
+/// Pure variant: the same YAML for an explicit group list, so tests never
+/// touch the user's stored groups.
+pub(crate) fn api_keys_yaml_with_groups(
+    settings: &Settings,
+    local_models: &[crate::local_ai::LocalModel],
+    local_port: u16,
+    local_token: &str,
+    groups: &[crate::routing_groups::Group],
 ) -> String {
     let opencode = settings.opencode_enabled && !settings.opencode_key.trim().is_empty();
     let openrouter = settings.openrouter_enabled && !settings.openrouter_key.trim().is_empty();
@@ -705,7 +761,8 @@ pub fn api_keys_yaml_with_local(
             ));
             yaml.push_str("      models:\n");
             for m in local_models {
-                let alias = local_model_alias(&m.id);
+                let fallback = local_model_alias(&m.id);
+                let alias = crate::routing_groups::alias_for(groups, "local", &m.id, &fallback);
                 yaml.push_str(&format!(
                     "        - name: \"{}\"\n          alias: \"{}\"\n",
                     yaml_escape(&m.id),
@@ -738,12 +795,16 @@ pub fn api_keys_yaml_with_local(
             if settings.opencode_models.is_empty() {
                 yaml.push_str("      models:\n");
                 for (name, display) in OPENCODE_MODELS {
+                    let fallback = format!("opencode/{name}");
+                    let alias =
+                        crate::routing_groups::alias_for(groups, "opencode", name, &fallback);
                     yaml.push_str(&format!(
-                        "        - name: \"{name}\"\n          alias: \"opencode/{name}\"\n          display-name: \"{display}\"\n"
+                        "        - name: \"{name}\"\n          alias: \"{}\"\n          display-name: \"{display}\"\n",
+                        yaml_escape(&alias)
                     ));
                 }
             } else {
-                push_cached_models(&mut yaml, "opencode", &settings.opencode_models);
+                push_cached_models(&mut yaml, "opencode", &settings.opencode_models, groups);
             }
         }
         if openrouter {
@@ -753,7 +814,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.openrouter_key)
             ));
-            push_openrouter_models(&mut yaml, settings);
+            push_openrouter_models(&mut yaml, settings, groups);
         }
         if deepinfra {
             yaml.push_str("    - name: \"deepinfra\"\n");
@@ -762,7 +823,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.deepinfra_key)
             ));
-            push_cached_models(&mut yaml, "deepinfra", &settings.deepinfra_models);
+            push_cached_models(&mut yaml, "deepinfra", &settings.deepinfra_models, groups);
         }
         if nvidia {
             yaml.push_str("    - name: \"nvidia\"\n");
@@ -771,7 +832,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.nvidia_key)
             ));
-            push_cached_models(&mut yaml, "nvidia", &settings.nvidia_models);
+            push_cached_models(&mut yaml, "nvidia", &settings.nvidia_models, groups);
         }
         if vercel {
             yaml.push_str("    - name: \"vercel\"\n");
@@ -780,7 +841,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.vercel_key)
             ));
-            push_cached_models(&mut yaml, "vercel", &settings.vercel_models);
+            push_cached_models(&mut yaml, "vercel", &settings.vercel_models, groups);
         }
         if zai {
             yaml.push_str("    - name: \"zai\"\n");
@@ -792,7 +853,7 @@ pub fn api_keys_yaml_with_local(
                 "      keys:\n        - api-key: \"{}\"\n",
                 yaml_escape(&settings.zai_key)
             ));
-            push_cached_models(&mut yaml, "zai", &settings.zai_models);
+            push_cached_models(&mut yaml, "zai", &settings.zai_models, groups);
         }
         if commandcode_openai {
             yaml.push_str("    - name: \"commandcode\"\n");
@@ -810,17 +871,17 @@ pub fn api_keys_yaml_with_local(
                 .filter(|model| model.anthropic_only != Some(true))
                 .cloned()
                 .collect();
-            push_cached_models(&mut yaml, "commandcode", &models);
+            push_cached_models(&mut yaml, "commandcode", &models, groups);
         }
         for (provider, base_url) in &custom_chat {
-            push_custom_provider(&mut yaml, provider, base_url);
+            push_custom_provider(&mut yaml, provider, base_url, groups);
         }
     }
 
     if !custom_responses.is_empty() {
         yaml.push_str("  codex:\n");
         for (provider, base_url) in &custom_responses {
-            push_custom_provider(&mut yaml, provider, base_url);
+            push_custom_provider(&mut yaml, provider, base_url, groups);
         }
     }
 
@@ -835,8 +896,10 @@ pub fn api_keys_yaml_with_local(
             ));
             yaml.push_str("      models:\n");
             for (name, display) in CLAUDE_MODELS {
+                let alias = crate::routing_groups::alias_for(groups, "claude", name, name);
                 yaml.push_str(&format!(
-                    "        - name: \"{name}\"\n          alias: \"{name}\"\n          display-name: \"{display}\"\n"
+                    "        - name: \"{name}\"\n          alias: \"{}\"\n          display-name: \"{display}\"\n",
+                    yaml_escape(&alias)
                 ));
             }
         }
@@ -856,17 +919,17 @@ pub fn api_keys_yaml_with_local(
                 .filter(|model| model.anthropic_only == Some(true))
                 .cloned()
                 .collect();
-            push_cached_models(&mut yaml, "commandcode", &models);
+            push_cached_models(&mut yaml, "commandcode", &models, groups);
         }
         for (provider, base_url) in &custom_anthropic {
-            push_custom_provider(&mut yaml, provider, base_url);
+            push_custom_provider(&mut yaml, provider, base_url, groups);
         }
     }
 
     if !custom_gemini.is_empty() {
         yaml.push_str("  gemini:\n");
         for (provider, base_url) in &custom_gemini {
-            push_custom_provider(&mut yaml, provider, base_url);
+            push_custom_provider(&mut yaml, provider, base_url, groups);
         }
     }
 
@@ -956,7 +1019,11 @@ fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
     }
 }
 
-fn push_openrouter_models(yaml: &mut String, settings: &Settings) {
+fn push_openrouter_models(
+    yaml: &mut String,
+    settings: &Settings,
+    groups: &[crate::routing_groups::Group],
+) {
     if settings.openrouter_models.is_empty() {
         return;
     }
@@ -974,10 +1041,12 @@ fn push_openrouter_models(yaml: &mut String, settings: &Settings) {
             }
             _ => model.id.clone(),
         };
+        let fallback = format!("openrouter/{}", model.id);
+        let alias = crate::routing_groups::alias_for(groups, "openrouter", &model.id, &fallback);
         yaml.push_str(&format!(
-            "        - name: \"{}\"\n          alias: \"openrouter/{}\"\n",
+            "        - name: \"{}\"\n          alias: \"{}\"\n",
             yaml_escape(&upstream),
-            yaml_escape(&model.id)
+            yaml_escape(&alias)
         ));
         if !model.display.trim().is_empty() {
             yaml.push_str(&format!(
@@ -999,11 +1068,37 @@ fn push_custom_provider(
     yaml: &mut String,
     provider: &crate::settings::CustomProvider,
     base_url: &str,
+    groups: &[crate::routing_groups::Group],
 ) {
     yaml.push_str(&format!(
-        "    - name: \"{}\"\n      base-url: \"{}\"\n      keys:\n        - api-key: \"{}\"\n",
+        "    - name: \"{}\"\n      base-url: \"{}\"\n",
         yaml_escape(&provider.id),
         yaml_escape(base_url),
+    ));
+    // Selection tier, emitted only when set: zero is the engine's "no
+    // preference" and writing it out would just be noise in the config.
+    if let Some(priority) = provider.priority.filter(|value| *value != 0) {
+        yaml.push_str(&format!("      priority: {priority}\n"));
+    }
+    // Applied after the engine's user-agent default, so a value here wins.
+    // A provider behind Cloudflare refuses the default `Go-http-client`.
+    let headers: std::collections::BTreeMap<String, String> = if provider.headers.is_empty() {
+        crate::providers::default_headers()
+    } else {
+        provider.headers.clone()
+    };
+    if !headers.is_empty() {
+        yaml.push_str("      headers:\n");
+        for (name, value) in &headers {
+            yaml.push_str(&format!(
+                "        {}: \"{}\"\n",
+                yaml_escape(name),
+                yaml_escape(value),
+            ));
+        }
+    }
+    yaml.push_str(&format!(
+        "      keys:\n        - api-key: \"{}\"\n",
         yaml_escape(provider.api_key.trim()),
     ));
     yaml.push_str("      models:\n");
@@ -1012,10 +1107,12 @@ fn push_custom_provider(
         if id.is_empty() {
             continue;
         }
+        let fallback = crate::custom::model_alias(&provider.id, id);
+        let alias = crate::routing_groups::alias_for(groups, &provider.id, id, &fallback);
         yaml.push_str(&format!(
             "        - name: \"{}\"\n          alias: \"{}\"\n",
             yaml_escape(id),
-            yaml_escape(&crate::custom::model_alias(&provider.id, id)),
+            yaml_escape(&alias),
         ));
         let display = model.display.trim();
         if !display.is_empty() && display != id {
@@ -1034,13 +1131,16 @@ fn push_cached_models(
     yaml: &mut String,
     provider: &str,
     models: &[crate::settings::ProviderModel],
+    groups: &[crate::routing_groups::Group],
 ) {
     yaml.push_str("      models:\n");
     for model in models {
+        let fallback = format!("{provider}/{}", model.id);
+        let alias = crate::routing_groups::alias_for(groups, provider, &model.id, &fallback);
         yaml.push_str(&format!(
-            "        - name: \"{id}\"\n          alias: \"{provider}/{id}\"\n",
+            "        - name: \"{id}\"\n          alias: \"{alias}\"\n",
             id = yaml_escape(&model.id),
-            provider = provider,
+            alias = yaml_escape(&alias),
         ));
         if !model.display.trim().is_empty() {
             yaml.push_str(&format!(
@@ -1051,6 +1151,18 @@ fn push_cached_models(
         if let Some(context) = model.context_window.filter(|value| *value > 0) {
             yaml.push_str(&format!("          max-context-length: {}\n", context));
         }
+    }
+}
+
+/// Engine affinity TTL is a duration string, not a number of seconds.
+pub(crate) fn format_affinity_ttl(seconds: u32) -> String {
+    let seconds = seconds.max(30);
+    if seconds.is_multiple_of(3600) {
+        format!("{}h", seconds / 3600)
+    } else if seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -2380,15 +2492,16 @@ async fn check_api_once(port: u16, api_key: &str) -> Result<String, (u16, String
 #[cfg(test)]
 mod tests {
     use super::{
-        adopt_matches, api_keys_yaml, api_keys_yaml_with_local, applied_reload_digest,
-        auth_file_name, auth_payload, base_config, config_generation, config_needs_write,
-        image_matches_engine, image_starts_with, is_listening, is_listening_blocking,
-        last_written_config, local_api_keys_yaml, lock_config_generation, parse_pid,
-        parse_recent_call, parse_tasklist_image, parse_tasklist_pids, parse_usage_record,
-        priority_for, quota_weight, reload_acknowledged, reload_digest, servable_local_models,
-        tail_bytes, write_config, write_config_forced, write_config_if_changed,
-        write_config_if_changed_forced, write_config_if_changed_locked, yaml_escape,
-        PRIORITY_TIER_BACKUP, USER_AGENT,
+        adopt_matches, api_keys_yaml, api_keys_yaml_with_groups, api_keys_yaml_with_local,
+        applied_reload_digest, auth_file_name, auth_payload, base_config, config_generation,
+        config_needs_write, engine_strategy, format_affinity_ttl, image_matches_engine,
+        image_starts_with, is_listening, is_listening_blocking, last_written_config,
+        local_api_keys_yaml, lock_config_generation, parse_pid, parse_recent_call,
+        parse_tasklist_image, parse_tasklist_pids, parse_usage_record, priority_for, quota_weight,
+        reload_acknowledged, reload_digest, servable_local_models, tail_bytes, write_config,
+        write_config_forced, write_config_if_changed, write_config_if_changed_forced,
+        write_config_if_changed_locked, yaml_escape, RoutingTuning, PRIORITY_TIER_BACKUP,
+        USER_AGENT,
     };
     use crate::settings::Settings;
     use crate::vault::Account;
@@ -2407,6 +2520,39 @@ mod tests {
 
     fn settings() -> Settings {
         Settings::default()
+    }
+
+    #[test]
+    fn model_group_alias_replaces_the_provider_alias() {
+        let mut s = settings();
+        s.openrouter_enabled = true;
+        s.openrouter_key = "or-key".into();
+        s.openrouter_models = vec![crate::settings::ProviderModel {
+            id: "openai/gpt-4o".into(),
+            ..Default::default()
+        }];
+        let groups = vec![crate::routing_groups::Group {
+            id: "g1".into(),
+            alias: "smart".into(),
+            note: String::new(),
+            enabled: true,
+            members: vec![crate::routing_groups::Member {
+                source_id: "openrouter".into(),
+                model_id: "openai/gpt-4o".into(),
+            }],
+        }];
+        let yaml = api_keys_yaml_with_groups(&s, &[], 18317, "token", &groups);
+        assert!(
+            yaml.contains("        - name: \"openai/gpt-4o\"\n          alias: \"smart\"\n"),
+            "{yaml}"
+        );
+        // A model outside every group keeps the namespaced alias.
+        let none: &[crate::routing_groups::Group] = &[];
+        let alone = api_keys_yaml_with_groups(&s, &[], 18317, "token", none);
+        assert!(
+            alone.contains("alias: \"openrouter/openai/gpt-4o\""),
+            "{alone}"
+        );
     }
 
     #[test]
@@ -2475,7 +2621,24 @@ mod tests {
 
     #[test]
     fn base_config_carries_the_plaintext_management_secret() {
-        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "melon-mgmt-1234", 120);
+        let default_tuning = RoutingTuning {
+            affinity: true,
+            affinity_ttl: 7200,
+            // The shipped default, so this test reads the config the app
+            // actually writes: one retry turned a single upstream hiccup into
+            // a 503 the client saw, two absorb it.
+            retry: 2,
+            cooldown: 60,
+            strategy: "weighted-round-robin",
+        };
+        let yaml = base_config(
+            18317,
+            "melon-abc",
+            "/tmp/auths",
+            "melon-mgmt-1234",
+            120,
+            &default_tuning,
+        );
         assert!(yaml.contains("secret-key: \"melon-mgmt-1234\""));
         // The old hard-coded bcrypt hash must be gone.
         assert!(!yaml.contains("$2a$"));
@@ -2490,7 +2653,7 @@ mod tests {
         assert!(!yaml.contains("remote-management:"), "{yaml}");
         // Root-level, not nested under `routing:`: the engine reads these
         // from the config root and a nested copy is never applied.
-        assert!(yaml.contains("\nrequest-retry: 1\n"), "{yaml}");
+        assert!(yaml.contains("\nrequest-retry: 2\n"), "{yaml}");
         assert!(yaml.contains("\nmax-retry-interval: 30\n"), "{yaml}");
         assert!(
             yaml.contains("\ntransient-error-cooldown-seconds: 60\n"),
@@ -2500,7 +2663,7 @@ mod tests {
         // and only there: the retry knobs below it are root-level instead.
         assert!(yaml.contains("  session-affinity: true\n"), "{yaml}");
         assert!(
-            yaml.contains("  session-affinity-rebind-on: \"quota\"\n"),
+            yaml.contains("  session-affinity-rebind-on: \"any\"\n"),
             "{yaml}"
         );
         // The embedded engine carries MacOS/patches/0001, which reads this
@@ -2510,6 +2673,51 @@ mod tests {
             yaml.contains("stream-bootstrap-timeout-seconds: 120"),
             "{yaml}"
         );
+    }
+
+    #[test]
+    fn routing_tuning_reaches_the_config_and_is_clamped() {
+        let tuned = RoutingTuning {
+            affinity: false,
+            affinity_ttl: 1800,
+            retry: 9,
+            cooldown: 9000,
+            strategy: "fill-first",
+        };
+        let yaml = base_config(18317, "melon-abc", "/tmp/auths", "sec", 0, &tuned);
+        assert!(yaml.contains("  session-affinity: false\n"), "{yaml}");
+        assert!(
+            yaml.contains("  session-affinity-subagents: false\n"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("  session-affinity-ttl: \"30m\"\n"), "{yaml}");
+        // Both knobs are clamped to the range the engine accepts.
+        assert!(yaml.contains("\nrequest-retry: 5\n"), "{yaml}");
+        assert!(
+            yaml.contains("\ntransient-error-cooldown-seconds: 600\n"),
+            "{yaml}"
+        );
+        // The gateway strategy is independent of the account order planner.
+        assert!(yaml.contains("  strategy: \"fill-first\"\n"), "{yaml}");
+    }
+
+    #[test]
+    fn gateway_strategy_falls_back_to_the_weighted_engine_value() {
+        assert_eq!(engine_strategy("weighted"), "weighted-round-robin");
+        assert_eq!(engine_strategy("roundRobin"), "round-robin");
+        assert_eq!(engine_strategy("fillFirst"), "fill-first");
+        // An empty or unknown value must never reach the engine as junk.
+        assert_eq!(engine_strategy(""), "weighted-round-robin");
+        assert_eq!(engine_strategy("auto"), "weighted-round-robin");
+    }
+
+    #[test]
+    fn affinity_ttl_uses_the_engine_duration_spelling() {
+        assert_eq!(format_affinity_ttl(7200), "2h");
+        assert_eq!(format_affinity_ttl(1800), "30m");
+        assert_eq!(format_affinity_ttl(90), "90s");
+        // Below the minimum a binding churns on every request.
+        assert_eq!(format_affinity_ttl(1), "30s");
     }
 
     #[test]
@@ -3205,6 +3413,8 @@ mod tests {
             api_key: format!("sk-{id}"),
             enabled: true,
             models,
+            priority: None,
+            headers: std::collections::BTreeMap::new(),
         }
     }
 
@@ -3216,6 +3426,53 @@ mod tests {
             enabled,
             alias: String::new(),
         }
+    }
+
+    /// A custom provider's tier and headers reach the config. Without them a
+    /// provider behind Cloudflare answers `error code: 1010` to the engine's
+    /// default `Go-http-client`, and a fast provider cannot be preferred
+    /// without taking it out of the failover chain.
+    #[test]
+    fn api_keys_yaml_carries_provider_priority_and_headers() {
+        let mut s = settings();
+        let mut provider = custom_provider(
+            "acme",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("gpt-5", true)],
+        );
+        provider.priority = Some(7);
+        provider
+            .headers
+            .insert("User-Agent".to_string(), "AcmeClient/2.0".to_string());
+        s.custom_providers = vec![provider];
+
+        let yaml = api_keys_yaml_test(&s);
+        assert!(yaml.contains("      priority: 7\n"), "{yaml}");
+        assert!(yaml.contains("      headers:\n"), "{yaml}");
+        assert!(
+            yaml.contains("        User-Agent: \"AcmeClient/2.0\"\n"),
+            "{yaml}"
+        );
+        // A provider that names no headers still gets the baseline ones, so
+        // it is not refused by a Cloudflare front.
+        let mut bare = custom_provider(
+            "bare",
+            "openai-chat",
+            "https://bare.example/v1",
+            vec![custom_model("gpt-5", true)],
+        );
+        bare.priority = Some(0);
+        s.custom_providers = vec![bare];
+        let yaml = api_keys_yaml_test(&s);
+        assert!(
+            !yaml.contains("      priority: 0\n"),
+            "zero is omitted: {yaml}"
+        );
+        assert!(
+            yaml.contains("        User-Agent: \"MelonTools/1.4 (Windows)\"\n"),
+            "{yaml}"
+        );
     }
 
     #[test]

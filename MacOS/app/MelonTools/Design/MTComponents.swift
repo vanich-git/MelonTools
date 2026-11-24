@@ -232,6 +232,40 @@ struct MTGlassButton: View {
     }
 }
 
+/// Numeric field with the platform stepper kept inside a pill, so the value and
+/// its increment controls read as one control instead of a label plus arrows.
+struct MTStepperField: View {
+    @Binding var value: Int
+    var range: ClosedRange<Int>
+    var step: Int = 1
+    var suffix: String = ""
+
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Stepper(value: $value, in: range, step: step) {
+            Text(suffix.isEmpty ? "\(value)" : "\(value) \(suffix)")
+                .font(MTTheme.mono(11, weight: .medium))
+                .foregroundStyle(MTTheme.textPrimary)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(
+            Capsule().fill(hovering ? MTTheme.borderColor.opacity(0.55) : MTTheme.cardSoft)
+        )
+        .overlay(
+            Capsule().strokeBorder(MTTheme.borderColor.opacity(0.8), lineWidth: 0.75)
+        )
+        .contentShape(Capsule())
+        .onHover { hovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+}
+
 // MARK: - Quota ring
 
 struct MTQuotaRing: View {
@@ -385,18 +419,32 @@ struct MTTextFieldStyle: TextFieldStyle {
     var size: MTButtonSize = .regular
 
     func _body(configuration: TextField<Self._Label>) -> some View {
-        configuration
-            .textFieldStyle(.plain)
-            .padding(.horizontal, MTTheme.s2)
+        MTFieldSurface(size: size) {
+            configuration.textFieldStyle(.plain)
+        }
+    }
+}
+
+private struct MTFieldSurface<Content: View>: View {
+    let size: MTButtonSize
+    @ViewBuilder var content: Content
+    @State private var hovering = false
+
+    var body: some View {
+        content
+            .padding(.horizontal, size == .small ? MTTheme.s2 + 2 : MTTheme.s3)
             .padding(.vertical, size == .small ? 3 : 5)
             .background(
-                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                    .fill(MTTheme.cardSoft)
+                Capsule().fill(MTTheme.cardSoft)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                    .strokeBorder(MTTheme.borderColor.opacity(0.65), lineWidth: 0.75)
+                Capsule().strokeBorder(
+                    hovering ? MTTheme.textTertiary.opacity(0.9) : MTTheme.borderColor.opacity(0.65),
+                    lineWidth: 0.75
+                )
             )
+            .contentShape(Capsule())
+            .onHover { hovering = $0 }
     }
 }
 

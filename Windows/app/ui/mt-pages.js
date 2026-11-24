@@ -122,7 +122,7 @@ function subscriptionText(raw) {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return `${t("subscription")}: ${esc(raw)}`;
   const expired = date.getTime() < Date.now();
-  const text = `${t("subscription")}: ${t("until")} ${date.toLocaleDateString()}`;
+  const text = `${t("subscription")}: ${t("until")} ${date.toLocaleDateString(S.lang === "en" ? "en-US" : "ru-RU")}`;
   return expired ? `${text} ⚠` : text;
 }
 
@@ -1381,6 +1381,10 @@ function customProviderModal() {
         <input id="custom-key" type="password" value="${esc(draft.apiKey)}" autocomplete="new-password" spellcheck="false" data-action="customProviderField" data-field="apiKey" data-on="input">
         <span class="footnote">${esc(t("customProviderKeyHint"))}</span>
       </label>
+      <label class="field">${esc(t("providerPriority"))}
+        <input id="custom-priority" value="${esc(draft.priority ?? "")}" placeholder="0" inputmode="numeric" autocomplete="off" data-action="customProviderField" data-field="priority" data-on="input">
+        <span class="footnote">${esc(t("providerPriorityHint"))}</span>
+      </label>
       <div class="custom-models-section">
         <div class="row">
           <span class="custom-section-title">${esc(t("models"))}</span>
@@ -1496,6 +1500,937 @@ function renderDonateQr() {
   }
 }
 
+// MARK: - Agents
+
+const AGENT_GROUPS = [
+  ["terminal", "agentGroupTerminal"],
+  ["editors", "agentGroupEditors"],
+  ["desktop", "agentGroupDesktop"],
+];
+
+function agentStatusLabel(status) {
+  switch (status) {
+    case "connected": return t("agentConnected");
+    case "ready": return t("agentReady");
+    case "cliMissing": return t("agentCliMissing");
+    case "manual": return t("agentManual");
+    default: return t("agentNotDetected");
+  }
+}
+
+function agentStatusPill(status) {
+  const tone = status === "connected" ? "ok" : status === "cliMissing" ? "warn" : "";
+  return `<span class="pill ${tone}">${esc(agentStatusLabel(status))}</span>`;
+}
+
+function agentMatches(agent, query) {
+  if (!query) return true;
+  const haystack = `${agent.title} ${agent.configPath || ""} ${t(agent.subtitleKey || "")}`.toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+function agentIcon(agent) {
+  if (agent.custom) {
+    return `<span class="agent-icon"><span class="agent-dot ${esc(agent.status)}"></span></span>`;
+  }
+  return `<span class="agent-icon"><img src="agents/agent-${esc(agent.id)}.png" alt="" loading="lazy"></span>`;
+}
+
+/// A client that is not installed: the row explains what it is and offers the
+/// install command, mirroring the macOS "Not set up" fold.
+function agentInstallRow(agent) {
+  const command = agent.installCommand || "";
+  const detail = command || t(agent.subtitleKey || "");
+  return `<div class="agent-row agent-row-static">
+    ${agentIcon(agent)}
+    <span class="agent-main"><b>${esc(agent.title)}</b><span class="agent-path mono">${esc(detail)}</span></span>
+    ${command ? `<button type="button" class="ghost small" data-action="copy" data-text="${esc(command)}" title="${esc(t("copy"))}" aria-label="${esc(t("copy"))}">${esc(t("copy"))}</button>` : ""}
+  </div>`;
+}
+
+function agentRow(agent) {
+  const path = agent.configPath ? `<span class="agent-path mono">${esc(agent.configPath)}</span>` : `<span class="agent-path mono">${esc(agent.manualKey || "")}</span>`;
+  return `<button type="button" class="agent-row" data-action="agentSelect" data-id="${esc(agent.id)}">
+    ${agentIcon(agent)}
+    <span class="agent-main"><b>${esc(agent.title)}</b>${path}</span>
+    ${agentStatusPill(agent.status)}
+    <span class="agent-chevron">›</span>
+  </button>`;
+}
+
+/// Model aliases the gateway already knows: every configured provider plus
+/// the built-in defaults. Keeps the agent form from asking for a raw id.
+function agentModelChoices() {
+  const settings = S.settings || {};
+  const found = new Set(["gpt-5", "gpt-5-codex", "gpt-6"]);
+  const collect = (models) => {
+    for (const model of Array.isArray(models) ? models : []) {
+      const alias = model && (model.alias || model.id || model.name);
+      if (alias && model.enabled !== false) found.add(alias);
+    }
+  };
+  for (const [key, value] of Object.entries(settings)) {
+    if (/models$/i.test(key)) collect(value);
+  }
+  for (const provider of Array.isArray(settings.customProviders) ? settings.customProviders : []) {
+    collect(provider && provider.models);
+  }
+  return [...found];
+}
+
+function agentHasModelSource() {
+  const settings = S.settings || {};
+  if (Array.isArray(S.accounts) && S.accounts.length) return true;
+  if (Array.isArray(settings.customProviders) && settings.customProviders.length) return true;
+  const local = S.localAi || {};
+  if (Array.isArray(local.models) && local.models.length) return true;
+  if (Array.isArray(S.localAiModels) && S.localAiModels.length) return true;
+  const ignored = new Set(["apiKey", "managementSecret"]);
+  return Object.entries(settings).some(([key, value]) => !ignored.has(key) && /key$/i.test(key) && typeof value === "string" && value.trim());
+}
+
+function agentGetStarted() {
+  const store = S.agents || {};
+  const agents = store.agents || [];
+  const connected = agents.filter((agent) => agent.status === "connected");
+  const done = (agentHasModelSource() ? 1 : 0) + (connected.length ? 1 : 0);
+  if (done >= 2) return "";
+  const collapsed = !!S.agentGetStartedCollapsed;
+  const connectable = agents.filter((agent) => agent.managed && !agent.applied && agent.status === "ready").slice(0, 5);
+  const step = (number, isDone, title, detail, action) => `<div class="agent-step ${isDone ? "done" : ""}">
+    <span class="agent-step-number">${isDone ? "✓" : number}</span>
+    <div class="agent-step-main"><b>${esc(title)}</b><div class="footnote">${esc(detail)}</div>${action || ""}</div>
+  </div>`;
+  return `<div class="card agent-get-started">
+    <div class="agent-group-head">
+      <span class="section-label">${esc(t("agentGetStarted"))}</span>
+      <span class="agent-count">${esc(fmt(t("agentGetStartedDone"), { done }))}</span>
+      <span class="spacer"></span>
+      <button class="ghost small" data-action="agentGetStartedToggle">${collapsed ? "▾" : "▴"}</button>
+    </div>
+    ${collapsed ? "" : `${step(1, agentHasModelSource(), t("agentGetStartedSource"), t("agentGetStartedSourceHint"),
+      agentHasModelSource() ? "" : `<button class="ghost small" data-action="agentGoProviders">${esc(t("agentGetStartedAddProvider"))}</button>`)}
+    <div class="agent-step-divider"></div>
+    ${step(2, connected.length > 0, t("agentGetStartedConnect"), t("agentGetStartedConnectHint"),
+      connected.length ? "" : connectable.length
+        ? `<div class="row agent-chips">${connectable.map((agent) => `<button class="ghost small" data-action="agentSelect" data-id="${esc(agent.id)}">${esc(agent.title)}</button>`).join("")}</div>`
+        : `<div class="footnote">${esc(t("agentGetStartedNothing"))}</div>`)}
+    <div class="agent-step-divider"></div>
+    ${step(3, false, t("agentGetStartedRouting"), t("agentGetStartedRoutingHint"),
+      `<button class="ghost small" data-action="agentGoRouting">${esc(t("agentOpenRouting"))}</button>`)}`}
+  </div>`;
+}
+
+function agentsBoard() {
+  const store = S.agents || {};
+  const agents = store.agents || [];
+  const query = (S.agentQuery || "").trim();
+  const filter = S.agentGroup || "all";
+  if (!agents.length) {
+    return `<div class="card"><div class="muted">${t("agentEmpty")}</div></div>`;
+  }
+  const sections = [];
+  const notSetUp = [];
+  for (const [group, titleKey] of AGENT_GROUPS) {
+    if (filter === "desktop") {
+      if (group !== "desktop" && group !== "editors") continue;
+    } else if (filter !== "all" && filter !== group) {
+      continue;
+    }
+    const matching = agents.filter((agent) => agent.group === group && agentMatches(agent, query));
+    const rows = matching.filter((agent) => query || agent.status !== "notDetected");
+    if (!query) notSetUp.push(...matching.filter((agent) => agent.status === "notDetected"));
+    if (!rows.length) continue;
+    const connected = rows.filter((agent) => agent.status === "connected").length;
+    sections.push(`<div class="agent-group">
+      <div class="agent-group-head">
+        <span class="section-label">${esc(t(titleKey))}</span>
+        <span class="agent-count">${rows.length}</span>
+        <span class="spacer"></span>
+        ${connected ? `<span class="agent-connected">${esc(fmt(t("agentConnectedN"), { n: connected }))}</span>` : ""}
+      </div>
+      <div class="card agent-list">${rows.map(agentRow).join("")}</div>
+    </div>`);
+  }
+  const custom = agents.filter((agent) => agent.custom && agentMatches(agent, query));
+  if (custom.length && (filter === "all" || filter === "custom")) {
+    sections.push(`<div class="agent-group">
+      <div class="agent-group-head">
+        <span class="section-label">${esc(t("agentYour"))}</span>
+        <span class="agent-count">${custom.length}</span>
+        <span class="spacer"></span>
+        <button class="ghost small" data-action="agentAdd">${t("agentAdd")}</button>
+      </div>
+      <div class="card agent-list">${custom.map(agentRow).join("")}</div>
+    </div>`);
+  }
+  if (!query && notSetUp.length) {
+    const open = !!S.agentShowNotSetUp;
+    sections.push(`<div class="agent-fold">
+      <button class="agent-fold-head" data-action="agentToggleNotSetUp">
+        <span class="agent-chevron">${open ? "▾" : "›"}</span>
+        <span>${esc(fmt(t("agentNotSetUp"), { n: notSetUp.length }))}</span>
+      </button>
+      ${open ? `<div class="card agent-list">${notSetUp.map((agent) => agent.installCommand ? agentInstallRow(agent) : agentRow(agent)).join("")}</div>` : ""}
+    </div>`);
+  }
+  if (!sections.length) {
+    return `<div class="card"><div class="muted">${t("agentEmpty")}</div></div>`;
+  }
+  return sections.join("");
+}
+
+function agentSnippet(agent) {
+  const store = S.agents || {};
+  const key = agent.manualKey || "OPENAI_BASE_URL";
+  const lines = [`${key}=${store.baseUrl || ""}`];
+  if (key !== "OPENAI_API_KEY") lines.push(`OPENAI_API_KEY=${store.apiKey || ""}`);
+  return lines.join("\n");
+}
+
+function agentMaskedKey(value) {
+  if (!value) return "";
+  if (value.length <= 8) return "••••";
+  return `${value.slice(0, 3)}…${value.slice(-4)}`;
+}
+
+function agentPanel() {
+  const store = S.agents || {};
+  const agent = (store.agents || []).find((entry) => entry.id === S.agentSelected);
+  if (!agent) return "";
+  const applied = agent.applied || (store.applications && store.applications[agent.id]);
+  const manual = agent.status === "manual";
+  const snippet = agentSnippet(agent);
+  const revealed = !!S.agentRevealKey;
+  const key = store.apiKey || "";
+  const states = Array.isArray(agent.configStates) && agent.configStates.length
+    ? agent.configStates
+    : (agent.configPath ? [{ path: agent.configPath, exists: false }] : []);
+  const files = applied && Array.isArray(applied.files) && applied.files.length
+    ? applied.files
+    : (agent.configPath ? [{ path: agent.configPath, backupPath: applied && applied.backupPath, created: applied && applied.createdFile }] : []);
+  const choices = agentModelChoices();
+  const model = (applied && applied.model) || S.agentModel || choices[0] || "gpt-5";
+  const effort = (applied && applied.effort) || S.agentEffort || "";
+  const efforts = Array.isArray(agent.effortOptions) ? agent.effortOptions : [];
+  return `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="agent-title">
+    <div class="modal-card agent-card">
+      <div class="modal-head">
+        <div class="row" style="gap:10px">${agentIcon(agent)}<div><div class="kicker">${esc(t("agents"))}</div><h2 id="agent-title">${esc(agent.title)}</h2></div></div>
+        <button type="button" class="onboarding-close" title="${esc(t("close"))}" aria-label="${esc(t("close"))}" data-action="agentClose">×</button>
+      </div>
+      <div class="subtitle" style="margin-bottom:12px">${esc(t(agent.subtitleKey || "") || agent.title)}</div>
+      <div class="row" style="margin-bottom:12px">${agentStatusPill(agent.status)}${agent.configPath ? `<span class="mono agent-path">${esc(agent.configPath)}</span>` : ""}</div>
+      ${S.status && S.status.running === false ? `<div class="note-line warn">${esc(t("agentGatewayStopped"))}</div>` : ""}
+      ${agent.status === "cliMissing" ? `<div class="note-line warn">${esc(t("agentCliMissingHint"))}</div>
+        ${agent.installCommand ? `<div class="agent-kv"><span>${esc(t("agentInstall"))}</span><code class="mono">${esc(agent.installCommand)}</code><button class="ghost small" data-action="copy" data-text="${esc(agent.installCommand)}">${esc(t("copy"))}</button></div>` : ""}` : ""}
+      ${manual ? `<div class="agent-section-label">${esc(t("agentManualSetup"))}</div>
+        <div class="footnote" style="margin-bottom:8px">${esc(t(agent.noteKey || "agentManualNote"))}</div>
+        <pre class="agent-snippet mono">${esc(snippet)}</pre>
+        <div class="row" style="margin-top:8px"><button class="ghost small" data-action="agentCopySnippet" data-text="${esc(snippet)}">${t("copy")}</button></div>`
+      : `<div class="agent-grid2">
+          <div>
+            <div class="agent-section-label">${esc(t("agentConnection"))}</div>
+            <div class="agent-kv"><span>${esc(t("agentBaseUrl"))}</span><code class="mono">${esc(store.baseUrl || "")}</code></div>
+            <div class="agent-kv"><span>${esc(t("agentApiKey"))}</span><code class="mono">${esc(revealed ? key : agentMaskedKey(key))}</code>
+              <button class="ghost small" data-action="agentRevealKey">${esc(revealed ? t("agentHideKey") : t("agentShowKey"))}</button></div>
+            <div class="agent-section-label" style="margin-top:12px">${esc(t("agentConfigFile"))}</div>
+            ${states.map((state) => `<div class="agent-kv"><span class="pill ${state.exists ? "ok" : ""}">${esc(state.exists ? t("agentFileExists") : t("agentFileWillCreate"))}</span><code class="mono" title="${esc(state.expanded || state.path)}">${esc(state.path)}</code></div>`).join("")}
+          </div>
+          <div>
+            <div class="agent-section-label">${esc(t("agentModel"))}</div>
+            <input id="agent-model" class="agent-input mono" value="${esc(model)}" list="agent-model-choices" placeholder="gpt-5" spellcheck="false" autocomplete="off">
+            <datalist id="agent-model-choices">${choices.map((choice) => `<option value="${esc(choice)}"></option>`).join("")}</datalist>
+            <div class="footnote">${esc(t("agentModelHint"))}</div>
+            ${efforts.length ? `<div class="agent-section-label" style="margin-top:12px">${esc(t("agentEffort"))}</div>
+              <select id="agent-effort" class="agent-input">
+                <option value="" ${effort === "" ? "selected" : ""}>${esc(t("agentEffortDefault"))}</option>
+                ${efforts.map((level) => `<option value="${esc(level)}" ${effort === level ? "selected" : ""}>${esc(level)}</option>`).join("")}
+              </select>
+              <div class="footnote">${esc(t("agentEffortHint"))}</div>` : ""}
+          </div>
+        </div>
+        ${agent.drift ? `<div class="agent-drift">
+          <b>${esc(t("agentConfigChanged"))}</b>
+          <div class="footnote">${esc(t("agentConfigChangedHint"))}</div>
+          <button class="ghost small" data-action="agentApply" ${S.busy.agent ? "disabled" : ""}>${esc(t("agentReapply"))}</button>
+        </div>` : ""}
+        ${applied && agent.restartHint ? `<div class="note-line" style="margin-bottom:10px">${esc(t(agent.restartHint))}</div>` : ""}
+        <div class="agent-section-label" style="margin-top:14px">${esc(t("agentWhatChanges"))}</div>
+        <div class="footnote">${esc(t(agent.noteKey || ""))}</div>
+        <div class="footnote">${esc(t("agentKeepCopy"))}</div>
+        ${(() => {
+          const listed = (Array.isArray(store.backups) ? store.backups : [])
+            .filter((entry) => entry.agentId === agent.id && entry.path)
+            .slice(0, 4);
+          const rows = listed.length
+            ? listed
+            : files.filter((file) => file.backupPath).slice(0, 4).map((file) => ({ path: file.backupPath }));
+          if (!rows.length) return "";
+          return `<div class="agent-section-label" style="margin-top:14px">${esc(t("agentBackups"))}</div>
+            ${rows.map((entry) => `<div class="agent-kv"><span class="mono">${esc(String(entry.path).split(/[\\/]/).pop())}</span><button class="ghost small" data-action="agentRevealPath" data-path="${esc(entry.path)}">${esc(t("agentReveal"))}</button></div>`).join("")}
+            <div class="footnote" style="margin-top:8px">${esc(t("agentBackupsHint"))}</div>
+            <div class="footnote">${esc(fmt(t("agentBackupDir"), { path: store.backupDirectory || "" }))}</div>`;
+        })()}`}
+      <div class="modal-actions">
+        <button class="ghost" data-action="agentClose">${t("close")}</button>
+        ${agent.custom ? `<button class="ghost small danger" data-action="agentRemoveCustom" data-id="${esc(agent.id)}">${t("agentCustomDelete")}</button>
+          <button class="ghost" data-action="agentEditCustom" data-id="${esc(agent.id)}">${t("agentConfigure")}</button>` : ""}
+        ${manual ? "" : applied
+          ? `<button class="ghost" data-action="agentApply" ${S.busy.agent ? "disabled" : ""}>${t("agentReapply")}</button>
+             <button class="btn" data-action="agentRevert" data-id="${esc(agent.id)}" ${S.busy.agent ? "disabled" : ""}>${t("agentDisconnect")}</button>`
+          : `<button class="btn" data-action="agentApply" ${S.busy.agent ? "disabled" : ""}>${t("agentConnect")}</button>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function agentEditorModal() {
+  const draft = S.agentDraft;
+  if (!draft) return "";
+  const field = (key, value, placeholder) => `<input id="agent-field-${key}" class="agent-input mono" value="${esc(value || "")}" placeholder="${esc(placeholder || "")}" spellcheck="false" autocomplete="off">`;
+  return `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="agent-editor-title">
+    <div class="modal-card agent-card">
+      <div class="modal-head">
+        <div><div class="kicker">${esc(t("agents"))}</div><h2 id="agent-editor-title">${esc(draft.id ? t("agentEditTitle") : t("agentCustomTitle"))}</h2></div>
+        <button type="button" class="onboarding-close" title="${esc(t("close"))}" aria-label="${esc(t("close"))}" data-action="agentCloseEditor">×</button>
+      </div>
+      <div class="agent-form">
+        <label class="agent-field"><span>${esc(t("agentCustomName"))}</span>${field("title", draft.title, "My Agent")}</label>
+        <label class="agent-field"><span>${esc(t("agentCustomPath"))}</span>${field("configPath", draft.configPath, "~/.myagent/config.json")}</label>
+        <label class="agent-field"><span>${esc(t("agentCustomFormat"))}</span>
+          <select id="agent-field-format" class="agent-input">
+            <option value="json" ${draft.format === "json" ? "selected" : ""}>${esc(t("agentFormatJson"))}</option>
+            <option value="env" ${draft.format === "env" ? "selected" : ""}>${esc(t("agentFormatEnv"))}</option>
+          </select>
+        </label>
+        <label class="agent-field"><span>${esc(t("agentCustomBaseKey"))}</span>${field("baseUrlKey", draft.baseUrlKey, "base_url")}</label>
+        <label class="agent-field"><span>${esc(t("agentCustomKeyKey"))}</span>${field("apiKeyKey", draft.apiKeyKey, "api_key")}</label>
+        <label class="agent-field"><span>${esc(t("agentCustomModelKey"))}</span>${field("modelKey", draft.modelKey, "model")}</label>
+      </div>
+      <div class="footnote">${esc(t("agentCustomHint"))}</div>
+      <div class="modal-actions">
+        <button class="ghost" data-action="agentCloseEditor">${t("cancel")}</button>
+        <button class="btn" data-action="agentSaveCustom" ${S.busy.agent ? "disabled" : ""}>${t("agentCustomSave")}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function agentsPage() {
+  const store = S.agents || {};
+  const filters = [["all", "agentAll"], ...AGENT_GROUPS, ["custom", "agentYourShort"]];
+  return `
+  ${pageHead("melon tools", t("agents"), t("agentsSub"))}
+  ${agentGetStarted()}
+  <div class="row agents-toolbar">
+    ${searchField({ id: "agent-search", value: S.agentQuery, placeholder: t("agentSearch"), action: "agentSearch", clearAction: "agentClearSearch" })}
+    <div class="segmented">
+      ${filters.map(([id, key]) => `<button class="${(S.agentGroup || "all") === id ? "active" : ""}" data-action="agentGroupFilter" data-id="${id}">${esc(t(key))}</button>`).join("")}
+    </div>
+    <span class="spacer"></span>
+    <button class="btn small" data-action="agentAdd">${t("agentAdd")}</button>
+  </div>
+  ${store.error ? `<div class="note-line danger">${esc(store.error)}</div>` : ""}
+  <div id="agents-board">${agentsBoard()}</div>
+  ${agentPanel()}
+  ${agentEditorModal()}`;
+}
+
+/// Routing rules once lived inside the API screen. The merged page keeps both
+/// entry points: this tab owns the rules, the second tab owns the service.
+function routingContent() {
+  const settings = S.settings || {};
+  const gateway = gatewayStrategy(settings.gatewayStrategy);
+  const status = S.status || {};
+  const running = !!status.running;
+  const bullets = ["groupsBulletAlias", "groupsBulletFailover", "groupsBulletOrder", "groupsBulletNotBalancer"]
+    .map((key) => `<div class="failover-bullet"><span class="failover-dot"></span><span>${esc(t(key))}</span></div>`)
+    .join("");
+  // macOS keeps the account order on the Accounts screen and this page owns
+  // only the engine strategy, the affinity tuning and the model groups.
+  return `
+  ${pageHead("melon tools", t("routing"), t("routingSub"))}
+  <div class="card">
+    <h2>${t("engineRouting")}</h2>
+    <div class="stack">
+      <div class="row">
+        <span class="pill ${running ? "ok" : ""}">${running ? t("running") : t("stopped")}</span>
+        <span class="footnote">${esc(t("reloadLive"))}</span>
+      </div>
+      <div class="row">
+        <b style="font-size:12px">${t("strategy")}</b>
+        <span class="spacer"></span>
+        ${gatewayStrategyPicker(gateway)}
+      </div>
+      <div class="footnote">${esc(gatewayStrategyHint(gateway))}</div>
+      ${tuningBlock()}
+      <div class="row">
+        <button class="btn small" data-action="gatewaySync" ${S.busy.sync ? "disabled" : ""}>${t("applyRouting")}</button>
+        <span class="spacer"></span>
+      </div>
+    </div>
+  </div>
+  ${groupsCard()}
+  <div class="card">
+    <h2>${t("howFailover")}</h2>
+    <div class="stack failover-list">${bullets}</div>
+  </div>
+  ${groupEditorModal()}`;
+}
+
+/// Providers that can carry a model alias, with their models, from the Rust
+/// snapshot. Empty until the page loads.
+function routingSources() {
+  const snapshot = S.routingGroups || {};
+  return Array.isArray(snapshot.sources) ? snapshot.sources : [];
+}
+
+function groupSourceTitle(id) {
+  const source = routingSources().find((entry) => entry.id === id);
+  return source ? source.title || source.id : id;
+}
+
+function groupMemberCount(group) {
+  return Array.isArray(group.members) ? group.members.length : 0;
+}
+
+function groupProviderCount(group) {
+  const ids = new Set((group.members || []).map((member) => member.sourceId));
+  return ids.size;
+}
+
+function groupRow(group) {
+  const providers = Array.from(new Set((group.members || []).map((member) => member.sourceId)));
+  const badges = providers.slice(0, 2)
+    .map((id) => `<span class="pill">${esc(groupSourceTitle(id))}</span>`)
+    .join("");
+  const more = providers.length > 2 ? `<span class="pill">+${providers.length - 2}</span>` : "";
+  const subtitle = group.note
+    ? esc(group.note)
+    : esc(fmt(t("groupProviders"), { n: groupProviderCount(group) }));
+  // The chevron promised a way in and the row did nothing: the whole row is
+  // now the edit target, matching the macOS sheet it opens.
+  return `<div class="group-row" data-action="groupEdit" data-id="${esc(group.id)}" role="button" tabindex="0" aria-label="${esc(group.alias)}">
+    <span class="group-icon ${group.enabled ? "on" : ""}">▤</span>
+    <div class="agent-main">
+      <b>${esc(group.alias)}</b>
+      <span class="agent-path">${subtitle}</span>
+    </div>
+    ${badges}${more}
+    <span class="group-count">${groupMemberCount(group)}</span>
+    <label class="switch" title="${esc(t("groupEnabled"))}">
+      <input type="checkbox" ${group.enabled ? "checked" : ""} data-action="groupToggle" data-id="${esc(group.id)}" data-on="change">
+      <span class="switch-track"></span>
+    </label>
+    <button class="ghost small" data-action="groupEdit" data-id="${esc(group.id)}">${t("edit")}</button>
+    <button class="ghost small danger" data-action="groupDelete" data-id="${esc(group.id)}">${t("delete")}</button>
+    <span class="group-chevron" aria-hidden="true">›</span>
+  </div>`;
+}
+
+/// Session affinity, retries and cooldown: the engine tuning that sits next
+/// to the strategy. Values come from settings, so an unset field falls back to
+/// the engine default.
+const AFFINITY_TTLS = [900, 1800, 3600, 7200, 21600, 43200];
+
+function affinityTtlLabel(seconds) {
+  if (seconds % 3600 === 0) return `${seconds / 3600} ${t("hoursShort")}`;
+  return `${Math.round(seconds / 60)} ${t("minutesShort")}`;
+}
+
+function tuningBlock() {
+  const settings = S.settings || {};
+  const affinity = settings.sessionAffinity !== false;
+  const ttl = Number(settings.sessionAffinityTtl) || 7200;
+  const retry = Number.isFinite(Number(settings.requestRetry)) ? Number(settings.requestRetry) : 1;
+  const cooldown = Number.isFinite(Number(settings.transientCooldown)) ? Number(settings.transientCooldown) : 60;
+  const options = AFFINITY_TTLS.includes(ttl) ? AFFINITY_TTLS : AFFINITY_TTLS.concat([ttl]).sort((a, b) => a - b);
+  return `<div class="tuning">
+    <div class="tuning-row">
+      <label class="switch" title="${esc(t("sessionAffinity"))}">
+        <input type="checkbox" ${affinity ? "checked" : ""} data-action="affinityToggle" data-on="change">
+        <span class="switch-track"></span>
+      </label>
+      <div class="tuning-text">
+        <b>${t("sessionAffinity")}</b>
+        <span class="footnote" style="margin:0">${t("sessionAffinityHint")}</span>
+      </div>
+      <select data-action="affinityTtl" data-on="change" ${affinity ? "" : "disabled"}>
+        ${options.map((value) => `<option value="${value}" ${value === ttl ? "selected" : ""}>${affinityTtlLabel(value)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="tuning-row">
+      <div class="tuning-text">
+        <b>${t("requestRetry")}</b>
+        <span class="footnote" style="margin:0">${t("requestRetryHint")}</span>
+      </div>
+      <input class="tuning-number" type="number" min="0" max="5" value="${retry}" data-action="requestRetry" data-on="change">
+    </div>
+    <div class="tuning-row">
+      <div class="tuning-text">
+        <b>${t("transientCooldown")}</b>
+        <span class="footnote" style="margin:0">${t("transientCooldownHint")}</span>
+      </div>
+      <input class="tuning-number" type="number" min="0" max="600" step="15" value="${cooldown}" data-action="transientCooldown" data-on="change">
+    </div>
+  </div>`;
+}
+
+function groupsCard() {
+  const snapshot = S.routingGroups || {};
+  const groups = Array.isArray(snapshot.groups) ? snapshot.groups : [];
+  return `<div class="card">
+    <h2>${t("modelGroups")}</h2>
+    <div class="stack">
+      <div class="footnote" style="margin:0">${t("modelGroupsHint")}</div>
+      ${groups.length
+        ? `<div class="group-list">${groups.map(groupRow).join("")}</div>`
+        : `<div class="group-empty">
+            <div class="group-empty-icon">▤</div>
+            <b>${t("noModelGroups")}</b>
+            <span class="footnote" style="margin:0;text-align:center">${t("noModelGroupsHint")}</span>
+          </div>`}
+      <div class="row">
+        <button class="ghost small" data-action="groupNew">${t("newGroup")}</button>
+        <span class="spacer"></span>
+        <span class="footnote">${groups.length ? esc(snapshot.path || "") : ""}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function groupEditorModal() {
+  const draft = S.routingGroupDraft;
+  if (!draft) return "";
+  const sources = routingSources();
+  const members = draft.members || [];
+  // Grouped by the canonical model, not the raw id: a row for a spelling the
+  // store counts as already present must not look new.
+  const checked = new Set(members.map((member) => `${member.sourceId}\u0000${member.modelId}`));
+  const groups = sources.length
+    ? sources.map((source) => {
+        const rows = (source.models || []).map((model) => {
+          const key = `${source.id}\u0000${model.id}`;
+          const on = checked.has(key);
+          return `<label class="group-model">
+            <input type="checkbox" ${on ? "checked" : ""} data-action="groupMember" data-source="${esc(source.id)}" data-model="${esc(model.id)}" data-on="change">
+            <span>${esc(model.title || model.id)}</span>
+            ${on ? `<span class="pill ok">${t("inGroup")}</span>` : ""}
+          </label>`;
+        }).join("");
+        return `<details class="group-source" ${(source.models || []).some((model) => checked.has(`${source.id}\u0000${model.id}`)) ? "open" : ""}>
+          <summary>${esc(source.title || source.id)} <span class="agent-count">${(source.models || []).length}</span></summary>
+          <div class="group-models">${rows || `<div class="footnote" style="margin:0">${t("noModels")}</div>`}</div>
+        </details>`;
+      }).join("")
+    : `<div class="footnote">${t("noGroupSources")}</div>`;
+  return `<div class="modal" data-modal="group">
+    <div class="modal-card agent-card">
+      <div class="modal-head">
+        <div>
+          <div class="kicker">${t("modelGroups")}</div>
+          <h2>${draft.id ? t("editGroup") : t("newGroup")}</h2>
+        </div>
+        <button class="onboarding-close" data-action="groupClose" aria-label="${t("close")}">✕</button>
+      </div>
+      <div class="agent-form">
+        <label class="agent-field">${t("groupAlias")}
+          <input class="agent-input" id="group-alias" value="${esc(draft.alias || "")}" placeholder="smart" autocomplete="off">
+        </label>
+        <label class="agent-field">${t("groupNote")}
+          <input class="agent-input" id="group-note" value="${esc(draft.note || "")}" placeholder="${t("groupNotePlaceholder")}" autocomplete="off">
+        </label>
+      </div>
+      <div class="agent-section-label">${t("groupMembers")} <span class="agent-count">${checked.size}</span></div>
+      <div class="group-sources">${groups}</div>
+      <div class="footnote">${t("groupMembersHint")}</div>
+      <div class="modal-actions">
+        <button class="ghost" data-action="groupClose">${t("cancel")}</button>
+        <button class="btn" data-action="groupSave" ${S.busy.group ? "disabled" : ""}>${t("groupSave")}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function routingPage() {
+  // The API service moved to its own sidebar section, so this page no longer
+  // carries a second tab: the row of subtabs and the gateway pill went with it.
+  return routingContent();
+}
+
+// MARK: - Usage
+
+const USAGE_PERIODS = ["today", "week", "month", "all"];
+const USAGE_HOURS = { today: 24, week: 24 * 7, month: 24 * 30, all: null };
+
+function usagePeriodStart(period) {
+  const hours = USAGE_HOURS[period];
+  return hours === null || hours === undefined ? 0 : Date.now() - hours * 3600 * 1000;
+}
+
+function usageDayKey(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function usageHourKey(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${usageDayKey(date)} ${pad(date.getHours())}`;
+}
+
+/// One column per day (or per hour for "today"), always including empty
+/// buckets so a quiet day reads as zero instead of collapsing the axis.
+function usageBuckets(events, period) {
+  const byHour = period === "today";
+  const buckets = new Map();
+  if (byHour) {
+    const now = new Date();
+    for (let step = 23; step >= 0; step -= 1) {
+      const at = new Date(now.getTime() - step * 3600 * 1000);
+      buckets.set(usageHourKey(at), { key: usageHourKey(at), label: `${String(at.getHours()).padStart(2, "0")}:00`, tokens: 0, input: 0, output: 0, calls: 0 });
+    }
+  } else {
+    const days = period === "week" ? 7 : period === "month" ? 30 : null;
+    if (days) {
+      const now = new Date();
+      for (let step = days - 1; step >= 0; step -= 1) {
+        const at = new Date(now.getTime() - step * 24 * 3600 * 1000);
+        buckets.set(usageDayKey(at), { key: usageDayKey(at), label: `${String(at.getDate()).padStart(2, "0")}.${String(at.getMonth() + 1).padStart(2, "0")}`, tokens: 0, input: 0, output: 0, calls: 0 });
+      }
+    }
+  }
+  for (const event of events) {
+    const at = new Date(event.at);
+    if (Number.isNaN(at.getTime())) continue;
+    const key = byHour ? usageHourKey(at) : usageDayKey(at);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.tokens += (event.input || 0) + (event.output || 0);
+      bucket.input += event.input || 0;
+      bucket.output += event.output || 0;
+      bucket.calls += 1;
+    }
+  }
+  const list = Array.from(buckets.values());
+  if (!byHour && !USAGE_HOURS[period]) {
+    // "All time": derive the span from the data itself, capped to 30 columns.
+    const dates = events
+      .map((event) => new Date(event.at))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((a, b) => a - b);
+    if (dates.length) {
+      const days = new Map();
+      const start = new Date(dates[0]);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date();
+      end.setHours(0, 0, 0, 0);
+      for (let at = new Date(start); at <= end; at = new Date(at.getTime() + 24 * 3600 * 1000)) {
+        days.set(usageDayKey(at), { key: usageDayKey(at), label: `${String(at.getDate()).padStart(2, "0")}.${String(at.getMonth() + 1).padStart(2, "0")}`, tokens: 0, input: 0, output: 0, calls: 0 });
+      }
+      for (const event of events) {
+        const at = new Date(event.at);
+        if (Number.isNaN(at.getTime())) continue;
+        const bucket = days.get(usageDayKey(at));
+        if (bucket) {
+          bucket.tokens += (event.input || 0) + (event.output || 0);
+          bucket.input += event.input || 0;
+          bucket.output += event.output || 0;
+          bucket.calls += 1;
+        }
+      }
+      const all = Array.from(days.values());
+      return all.slice(Math.max(0, all.length - 30));
+    }
+    return [];
+  }
+  return list;
+}
+
+/// Model prices come from the provider catalogues the settings already carry:
+/// the same fields the Providers cards show, so Usage never invents a price.
+function usagePriceIndex() {
+  const settings = S.settings || {};
+  const index = new Map();
+  const lists = [
+    settings.openrouterModels, settings.deepinfraModels, settings.vercelModels,
+    settings.zaiModels, settings.nvidiaModels, settings.commandcodeModels,
+    settings.opencodeModels,
+  ];
+  for (const list of lists) {
+    for (const row of Array.isArray(list) ? list : []) {
+      if (!row || !row.id) continue;
+      const id = String(row.id).toLowerCase();
+      index.set(id, row);
+      // Usage lines carry the routed name (`gpt-6.2-sol`), the catalogue the
+      // qualified one (`openai/gpt-6.2-sol`): both must resolve to one price.
+      const tail = id.split("/").pop();
+      if (tail && !index.has(tail)) index.set(tail, row);
+      if (row.display) index.set(String(row.display).toLowerCase(), row);
+    }
+  }
+  return index;
+}
+
+/// Token cost of one event, or null when the catalogue has no price for it.
+function usageEventCost(index, event) {
+  const name = String(event.model || "").toLowerCase();
+  const row = index.get(name) || index.get(name.split("/").pop());
+  if (!row) return null;
+  const prompt = finiteNumber(row.promptPerToken ?? row.prompt_per_token);
+  const completion = finiteNumber(row.completionPerToken ?? row.completion_per_token);
+  if (prompt === null || completion === null) return null;
+  return (event.input || 0) * prompt + (event.output || 0) * completion;
+}
+
+/// Currency for a small amount: cents below a dollar, four digits under it.
+function usageMoney(value) {
+  const number = finiteNumber(value);
+  if (number === null) return "-";
+  if (number >= 100) return `$${number.toFixed(0)}`;
+  if (number >= 1) return `$${number.toFixed(2)}`;
+  return `$${number.toFixed(4)}`;
+}
+
+/// Compact token counts, the same 2,9 K spelling the macOS screen prints.
+function usageCompact(value) {
+  const number = finiteNumber(value) || 0;
+  const decimal = (raw) => raw.toFixed(1).replace(".", S.lang === "en" ? "." : ",");
+  if (number >= 1000000) return `${decimal(number / 1000000)} ${S.lang === "en" ? "M" : "млн"}`;
+  if (number >= 1000) return `${decimal(number / 1000)} ${S.lang === "en" ? "K" : "тыс."}`;
+  return String(Math.round(number));
+}
+
+function tokensWord(value) {
+  if (S.lang === "en") return "tokens";
+  const number = Math.abs(Math.trunc(Number(value) || 0));
+  // Compact values are printed as fractional thousands or millions, so the
+  // noun after them is always the genitive plural.
+  if (number >= 1000) return "токенов";
+  const mod10 = number % 10;
+  const mod100 = number % 100;
+  if (mod10 === 1 && mod100 !== 11) return "токен";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "токена";
+  return "токенов";
+}
+
+function usagePage() {
+  const all = Array.isArray(S.usageEvents) ? S.usageEvents : [];
+  const period = USAGE_PERIODS.includes(S.usagePeriod) ? S.usagePeriod : "week";
+  const since = usagePeriodStart(period);
+  const events = all.filter((event) => {
+    const at = Date.parse(event.at);
+    return Number.isFinite(at) && at >= since;
+  });
+
+  const prices = usagePriceIndex();
+  const costs = events.map((event) => usageEventCost(prices, event));
+  const priced = costs.filter((cost) => cost !== null);
+  const cost = priced.reduce((sum, value) => sum + value, 0);
+
+  const calls = events.length;
+  const errors = events.filter((event) => (event.status || 0) >= 400).length;
+  const input = events.reduce((sum, event) => sum + (event.input || 0), 0);
+  const output = events.reduce((sum, event) => sum + (event.output || 0), 0);
+  const total = input + output;
+  const rate = calls ? Math.round((errors / calls) * 100) : 0;
+
+  const periodButtons = USAGE_PERIODS.map((id) => `
+    <button class="${period === id ? "active" : ""}" data-action="usagePeriod" data-id="${id}">${t(`period${id.charAt(0).toUpperCase()}${id.slice(1)}`)}</button>
+  `).join("");
+
+  const metric = (label, value, foot, tint, footTint) => `
+    <div class="metric">
+      <div class="metric-label">${esc(label)}</div>
+      <div class="metric-value ${tint || ""}">${esc(value)}</div>
+      ${foot ? `<div class="metric-foot ${footTint || ""}">${esc(foot)}</div>` : ""}
+    </div>
+  `;
+  const requestsWord = (n) => {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return t("requestOne");
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return t("requestFew");
+    return t("requestMany");
+  };
+
+  const costCaption = priced.length === 0
+    ? t("noPricesForModels")
+    : priced.length === calls
+      ? t("fromListPrices")
+      : fmt(t("pricedOfRequests"), { priced: priced.length, all: calls });
+
+  const buckets = usageBuckets(events, period);
+  const peak = buckets.reduce((max, bucket) => Math.max(max, bucket.tokens), 0);
+  const legend = `
+    <div class="usage-legend">
+      <span class="usage-legend-dot input"></span><span>${t("legendInput")}</span>
+      <span class="usage-legend-dot output"></span><span>${t("legendOutput")}</span>
+      <span class="spacer"></span>
+      <span class="footnote">${esc(fmt(t("usageTokensSummary"), { calls: formatTokens(calls), tokens: formatTokens(total) }))}</span>
+    </div>`;
+  const chart = buckets.length && calls
+    ? `<div class="usage-chart">
+        ${buckets.map((bucket) => {
+          const height = peak ? Math.max(1, Math.round((bucket.tokens / peak) * 100)) : 0;
+          const inputShare = bucket.tokens ? Math.round((bucket.input / bucket.tokens) * 100) : 0;
+          return `<div class="usage-chart-col" title="${esc(`${bucket.label}: ${formatTokens(bucket.tokens)} · ${bucket.calls}`)}">
+            ${bucket.tokens ? `<div class="usage-chart-bar" style="height:${height}%">
+              <span class="usage-chart-input" style="height:${inputShare}%"></span>
+              <span class="usage-chart-output" style="height:${100 - inputShare}%"></span>
+            </div>` : ""}
+            <div class="usage-chart-label">${esc(bucket.label)}</div>
+          </div>`;
+        }).join("")}
+      </div>${legend}${period === "all" ? `<div class="footnote">${t("usageAllTimeHint")}</div>` : ""}`
+    : `<div class="empty-state">
+        <h3>${t("noRequestsInPeriod")}</h3>
+        <div class="footnote">${t("usageLinesHint")}</div>
+      </div>`;
+
+  const byProvider = new Map();
+  for (const event of events) {
+    const key = event.provider || "-";
+    const row = byProvider.get(key) || { calls: 0, tokens: 0, errors: 0, cost: 0, priced: 0 };
+    row.calls += 1;
+    row.tokens += (event.input || 0) + (event.output || 0);
+    if ((event.status || 0) >= 400) row.errors += 1;
+    const eventCost = usageEventCost(prices, event);
+    if (eventCost !== null) {
+      row.cost += eventCost;
+      row.priced += 1;
+    }
+    byProvider.set(key, row);
+  }
+  const providerRows = Array.from(byProvider.entries()).sort((a, b) => b[1].tokens - a[1].tokens);
+  const providerPeak = providerRows.reduce((max, [, row]) => Math.max(max, row.tokens), 0);
+
+  const byModel = new Map();
+  for (const event of events) {
+    const key = event.model || "-";
+    const row = byModel.get(key) || { calls: 0, tokens: 0, cost: 0, priced: 0 };
+    row.calls += 1;
+    row.tokens += (event.input || 0) + (event.output || 0);
+    const eventCost = usageEventCost(prices, event);
+    if (eventCost !== null) {
+      row.cost += eventCost;
+      row.priced += 1;
+    }
+    byModel.set(key, row);
+  }
+  const modelRows = Array.from(byModel.entries()).sort((a, b) => b[1].tokens - a[1].tokens).slice(0, 8);
+  const modelPeak = modelRows.reduce((max, [, row]) => Math.max(max, row.tokens), 0);
+
+  const breakdown = (name, row, peakValue, tint) => `
+    <div class="usage-row">
+      <div class="usage-row-head">
+        <span class="usage-row-name">${esc(name === "-" ? t("unknownProvider") : name)}</span>
+        <span class="usage-row-value">${esc(usageCompact(row.tokens))} ${tokensWord(row.tokens)}</span>
+        ${row.priced ? `<span class="usage-row-cost">${esc(usageMoney(row.cost))}</span>` : ""}
+        <span class="usage-row-calls">${row.calls} ${requestsWord(row.calls)}</span>
+      </div>
+      <div class="quota-track"><div class="quota-fill ${tint}" style="width:${peakValue ? Math.round((row.tokens / peakValue) * 100) : 0}%"></div></div>
+    </div>`;
+
+  const providerList = providerRows.length
+    ? providerRows.slice(0, 8).map(([name, row]) => breakdown(name, row, providerPeak, "")).join("")
+    : `<div class="footnote">${t("nothingRecorded")}</div>`;
+
+  const modelList = modelRows.length
+    ? modelRows.map(([name, row]) => breakdown(name, row, modelPeak, "info")).join("")
+    : `<div class="footnote">${t("nothingRecorded")}</div>`;
+
+  const recent = events.slice(-12).reverse();
+  const recentList = recent.length
+    ? `<div class="usage-recent">
+        ${recent.map((event) => {
+          const at = new Date(event.at);
+          const when = Number.isNaN(at.getTime())
+            ? "-"
+            : at.toLocaleString(S.lang === "en" ? "en-US" : "ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          const failed = (event.status || 0) >= 400;
+          const eventCost = usageEventCost(prices, event);
+          return `<div class="usage-recent-row">
+            <span class="status-dot ${failed ? "err" : "ok"}"></span>
+            <span class="usage-recent-time">${esc(when)}</span>
+            <span class="usage-recent-provider">${esc(event.provider || t("unknownProvider"))}</span>
+            <span class="usage-recent-model">${esc(event.model || "-")}</span>
+            <span class="spacer"></span>
+            <span class="usage-recent-tokens">${esc(usageCompact(event.input || 0))} / ${esc(usageCompact(event.output || 0))}</span>
+            <span class="usage-recent-cost">${esc(eventCost === null ? "-" : usageMoney(eventCost))}</span>
+            ${failed ? `<span class="pill danger">HTTP ${esc(event.status)}</span>` : ""}
+          </div>`;
+        }).join("")}
+      </div>`
+    : `<div class="footnote">${t("nothingRecorded")}</div>`;
+
+  const openrouter = S.providers || {};
+  const vercel = S.vercel || {};
+  const claude = S.claude || {};
+  const creditsLeft = finiteNumber(openrouter.remaining);
+  const keyRemaining = finiteNumber(openrouter.limitRemaining);
+  const vercelBalance = finiteNumber(vercel.balance);
+  const fiveHour = finiteNumber(claude.fiveHourPercent);
+  const resetAt = claude.fiveHourReset
+    ? fmt(t("resetAt"), { when: new Date(claude.fiveHourReset).toLocaleString(S.lang === "en" ? "en-US" : "ru-RU", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) })
+    : t("noResetReported");
+  const balances = `
+    <div class="grid4">
+      ${metric("OpenRouter", usageMoney(creditsLeft), t("creditsLeft"), "ok")}
+      ${metric(t("keyBalance"), usageMoney(keyRemaining), t("remainingOnKey"), "")}
+      ${metric("Vercel", usageMoney(vercelBalance), t("teamWallet"), "")}
+      ${metric(t("claudeFiveHour"), fiveHour === null ? "-" : `${Math.round(fiveHour)}%`, resetAt, "warn")}
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="ghost small" data-action="usageBalancesRefresh">${t("refreshBalances")}</button>
+      <span class="footnote">${t("balancesHint")}</span>
+    </div>`;
+
+  return `
+  ${pageHead("melon tools", t("usageTitle"), t("usageSub"))}
+  <div class="row usage-toolbar">
+    <div class="segmented">${periodButtons}</div>
+    <span class="spacer"></span>
+    <span class="pill">${fmt(t("usageRecords"), { n: formatTokens(all.length) })}</span>
+    <button class="ghost small" data-action="usageRefresh">${t("refresh")}</button>
+    <details class="local-ai-menu">
+      <summary title="${t("more")}">…</summary>
+      <div class="local-ai-menu-panel">
+        <button class="local-ai-menu-item" data-action="usageReload">${t("reloadHistory")}</button>
+        <div class="local-ai-menu-sep"></div>
+        <button class="local-ai-menu-item danger" data-action="usageClear">${t("clearHistory")}</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="grid4">
+    ${metric(t("requests"), formatTokens(calls), errors ? fmt(t("errorsCount"), { n: errors }) : t("noFailedRequests"), "", errors ? "danger" : "")}
+    ${metric(t("inputTokens"), usageCompact(input), t("promptTokens"), "")}
+    ${metric(t("outputTokens"), usageCompact(output), t("completionTokens"), "")}
+    ${metric(t("costEstimate"), priced.length ? usageMoney(cost) : "-", costCaption, "")}
+  </div>
+
+  <div class="card">
+    <h2>${period === "today" ? t("tokensByHour") : t("tokensByDay")}</h2>
+    <div class="stack">${chart}</div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><h2>${t("byProvider")}</h2><div class="stack">${providerList}</div></div>
+    <div class="card"><h2>${t("topModels")}</h2><div class="stack">${modelList}</div></div>
+  </div>
+
+  <div class="card">
+    <h2>${t("balances")}</h2>
+    <div class="stack">${balances}</div>
+  </div>
+
+  <div class="card">
+    <h2>${t("recentUsage")}</h2>
+    <div class="stack">${recentList}</div>
+  </div>`;
+}
+
 function settingsPage() {
   const settings = S.settings || {};
   const info = S.info || {};
@@ -1598,7 +2533,7 @@ function settingsPage() {
         <button class="btn small" data-action="backupImportPick">${t("backupImport")}</button>
         <input type="file" id="backup-file" accept=".melon,.json,application/json" hidden data-action="backupImportFile" data-on="change">
       </div>
-      <div class="footnote">${t("backupLast")}: ${S.backupLast ? esc(new Date(S.backupLast * 1000).toLocaleString()) : esc(t("backupNone"))}</div>
+      <div class="footnote">${t("backupLast")}: ${S.backupLast ? esc(dateTimeText(S.backupLast)) : esc(t("backupNone"))}</div>
     </div>
   </div>
 
@@ -1612,75 +2547,6 @@ function settingsPage() {
     </table>
   </div>`;
 }
-
-function composerPage() {
-  const bridge = S.bridge;
-  const attached = bridge && bridge.attached;
-  return `
-  ${pageHead("codex", t("composer"), t("composerHint"))}
-  <div class="card">
-    <h2>${t("bridge")}</h2>
-    <div class="stack">
-      <div class="row">
-        ${attached
-          ? `<span class="pill ok">${t("bridgeOn")}</span>
-             <span class="pill">${t("port")}: ${esc(bridge.debugPort ?? "—")}</span>
-             ${bridge.model ? `<span class="pill gold">${esc(bridge.model)}</span>` : ""}`
-          : `<span class="pill warn">${t("bridgeOff")}</span>
-             <span class="footnote">${t("bridgeHint")}${bridge && bridge.reason ? " · " + esc(bridge.reason) : ""}</span>`}
-      </div>
-      <div class="row">
-        <button class="ghost small" data-action="bridgeLaunchCodex" ${S.busy.launch ? "disabled" : ""}>${t("bridgeRestart")}</button>
-        <button class="ghost small" data-action="refreshStatus">${t("refresh")}</button>
-      </div>
-      <table class="kv">
-        <tr><td>${t("session")}</td><td>${esc(bridge && bridge.threadId ? bridge.threadId : "—")}</td></tr>
-        <tr><td>${t("api")}</td><td>${t("composerHint")}</td></tr>
-      </table>
-    </div>
-  </div>`;
-}
-
-function instancesPage() {
-  const instances = S.instancesData || [];
-  const accounts = S.accounts || [];
-  return `
-  ${pageHead("codex", t("instances"), t("instanceHint"))}
-  <div class="card">
-    <div class="row">
-      <input type="text" id="instance-name" placeholder="${t("instanceNew")}">
-      <button class="btn small" data-action="instanceCreate">${t("instanceCreate")}</button>
-      <span class="footnote">${t("instanceHint")}</span>
-    </div>
-  </div>
-  <div class="accounts">
-    ${instances.map((instance) => `
-      <div class="card">
-        <div class="account-head">
-          <span class="email">${esc(instance.name)}</span>
-          <span class="pill ${instance.exists ? "ok" : "warn"}">${instance.exists ? t("found") : t("missing")}</span>
-        </div>
-        <div class="stack">
-          <div class="footnote mono">${esc(instance.homePath || "")}</div>
-          <div class="row">
-            <label class="field">${t("instanceBind")}
-              <select data-action="instanceBind" data-id="${esc(instance.id)}" data-on="change">
-                <option value="">${t("instanceNone")}</option>
-                ${accounts.map((a) => `<option value="${esc(a.id)}" ${instance.accountId === a.id ? "selected" : ""}>${esc(a.email || a.displayName)}</option>`).join("")}
-              </select>
-            </label>
-            <button class="btn small" data-action="instanceLaunch" data-id="${esc(instance.id)}">${t("instanceLaunch")}</button>
-            <span class="spacer"></span>
-            <button class="ghost small danger" data-action="instanceDelete" data-id="${esc(instance.id)}">${t("instanceDelete")}</button>
-          </div>
-        </div>
-      </div>`).join("") || `<div class="card"><div class="muted">${t("noCalls")}</div></div>`}
-  </div>`;
-}
-
-// Scheduled tasks: result bodies are capped server-side (64 KiB); the viewer
-// caps again so a huge answer cannot stall the DOM.
-const RESULT_VIEW_CAP = 20000;
 
 function boundedText(text) {
   const value = String(text || "");
@@ -1959,23 +2825,27 @@ function schedulerCard(task, data) {
       <span class="email">${esc(task.name)}</span>
       ${schedulerStatusPill(task)}
       <span class="spacer"></span>
-      <label class="row" style="gap:6px;font-size:11px;color:var(--text2)">
-        <input type="checkbox" ${task.enabled ? "checked" : ""} data-action="schedulerToggle" data-id="${esc(task.id)}" data-on="change">
+      <label class="card-toggle">
+        <input type="checkbox" role="switch" ${task.enabled ? "checked" : ""} data-action="schedulerToggle" data-id="${esc(task.id)}" data-on="change">
         <span>${t("schedulerEnabled")}</span>
       </label>
     </div>
     <div class="task-meta">
-      <span>${t("schedulerModel")}: <span class="val">${esc(task.model || "—")}</span></span>
-      ${task.reasoningEffort ? `<span class="pill gold">${esc(task.reasoningEffort)}</span>` : ""}
-      <span>${task.scheduleKind === "cron"
-        ? `${t("schedulerScheduleCron")}: <span class="mono">${esc(task.cronExpression || "—")}</span>`
-        : fmt(t("schedulerEvery"), { n: task.intervalMinutes || 0 })}</span>
-      ${task.timeZone ? `<span>${t("schedulerTimeZone")}: <span class="mono">${esc(task.timeZone)}</span></span>` : ""}
-      <span>${t("schedulerNext")}: <span class="val">${task.enabled ? esc(schedulerNextText(task.nextRunAt)) : "—"}</span></span>
-      <span>${t("schedulerLast")}: <span class="val">${task.lastRunAt ? esc(ageText(task.lastRunAt)) : t("never")}</span></span>
-      ${task.lastDurationMs != null ? `<span>${t("schedulerDuration")}: ${Math.round(task.lastDurationMs / 100) / 10} ${unit("s", "с")}</span>` : ""}
-      ${task.lastTokens != null ? `<span>${t("schedulerTokens")}: ${task.lastTokens}</span>` : ""}
-      <span>${t("schedulerDailyLimit")}: <span class="val">${(task.dailyTokenLimit || 0) > 0 ? Number(task.dailyTokenLimit) : esc(t("schedulerDailyLimitNone"))}</span></span>
+      <div class="task-meta-row">
+        <span>${t("schedulerModel")}: <span class="val">${esc(task.model || "—")}</span></span>
+        ${task.reasoningEffort ? `<span class="pill">${esc(task.reasoningEffort)}</span>` : ""}
+        <span>${task.scheduleKind === "cron"
+          ? `${t("schedulerScheduleCron")}: <span class="mono">${esc(task.cronExpression || "—")}</span>`
+          : fmt(t("schedulerEvery"), { n: task.intervalMinutes || 0 })}</span>
+        ${task.timeZone ? `<span>${t("schedulerTimeZone")}: <span class="mono">${esc(task.timeZone)}</span></span>` : ""}
+        <span>${t("schedulerNext")}: <span class="val">${task.enabled ? esc(schedulerNextText(task.nextRunAt)) : "—"}</span></span>
+        <span>${t("schedulerDailyLimit")}: <span class="val">${(task.dailyTokenLimit || 0) > 0 ? Number(task.dailyTokenLimit) : esc(t("schedulerDailyLimitNone"))}</span></span>
+      </div>
+      <div class="task-meta-row sub">
+        <span>${t("schedulerLast")}: <span class="val">${task.lastRunAt ? esc(ageText(task.lastRunAt)) : t("never")}</span></span>
+        ${task.lastDurationMs != null ? `<span>${t("schedulerDuration")}: ${Math.round(task.lastDurationMs / 100) / 10} ${unit("s", "с")}</span>` : ""}
+        ${task.lastTokens != null ? `<span>${t("schedulerTokens")}: ${task.lastTokens}</span>` : ""}
+      </div>
     </div>
     ${task.lastError ? `<div class="footnote mono" style="color:var(--danger);white-space:pre-wrap;max-height:140px;overflow:auto">${esc(boundedText(task.lastError))}</div>` : ""}
     <div class="row" style="margin-top:12px">
@@ -2007,7 +2877,7 @@ function schedulerDetails(task, data) {
         ${history.map((entry) => {
           const cached = (S.schedulerResults || {})[entry.id] || (entry.result !== undefined ? entry : null);
           return `<div class="footnote mono" style="margin-top:2px">
-          ${esc(new Date(entry.at * 1000).toLocaleString())} · ${esc(entry.status)}${entry.tokens != null ? ` · ${entry.tokens} ${t("schedulerTokens")}` : ""}
+          ${esc(dateTimeText(entry.at))} · ${esc(entry.status)}${entry.tokens != null ? ` · ${entry.tokens} ${t("schedulerTokensUnit")}` : ""}
           ${cached
             ? ` · ${esc(boundedText(String(cached.result || cached.error || "")).slice(0, 240))}`
             : ` · <button class="ghost small" data-action="schedulerResultLoad" data-id="${esc(entry.id)}">${t("schedulerResult")}</button>`}
@@ -2030,10 +2900,10 @@ function schedulerHistoryCard(data) {
       ${history.slice(0, 50).map((entry) => {
         const cached = (S.schedulerResults || {})[entry.id] || (entry.result !== undefined ? entry : null);
         return `<div class="row" style="align-items:flex-start;gap:8px">
-          <span class="mono footnote" style="min-width:150px">${esc(new Date(entry.at * 1000).toLocaleString())}</span>
+          <span class="mono footnote" style="min-width:132px">${esc(dateTimeText(entry.at))}</span>
           <span class="pill ${entry.status === "ok" ? "ok" : entry.status === "error" ? "danger" : ""}">${esc(entry.status)}</span>
           <span class="muted">${esc(name(entry.taskId))}</span>
-          ${entry.tokens != null ? `<span class="pill">${entry.tokens} ${t("schedulerTokens")}</span>` : ""}
+          ${entry.tokens != null ? `<span class="mono footnote">${entry.tokens} ${t("schedulerTokensUnit")}</span>` : ""}
           <span class="spacer"></span>
           ${cached
             ? `<span class="mono footnote" style="max-width:45%;white-space:pre-wrap">${esc(boundedText(String(cached.result || cached.error || "")).slice(0, 240))}</span>`
@@ -2141,10 +3011,10 @@ function localAiEngineBadge() {
 function localAiSubtabs() {
   const current = S.localAi.tab || "models";
   const tabs = [
-    { id: "models", label: t("localAiModels"), icon: "cpu" },
-    { id: "catalog", label: t("localAiCatalog"), icon: "cube" },
+    { id: "models", label: t("localAiModels"), icon: "cube" },
+    { id: "catalog", label: t("localAiCatalog"), icon: "sparkles" },
     { id: "downloads", label: t("localAiDownloads"), icon: "download", badge: S.localAi.activeDownloadCount || 0 },
-    { id: "runtime", label: t("localAiRuntime"), icon: "terminal" },
+    { id: "runtime", label: t("localAiRuntime"), icon: "cpu" },
     { id: "settings", label: t("localAiSettings"), icon: "gear" },
   ];
 
@@ -2153,6 +3023,7 @@ function localAiSubtabs() {
     <div class="subtabs-list">
       ${tabs.map((tab) => `
         <button class="subtab-btn ${current === tab.id ? "active" : ""}" data-action="localAiTab" data-id="${tab.id}">
+          ${localAiIcon(tab.icon, 12)}
           <span>${esc(tab.label)}</span>
           ${tab.badge ? `<span class="badge">${tab.badge}</span>` : ""}
         </button>
@@ -2831,6 +3702,7 @@ function localAiApiCard() {
 function localAiSettingsTab() {
   const hw = S.localAi.hardware || {};
   const rt = S.localAi.runtime || {};
+  const settings = S.settings || {};
   // The engine path resolves from the live runtime status, so a runtime that
   // was already installed before this launch still reads as present.
   const binaryPath = rt.binaryPath || hw.binaryPath || "";
@@ -2849,7 +3721,7 @@ function localAiSettingsTab() {
       <div class="stack" style="margin-top:10px">
         <div class="field-label">${esc(t("localAiModelsDirectory"))}</div>
         <div class="row">
-          <input type="text" id="local-ai-models-dir" class="mono" value="${esc(modelsDir)}" readonly>
+          <input type="text" id="local-ai-models-dir" class="mono local-ai-path-input" value="${esc(modelsDir)}" readonly>
           <button class="btn small" data-action="localAiOpenModelsFolder">${esc(t("localAiOpenModelsFolder"))}</button>
         </div>
         <div class="stat-line">
@@ -2866,7 +3738,7 @@ function localAiSettingsTab() {
       <div class="stack" style="margin-top:10px">
         <div class="field-label">${esc(t("localAiLlamaServerPath"))}</div>
         <div class="row">
-          <input type="text" id="local-ai-bin-path" class="mono" title="${esc(binaryPath)}" value="${esc(binaryPath)}" placeholder="${esc(t("localAiBinaryAuto"))}">
+          <input type="text" id="local-ai-bin-path" class="mono local-ai-path-input" title="${esc(binaryPath)}" value="${esc(binaryPath)}" placeholder="${esc(t("localAiBinaryAuto"))}">
           <button class="btn small" data-action="localAiPickBinary">${esc(t("localAiBrowse"))}</button>
           <button class="ghost small" data-action="localAiSaveBinary">${esc(t("save"))}</button>
         </div>
@@ -2895,6 +3767,63 @@ function localAiSettingsTab() {
 
         <div class="divider" style="margin:6px 0"></div>
         ${localAiRuntimeInstallBody()}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiScheduling"))}</h2>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <div class="row local-ai-scheduling-row">
+          <label class="field-label" for="local-ai-parallel">${esc(t("localAiParallelRequests"))}</label>
+          <select id="local-ai-parallel">
+            ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${Number(settings.localParallelRequests || 1) === n ? "selected" : ""}>${n === 1 ? esc(t("localAiParallelLowest")) : n}</option>`).join("")}
+          </select>
+        </div>
+        <div class="row local-ai-scheduling-row">
+          <label class="field-label" for="local-ai-idle">${esc(t("localAiIdleUnload"))}</label>
+          <select id="local-ai-idle">
+            ${[[0, "localAiIdleNever"], [300, "localAiIdle5"], [900, "localAiIdle15"], [1800, "localAiIdle30"], [3600, "localAiIdle60"]].map(([value, key]) => `<option value="${value}" ${Number(settings.localIdleUnloadSeconds || 0) === value ? "selected" : ""}>${esc(t(key))}</option>`).join("")}
+          </select>
+        </div>
+        <div class="row local-ai-scheduling-row">
+          <label class="field-label" for="local-ai-models-max">${esc(t("localAiModelsMax"))}</label>
+          <select id="local-ai-models-max">
+            ${[1, 2, 3].map((n) => `<option value="${n}" ${Number(settings.localModelsMax || 1) === n ? "selected" : ""}>${n === 1 ? esc(t("localAiModelsMaxRecommended")) : n}</option>`).join("")}
+          </select>
+        </div>
+        <div class="footnote">${esc(t("localAiSchedulingHint"))}</div>
+        <div class="row">
+          <span class="footnote">${esc(t("localAiSchedulingRestart"))}</span>
+          <span class="spacer"></span>
+          <button class="btn small" data-action="localAiSaveScheduling">${esc(t("save"))}</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>${esc(t("localAiGatewayLoopback"))}</h2>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <div class="row local-ai-gateway-row">
+          <div class="stack" style="gap:2px">
+            <b>${esc(t("localAiGatewayPort"))}</b>
+            <span class="footnote mono">http://127.0.0.1:${esc((S.status && S.status.port) || (settings.port || 18317))}/v1</span>
+          </div>
+          <span class="spacer"></span>
+          <span class="pill ${S.status && S.status.running ? "ok" : ""}">${esc(t(S.status && S.status.running ? "localAiListening" : "localAiStopped"))}</span>
+        </div>
+        <div class="divider"></div>
+        <div class="row local-ai-gateway-row">
+          <div class="stack" style="gap:2px">
+            <b>${esc(t("localAiLlamaPort"))}</b>
+            <span class="footnote mono">http://127.0.0.1:${esc(rt.port || 0)}/v1 ${esc(t("localAiLoopbackAuth"))}</span>
+          </div>
+          <span class="spacer"></span>
+          <span class="pill ${rt.isRunning ? "ok" : ""}">${esc(t(rt.isRunning ? "localAiActive" : "localAiStandby"))}</span>
+        </div>
       </div>
     </div>
 

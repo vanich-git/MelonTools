@@ -52,6 +52,21 @@ pub struct BridgeState {
     models: std::sync::Arc<Mutex<Option<(Value, std::time::Instant)>>>,
     /// OpenRouter metrics for the chips popover (5-minute freshness).
     providers: Mutex<Option<(Value, std::time::Instant)>>,
+    /// Last automatic answer the chips reported after a capacity error. Feeds
+    /// the "auto-continue" row in Settings and the tray status.
+    auto_retry: Mutex<AutoRetryLog>,
+}
+
+/// Everything the chips told us about automatic capacity handling.
+#[derive(Default, Clone)]
+pub struct AutoRetryLog {
+    pub actions: i64,
+    /// `retry` when Codex's own control was pressed, `continue` when the
+    /// fallback sent a message instead.
+    pub kind: String,
+    pub attempt: i64,
+    /// Reference epoch seconds.
+    pub at: Option<i64>,
 }
 
 impl BridgeState {
@@ -62,8 +77,18 @@ impl BridgeState {
             session_path: Mutex::new(None),
             models: std::sync::Arc::new(Mutex::new(None)),
             providers: Mutex::new(None),
+            auto_retry: Mutex::new(AutoRetryLog::default()),
         }
     }
+}
+
+/// Automatic capacity answers the chips reported, for the UI card.
+pub fn auto_retry_log(state: &BridgeState) -> (i64, String, Option<i64>) {
+    state
+        .auto_retry
+        .lock()
+        .map(|guard| (guard.actions, guard.kind.clone(), guard.at))
+        .unwrap_or((0, String::new(), None))
 }
 
 fn set_status(state: &BridgeState, value: Value) {
@@ -246,6 +271,9 @@ type Ws =
 struct Session {
     ws: Ws,
     next_id: u64,
+    /// Messages the page sent through the `__melonSend` binding. They arrive
+    /// interleaved with command replies, so every read drains them here.
+    page_messages: Vec<Value>,
 }
 
 impl Session {
@@ -253,7 +281,77 @@ impl Session {
         let (ws, _) = tokio_tungstenite::connect_async(ws_url)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { ws, next_id: 1 })
+        let mut session = Self {
+            ws,
+            next_id: 1,
+            page_messages: Vec::new(),
+        };
+        // The binding is what the chips use for the refresh button and for the
+        // auto-continue report. Without it those controls hide themselves.
+        session
+            .command(json!({"method": "Runtime.addBinding", "params": {"name": "__melonSend"}}))
+            .await
+            .map_err(|e| format!("addBinding: {e}"))?;
+        session
+            .command(json!({"method": "Runtime.enable", "params": {}}))
+            .await
+            .map_err(|e| format!("runtime.enable: {e}"))?;
+        Ok(session)
+    }
+
+    /// Sends a command that carries no result the caller needs, draining any
+    /// binding messages that arrive in the meantime.
+    async fn command(&mut self, mut request: Value) -> Result<(), String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        request["id"] = json!(id);
+        self.ws
+            .send(Message::Text(request.to_string()))
+            .await
+            .map_err(|e| e.to_string())?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("command timeout".to_string());
+            }
+            match tokio::time::timeout(remaining, self.ws.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else {
+                        continue;
+                    };
+                    self.capture_binding(&value);
+                    if value.get("id").and_then(|v| v.as_u64()) != Some(id) {
+                        continue;
+                    }
+                    return match value.get("error") {
+                        Some(error) => Err(error.to_string()),
+                        None => Ok(()),
+                    };
+                }
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(error))) => return Err(error.to_string()),
+                Ok(None) => return Err("сокет закрыт".to_string()),
+                Err(_) => return Err("command timeout".to_string()),
+            }
+        }
+    }
+
+    /// Keeps a `Runtime.bindingCalled` payload for the tick to read.
+    fn capture_binding(&mut self, value: &Value) {
+        if value.get("method").and_then(|v| v.as_str()) != Some("Runtime.bindingCalled") {
+            return;
+        }
+        let Some(payload) = value.pointer("/params/payload").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if let Ok(parsed) = serde_json::from_str::<Value>(payload) {
+            // Bounded: a page that spams the binding must not grow the vector
+            // without limit between ticks.
+            if self.page_messages.len() < 32 {
+                self.page_messages.push(parsed);
+            }
+        }
     }
 
     async fn evaluate(&mut self, expression: &str) -> Result<Option<Value>, String> {
@@ -284,6 +382,7 @@ impl Session {
                         Ok(value) => value,
                         Err(_) => continue,
                     };
+                    self.capture_binding(&value);
                     if value.get("id").and_then(|v| v.as_u64()) != Some(id) {
                         continue;
                     }
@@ -503,7 +602,51 @@ async fn status_payload(
         "model": if model_name.is_empty() { Value::Null } else { json!(model_name.clone()) },
         "provider": if model_name.is_empty() { Value::Null } else { json!(provider_of(&model_name)) },
     });
+    payload["autoRetry"] =
+        auto_retry_payload(&accounts, &settings.lang, settings.auto_retry_enabled);
     payload
+}
+
+/// Auto-continue after a capacity error, the Windows twin of the macOS
+/// `autoRetry` block. The injected script only acts when this is present and
+/// enabled, so without it Codex stopped at "model is at capacity" forever.
+///
+/// `poolPaused` is the authoritative brake: when every usable account is held
+/// back by a limit or a reserve, answering the card would fire a continuation
+/// every couple of minutes with no chance to succeed.
+fn auto_retry_payload(accounts: &[vault::Account], lang: &str, enabled: bool) -> Value {
+    let ru = lang != "en";
+    let mut auto_retry = json!({
+        "enabled": enabled,
+        // Let the failed turn settle before the fallback sends a new message.
+        "continueDelaySeconds": 45,
+        "continueText": if ru {
+            "Продолжи задачу с того места, где остановился. Не повторяй уже сделанную работу."
+        } else {
+            "Continue the task from where you stopped. Do not repeat work already done."
+        },
+    });
+    // The strongest usable window is the signal: one healthy account is enough
+    // to keep retrying.
+    let best = accounts
+        .iter()
+        .filter_map(|a| a.quota.as_ref()?.hourly_remaining_percent)
+        .reduce(f64::max)
+        .or_else(|| {
+            accounts
+                .iter()
+                .filter_map(|a| a.quota.as_ref()?.weekly_remaining_percent)
+                .reduce(f64::max)
+        });
+    if let Some(best) = best {
+        auto_retry["poolHourlyRemaining"] = json!(best.round() as i64);
+    }
+    let enabled_accounts: Vec<&vault::Account> =
+        accounts.iter().filter(|a| a.pool_enabled()).collect();
+    let pool_paused =
+        !enabled_accounts.is_empty() && enabled_accounts.iter().all(|a| a.is_blocked());
+    auto_retry["poolPaused"] = json!(enabled_accounts.is_empty() || pool_paused);
+    auto_retry
 }
 
 /// Gateway model list with a short freshness window — the 5 s tick has no
@@ -795,8 +938,45 @@ pub async fn tick(state: &BridgeState, settings: &crate::settings::Settings) {
         }
     }
 
+    // Page messages are handled before the status push: a refresh request
+    // changes the account table the payload carries.
+    let page_messages = std::mem::take(&mut session.page_messages);
+    for message in &page_messages {
+        match message.get("action").and_then(|v| v.as_str()) {
+            Some("refresh") => {
+                if let Ok(client) = crate::quota::client() {
+                    let _ = crate::quota::refresh_all(&client, None).await;
+                    crate::live_quota::tick(settings).await;
+                    if crate::gateway::health(settings.port, &settings.api_key).await {
+                        let _ = crate::gateway::sync_accounts(settings);
+                    }
+                }
+            }
+            // The chips report what they did, so the log and the status row can
+            // show that a capacity error was answered automatically.
+            Some("autoRetry") => {
+                let kind = message
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("retry");
+                let attempt = message.get("attempt").and_then(|v| v.as_i64()).unwrap_or(0);
+                if let Ok(mut guard) = state.auto_retry.lock() {
+                    guard.actions += 1;
+                    guard.kind = kind.to_string();
+                    guard.attempt = attempt;
+                    guard.at = Some(crate::vault::unix_now() as i64);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut payload = status_payload(state, settings, model.clone()).await;
     payload["active"]["threadId"] = json!(thread_id.clone());
+    if let Ok(guard) = state.auto_retry.lock() {
+        payload["autoRetryActions"] = json!(guard.actions);
+        payload["lastAutoRetryAt"] = json!(guard.at);
+    }
     if let Some(mut session_usage) = thread_id
         .as_deref()
         .and_then(|id| session_usage_cached(state, id))
@@ -1405,10 +1585,11 @@ pub async fn launch_codex_with_debug_port(settings: &Settings) -> Result<Value, 
 #[cfg(test)]
 mod tests {
     use super::{
-        provider_pricing, session_cost, store_exe_paths, store_location_from_output,
-        valid_codex_exe,
+        auto_retry_payload, provider_pricing, session_cost, store_exe_paths,
+        store_location_from_output, valid_codex_exe,
     };
     use crate::settings::{ProviderModel, Settings};
+    use crate::vault;
     use serde_json::json;
 
     fn pricing_settings() -> Settings {
@@ -1493,6 +1674,66 @@ mod tests {
             "total": {"input": 10, "cached": 0, "output": 5, "total": 15},
         });
         assert!(session_cost(&session, &settings).is_none());
+    }
+
+    fn retry_account(hourly: Option<f64>, backup: bool) -> vault::Account {
+        vault::Account {
+            id: "a".to_string(),
+            email: None,
+            plan_type: None,
+            account_id: None,
+            user_id: None,
+            subscription_active_until: None,
+            subscription_updated_at: None,
+            tokens: vault::Tokens::default(),
+            last_refresh: None,
+            quota: hourly.map(|value| vault::Quota {
+                hourly_remaining_percent: Some(value),
+                weekly_remaining_percent: Some(value),
+                ..Default::default()
+            }),
+            quota_updated_at: None,
+            quota_error: None,
+            quota_source: None,
+            quota_block: None,
+            hourly_reserve_percent: None,
+            weekly_reserve_percent: None,
+            preferred_first: None,
+            is_backup: Some(backup),
+            pool_enabled: Some(true),
+            selected_models: None,
+            needs_relogin: None,
+        }
+    }
+
+    #[test]
+    fn auto_retry_carries_the_localized_continuation_and_best_window() {
+        let accounts = vec![
+            retry_account(Some(40.0), false),
+            retry_account(Some(78.4), true),
+        ];
+        let ru = auto_retry_payload(&accounts, "ru", true);
+        assert_eq!(ru["enabled"], true);
+        assert_eq!(ru["poolHourlyRemaining"], 78);
+        assert_eq!(ru["poolPaused"], false);
+        assert!(ru["continueText"].as_str().unwrap().contains("Продолжи"));
+        let en = auto_retry_payload(&accounts, "en", false);
+        assert_eq!(en["enabled"], false);
+        assert!(en["continueText"].as_str().unwrap().starts_with("Continue"));
+    }
+
+    #[test]
+    fn auto_retry_stays_silent_when_every_account_is_blocked() {
+        // An exhausted window blocks through the quota itself; a reserve block
+        // only counts while that reserve is configured above zero. The block
+        // check also needs a fresh reading, so the timestamp is set here.
+        let mut blocked = retry_account(Some(0.0), false);
+        blocked.quota_updated_at = Some(crate::vault::now_ref());
+        assert!(blocked.is_blocked());
+        let payload = auto_retry_payload(&[blocked], "en", true);
+        assert_eq!(payload["poolPaused"], true);
+        // An empty pool is paused too: nothing can answer a capacity error.
+        assert_eq!(auto_retry_payload(&[], "en", true)["poolPaused"], true);
     }
 
     #[test]

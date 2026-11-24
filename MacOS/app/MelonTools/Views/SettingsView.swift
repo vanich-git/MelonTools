@@ -86,9 +86,9 @@ struct SettingsView: View {
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 130, alignment: .leading)
                             Circle()
-                                .fill(MTTheme.amber)
+                                .fill(MTTheme.cyan)
                                 .frame(width: 16, height: 16)
-                            Text(L("golden melon"))
+                            Text(L("cyan"))
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textPrimary)
                         }
@@ -99,7 +99,7 @@ struct SettingsView: View {
                                 .frame(width: 130, alignment: .leading)
                             Toggle(L("Show a compact island at the top of the screen"), isOn: $notchHUDEnabled)
                                 .toggleStyle(.switch)
-                                .tint(MTTheme.amber)
+                                .tint(MTTheme.cyan)
                                 .font(MTTheme.body(12))
                                 .onChange(of: notchHUDEnabled) { _, enabled in
                                     NotchHUDController.shared.setEnabled(enabled)
@@ -206,7 +206,7 @@ struct SettingsView: View {
                             }
                         ))
                         .toggleStyle(.switch)
-                        .tint(MTTheme.amber)
+                        .tint(MTTheme.cyan)
                         .font(MTTheme.body(12))
 
                         HStack(spacing: MTTheme.s3) {
@@ -214,14 +214,15 @@ struct SettingsView: View {
                                 .font(MTTheme.mono(11))
                                 .foregroundStyle(MTTheme.textSecondary)
                                 .frame(width: 180, alignment: .leading)
-                            Stepper(value: Binding(
-                                get: { max(15, streamBootstrapTimeoutSeconds) },
-                                set: { streamBootstrapTimeoutSeconds = $0; CodexGatewayService.shared.applyStreamBootstrapTimeout() }
-                            ), in: 15...300, step: 15) {
-                                Text("\(streamBootstrapTimeoutSeconds) " + L("sec"))
-                                    .font(MTTheme.mono(11))
-                                    .foregroundStyle(streamBootstrapTimeoutSeconds > 0 ? MTTheme.textPrimary : MTTheme.textTertiary)
-                            }
+                            MTStepperField(
+                                value: Binding(
+                                    get: { max(15, streamBootstrapTimeoutSeconds) },
+                                    set: { streamBootstrapTimeoutSeconds = $0; CodexGatewayService.shared.applyStreamBootstrapTimeout() }
+                                ),
+                                range: 15...300,
+                                step: 15,
+                                suffix: L("sec")
+                            )
                             .disabled(streamBootstrapTimeoutSeconds == 0)
                         }
                         Text(L("Antigravity only: if the first token does not arrive in time, the engine retries the request on another Google account before the client sees the stream. Codex, Claude and API-key providers are not affected. Empty heartbeat frames extend the window while the model is still thinking (up to 3x the timeout). The first strike only fails over; repeated strikes cool the account down for 60 s, 5 min and 30 min."))
@@ -265,7 +266,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(MTTheme.amber)
+                        .tint(MTTheme.cyan)
                         if let last = composer.lastAutoRetryAt {
                             Text(L("Last automatic action:") + " " + last.formatted(date: .omitted, time: .shortened))
                                 .font(MTTheme.mono(10))
@@ -273,6 +274,10 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                ComposerChipsCard()
+
+                InstancesCard()
 
                 MTCard(title: L("Service settings"), systemImage: "network", accent: MTTheme.cyan, isBento: true) {
                     VStack(alignment: .leading, spacing: MTTheme.s2) {
@@ -346,7 +351,7 @@ struct SettingsView: View {
                                 .disabled(backupBusy)
                         }
                         HStack(spacing: MTTheme.s2) {
-                            MTGlassButton(title: L("Export backup…"), systemImage: "square.and.arrow.up", tint: MTTheme.amber, prominent: true) {
+                            MTGlassButton(title: L("Export backup…"), systemImage: "square.and.arrow.up", tint: MTTheme.cyan, prominent: true) {
                                 exportBackup()
                             }
                             MTGlassButton(title: L("Import backup…"), systemImage: "square.and.arrow.down", tint: MTTheme.amber) {

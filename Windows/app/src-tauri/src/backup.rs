@@ -626,10 +626,7 @@ fn parse_settings(value: &Value) -> Result<settings::Settings, String> {
     if !(1024..=65535).contains(&settings.port) {
         return Err("the backup payload is damaged: settingsWindows port is out of range".into());
     }
-    if settings.quota_interval == 0 {
-        settings.quota_interval = 300;
-    }
-    if !(60..=86_400).contains(&settings.quota_interval) {
+    if settings.quota_interval != 0 && !(60..=86_400).contains(&settings.quota_interval) {
         return Err(
             "the backup payload is damaged: settingsWindows quota interval is out of range".into(),
         );

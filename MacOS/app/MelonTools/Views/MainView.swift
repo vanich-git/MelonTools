@@ -2,20 +2,35 @@ import AppKit
 import SwiftUI
 
 enum MTSection: String, CaseIterable, Identifiable {
-    case dashboard, scheduler, codexAccounts, codexAPI, providers, localAI, codexComposer, codexInstances, settings, donate
+    case dashboard
+    case agents
+    case codexInstances
+    case codexComposer
+    case providers
+    case routing
+    case usage
+    case codexAPI
+    case localAI
+    case scheduler
+    case codexAccounts
+    case settings
+    case donate
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .dashboard: return L("Dashboard")
+        case .agents: return L("Agents")
+        case .codexInstances: return L("Instances")
+        case .codexComposer: return L("Composer Chips")
+        case .providers: return L("Providers")
+        case .routing: return L("Routing")
+        case .usage: return L("Usage")
+        case .codexAPI: return L("Codex API")
+        case .localAI: return L("Local AI")
         case .scheduler: return L("Scheduler")
         case .codexAccounts: return L("Accounts")
-        case .codexAPI: return L("Codex API")
-        case .providers: return L("Connections")
-        case .localAI: return L("Local AI")
-        case .codexComposer: return L("Composer Chips")
-        case .codexInstances: return L("Instances")
         case .settings: return L("Settings")
         case .donate: return L("Donate")
         }
@@ -24,13 +39,16 @@ enum MTSection: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .dashboard: return "square.grid.2x2"
+        case .agents: return "person.crop.rectangle.stack"
+        case .codexInstances: return "square.on.square"
+        case .codexComposer: return "capsule"
+        case .providers: return "square.stack.3d.up"
+        case .routing: return "arrow.triangle.branch"
+        case .usage: return "chart.bar.xaxis"
+        case .codexAPI: return "network"
+        case .localAI: return "cpu.fill"
         case .scheduler: return "clock.badge.checkmark"
         case .codexAccounts: return "person.2"
-        case .codexAPI: return "network"
-        case .providers: return "square.stack.3d.up"
-        case .localAI: return "cpu.fill"
-        case .codexComposer: return "capsule"
-        case .codexInstances: return "square.on.square"
         case .settings: return "gear"
         case .donate: return "heart.circle.fill"
         }
@@ -40,13 +58,16 @@ enum MTSection: String, CaseIterable, Identifiable {
     var accentColor: Color {
         switch self {
         case .dashboard: return MTTheme.cyan
+        case .agents: return MTTheme.violet
+        case .codexInstances: return MTTheme.amber
+        case .codexComposer: return MTTheme.cyan
+        case .providers: return MTTheme.emerald
+        case .routing: return MTTheme.cyan
+        case .usage: return MTTheme.emerald
+        case .codexAPI: return MTTheme.cyan
+        case .localAI: return MTTheme.emerald
         case .scheduler: return MTTheme.amber
         case .codexAccounts: return MTTheme.violet
-        case .codexAPI: return MTTheme.cyan
-        case .providers: return MTTheme.emerald
-        case .localAI: return MTTheme.emerald
-        case .codexComposer: return MTTheme.cyan
-        case .codexInstances: return MTTheme.amber
         case .settings: return MTTheme.textSecondary
         case .donate: return MTTheme.ruby
         }
@@ -57,14 +78,30 @@ enum MTSection: String, CaseIterable, Identifiable {
         let sections: [MTSection]
     }
 
+    /// Sidebar groups follow the model Magpie uses: day-to-day work first, then
+    /// the places models are configured, then the numbers about them.
     static var groups: [Group] {
         [
             Group(title: L("Overview"), sections: [.dashboard]),
-            Group(title: L("Scheduler"), sections: [.scheduler]),
-            Group(title: L("Local AI"), sections: [.localAI]),
-            Group(title: L("Codex"), sections: [.codexAccounts, .codexAPI, .providers, .codexComposer, .codexInstances]),
+            Group(title: L("Work"), sections: [.agents]),
+            Group(title: L("Models"), sections: [.codexAPI, .routing, .providers, .localAI]),
+            Group(title: L("Insights"), sections: [.usage]),
+            Group(title: L("Automation"), sections: [.scheduler]),
+            Group(title: L("Accounts"), sections: [.codexAccounts]),
             Group(title: L("App"), sections: [.settings, .donate]),
         ]
+    }
+
+    /// Sidebar order, flattened: also the order of the Cmd-1…9 shortcuts.
+    /// Sections missing from `groups` are reachable only by their own page and
+    /// stay in the enum so a stored selection still decodes.
+    static var visibleSections: [MTSection] {
+        groups.flatMap(\.sections)
+    }
+
+    static func initialSelection() -> MTSection {
+        let saved = MTSection(rawValue: UserDefaults.standard.string(forKey: "mainSelection") ?? "") ?? .dashboard
+        return visibleSections.contains(saved) ? saved : .settings
     }
 }
 
@@ -73,9 +110,7 @@ struct MainView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var updater = UpdaterStore.shared
-    @State private var selection: MTSection = MTSection(
-        rawValue: UserDefaults.standard.string(forKey: "mainSelection") ?? ""
-    ) ?? .dashboard
+    @State private var selection: MTSection = MTSection.initialSelection()
     /// First-run guide: shown once, then never again on this account.
     @AppStorage("onboardingDone") private var onboardingDone = false
 
@@ -94,6 +129,11 @@ struct MainView: View {
             UserDefaults.standard.set(section.rawValue, forKey: "mainSelection")
         }
         .onAppear {
+            // Normalize a stored pointer to a merged or hidden section once, so
+            // the next launch does not have to remap it again.
+            if UserDefaults.standard.string(forKey: "mainSelection") != selection.rawValue {
+                UserDefaults.standard.set(selection.rawValue, forKey: "mainSelection")
+            }
             app.applyAppearance()
             if let window = NSApp.windows.first(where: { $0.title == "Melon Tools" }) {
                 window.identifier = NSUserInterfaceItemIdentifier("main")
@@ -115,9 +155,8 @@ struct MainView: View {
             OnboardingView(selection: $selection)
         }
         .overlay {
-            // Cmd-1…9 jump to the first nine sidebar sections (the display
-            // order of MTSection).
-            ForEach(Array(MTSection.allCases.prefix(9).enumerated()), id: \.offset) { index, section in
+            // Cmd-1…9 jump to the first nine sidebar sections in display order.
+            ForEach(Array(MTSection.visibleSections.prefix(9).enumerated()), id: \.offset) { index, section in
                 Button("") { selection = section }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                     .opacity(0)
@@ -246,7 +285,7 @@ struct MainView: View {
                 Text("Melon Tools")
                     .font(MTTheme.body(13, weight: .bold))
                     .foregroundStyle(MTTheme.textPrimary)
-                Text(L("scheduler + codex"))
+                Text(L("providers, agents and routing"))
                     .font(MTTheme.mono(9))
                     .foregroundStyle(MTTheme.textSecondary)
             }
@@ -363,13 +402,16 @@ private struct GatewayFooter: View {
     private var detail: some View {
         switch selection {
         case .dashboard: DashboardView(selection: $selection)
+        case .agents: AgentsView(selection: $selection)
+        case .codexInstances: CodexInstancesView()
+        case .codexComposer: CodexComposerView()
+        case .providers: CodexProvidersView(selection: $selection)
+        case .routing: RoutingView(selection: $selection)
+        case .usage: UsageView(selection: $selection)
+        case .codexAPI: CodexAPIView()
+        case .localAI: LocalAIView()
         case .scheduler: SchedulerView()
         case .codexAccounts: CodexAccountsView(selection: $selection)
-        case .codexAPI: CodexAPIView()
-        case .providers: CodexProvidersView(selection: $selection)
-        case .localAI: LocalAIView()
-        case .codexComposer: CodexComposerView()
-        case .codexInstances: CodexInstancesView()
         case .settings: SettingsView()
         case .donate: DonateView()
         }

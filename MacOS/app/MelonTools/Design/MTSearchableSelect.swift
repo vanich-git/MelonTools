@@ -12,6 +12,7 @@ struct MTSearchableSelect<Value: Hashable>: View {
     var width: CGFloat = 320
 
     @State private var isPresented = false
+    @State private var hovering = false
     @FocusState private var triggerFocused: Bool
 
     private var currentLabel: String {
@@ -37,24 +38,32 @@ struct MTSearchableSelect<Value: Hashable>: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(isPresented ? MTTheme.emerald : MTTheme.textTertiary)
             }
-            .padding(.horizontal, 8)
-            .frame(width: width, height: 24)
+            .padding(.horizontal, 12)
+            .frame(width: width, height: 26)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isPresented ? MTTheme.emerald.opacity(0.1) : Color.primary.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(
-                                isPresented ? MTTheme.emerald.opacity(0.7) : Color.primary.opacity(0.09),
-                                lineWidth: isPresented ? 1.2 : 1
-                            )
+                Capsule()
+                    .fill(
+                        isPresented ? MTTheme.emerald.opacity(0.1)
+                        : (hovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.05))
                     )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        isPresented ? MTTheme.emerald.opacity(0.7) : Color.primary.opacity(0.09),
+                        lineWidth: isPresented ? 1.2 : 1
+                    )
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(triggerFocused ? MTTheme.cyan.opacity(0.9) : Color.clear, lineWidth: 2)
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .focusable()
         .focused($triggerFocused)
+        .onHover { hovering = $0 }
         .help(currentLabel)
         .accessibilityLabel(currentLabel)
         .accessibilityValue(expandedState)

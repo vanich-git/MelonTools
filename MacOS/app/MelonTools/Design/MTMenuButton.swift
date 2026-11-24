@@ -40,6 +40,7 @@ struct MTMenuButton: View {
 
     @State private var isPresented = false
     @State private var hoveredEntry: UUID?
+    @State private var isHovering = false
 
     var body: some View {
         Button {
@@ -54,19 +55,23 @@ struct MTMenuButton: View {
                 }
             }
             .foregroundStyle(tint)
-            .frame(height: 22)
-            .padding(.horizontal, title == nil ? 6 : 9)
+            .frame(height: 24)
+            .padding(.horizontal, title == nil ? 8 : 12)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isPresented ? Color.primary.opacity(0.1) : Color.primary.opacity(0.05))
+                Capsule()
+                    .fill(
+                        isPresented ? Color.primary.opacity(0.1)
+                        : (isHovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.05))
+                    )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isPresented ? MTTheme.emerald.opacity(0.55) : Color.clear, lineWidth: 1)
+                Capsule()
+                    .strokeBorder(isPresented ? MTTheme.emerald.opacity(0.55) : Color.clear, lineWidth: 1)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             menuPanel
         }
@@ -97,14 +102,14 @@ struct MTMenuButton: View {
                             Spacer(minLength: 0)
                         }
                         .foregroundStyle(entry.isDestructive ? MTTheme.danger : MTTheme.textPrimary)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
-                            RoundedRectangle(cornerRadius: 6)
+                            Capsule()
                                 .fill(hoveredEntry == entry.id ? Color.primary.opacity(0.08) : Color.clear)
                         )
-                        .contentShape(Rectangle())
+                        .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .onHover { hoveredEntry = $0 ? entry.id : nil }
@@ -270,7 +275,7 @@ struct MTSelectList<Value: Hashable>: View {
         VStack(alignment: .leading, spacing: 6) {
             if searchable {
                 TextField(L("Search..."), text: $query)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.mtInput(size: .small))
                     .font(MTTheme.body(11.5))
                     .focused($searchFocused)
                     .onSubmit { commitHighlighted() }
@@ -365,17 +370,17 @@ struct MTSelectList<Value: Hashable>: View {
                         .foregroundStyle(MTTheme.emerald)
                 }
             }
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                Capsule()
                     .fill(
                         isHighlighted ? Color.primary.opacity(0.10)
                         : (isSelected ? MTTheme.emerald.opacity(0.16) : Color.clear)
                     )
             )
-            .contentShape(Rectangle())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -539,6 +544,7 @@ struct MTSelect<Value: Hashable>: View {
     var detail: ((Value) -> String)? = nil
 
     @State private var isPresented = false
+    @State private var hovering = false
     @FocusState private var triggerFocused: Bool
 
     private var currentLabel: String {
@@ -564,24 +570,32 @@ struct MTSelect<Value: Hashable>: View {
                     .foregroundStyle(isPresented ? MTTheme.emerald : MTTheme.textTertiary)
                     .rotationEffect(.degrees(isPresented ? 180 : 0))
             }
-            .padding(.horizontal, 8)
-            .frame(width: width, height: 24)
+            .padding(.horizontal, 12)
+            .frame(width: width, height: 26)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isPresented ? MTTheme.emerald.opacity(0.1) : Color.primary.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(
-                                isPresented ? MTTheme.emerald.opacity(0.7) : Color.primary.opacity(0.09),
-                                lineWidth: isPresented ? 1.2 : 1
-                            )
+                Capsule()
+                    .fill(
+                        isPresented ? MTTheme.emerald.opacity(0.1)
+                        : (hovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.05))
                     )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        isPresented ? MTTheme.emerald.opacity(0.7) : Color.primary.opacity(0.09),
+                        lineWidth: isPresented ? 1.2 : 1
+                    )
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(triggerFocused ? MTTheme.cyan.opacity(0.9) : Color.clear, lineWidth: 2)
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .focusable()
         .focused($triggerFocused)
+        .onHover { hovering = $0 }
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             MTSelectList(
                 options: options,
@@ -624,6 +638,7 @@ struct MTSegmented<Value: Hashable>: View {
     @Binding var selection: Value
     var options: [(value: Value, label: String)]
     var width: CGFloat?
+    @State private var hovered: Value?
 
     var body: some View {
         HStack(spacing: 2) {
@@ -639,23 +654,33 @@ struct MTSegmented<Value: Hashable>: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 4)
                         .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(isSelected ? Color.primary.opacity(0.12) : Color.clear)
+                            Capsule()
+                                .fill(
+                                    isSelected ? Color.primary.opacity(0.12)
+                                    : (hovered == option.value ? Color.primary.opacity(0.08) : Color.clear)
+                                )
                         )
-                        .contentShape(Rectangle())
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside {
+                        hovered = option.value
+                    } else if hovered == option.value {
+                        hovered = nil
+                    }
+                }
             }
         }
         .padding(2)
         .frame(width: width)
         .background(
-            RoundedRectangle(cornerRadius: 7)
+            Capsule()
                 .fill(Color.primary.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-                )
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
     }
 }

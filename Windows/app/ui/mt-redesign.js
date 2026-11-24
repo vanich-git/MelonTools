@@ -18,7 +18,7 @@ Object.assign(DICT.ru, {
   "dashboard": "Обзор",
   "accounts": "Аккаунты",
   "api": "API-сервис",
-  "providers": "Подключения",
+  "providers": "Провайдеры",
   "donate": "Донат",
   "settings": "Настройки",
   "codex": "Codex",
@@ -26,7 +26,7 @@ Object.assign(DICT.ru, {
   "overview": "Обзор",
   "schedulerGroup": "Планировщик",
   "local_ai": "Локальный ИИ",
-  "brandSub": "планировщик и Codex в одном месте",
+  "brandSub": "провайдеры, агенты и маршрутизация",
   "codexPool": "Пул Codex",
   "open": "Открыть",
   "weeklyLeft": "Остаток недели: {n}%",
@@ -34,7 +34,7 @@ Object.assign(DICT.ru, {
   "composer": "Чипы композера",
   "instances": "Инстансы Codex",
   "dashTitle": "Обзор",
-  "dashSub": "Планировщик и пул Codex в реальном времени.",
+  "dashSub": "Состояние шлюза, аккаунтов и расходов в реальном времени.",
   "gateway": "Шлюз",
   "running": "работает",
   "stopped": "остановлен",
@@ -98,7 +98,7 @@ Object.assign(DICT.ru, {
   "stale": "устарела",
   "history": "История",
   "historyHint": "Остаток квоты по последним обновлениям.",
-  "apiSub": "Локальный OpenAI-совместимый сервис на пуле ваших аккаунтов Codex.",
+  "apiSub": "Локальный OpenAI-совместимый шлюз на ваших провайдерах и аккаунтах.",
   "endpoint": "Адрес",
   "apiKey": "Ключ",
   "copy": "Копировать",
@@ -129,6 +129,9 @@ Object.assign(DICT.ru, {
   "launchCodex": "Запустить Codex",
   "configuration": "Параметры",
   "apiKeyHint": "Этот ключ используется как API-ключ OpenAI в других инструментах.",
+  "rotateKey": "Сменить ключ",
+  "rotateKeyHint": "Новый ключ обновляет шлюз и маршрут Codex. Перезапустите сервис, если другой клиент ещё держит старый ключ.",
+  "rotateKeyConfirm": "Сгенерировать новый ключ доступа? Старый перестанет работать после перезапуска сервиса.",
   "clientHint": "Любой OpenAI-совместимый инструмент может обращаться к этому сервису. Запросы обслуживаются аккаунтами Codex и расходуют вашу подписку ChatGPT.",
   "routingMode": "Режим роутинга",
   "manage": "Управление",
@@ -263,7 +266,7 @@ Object.assign(DICT.ru, {
   "serviceSettings": "Настройки сервиса",
   "dashboardWidgets": "Виджеты обзора",
   "accent": "Акцент",
-  "goldenMelon": "золотая дыня",
+  "goldenMelon": "циан",
   "showPoolHealth": "Показывать состояние пула",
   "showAntigravity": "Показывать состояние пула Antigravity",
   "showSpend": "Показывать расход и топ провайдеров",
@@ -306,6 +309,32 @@ Object.assign(DICT.ru, {
   "autoRefresh": "автообновление квот",
   "addAccount": "Добавить аккаунт",
   "addAccountHint": "Вход по коду: откроется страница OpenAI, введите код.",
+  "allProviders": "Все провайдеры",
+  "providerDetailSub": "Подключение, модели и маршрутизация этого провайдера.",
+  "qosToggle": "Переключать аккаунт Antigravity, если первый токен медлит",
+  "connection": "Подключение",
+  "advanced": "Дополнительно",
+  "standby": "ожидает",
+  "noAccounts": "нет аккаунтов",
+  "noBinary": "нет бинарника",
+  "signedInAs": "вход выполнен как {email}",
+  "autoRetry": "Продолжать автоматически после ошибки ёмкости",
+  "autoRetryHint": "Нажимает Retry в Codex; если кнопка пропала, отправляет короткое продолжение.",
+  "autoRetryLast": "Последнее автоматическое действие: {time}",
+  "gatewayAutoStart": "Запускать сервис при старте приложения",
+  "gatewayAutoStartHint": "Если выключить, локальный API не стартует сам. Запустить его можно кнопкой на странице API-сервис.",
+  "browserLogin": "Вход через браузер",
+  "browserLoginHint": "Откроется страница OpenAI, вход завершится сам.",
+  "browserLoginWaiting": "Завершите вход в браузере",
+  "browserLoginCancel": "Отменить вход",
+  "browserLoginDone": "Вход выполнен",
+  "browserLoginFailed": "Не удалось выполнить вход",
+  "browserLoginTimeout": "Браузер не вернул код за 10 минут",
+  "pasteLoginJson": "Вставить вход (JSON)",
+  "pasteLoginHint": "Вставьте целиком содержимое сохранённого файла входа Codex (JSON).",
+  "import": "Импортировать",
+  "pasteUnavailable": "Буфер обмена недоступен",
+  "pasteEmpty": "Буфер обмена пуст",
   "deviceCode": "Код",
   "deviceWaiting": "Ждём подтверждение…",
   "deviceOpen": "Открыть страницу входа",
@@ -321,7 +350,7 @@ Object.assign(DICT.ru, {
   "poolEnabledHint": "Квоты продолжают обновляться. Выключенный аккаунт вернётся в маршрутизацию только после ручного включения.",
   "availableShort": "есть",
   "unavailableShort": "нет",
-  "routing": "Роутинг",
+  "routing": "Маршрутизация",
   "accountRouting": "Роутинг аккаунтов",
   "strategy": "Стратегия",
   "strategyAuto": "Авто (рекомендуется)",
@@ -341,7 +370,7 @@ Object.assign(DICT.ru, {
   "strategyHintPlanLow": "Сначала используются тарифы младше.",
   "strategyHintExpiry": "Первым используется аккаунт с ближайшим окончанием подписки.",
   "strategyHintCustom": "Порядок задаётся стрелками; лимиты и роль «Резерв» продолжают действовать.",
-  "applyRouting": "Применить роутинг",
+  "applyRouting": "Применить маршрутизацию",
   "accountsInPool": "Аккаунтов в пуле: {n}",
   "orderCustom": "Включён ручной порядок — шлюз следует списку карточек",
   "preferred": "Первый",
@@ -383,8 +412,9 @@ Object.assign(DICT.ru, {
   "schedulerModelHint": "Модели шлюза из /v1/models.",
   "schedulerModelsFailed": "Список моделей недоступен — запустите шлюз и обновите.",
   "schedulerGatewayOff": "Шлюз не отвечает — выполнять задачи некуда. Запустите API-сервис и повторите.",
-  "schedulerTokens": "токены",
-  "schedulerDuration": "время",
+  "schedulerTokens": "Токены",
+  "schedulerTokensUnit": "токенов",
+  "schedulerDuration": "Время",
   "schedulerMinutesShort": "{n} мин",
   "schedulerTemplate": "Шаблон",
   "schedulerTemplateNone": "Без шаблона",
@@ -598,8 +628,8 @@ Object.assign(DICT.ru, {
 Object.assign(DICT.en, {
   "dashboard": "Dashboard",
   "accounts": "Accounts",
-  "api": "Codex API",
-  "providers": "Connections",
+  "api": "API Service",
+  "providers": "Providers",
   "donate": "Donate",
   "settings": "Settings",
   "codex": "Codex",
@@ -607,7 +637,7 @@ Object.assign(DICT.en, {
   "overview": "Overview",
   "schedulerGroup": "Scheduler",
   "local_ai": "Local AI",
-  "brandSub": "scheduler + codex",
+  "brandSub": "providers, agents and routing",
   "codexPool": "Codex pool",
   "open": "Open",
   "weeklyLeft": "Weekly quota left: {n}%",
@@ -615,7 +645,7 @@ Object.assign(DICT.en, {
   "composer": "Composer Chips",
   "instances": "Codex Instances",
   "dashTitle": "Overview",
-  "dashSub": "The Scheduler and the Codex pool in real time.",
+  "dashSub": "Gateway, accounts and spending in real time.",
   "gateway": "Gateway",
   "running": "running",
   "stopped": "stopped",
@@ -679,7 +709,7 @@ Object.assign(DICT.en, {
   "stale": "stale",
   "history": "History",
   "historyHint": "Quota remaining across recent refreshes.",
-  "apiSub": "A local OpenAI-compatible service on the pool of your Codex accounts.",
+  "apiSub": "A local OpenAI-compatible gateway on your providers and accounts.",
   "endpoint": "Base URL",
   "apiKey": "Key",
   "copy": "Copy",
@@ -710,6 +740,9 @@ Object.assign(DICT.en, {
   "launchCodex": "Launch Codex",
   "configuration": "Configuration",
   "apiKeyHint": "Use this key as the OpenAI API key in other tools.",
+  "rotateKey": "Rotate key",
+  "rotateKeyHint": "A new key updates the gateway and the Codex route. Restart the service if another client still uses the old key.",
+  "rotateKeyConfirm": "Generate a new access key? The old one stops working after the service restarts.",
   "clientHint": "Any OpenAI-compatible tool can point at this service. Requests are served from the Codex accounts and are billed to your ChatGPT subscriptions.",
   "routingMode": "Routing mode",
   "manage": "Manage",
@@ -844,7 +877,7 @@ Object.assign(DICT.en, {
   "serviceSettings": "Service settings",
   "dashboardWidgets": "Dashboard widgets",
   "accent": "Accent",
-  "goldenMelon": "golden melon",
+  "goldenMelon": "cyan",
   "showPoolHealth": "Show pool health",
   "showAntigravity": "Show Antigravity pool health",
   "showSpend": "Show spend & top providers",
@@ -887,6 +920,32 @@ Object.assign(DICT.en, {
   "autoRefresh": "quota auto-refresh",
   "addAccount": "Add account",
   "addAccountHint": "Device code: a page opens, enter the code.",
+  "allProviders": "All providers",
+  "providerDetailSub": "This provider's connection, models and routing.",
+  "qosToggle": "Switch Antigravity accounts when the first token is slow",
+  "connection": "Connection",
+  "advanced": "Advanced",
+  "standby": "standby",
+  "noAccounts": "no accounts",
+  "noBinary": "no binary",
+  "signedInAs": "signed in as {email}",
+  "autoRetry": "Auto-continue after capacity errors",
+  "autoRetryHint": "Presses Codex Retry; when that control disappears, sends a short continuation.",
+  "autoRetryLast": "Last automatic action: {time}",
+  "gatewayAutoStart": "Start the service at app launch",
+  "gatewayAutoStartHint": "When off, the local API does not start by itself. Start it from the API Service page.",
+  "browserLogin": "OAuth browser login",
+  "browserLoginHint": "A page opens; the login completes on its own.",
+  "browserLoginWaiting": "Complete the sign-in in the browser",
+  "browserLoginCancel": "Cancel login",
+  "browserLoginDone": "Logged in",
+  "browserLoginFailed": "Login failed",
+  "browserLoginTimeout": "The browser returned no code within 10 minutes",
+  "pasteLoginJson": "Paste login (JSON)",
+  "pasteLoginHint": "Paste the full contents of a saved Codex login file (JSON).",
+  "import": "Import",
+  "pasteUnavailable": "Clipboard is unavailable",
+  "pasteEmpty": "Clipboard is empty",
   "deviceCode": "Code",
   "deviceWaiting": "Waiting for confirmation…",
   "deviceOpen": "Open the sign-in page",
@@ -964,8 +1023,9 @@ Object.assign(DICT.en, {
   "schedulerModelHint": "Gateway models from /v1/models.",
   "schedulerModelsFailed": "Model list unavailable — start the gateway and refresh.",
   "schedulerGatewayOff": "The gateway is not reachable — there is nowhere to run tasks. Start the API service and retry.",
-  "schedulerTokens": "tokens",
-  "schedulerDuration": "time",
+  "schedulerTokens": "Tokens",
+  "schedulerTokensUnit": "tokens",
+  "schedulerDuration": "Time",
   "schedulerMinutesShort": "{n} min",
   "schedulerTemplate": "Template",
   "schedulerTemplateNone": "No template",
@@ -1223,6 +1283,73 @@ Object.assign(DICT.en, {
   accountDeleteSelectedConfirm: "Remove the selected accounts ({n}) from the pool?",
 });
 
+// Provider detail tabs (see providerModelsSection and friends).
+Object.assign(DICT.ru, {
+  accountsTotal: "Всего аккаунтов", accountsInPoolLabel: "В пуле", manageAccounts: "Управлять аккаунтами",
+  routingMode: "Режим маршрутизации",
+  accountsOrderHint: "Порядок аккаунтов задаётся на странице «Аккаунты».",
+  modelsSelected: "Моделей в пуле", providerHost: "Хост", modelsFromAccount: "Модели приходят вместе с аккаунтом: отдельного запроса у провайдера нет.",
+  modelsLoadHint: "Запрос списка моделей к провайдеру с текущим ключом.",
+  modelsInPool: "Моделей в пуле: {n}",
+  gatewayStrategy: "Стратегия шлюза", baseUrl: "Базовый адрес", protocol: "Протокол",
+  sourceIdentifier: "Идентификатор источника", enabled: "Включён", on: "Да", checkConnection: "Проверить подключение",
+  applyConfig: "Применить конфигурацию",
+  advancedNoteProvider: "Значения только для чтения: они выводятся из ключа и адреса провайдера.",
+  advancedNoteGateway: "Адрес локального шлюза. Меняется в «Настройках» вместе с портом.",
+  advancedNoteClaude: "OAuth-файлы Claude лежат в папке auth шлюза, резервный ключ записывается в config.yaml.",
+  advancedNoteAntigravity: "Файлами авторизации Antigravity управляет движок, прокси привязан к каждому аккаунту.",
+  codexResponsesApi: "Codex responses API",
+  claudeAccountHint: "Один Claude-аккаунт на приложение: ключ выпускается при входе.",
+  routeNoteCodex: "Аккаунты пула Codex маршрутизирует планировщик аккаунтов, а не группы моделей.",
+  routeNoteClaude: "Claude подключается одним аккаунтом и не участвует в перестановке порядка.",
+  routeNoteAntigravity: "Порядок аккаунтов Antigravity задаётся приоритетом в списке аккаунтов.",
+  routeNoteOpenRouter: "OpenRouter идёт через общий шлюз и подчиняется стратегии шлюза.",
+  routeNoteOpenCode: "OpenCode проксируется шлюзом: стратегия та же, что у остальных источников.",
+  routeNoteCommandCode: "CommandCode проксируется шлюзом с общей стратегией.",
+  routeNoteDefault: "Источник участвует в маршрутизации шлюза на общих правилах.",
+  gatewayWeighted: "Взвешенный round-robin", gatewayRoundRobin: "Round-robin", gatewayFillFirst: "Заполнять по порядку",
+  gatewayWeightedHint: "Распределяет запросы внутри старшего готового уровня с учётом доли каждого аккаунта.",
+  gatewayRoundRobinHint: "Перебирает учётные данные по порядку, не глядя на закэшированную квоту.",
+  gatewayFillFirstHint: "Держит первые готовые учётные данные, пока они не сломаются, затем переходит к следующим.",
+  groupsBulletAlias: "Псевдоним группы записывается каждому провайдеру-участнику, поэтому клиент видит одно имя модели.",
+  groupsBulletFailover: "Сбойный запрос уходит к другому участнику группы, а не к тому же аккаунту.",
+  groupsBulletOrder: "Движок упорядочивает провайдеров по числу моделей, затем по имени.",
+  groupsBulletNotBalancer: "Группа не балансировщик нагрузки: она только склеивает одинаковые модели под одним псевдонимом.",
+});
+
+Object.assign(DICT.en, {
+  accountsTotal: "Total accounts", accountsInPoolLabel: "In pool", manageAccounts: "Manage accounts",
+  routingMode: "Routing mode",
+  accountsOrderHint: "Account order is set on the Accounts page.",
+  modelsSelected: "Models in pool", providerHost: "Host", modelsFromAccount: "Models arrive with the account: this provider has no separate request.",
+  modelsLoadHint: "Asks the provider for its model list with the current key.",
+  modelsInPool: "Models in pool: {n}",
+  gatewayStrategy: "Gateway strategy", baseUrl: "Base URL", protocol: "Protocol",
+  sourceIdentifier: "Source identifier", enabled: "Enabled", on: "Yes", checkConnection: "Check connection",
+  applyConfig: "Apply config",
+  advancedNoteProvider: "Read-only values derived from the provider key and address.",
+  advancedNoteGateway: "The local gateway address. It changes together with the port in Settings.",
+  advancedNoteClaude: "Claude OAuth files live in the gateway auth folder; the fallback key is written to config.yaml.",
+  advancedNoteAntigravity: "Antigravity auth files are managed by the engine; proxy binding is per account.",
+  codexResponsesApi: "Codex responses API",
+  claudeAccountHint: "One Claude account per app: the key is issued on sign-in.",
+  routeNoteCodex: "Codex pool accounts are routed by the account planner, not by model groups.",
+  routeNoteClaude: "Claude connects as a single account and takes no part in the order.",
+  routeNoteAntigravity: "Antigravity account order comes from the priority in the account list.",
+  routeNoteOpenRouter: "OpenRouter goes through the shared gateway and follows the gateway strategy.",
+  routeNoteOpenCode: "OpenCode is proxied by the gateway, so the strategy is the same as for other sources.",
+  routeNoteCommandCode: "CommandCode is proxied by the gateway with the shared strategy.",
+  routeNoteDefault: "This source takes part in gateway routing under the shared rules.",
+  gatewayWeighted: "Weighted round-robin", gatewayRoundRobin: "Round-robin", gatewayFillFirst: "Fill first",
+  gatewayWeightedHint: "Spreads requests inside the highest ready tier, weighted by each account's share.",
+  gatewayRoundRobinHint: "Rotates credentials in order, regardless of the cached quota.",
+  gatewayFillFirstHint: "Uses the first ready credential until it fails, then moves to the next one.",
+  groupsBulletAlias: "The group alias is written to every member provider, so the client sees one model name.",
+  groupsBulletFailover: "A failed request moves to another member provider, not to the same account.",
+  groupsBulletOrder: "The engine orders providers by model count, then by name.",
+  groupsBulletNotBalancer: "A group is not a load balancer: it only merges identical models under one alias.",
+});
+
 function orderingState() {
   const accounts = S.accounts || [];
   const routing = S.routing || {};
@@ -1352,6 +1479,24 @@ function launchErrorInfo(code) {
   }
 }
 
+/// Paste-login sheet, the Windows twin of macOS `importSheet`: one textarea,
+/// Cancel and Import. Nothing is read from disk here.
+function pasteLoginModal() {
+  if (!S.pasteLogin) return "";
+  return `
+  <div class="modal">
+    <div class="modal-card codex-modal-card">
+      <h2>${t("pasteLoginJson")}</h2>
+      <div class="modal-sub">${t("pasteLoginHint")}</div>
+      <textarea id="paste-login-text" class="mono" rows="10" placeholder="{ ... }" ${S.busy["import-json"] ? "disabled" : ""}>${esc(S.pasteLogin.text || "")}</textarea>
+      <div class="codex-modal-actions">
+        <button class="ghost" data-action="loginJsonPasteClose">${t("cancel")}</button>
+        <button class="btn" data-action="loginJsonPasteImport" ${S.busy["import-json"] ? "disabled" : ""}>${t("import")}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function launchModal() {
   if (!S.launchModal) return "";
   const info = launchErrorInfo(S.launchError);
@@ -1396,12 +1541,54 @@ function strategySelect(current) {
   </select>`;
 }
 
+/// The three engine strategies macOS exposes on the Routing screen. They are
+/// kept apart from `strategyOptions`, which orders the accounts themselves.
+const GATEWAY_STRATEGIES = [
+  ["weighted", "gatewayWeighted", "gatewayWeightedHint"],
+  ["roundRobin", "gatewayRoundRobin", "gatewayRoundRobinHint"],
+  ["fillFirst", "gatewayFillFirst", "gatewayFillFirstHint"],
+];
+
+function gatewayStrategy(current) {
+  return GATEWAY_STRATEGIES.some(([value]) => value === current) ? current : "weighted";
+}
+
+function gatewayStrategyPicker(current) {
+  const value = gatewayStrategy(current);
+  return `<div class="segmented">${GATEWAY_STRATEGIES
+    .map(([id, label]) => `<button class="${value === id ? "active" : ""}" data-action="setGatewayStrategy" data-id="${id}">${esc(t(label))}</button>`)
+    .join("")}</div>`;
+}
+
+function gatewayStrategyHint(current) {
+  const value = gatewayStrategy(current);
+  const row = GATEWAY_STRATEGIES.find(([id]) => id === value);
+  return t(row[2]);
+}
+
+/// macOS keeps account routing on the Accounts screen (MiniAPICard) and the
+/// engine strategy on Routing. The card shows both the routing mode picker and
+/// the order the planner will actually use.
 function miniApiCard() {
   const status = S.status || {};
   const running = !!status.running;
   const route = routeInfo();
   const routeIsMelon = !!(S.route && S.route.ours);
-  const strategy = orderingState().strategy;
+  const routing = orderingState();
+  const ttl = routing.accounts.length
+    ? `<div class="order-preview">${routing.ordered
+        .filter((id) => routing.byId.get(id))
+        .map((id, index) => {
+          const account = routing.byId.get(id);
+          const blocked = !!account.blocked || routing.blockedIds.has(id);
+          return `<div class="row" style="gap:6px;align-items:center">
+            <span class="mono" style="font-size:9px;color:var(--text2);width:12px;text-align:right">${index + 1}</span>
+            <span class="dot ${blocked ? "warn" : account.hourlyWindowPresent === false ? "" : "ok"}"></span>
+            <span class="mono" style="font-size:10px">${esc(account.displayName || account.email || account.id)}</span>
+            ${blocked ? `<span class="pill" style="font-size:9px">${esc(t("paused"))}</span>` : ""}
+          </div>`;
+        }).join("")}</div>`
+    : `<div class="footnote" style="margin:0">${esc(t("warnNoAccounts"))}</div>`;
   return `
   <div class="card mini-api-card">
     <div class="row">
@@ -1410,14 +1597,15 @@ function miniApiCard() {
       <span class="pill ${running ? "ok" : ""}">${running ? t("running") : t("stopped")}</span>
     </div>
     <div class="row">
-      <span class="footnote">${t("routingMode")}</span>
+      <span class="stat-label">${esc(t("routingMode"))}</span>
       <span class="spacer"></span>
-      ${strategySelect(strategy)}
+      ${strategySelect(routing.strategy)}
     </div>
-    ${priorityList()}
+    <div class="footnote" style="margin:0">${esc(strategyHint(routing.strategy))}</div>
+    ${ttl}
     <div class="row mini-actions">
       <button class="btn small" data-action="codexOpen" ${S.busy.launch ? "disabled" : ""}>${routeIsMelon ? t("openCodex") : t("launchCodex")}</button>
-      <button class="ghost small" data-action="go" data-id="api">${t("manage")}</button>
+      <button class="ghost small" data-action="openApi">${t("manage")}</button>
       <span class="spacer"></span>
     </div>
     <div class="api-route"><span class="dot ${route.cls}"></span>${esc(route.title)}</div>
@@ -1464,10 +1652,13 @@ function accountModelSelection(account) {
 }
 
 function accountHistoryStrip(id) {
-  if (!(S.history || []).some((sample) => sample && sample.key === id)) return "";
+  const samples = (S.history || []).filter((sample) => sample && sample.key === id);
+  const hourly = samples.filter((sample) => Number.isFinite(sample.hourlyLeft)).length;
+  const weekly = samples.filter((sample) => Number.isFinite(sample.weeklyLeft)).length;
+  if (hourly < 2 && weekly < 2) return "";
   return `<div class="spark-row account-history" title="${esc(t("historyHint"))}">
-    <span class="spark-label">${t("accountHourly")}</span>${sparkline(id, "hourlyLeft", t("accountHourly"))}
-    <span class="spark-label">${t("accountWeekly")}</span><span class="account-weekly-spark">${sparkline(id, "weeklyLeft", t("accountWeekly"))}</span>
+    ${hourly >= 2 ? `<span class="spark-label">${t("accountHourly")}</span>${sparkline(id, "hourlyLeft", t("accountHourly"))}` : ""}
+    ${weekly >= 2 ? `<span class="spark-label">${t("accountWeekly")}</span><span class="account-weekly-spark">${sparkline(id, "weeklyLeft", t("accountWeekly"))}</span>` : ""}
   </div>`;
 }
 
@@ -1505,7 +1696,7 @@ function accountCard(account) {
   const resetBusy = !!S.busy["reset-" + account.id];
   const resetTitle = account.resetCreditsNextExpiry
     ? fmt(t("resetExpires"), {
-        date: new Date(account.resetCreditsNextExpiry * 1000).toLocaleDateString(),
+        date: new Date(account.resetCreditsNextExpiry * 1000).toLocaleDateString(S.lang === "en" ? "en-US" : "ru-RU"),
       })
     : t("resetActivate");
   const resetControl = hasResets
@@ -1544,11 +1735,12 @@ function accountCard(account) {
       <div class="footnote account-updated">${t("quotaAge")} ${esc(ageText(account.quotaUpdatedAt))} · ${t(account.quotaSource === "gateway" ? "quotaLive" : "quotaUsage")}</div>
       ${modelsBlock}
       <div class="account-actions">
-        <button class="ghost small" data-action="switchAccount" data-id="${esc(account.id)}" ${account.current ? "disabled" : ""}>${accountIcon("switch")}${t(account.current ? "accountActive" : "accountSwitch")}</button>
+        ${account.current ? "" : `<button class="ghost small" data-action="switchAccount" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""}>${accountIcon("switch")}${t("accountSwitch")}</button>`}
         <button class="ghost small" data-action="refreshQuota" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""}>${accountIcon("quota")}${t("accountQuota")}</button>
-        <button class="ghost small" data-action="accountWake" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""} title="${t("wakeAccount")}">${accountIcon("wake")}${account.hourlyWindowPresent === false ? t("wake") : ""}</button>
+        ${account.hourlyWindowPresent === false ? `<button class="ghost small" data-action="accountWake" data-id="${esc(account.id)}" ${S.busy.quotas ? "disabled" : ""} title="${t("wakeAccount")}">${accountIcon("wake")}${t("wake")}</button>` : ""}
         <button class="ghost small" data-action="launchAccountInCodex" data-id="${esc(account.id)}" ${S.busy.launch ? "disabled" : ""}>${accountIcon("launch")}${t("accountLaunch")}</button>
         <button class="ghost small account-models-button" data-action="poolOpenAccount" data-id="${esc(account.id)}" title="${esc(accountModelSelection(account))}">${accountIcon("models")}${t("models")}</button>
+        <span class="spacer"></span>
         <button class="icon-btn account-delete" aria-label="${t("remove")}" title="${t("remove")}" data-action="deleteAccount" data-id="${esc(account.id)}">${accountIcon("trash")}</button>
       </div>
     </div>`;
@@ -1622,13 +1814,410 @@ function accountSettingsModal() {
   </div>`;
 }
 
+/// Providers board: one row per provider, the macOS `CodexProvidersView`
+/// layout. A row opens that provider's own page; the keys and toggles live
+/// there instead of all being stacked on a single screen.
+const PROVIDER_ROWS = [
+  { id: "codexPool", title: "Codex" },
+  { id: "claude", title: "Claude" },
+  { id: "antigravity", title: "Antigravity" },
+  { id: "openRouter", title: "OpenRouter", key: true },
+  { id: "openCode", title: "OpenCode", key: true },
+  { id: "commandCode", title: "CommandCode", key: true },
+  { id: "deepInfra", title: "DeepInfra", key: true },
+  { id: "nvidia", title: "NVIDIA", key: true },
+  { id: "vercel", title: "Vercel", key: true },
+  { id: "zai", title: "Z.ai", key: true },
+  { id: "localAI", title: "Local AI" },
+];
+
+/// Board row glyphs, drawn inline so the row needs no icon dependency.
+const PROVIDER_GLYPHS = {
+  codexPool: '<svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z"/><path d="M12 3v18M4 7l8 4 8-4"/></svg>',
+  claude: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 5v14M5 12h14"/></svg>',
+  antigravity: '<svg viewBox="0 0 24 24"><path d="M12 4 4 20h16L12 4Z"/></svg>',
+  openRouter: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4v16"/></svg>',
+  openCode: '<svg viewBox="0 0 24 24"><path d="M8 6 4 10l4 4M16 6l4 4-4 4"/><path d="M9 18h6"/></svg>',
+  commandCode: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M7 10h4M7 14h8"/></svg>',
+  deepInfra: '<svg viewBox="0 0 24 24"><path d="M13 3 6 13h5l-2 8 9-11h-5l2-7Z"/></svg>',
+  nvidia: '<svg viewBox="0 0 24 24"><path d="M4 8h16v8H4z"/><path d="M8 12h3M14 12h3"/></svg>',
+  vercel: '<svg viewBox="0 0 24 24"><path d="M12 5 21 20H3L12 5Z"/></svg>',
+  zai: '<svg viewBox="0 0 24 24"><path d="M6 6h12l-12 12h12"/></svg>',
+  localAI: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
+};
+
+/// Settings key and the placeholder each provider's key field shows.
+const PROVIDER_KEY_FIELDS = {
+  openRouter: { field: "openrouterKey", label: "orKey", placeholder: "sk-or-v1-…" },
+  openCode: { field: "opencodeKey", label: "ocKey", placeholder: "oc_sk_…" },
+  commandCode: { field: "commandcodeKey", label: "ccKey", placeholder: "cmd_…" },
+  deepInfra: { field: "deepinfraKey", label: "diKey", placeholder: "di_…" },
+  nvidia: { field: "nvidiaKey", label: "nvidiaKey", placeholder: "nvapi-…" },
+  vercel: { field: "vercelKey", label: "vercelKey", placeholder: "vck_…" },
+  zai: { field: "zaiKey", label: "zaiKey", placeholder: "id.secret" },
+};
+
+/// Enabled flag next to the key field. Absent means enabled, like every
+/// provider toggle the gateway reads.
+const PROVIDER_ENABLED_FIELDS = {
+  openRouter: "openrouterEnabled",
+  openCode: "opencodeEnabled",
+  commandCode: "commandcodeEnabled",
+  deepInfra: "deepinfraEnabled",
+  nvidia: "nvidiaEnabled",
+  vercel: "vercelEnabled",
+  zai: "zaiEnabled",
+};
+
+function providerRouteMeta(id) {
+  return PROVIDER_ROWS.find((route) => route.id === id) || null;
+}
+
+function providerKeyValue(settings, id) {
+  const field = PROVIDER_KEY_FIELDS[id];
+  if (!field) return "";
+  return String(settings[field.field] || "").trim();
+}
+
+function providerRowSubtitle(id) {
+  if (id === "codexPool") {
+    const accounts = (S.accounts || []).length;
+    const models = providerModelCount("codex");
+    return `${accountsCountText(accounts)} · ${modelsCountText(models)}`;
+  }
+  if (id === "claude") {
+    const claude = S.claude || {};
+    if (claude.email) return fmt(t("signedInAs"), { email: claude.email });
+    if (claude.connected) return t("connected");
+    return `api.anthropic.com · ${modelsCountText(providerModelCount("claude"))}`;
+  }
+  if (id === "antigravity") {
+    const pool = S.antigravity || {};
+    const count = Array.isArray(pool.accounts) ? pool.accounts.length : 0;
+    return `antigravity · ${accountsCountText(count)}`;
+  }
+  if (id === "localAI") {
+    const ready = (S.localAi && Array.isArray(S.localAi.models) ? S.localAi.models : [])
+      .filter((model) => model.runtimeStatus === "ready").length;
+    const running = !!((S.localAi || {}).runtime || {}).running;
+    return `${running ? "llama-server" : t("noBinary")} · ${ready} ${t("ready")}`;
+  }
+  const host = PROVIDER_HOSTS[id] || "";
+  return `${host} · ${modelsCountText(providerModelCount(id))}`;
+}
+
+const PROVIDER_HOSTS = {
+  openRouter: "openrouter.ai/api/v1",
+  openCode: "opencode.ai",
+  commandCode: "commandcode.ai",
+  deepInfra: "api.deepinfra.com",
+  nvidia: "integrate.api.nvidia.com",
+  vercel: "ai-gateway.vercel.sh",
+  zai: "api.z.ai",
+  claude: "api.anthropic.com",
+  antigravity: "daily-cloudcode-pa.googleapis.com",
+};
+
+/// One board row: icon, title, subtitle, badges, chevron.
+function providerRow(route) {
+  const settings = S.settings || {};
+  const meta = providerRouteMeta(route);
+  if (!meta) return "";
+  let badges = "";
+  if (meta.key) {
+    const configured = !!providerKeyValue(settings, meta.id);
+    badges += `<span class="pill ${configured ? "ok" : ""}">${configured ? t("keyConfigured") : t("noKey")}</span>`;
+  }
+  if (meta.id === "codexPool") {
+    const running = !!(S.status && S.status.running);
+    badges += `<span class="pill ${running ? "ok" : ""}">${running ? t("running") : t("stopped")}</span>`;
+  }
+  if (meta.id === "antigravity") {
+    const connected = !!((S.antigravity || {}).connected);
+    badges += `<span class="pill ${connected ? "ok" : ""}">${connected ? t("connected") : t("noAccounts")}</span>`;
+  }
+  if (meta.id === "localAI") {
+    const running = !!((S.localAi || {}).runtime || {}).running;
+    badges += `<span class="pill ${running ? "ok" : ""}">${running ? t("running") : t("standby")}</span>`;
+  }
+  return `<button class="provider-row" data-action="providerOpen" data-id="${meta.id}">
+    <span class="provider-row-icon">${PROVIDER_GLYPHS[meta.id] || ""}</span>
+    <span class="provider-row-text">
+      <b>${esc(meta.title)}</b>
+      <span>${esc(providerRowSubtitle(meta.id))}</span>
+    </span>
+    <span class="provider-row-badges">${badges}</span>
+    <span class="provider-row-chevron">›</span>
+  </button>`;
+}
+
+function providersBoard() {
+  return `
+  ${pageHead("codex", t("providers"), t("providersSub"))}
+  ${poolPauseBanner()}
+  <div class="card provider-board">
+    ${PROVIDER_ROWS.map((route, index) => `${index ? `<div class="provider-row-sep"></div>` : ""}${providerRow(route.id)}`).join("")}
+    ${(S.settings && Array.isArray(S.settings.customProviders) && S.settings.customProviders.length)
+      ? S.settings.customProviders.map((source) => `<div class="provider-row-sep"></div>${customProviderRow(source)}`).join("")
+      : ""}
+  </div>
+  <div class="row" style="gap:var(--s3)">
+    <button class="btn" data-action="customProviderOpen">${t("customProviderAdd")}</button>
+  </div>
+  ${diagnosticsCard()}
+  ${customProviderModal()}`;
+}
+
+/// Providers that are not one of the fixed keys: a row that opens the same
+/// editor the Add flow uses.
+function customProviderRow(source) {
+  return `<button class="provider-row" data-action="customProviderOpen" data-id="${esc(source.id)}">
+    <span class="provider-row-icon">${PROVIDER_GLYPHS.localAI}</span>
+    <span class="provider-row-text">
+      <b>${esc(source.name || source.id)}</b>
+      <span>${esc(source.baseUrl || "")} · ${(source.selectedModels || []).length} ${t("modelsCount")}</span>
+    </span>
+    <span class="provider-row-badges"><span class="pill ${source.enabled !== false ? "ok" : ""}">${source.enabled !== false ? t("sourceEnabled") : t("off")}</span></span>
+    <span class="provider-row-chevron">›</span>
+  </button>`;
+}
+
+/// The provider's own page: back to the board plus the card that used to be
+/// stacked on the list. `localAI` routes to the Local AI section instead.
+function providerDetail(id) {
+  const settings = S.settings || {};
+  const meta = providerRouteMeta(id);
+  if (!meta) return providersBoard();
+  const back = `<div class="row"><button class="ghost small" data-action="providerBack">‹ ${esc(t("allProviders"))}</button></div>`;
+  // macOS shows a chip picker for the provider's own sections. The Windows
+  // cards are single-scroll, so the chips jump to the matching anchor instead
+  // of hiding content behind a tab that would look empty.
+  const sections = [["connection", "connection"], ["models", "models"]];
+  if (["codexPool", "claude", "antigravity"].includes(id)) sections.push(["accounts", "accounts"]);
+  sections.push(["routing", "routing"]);
+  sections.push(["advanced", "advanced"]);
+  const section = S.providerSection && sections.some((pair) => pair[0] === S.providerSection.replace(/Section$/, ""))
+    ? S.providerSection.replace(/Section$/, "")
+    : "connection";
+  const chips = `<div class="segmented provider-chips">${sections
+    .map(([key, label]) => `<button class="${section === key ? "active" : ""}" data-action="providerSection" data-id="${key}">${esc(t(label))}</button>`)
+    .join("")}</div>`;
+  const anchor = (key, html) => `<div data-provider-section="${key}">${html}</div>`;
+  let connection = "";
+  switch (id) {
+    case "codexPool": connection = codexPoolCard(); break;
+    case "claude": connection = claudeCard(settings); break;
+    case "antigravity": connection = antigravityCard(); break;
+    case "localAI": connection = localAiConnectionCard(); break;
+    case "openRouter": connection = openRouterCard(settings); break;
+    case "openCode": connection = openCodeCard(settings); break;
+    case "commandCode": connection = commandCodeCard(settings); break;
+    case "deepInfra": connection = deepInfraCard(settings); break;
+    case "nvidia": connection = nvidiaCard(settings); break;
+    case "vercel": connection = vercelCard(settings); break;
+    case "zai": connection = zaiCard(settings); break;
+    default: connection = "";
+  }
+  // Every chip macOS offers gets a card here: a chip that scrolls to nothing
+  // reads as a broken tab, so the sections are always rendered.
+  const body = `${anchor("connection", connection)}
+    ${anchor("models", providerModelsSection(id, meta))}
+    ${["codexPool", "claude", "antigravity"].includes(id) ? anchor("accounts", providerAccountsSection(id)) : ""}
+    ${anchor("routing", providerRoutingSection(id))}
+    ${anchor("advanced", providerAdvancedSection(id, meta))}`;
+  return `
+  ${pageHead("codex", meta.title, t("providerDetailSub"))}
+  ${back}
+  ${chips}
+  ${poolPauseBanner()}
+  ${body}
+  ${customProviderModal()}`;
+}
+
+/// Providers section entry point: the board, or one provider's page.
+/// The Models tab of a provider page. Codex pool keeps its tri-state model
+/// list, every key-based provider shows the loaded count and a reload button,
+/// and the OAuth providers say where their models come from.
+function providerModelsSection(id, meta) {
+  if (id === "codexPool") {
+    const pool = S.pool || {};
+    const total = Array.isArray(pool.models) ? pool.models.length : 0;
+    const selected = Number(pool.selectedCount || 0);
+    return `<div class="card"><h2>${t("models")}</h2>
+      <div class="footnote">${esc(total ? fmt(t("poolInPool"), { n: selected, total }) : fmt(t("modelsInPool"), { n: selected }))}</div>
+      <div class="row" style="margin-top:10px">
+        ${searchField({ id: "models-search", value: S.modelsQuery, placeholder: t("modelsSearch"), action: "modelsSearch", clearAction: "modelsClearSearch" })}
+        <button class="ghost small" data-action="modelsLoad">${t("loadModels")}</button>
+      </div>
+      <div id="provider-model-list" style="max-height:420px;overflow:auto;margin-top:10px">${providerModelRowsMarkup()}</div>
+    </div>`;
+  }
+  const count = providerModelCount(id);
+  // OAuth providers have no key and no model request of their own: their
+  // catalogue arrives with the pool or the account quota.
+  const oauth = ["claude", "antigravity", "localAI"].includes(id);
+  return `<div class="card"><h2>${t("models")}</h2>
+    <div class="stat-grid">
+      <div class="stat"><span class="value">${count}</span><span class="label">${esc(t("modelsSelected"))}</span></div>
+      <div class="stat"><span class="label">${esc(t("providerHost"))}</span><span class="value mono" style="font-size:11px">${esc(PROVIDER_HOSTS[id] || meta.title)}</span></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      ${oauth
+        ? `<span class="footnote" style="margin:0">${esc(t("modelsFromAccount"))}</span>`
+        : `<button class="ghost small" data-action="modelsLoad">${t("loadModels")}</button>
+           <span class="footnote" style="margin:0">${esc(t("modelsLoadHint"))}</span>`}
+    </div>
+  </div>`;
+}
+
+/// Accounts tab: the three providers that own a credential list reuse the
+/// cards from the Connection tab, which already list and manage them.
+function providerAccountsSection(id) {
+  if (id === "codexPool") {
+    const accounts = S.accounts || [];
+    const connected = accounts.filter((account) => account.poolEnabled !== false).length;
+    return `<div class="card"><h2>${t("accounts")}</h2>
+      <div class="stat-grid">
+        <div class="stat"><span class="value">${accounts.length}</span><span class="label">${esc(t("accountsTotal"))}</span></div>
+        <div class="stat"><span class="value">${connected}</span><span class="label">${esc(t("accountsInPoolLabel"))}</span></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn small" data-action="go" data-id="accounts">${t("manageAccounts")}</button>
+        <span class="footnote" style="margin:0">${esc(t("accountsOrderHint"))}</span>
+      </div>
+    </div>`;
+  }
+  if (id === "claude") {
+    const claude = S.claude || {};
+    return `<div class="card"><h2>${t("accounts")}</h2>
+      <div class="row">
+        <span class="pill ${claude.connected ? "ok" : ""}">${claude.connected ? t("connected") : t("notConnected")}</span>
+        ${claude.email ? `<span class="mono" style="font-size:11px">${esc(claude.email)}</span>` : ""}
+      </div>
+      <div class="row" style="margin-top:12px">
+        ${claude.connected
+          ? `<button class="ghost small" data-action="claudeDisconnect">${t("antigravityDisconnect")}</button>
+             <button class="ghost small" data-action="claudeRefreshUsage">${t("refresh")}</button>`
+          : `<button class="btn small" data-action="claudeConnect">${t("claudeConnect")}</button>`}
+        <span class="footnote" style="margin:0">${esc(t("claudeAccountHint"))}</span>
+      </div>
+    </div>`;
+  }
+  const pool = S.antigravity || {};
+  const accounts = Array.isArray(pool.accounts) ? pool.accounts : [];
+  return `<div class="card"><h2>${t("accounts")}</h2>
+    <div class="row">
+      <span class="pill ${accounts.length ? "ok" : ""}">${esc(fmt(t("accountsInPool"), { n: accounts.length }))}</span>
+      <span class="spacer"></span>
+      <button class="btn small" data-action="antigravityConnect">${t("addGoogleAccount")}</button>
+    </div>
+    ${accounts.length
+      ? `<div class="stack" style="margin-top:10px">${accounts.map((account) => `<div class="row">
+          <span class="dot ${account.disabled ? "" : "ok"}"></span>
+          <span class="mono" style="font-size:11px">${esc(account.email || account.name)}</span>
+          ${account.priority ? `<span class="pill gold">P${account.priority}</span>` : ""}
+        </div>`).join("")}</div>`
+      : `<div class="footnote" style="margin-top:8px">${esc(t("antigravityHint"))}</div>`}
+  </div>`;
+}
+
+/// Routing tab: the engine strategy is one global value, so the card states it
+/// and links to the screen that owns the picker, exactly like macOS.
+function providerRoutingSection(id) {
+  const settings = S.settings || {};
+  const strategy = settings.routingStrategy || "auto";
+  const label = strategyOptions().find(([value]) => value === strategy);
+  const notes = {
+    codexPool: "routeNoteCodex",
+    claude: "routeNoteClaude",
+    antigravity: "routeNoteAntigravity",
+    openRouter: "routeNoteOpenRouter",
+    openCode: "routeNoteOpenCode",
+    commandCode: "routeNoteCommandCode",
+  };
+  return `<div class="card"><h2>${t("routing")}</h2>
+    <div class="row">
+      <span class="stat-label">${esc(t("gatewayStrategy"))}</span>
+      <b style="font-size:12px">${esc(t(label ? label[1] : "strategyAuto"))}</b>
+      <span class="spacer"></span>
+      <button class="ghost small" data-action="go" data-id="routing">${t("openRouting")}</button>
+    </div>
+    <div class="footnote" style="margin-top:8px">${esc(t(notes[id] || "routeNoteDefault"))}</div>
+    ${["codexPool", "claude", "antigravity"].includes(id)
+      ? `<div class="footnote">${esc(t("accountsOrderHint"))}</div>`
+      : ""}
+  </div>`;
+}
+
+/// Advanced tab: read-only facts about the upstream plus the two actions that
+/// touch it, matching the macOS card row for row.
+function providerAdvancedSection(id, meta) {
+  const settings = S.settings || {};
+  const custom = id.startsWith("custom:")
+    ? (settings.customProviders || []).find((source) => source.id === id.replace(/^custom:/, ""))
+    : null;
+  const gatewayUrl = `http://127.0.0.1:${settings.port || 18317}/v1`;
+  const host = PROVIDER_HOSTS[id] || "";
+  const baseUrl = custom
+    ? custom.baseUrl || ""
+    : id === "codexPool" || id === "localAI"
+      ? gatewayUrl
+      : host ? `https://${host}` : "-";
+  // macOS shows the protocol title from the provider catalogue; the local
+  // gateway speaks the Codex responses API.
+  const protocol = custom
+    ? custom.protocol || "openai-chat"
+    : id === "codexPool" || id === "localAI"
+      ? t("codexResponsesApi")
+      : id === "claude" ? "anthropic" : "openai-chat";
+  const notes = {
+    codexPool: "advancedNoteGateway",
+    claude: "advancedNoteClaude",
+    antigravity: "advancedNoteAntigravity",
+  };
+  return `<div class="card"><h2>${t("advanced")}</h2>
+    <div class="stack" style="gap:6px">
+      <div class="agent-kv"><span>${esc(t("baseUrl"))}</span><code class="mono">${esc(baseUrl)}</code></div>
+      <div class="agent-kv"><span>${esc(t("protocol"))}</span><code class="mono">${esc(protocol)}</code></div>
+      ${custom
+        ? `<div class="agent-kv"><span>${esc(t("sourceIdentifier"))}</span><code class="mono">${esc(custom.id)}</code></div>
+           <div class="agent-kv"><span>${esc(t("enabled"))}</span><code class="mono">${esc(custom.enabled !== false ? t("on") : t("off"))}</code></div>`
+        : ""}
+      <div class="agent-kv"><span>${esc(t("gateway"))}</span><code class="mono">${esc(gatewayUrl)}</code></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn small" data-action="diagRun" ${S.busy.diag ? "disabled" : ""}>${t("checkConnection")}</button>
+      <button class="ghost small" data-action="gatewaySync" ${S.busy.sync ? "disabled" : ""}>${t("applyConfig")}</button>
+      <span class="spacer"></span>
+    </div>
+    <div class="footnote" style="margin-top:8px">${esc(t(notes[id] || "advancedNoteProvider"))}</div>
+  </div>`;
+}
+
+function providersPage() {
+  if (S.providerRoute) return providerDetail(S.providerRoute);
+  return providersBoard();
+}
+
 function accountsPage() {
   const { accounts, byId, ordered } = orderingState();
   const deviceLogin = S.deviceLogin;
+  const browserLogin = S.browserLogin;
   const cards = ordered.map((id) => accountCard(byId.get(id))).join("");
   const selected = (S.selectedAccounts || []).filter((id) => byId.has(id));
   const allSelected = accounts.length > 0 && selected.length === accounts.length;
   const sleeping = accounts.filter((account) => account.hourlyWindowPresent === false);
+
+  // Browser OAuth runs on its own: while it waits the device form is hidden,
+  // so the user sees one pending login instead of two competing ones.
+  const browserBlock = browserLogin
+    ? `<div class="row">
+         <span class="pill gold">${t("browserLogin")}</span>
+         <span class="footnote" style="margin:0">${t("browserLoginWaiting")}</span>
+         <span class="spacer"></span>
+         <button class="ghost small danger" data-action="browserLoginCancel">${t("browserLoginCancel")}</button>
+       </div>`
+    : "";
 
   const deviceBlock = deviceLogin && !deviceLogin.done
     ? `<div class="row">
@@ -1646,16 +2235,18 @@ function accountsPage() {
   return `
   ${pageHead("codex", t("accounts"), t("accountsSub"))}
   <div class="row">
-    <button class="btn" data-action="importAuth">${t("importAuth")}</button>
+    <button class="btn" data-action="browserLoginStart" ${browserLogin || S.busy["browser-login"] ? "disabled" : ""}>${t("browserLogin")}</button>
+    <button class="ghost" data-action="importAuth">${t("importAuth")}</button>
+    <button class="ghost" data-action="loginJsonPaste">${t("pasteLoginJson")}</button>
     <button class="ghost" data-action="importJsonPick">${t("importJson")}</button>
     <input type="file" id="accounts-json-file" accept=".json,application/json" hidden data-action="importJsonFile" data-on="change">
-    <button class="ghost" data-action="refreshQuotas" ${S.busy.quotas ? "disabled" : ""}>${t("refreshQuotas")}</button>
     ${sleeping.length ? `<button class="ghost" data-action="accountsWakeSleeping" ${S.busy.quotas ? "disabled" : ""}>${fmt(t("accountWakeSleepingN"), { n: sleeping.length })}</button>` : ""}
+    <button class="ghost" data-action="refreshQuotas" ${S.busy.quotas ? "disabled" : ""}>${t("refreshQuotas")}</button>
     <span class="footnote">${t("importHint")}</span>
   </div>
   <div class="card">
     <h2>${t("addAccount")}</h2>
-    <div class="stack">${deviceBlock}</div>
+    <div class="stack">${browserBlock}${deviceBlock}</div>
   </div>
   ${poolPauseBanner()}
   ${accounts.length ? `<div class="row account-selection-bar">
@@ -1671,6 +2262,7 @@ function accountsPage() {
     ${cards || `<div class="card"><div class="muted">${t("warnNoAccounts")}</div></div>`}
   </div>
   ${poolModal()}
+  ${pasteLoginModal()}
   ${launchModal()}
   ${accountSettingsModal()}`;
 }
@@ -1679,7 +2271,7 @@ function formatUsageDate(iso) {
   if (!iso) return "-";
   try {
     const d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleString();
+    return isNaN(d.getTime()) ? iso : d.toLocaleString(S.lang === "en" ? "en-US" : "ru-RU");
   } catch (e) {
     return iso;
   }
@@ -1689,7 +2281,9 @@ function formatUsageTime(iso) {
   if (!iso) return "-";
   try {
     const d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return isNaN(d.getTime()) ? iso : d.toLocaleTimeString(S.lang === "en" ? "en-US" : "ru-RU", {
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
   } catch (e) {
     return iso;
   }
@@ -1768,7 +2362,6 @@ function apiPage() {
   const routeIsMelon = !!(S.route && S.route.ours);
   const bridge = S.bridge;
   const base = `http://127.0.0.1:${settings.port || status.port || 18317}/v1`;
-  const strategy = orderingState().strategy;
 
   return `
   ${pageHead("codex api", t("api"), t("apiSub"))}
@@ -1800,20 +2393,18 @@ function apiPage() {
         : ""}
       ${S.codexAppError ? `<div class="note-line danger">${esc(S.codexAppError)}</div>` : ""}
 
-      <div class="divider"></div>
-
-      <div class="row">
+      <div class="row api-routing-head">
         <b style="font-size:12px">${t("accountRouting")}</b>
         <span class="spacer"></span>
-        ${strategySelect(strategy)}
+        ${strategySelect(orderingState().strategy)}
       </div>
-      <div class="footnote">${esc(strategyHint(strategy))}</div>
+      <div class="footnote">${esc(strategyHint(orderingState().strategy))}</div>
       ${priorityList()}
       <div class="row">
-        ${orderingState().accounts.length > 1 ? `<button class="ghost small" data-action="resetOrder">${t("resetOrder")}</button>` : ""}
+        ${(S.accounts || []).length > 1 ? `<button class="ghost small" data-action="resetOrder">${t("resetOrder")}</button>` : ""}
         <button class="btn small" data-action="gatewaySync" ${S.busy.sync ? "disabled" : ""}>${t("applyRouting")}</button>
         <span class="spacer"></span>
-        <span class="footnote">${esc(fmt(t("accountsInPool"), { n: orderingState().accounts.filter((account) => account.poolEnabled !== false).length }))}</span>
+        <button class="ghost small" data-action="go" data-id="routing">${t("openRouting")}</button>
       </div>
     </div>
   </div>
@@ -1828,8 +2419,10 @@ function apiPage() {
       <span class="mono" style="font-size:11px;color:var(--text2);width:130px">${t("serviceKey")}</span>
       <span class="mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px">${esc(settings.apiKey || "—")}</span>
       <button class="ghost small" data-action="copy" data-text="${esc(settings.apiKey || "")}">${t("copy")}</button>
+      <button class="ghost small" data-action="apiKeyRotate">${t("rotateKey")}</button>
     </div>
     <div class="footnote">${t("apiKeyHint")}</div>
+    <div class="footnote">${t("rotateKeyHint")}</div>
   </div>
 
   <div class="card">
@@ -1867,6 +2460,74 @@ function apiPage() {
   ${launchModal()}`;
 }
 
+/// Codex composer chips as a Settings card: the Composer integration used to
+/// live on its own screen, and the macOS build keeps it as a bento card.
+function composerChipsCard() {
+  const bridge = S.bridge;
+  const attached = !!(bridge && bridge.attached);
+  const settings = S.settings || {};
+  // The chips report every automatic answer; the card shows the last one so a
+  // user can tell the fallback is working instead of guessing.
+  const lastStamp = bridge && bridge.lastAutoRetryAt
+    ? new Date(bridge.lastAutoRetryAt * 1000).toLocaleTimeString(S.lang === "en" ? "en-US" : "ru-RU", {
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+      })
+    : null;
+  const lastAutoRetry = lastStamp && bridge.autoRetryActions
+    ? lastStamp
+    : null;
+  return `<div class="card">
+    <h2>${t("composer")}</h2>
+    <div class="stack">
+      <div class="row">
+        <span class="dot ${attached ? "ok" : "warn"}"></span>
+        <b style="font-size:12px">${attached ? t("bridgeOn") : t("bridgeOff")}</b>
+        <span class="spacer"></span>
+        <button class="ghost small" data-action="refreshStatus" ${S.busy.refresh ? "disabled" : ""}>${t("checkNow")}</button>
+        ${attached ? "" : `<button class="ghost small" data-action="bridgeLaunchCodex" ${S.busy.launch ? "disabled" : ""}>${t("bridgeRestart")}</button>`}
+      </div>
+      <div class="footnote" style="margin:0">${t("composerHint")}</div>
+      <div class="row" style="margin-top:2px">
+        <label class="card-toggle">
+          <input type="checkbox" ${settings.autoRetryEnabled !== false ? "checked" : ""} data-action="autoRetryToggle" data-on="change">
+          <span>${t("autoRetry")}</span>
+        </label>
+      </div>
+      <div class="footnote" style="margin:0">${t("autoRetryHint")}</div>
+      ${lastAutoRetry ? `<div class="footnote" style="margin:0">${fmt(t("autoRetryLast"), { time: lastAutoRetry })}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+/// Codex instances as a Settings card. Same fields as the old screen.
+function instancesCard() {
+  const instances = S.instancesData || [];
+  const accounts = S.accounts || [];
+  return `<div class="card">
+    <h2>${t("instances")} <span class="hint">${instances.length}</span></h2>
+    <div class="stack">
+      <div class="row">
+        <input class="small instance-name" type="text" id="instance-name" placeholder="${esc(t("instanceNew"))}">
+        <button class="btn small" data-action="instanceCreate">${t("instanceCreate")}</button>
+      </div>
+      ${instances.length
+        ? `<div class="stack" style="gap:6px">${instances.map((instance) => `
+            <div class="row" style="gap:8px">
+              <span class="dot ${instance.exists ? "ok" : "warn"}"></span>
+              <b style="font-size:12px">${esc(instance.name)}</b>
+              <select data-action="instanceBind" data-id="${esc(instance.id)}" data-on="change">
+                <option value="">${t("instanceNone")}</option>
+                ${accounts.map((account) => `<option value="${esc(account.id)}" ${instance.accountId === account.id ? "selected" : ""}>${esc(account.email || account.displayName)}</option>`).join("")}
+              </select>
+              <span class="spacer"></span>
+              <button class="ghost small" data-action="instanceLaunch" data-id="${esc(instance.id)}">${t("instanceLaunch")}</button>
+              <button class="ghost small danger" data-action="instanceDelete" data-id="${esc(instance.id)}">${t("instanceDelete")}</button>
+            </div>`).join("")}</div>`
+        : `<div class="footnote" style="margin:0">${esc(t("instanceHint"))}</div>`}
+    </div>
+  </div>`;
+}
+
 function settingsPage() {
   const settings = S.settings || {};
   const info = S.info || {};
@@ -1888,6 +2549,12 @@ function settingsPage() {
 
   <div class="card">
     <h2>${t("appearance")}</h2>
+    <div class="row">
+      <span class="setting-label">${t("theme")}</span>
+      <div class="segmented">
+        ${[["system", "themeSystem"], ["light", "themeLight"], ["dark", "themeDark"]].map(([id, key]) => `<button class="${(settings.theme || "system") === id ? "active" : ""}" data-action="setTheme" data-id="${id}">${esc(t(key))}</button>`).join("")}
+      </div>
+    </div>
     <div class="row">
       <span class="setting-label">${t("language")}</span>
       <div class="segmented">
@@ -1919,6 +2586,22 @@ function settingsPage() {
         </label>
       </div>
       <div class="footnote" style="margin:0">${t("proxyHint")}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>${t("qosCard")}</h2>
+    <div class="stack">
+      <label class="card-toggle">
+        <input type="checkbox" ${Number(settings.streamBootstrapTimeoutSeconds ?? 180) > 0 ? "checked" : ""} data-action="firstTokenFailoverToggle" data-on="change">
+        <span>${t("qosToggle")}</span>
+      </label>
+      <div class="row">
+        <label class="field">${t("firstTokenTimeout")}
+          <input class="small" type="number" id="set-stream-timeout" min="0" max="300" step="15" value="${Number(settings.streamBootstrapTimeoutSeconds ?? 180)}">
+        </label>
+      </div>
+      <div class="footnote" style="margin:0">${t("qosHint")}</div>
     </div>
   </div>
 
@@ -1969,10 +2652,22 @@ function settingsPage() {
         <input type="checkbox" ${S.autostart ? "checked" : ""} data-action="autostartToggle" data-on="change">
         <span>${t("autostart")}</span>
       </label>
-      <span class="spacer"></span>
+    </div>
+    <div class="row">
+      <label class="card-toggle">
+        <input type="checkbox" ${settings.gatewayAutoStart !== false ? "checked" : ""} data-action="gatewayAutoStartToggle" data-on="change">
+        <span>${t("gatewayAutoStart")}</span>
+      </label>
+    </div>
+    <div class="footnote">${t("gatewayAutoStartHint")}</div>
+    <div class="row" style="justify-content:flex-end">
       <button class="btn small" data-action="applySettings" ${S.busy.settings ? "disabled" : ""}>${t("apply")}</button>
     </div>
   </div>
+
+  ${composerChipsCard()}
+
+  ${instancesCard()}
 
   <div class="card">
     <h2>${t("notifications")}</h2>
@@ -1997,7 +2692,16 @@ function settingsPage() {
         <button class="ghost small" data-action="backupImportPick">${t("backupImport")}</button>
         <input type="file" id="backup-file" accept=".melon,.json,application/json" hidden data-action="backupImportFile" data-on="change">
       </div>
-      <div class="footnote">${t("backupLast")}: ${S.backupLast ? esc(new Date(S.backupLast * 1000).toLocaleString()) : esc(t("backupNone"))}</div>
+      <div class="footnote">${t("backupLast")}: ${S.backupLast ? esc(dateTimeText(S.backupLast)) : esc(t("backupNone"))}</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>${t("supportBundle")}</h2>
+    <div class="footnote">${esc(t("supportBundleHint"))}</div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost small" data-action="diagRun" ${S.busy.diag ? "disabled" : ""}>${t("diagRun")}</button>
+      <button class="btn small" data-action="supportBundle" ${S.busy.support ? "disabled" : ""}>${t("supportBundle")}</button>
     </div>
   </div>
 
@@ -2023,95 +2727,6 @@ function settingsPage() {
   </div>`;
 }
 
-function composerPage() {
-  const bridge = S.bridge;
-  const attached = !!(bridge && bridge.attached);
-  const reason = bridge && bridge.reason ? String(bridge.reason) : "";
-  return `
-  ${pageHead("codex composer", t("composer"), t("composerHint"))}
-
-  <div class="card">
-    <h2>${t("status")}</h2>
-    <div class="stack">
-      <div class="row">
-        <span class="dot ${attached ? "ok" : "warn"}"></span>
-        <b>${attached ? t("bridgeOn") : t("bridgeOff")}</b>
-        <span class="spacer"></span>
-        <button class="ghost small" data-action="refreshStatus" ${S.busy.refresh ? "disabled" : ""}>${t("checkNow")}</button>
-        ${attached ? "" : `<button class="btn small" data-action="bridgeLaunchCodex" ${S.busy.launch ? "disabled" : ""}>${t("bridgeRestart")}</button>`}
-      </div>
-      ${attached ? "" : `<div class="footnote">${t("bridgeHint")}${reason ? " · " + esc(reason) : ""}</div>`}
-      ${bridge && bridge.model ? `<span class="pill gold">${esc(bridge.model)}</span>` : ""}
-      <details class="advanced">
-        <summary>${t("technicalDetails")}</summary>
-        <div class="advanced-body">
-          <table class="kv">
-            <tr><td>${t("port")}</td><td>${esc((bridge && bridge.debugPort) || "—")}</td></tr>
-            <tr><td>${t("session")}</td><td>${esc(bridge && bridge.threadId ? bridge.threadId : "—")}</td></tr>
-          </table>
-        </div>
-      </details>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>${t("howItWorks")}</h2>
-    <div class="stack">
-      <div class="footnote" style="margin:0">${t("composerHow1")}</div>
-      <div class="footnote" style="margin:0">${t("composerHow2")}</div>
-      <div class="footnote" style="margin:0">${t("composerHow3")}</div>
-    </div>
-  </div>
-  ${launchModal()}`;
-}
-
-function instancesPage() {
-  const instances = S.instancesData || [];
-  const accounts = S.accounts || [];
-  return `
-  ${pageHead("codex", t("instances"), t("instancesSub"))}
-  <div class="card">
-    <h2>${t("instanceNew")}</h2>
-    <div class="row">
-      <input type="text" id="instance-name" placeholder="${t("instanceNew")}">
-      <button class="btn small" data-action="instanceCreate">${t("instanceCreate")}</button>
-      <span class="footnote" style="margin:0">${t("instanceHint")}</span>
-    </div>
-  </div>
-  ${instances.length
-    ? `<div class="account-grid">
-    ${instances.map((instance) => `
-      <div class="card">
-        <div class="account-head">
-          <span class="email">${esc(instance.name)}</span>
-          <span class="pill ${instance.exists ? "ok" : "warn"}">${instance.exists ? t("found") : t("missing")}</span>
-        </div>
-        <div class="row">
-          <label class="field">${t("instanceBind")}
-            <select data-action="instanceBind" data-id="${esc(instance.id)}" data-on="change">
-              <option value="">${t("instanceNone")}</option>
-              ${accounts.map((a) => `<option value="${esc(a.id)}" ${instance.accountId === a.id ? "selected" : ""}>${esc(a.email || a.displayName)}</option>`).join("")}
-            </select>
-          </label>
-          <span class="spacer"></span>
-          <button class="btn small" data-action="instanceLaunch" data-id="${esc(instance.id)}">${t("instanceLaunch")}</button>
-          <button class="ghost small danger" data-action="instanceDelete" data-id="${esc(instance.id)}">${t("instanceDelete")}</button>
-        </div>
-        <details class="advanced">
-          <summary>${t("technicalDetails")}</summary>
-          <div class="advanced-body"><div class="footnote mono">${esc(instance.homePath || "")}</div></div>
-        </details>
-      </div>`).join("")}
-  </div>`
-    : `<div class="card">
-    <b>${t("instancesEmpty")}</b>
-    <div class="footnote" style="margin:0">${t("instancesEmptyHint")}</div>
-  </div>`}`;
-}
-
-// Scheduled tasks: result bodies are capped server-side (64 KiB); the viewer
-// caps again so a huge answer cannot stall the DOM.
-
 function donatePage() {
   const address = "TXtXMdkwKt2Nnxwo7ST9h4otFp3WYWjpfw";
   return `
@@ -2135,7 +2750,7 @@ function donatePage() {
 }
 
 function cardIcon(svg, tint) {
-  return `<span class="card-icon" style="color:${tint || "var(--gold)"}">${svg}</span>`;
+  return `<span class="card-icon" style="color:${tint || "var(--accent)"}">${svg}</span>`;
 }
 
 const CARD_ICONS = {
@@ -2153,6 +2768,28 @@ function dashAverage(values) {
   return list.length ? list.reduce((sum, value) => sum + value, 0) / list.length : null;
 }
 
+function pluralRu(value, one, few, many) {
+  const n = Math.abs(Number(value) || 0);
+  const tail = n % 100;
+  if (tail >= 11 && tail <= 14) return many;
+  const last = n % 10;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+function accountsCountText(value) {
+  const n = Number(value) || 0;
+  if (S.lang === "en") return `${n} ${n === 1 ? "account" : "accounts"}`;
+  return `${n} ${pluralRu(n, "аккаунт", "аккаунта", "аккаунтов")}`;
+}
+
+function modelsCountText(value) {
+  const n = Number(value) || 0;
+  if (S.lang === "en") return `${n} ${n === 1 ? "model" : "models"}`;
+  return `${n} ${pluralRu(n, "модель", "модели", "моделей")}`;
+}
+
 function providerLines() {
   const settings = S.settings || {};
   const accounts = Array.isArray(S.accounts) ? S.accounts : [];
@@ -2167,18 +2804,18 @@ function providerLines() {
     id: "codex",
     name: "Codex",
     on: accounts.length > 0,
-    detail: `${accounts.length} ${t("accountsShort")}`,
+    detail: accountsCountText(accounts.length),
     tint: "var(--info)",
   });
-  if (hasKey(settings.openrouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: `${countModels("openrouter/")} ${t("modelsShort")}`, tint: "var(--violet)" });
-  if (hasKey(settings.opencodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: `${countModels("opencode/")} ${t("modelsShort")}`, tint: "var(--info)" });
-  if (hasKey(settings.deepinfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: `${countModels("deepinfra/")} ${t("modelsShort")}`, tint: "var(--ok)" });
-  if (hasKey(settings.nvidiaKey)) lines.push({ id: "nvidia", name: "NVIDIA", on: !!settings.nvidiaEnabled, detail: `${countModels("nvidia/")} ${t("modelsShort")}`, tint: "var(--ok)" });
-  if (hasKey(settings.vercelKey)) lines.push({ id: "vercel", name: "Vercel", on: true, detail: `${countModels("vercel/")} ${t("modelsShort")}`, tint: "var(--text2)" });
-  if (hasKey(settings.zaiKey)) lines.push({ id: "zai", name: "Z.ai", on: true, detail: `${countModels("zai/")} ${t("modelsShort")}`, tint: "var(--gold)" });
-  if (hasKey(settings.commandcodeKey)) lines.push({ id: "commandcode", name: "CommandCode", on: true, detail: `${countModels("commandcode/")} ${t("modelsShort")}`, tint: "var(--violet)" });
-  if (claudeOn || hasKey(settings.claudeKey)) lines.push({ id: "claude", name: "Claude", on: true, detail: t("connected"), tint: "var(--gold)" });
-  if (agAccounts.length) lines.push({ id: "antigravity", name: "Antigravity", on: true, detail: `${agAccounts.length} ${t("accountsShort")}`, tint: "var(--info)" });
+  if (hasKey(settings.openrouterKey)) lines.push({ id: "openrouter", name: "OpenRouter", on: true, detail: modelsCountText(countModels("openrouter/")), tint: "var(--violet)" });
+  if (hasKey(settings.opencodeKey)) lines.push({ id: "opencode", name: "OpenCode", on: true, detail: modelsCountText(countModels("opencode/")), tint: "var(--info)" });
+  if (hasKey(settings.deepinfraKey)) lines.push({ id: "deepinfra", name: "DeepInfra", on: true, detail: modelsCountText(countModels("deepinfra/")), tint: "var(--ok)" });
+  if (hasKey(settings.nvidiaKey)) lines.push({ id: "nvidia", name: "NVIDIA", on: !!settings.nvidiaEnabled, detail: modelsCountText(countModels("nvidia/")), tint: "var(--ok)" });
+  if (hasKey(settings.vercelKey)) lines.push({ id: "vercel", name: "Vercel", on: true, detail: modelsCountText(countModels("vercel/")), tint: "var(--text2)" });
+  if (hasKey(settings.zaiKey)) lines.push({ id: "zai", name: "Z.ai", on: true, detail: modelsCountText(countModels("zai/")), tint: "var(--accent)" });
+  if (hasKey(settings.commandcodeKey)) lines.push({ id: "commandcode", name: "CommandCode", on: true, detail: modelsCountText(countModels("commandcode/")), tint: "var(--violet)" });
+  if (claudeOn || hasKey(settings.claudeKey)) lines.push({ id: "claude", name: "Claude", on: true, detail: t("connected"), tint: "var(--accent)" });
+  if (agAccounts.length) lines.push({ id: "antigravity", name: "Antigravity", on: true, detail: accountsCountText(agAccounts.length), tint: "var(--info)" });
 
   return lines.sort((lhs, rhs) => {
     if (lhs.on !== rhs.on) return lhs.on ? -1 : 1;
@@ -2253,7 +2890,7 @@ function dashboardPoolsCard() {
     ]));
   }
   if (claudeConnected) {
-    rows.push(row(claudeIcon, "var(--gold)", "Claude", 1, []));
+    rows.push(row(claudeIcon, "var(--accent)", "Claude", 1, []));
   }
 
   return `<div class="card dash-card" data-dashboard-card="pools">
@@ -2263,7 +2900,7 @@ function dashboardPoolsCard() {
     <div class="card-footer">
       <span>${t("dashAllPools")}</span>
       <span class="spacer"></span>
-      <span>${total} ${t("accountsShort")}</span>
+      <span>${accountsCountText(total)}</span>
     </div>
   </div>`;
 }
@@ -2386,7 +3023,7 @@ function dashboardSchedulerCard(summary) {
   const next = summary.next;
   const last = summary.last;
   return `<div class="card dash-card" data-dashboard-card="scheduler">
-    <h2>${cardIcon(CARD_ICONS.scheduler, "var(--gold)")}${t("dashScheduler")}</h2>
+    <h2>${cardIcon(CARD_ICONS.scheduler, "var(--accent)")}${t("dashScheduler")}</h2>
     <div class="stat-grid">
       <div class="stat ${summary.due ? "warn" : ""}"><span class="value">${summary.due}</span><span class="label">${esc(t("dashDue"))}</span></div>
       <div class="stat"><span class="value">${next ? esc(schedulerNextText(next.nextRunAt)) : "—"}</span><span class="label">${esc(t("dashNextRun"))}</span></div>
@@ -2448,7 +3085,7 @@ function dashboardGatewayCard(status) {
         : `<button class="btn small" data-action="gatewayStart" ${busy.start ? "disabled" : ""}>${t("start")}</button>`}
       <button class="ghost small" data-action="checkApi" ${busy.check ? "disabled" : ""}>${t("check")}</button>
       <span class="spacer"></span>
-      <button class="ghost small" data-action="go" data-id="api">${t("open")}</button>
+      <button class="ghost small" data-action="openApi">${t("open")}</button>
     </div>
     ${S.checkResult ? `<div class="note-line ${S.checkPassed ? "ok" : "danger"}">${esc(S.checkResult)}</div>` : ""}
   </div>`;

@@ -2447,18 +2447,32 @@ impl LocalRuntimeManager {
         Ok(path)
     }
 
+    /// Parallel slots for the engine. The saved setting wins; the environment
+    /// variable stays as a development override, then the macOS default of 1.
     fn parallel_requests() -> usize {
-        std::env::var("MELON_LOCAL_PARALLEL")
+        if let Some(value) = std::env::var("MELON_LOCAL_PARALLEL")
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1)
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            return value.clamp(1, 16);
+        }
+        crate::settings::load().local_parallel_requests.clamp(1, 16) as usize
     }
 
     fn idle_unload_seconds() -> u64 {
-        std::env::var("MELON_LOCAL_IDLE_UNLOAD")
+        if let Some(value) = std::env::var("MELON_LOCAL_IDLE_UNLOAD")
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            return value;
+        }
+        crate::settings::load().local_idle_unload_seconds as u64
+    }
+
+    /// Models the engine may keep loaded at once. macOS exposes the same
+    /// choice as 1, 2 or 3 and recommends 1.
+    fn models_max_concurrent() -> usize {
+        crate::settings::load().local_models_max.clamp(1, 3) as usize
     }
 
     /// One snapshot of the runtime state.
@@ -3028,7 +3042,7 @@ impl LocalRuntimeManager {
                 "--models-preset".to_string(),
                 preset_path.to_string_lossy().to_string(),
                 "--models-max".to_string(),
-                "1".to_string(),
+                Self::models_max_concurrent().to_string(),
                 "--metrics".to_string(),
             ];
             if parallel > 1 {

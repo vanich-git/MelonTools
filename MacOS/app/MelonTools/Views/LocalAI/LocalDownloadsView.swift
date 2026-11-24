@@ -150,7 +150,7 @@ struct LocalDownloadsView: View {
                             }) {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.amber, prominent: true, size: .small))
+                            .buttonStyle(MTGlassButtonStyle(tint: MTTheme.cyan, prominent: true, size: .small))
                             .help(L("Retry Download"))
                             .accessibilityLabel(L("Retry Download"))
 

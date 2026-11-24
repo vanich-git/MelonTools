@@ -680,9 +680,11 @@ struct CodexAccountsView: View {
             TextEditor(text: $importText)
                 .font(MTTheme.mono(11))
                 .scrollContentBackground(.hidden)
-                .background(MTTheme.background)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(MTTheme.background, in: Capsule())
                 .frame(height: 200)
-                .overlay(RoundedRectangle(cornerRadius: MTTheme.rSmall).strokeBorder(MTTheme.borderColor))
+                .overlay(Capsule().strokeBorder(MTTheme.borderColor))
             HStack {
                 Spacer()
                 MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { showImportSheet = false }
@@ -917,7 +919,7 @@ private struct MiniAPICard: View {
                         }
                     }
                     MTGlassButton(title: L("Manage"), systemImage: "arrow.right", tint: MTTheme.cyan) {
-                        selection = .codexAPI
+                        GatewayDeepLink.openAPI(selection: $selection)
                     }
                     Spacer()
                 }
@@ -1056,7 +1058,7 @@ private struct AccountRoutingSheet: View {
             VStack(alignment: .leading, spacing: MTTheme.s2) {
                 Toggle(L("Always first"), isOn: $preferred)
                     .toggleStyle(.switch)
-                    .tint(MTTheme.amber)
+                    .tint(MTTheme.cyan)
                 Text(L("The “always first” account leads while it is not paused by limits."))
                     .font(MTTheme.mono(10))
                     .foregroundStyle(MTTheme.textSecondary)
@@ -1100,7 +1102,7 @@ private struct AccountRoutingSheet: View {
             HStack(spacing: MTTheme.s2) {
                 Spacer()
                 MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
-                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true) {
+                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.cyan, prominent: true) {
                     store.updateRoutingSettings(
                         account,
                         hourlyPercent: hourlyEnabled ? hourly : nil,
@@ -1136,16 +1138,11 @@ private struct AccountRoutingSheet: View {
         VStack(alignment: .leading, spacing: MTTheme.s2) {
             Toggle(title, isOn: enabled)
                 .toggleStyle(.switch)
-                .tint(MTTheme.amber)
+                .tint(MTTheme.cyan)
             if enabled.wrappedValue {
                 HStack(spacing: MTTheme.s3) {
-                    Stepper(value: value, in: 1...100) {
-                        Text("\(value.wrappedValue)%")
-                            .font(MTTheme.mono(12, weight: .semibold))
-                            .foregroundStyle(MTTheme.textPrimary)
-                            .frame(width: 48, alignment: .leading)
-                    }
-                    .frame(width: 160)
+                    MTStepperField(value: value, range: 1...100, suffix: "%")
+                        .frame(width: 112)
                     Text(L("switch when quota left drops to this percent"))
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
@@ -1196,77 +1193,82 @@ private struct AccountModelsSheet: View {
     }
 
     private func editor(_ account: CodexAccount) -> some View {
-        VStack(alignment: .leading, spacing: MTTheme.s4) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: L("Models · %@"), account.displayName))
-                    .font(MTTheme.display(20))
-                    .foregroundStyle(MTTheme.textPrimary)
-                Text(L("Codex models subtitle"))
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: MTTheme.s2) {
-                TextField(L("Search"), text: $search)
-                    .textFieldStyle(.mtInput)
-                    .font(MTTheme.mono(11))
-                    .frame(maxWidth: 260)
-                MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) {
-                    for model in filteredModels { selected.insert(model.slug) }
+        // The model list is fixed at 320 points, but the header, the search
+        // row and the error notes can still overflow a short window, so the
+        // sheet scrolls as one column instead of clipping its own footer.
+        ScrollView {
+            VStack(alignment: .leading, spacing: MTTheme.s4) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(String(format: L("Models · %@"), account.displayName))
+                        .font(MTTheme.display(20))
+                        .foregroundStyle(MTTheme.textPrimary)
+                    Text(L("Codex models subtitle"))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                MTGlassButton(title: L("Clear"), size: .small, tint: MTTheme.textSecondary) {
-                    for model in filteredModels { selected.remove(model.slug) }
-                }
-                Spacer()
-                MTGlassButton(
-                    title: L("Load models"),
-                    systemImage: "arrow.down.circle",
-                    size: .small,
-                    tint: MTTheme.emerald,
-                    isLoading: pool.isRefreshing
-                ) {
-                    Task { await pool.refreshFromServer(accounts: store.accounts) }
-                }
-            }
-            if let refreshError = pool.refreshError {
-                Text(refreshError)
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.danger)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
-            modelList(account)
-
-            Text(L("Relaunch Codex to refresh the model picker."))
-                .font(MTTheme.mono(10))
-                .foregroundStyle(MTTheme.textTertiary)
-
-            if let error {
-                Text(error)
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.danger)
-                    .textSelection(.enabled)
-            } else if selected.isEmpty {
-                Text(L("At least one model must stay selected."))
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.warn)
-            }
-
-            HStack(spacing: MTTheme.s2) {
-                Spacer()
-                MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
-                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true) {
-                    if let message = store.updateAccountModels(account, selected: selected) {
-                        error = message
-                    } else {
-                        dismiss()
+                HStack(spacing: MTTheme.s2) {
+                    TextField(L("Search"), text: $search)
+                        .textFieldStyle(.mtInput)
+                        .font(MTTheme.mono(11))
+                        .frame(maxWidth: 260)
+                    MTGlassButton(title: L("Select all"), size: .small, tint: MTTheme.cyan) {
+                        for model in filteredModels { selected.insert(model.slug) }
+                    }
+                    MTGlassButton(title: L("Clear"), size: .small, tint: MTTheme.textSecondary) {
+                        for model in filteredModels { selected.remove(model.slug) }
+                    }
+                    Spacer()
+                    MTGlassButton(
+                        title: L("Load models"),
+                        systemImage: "arrow.down.circle",
+                        size: .small,
+                        tint: MTTheme.emerald,
+                        isLoading: pool.isRefreshing
+                    ) {
+                        Task { await pool.refreshFromServer(accounts: store.accounts) }
                     }
                 }
-                .disabled(selected.isEmpty)
+                if let refreshError = pool.refreshError {
+                    Text(refreshError)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                modelList(account)
+
+                Text(L("Relaunch Codex to refresh the model picker."))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textTertiary)
+
+                if let error {
+                    Text(error)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.danger)
+                        .textSelection(.enabled)
+                } else if selected.isEmpty {
+                    Text(L("At least one model must stay selected."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.warn)
+                }
+
+                HStack(spacing: MTTheme.s2) {
+                    Spacer()
+                    MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
+                    MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.cyan, prominent: true) {
+                        if let message = store.updateAccountModels(account, selected: selected) {
+                            error = message
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .disabled(selected.isEmpty)
+                }
             }
+            .padding(MTTheme.s5)
         }
-        .padding(MTTheme.s5)
         .frame(width: 560)
         .background(MTTheme.background)
         .onAppear {
@@ -1279,15 +1281,15 @@ private struct AccountModelsSheet: View {
     // MARK: Rows
 
     private func modelList(_ account: CodexAccount) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(filteredModels) { model in
-                    modelRow(model, account: account)
-                }
+        // No scroller of its own: the editor already scrolls, and a capped
+        // inner list trapped the wheel so the sheet stopped moving at its
+        // edge. The list grows and the sheet scrolls over it.
+        LazyVStack(alignment: .leading, spacing: 1) {
+            ForEach(filteredModels) { model in
+                modelRow(model, account: account)
             }
-            .padding(.vertical, MTTheme.s1)
         }
-        .frame(height: 320)
+        .padding(.vertical, MTTheme.s1)
         .background(MTTheme.cardBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)

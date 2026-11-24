@@ -23,7 +23,7 @@ struct UpdateSheet: View {
                 Spacer(minLength: 0)
                 MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
                 if case .available = updater.phase {
-                    MTGlassButton(title: L("Update"), systemImage: "arrow.down.circle.fill", tint: MTTheme.amber, prominent: true) {
+                    MTGlassButton(title: L("Update"), systemImage: "arrow.down.circle.fill", tint: MTTheme.cyan, prominent: true) {
                         Task { await updater.install() }
                     }
                 }
@@ -83,7 +83,7 @@ struct UpdateSheet: View {
                 VStack(alignment: .leading, spacing: MTTheme.s2) {
                     ProgressView(value: progress.fraction)
                         .progressViewStyle(.linear)
-                        .tint(MTTheme.gold)
+                        .tint(MTTheme.cyan)
                     Text(
                         String(
                             format: L("%@ of %@ · %@/s"),

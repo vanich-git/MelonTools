@@ -16,7 +16,7 @@ settings:
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: "NO"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
-    SWIFT_STRICT_CONCURRENCY: minimal
+    SWIFT_STRICT_CONCURRENCY: targeted
 
 targets:
   MelonTools:
@@ -43,8 +43,8 @@ targets:
       properties:
         CFBundleDisplayName: Melon Tools
         CFBundleName: Melon Tools
-        CFBundleShortVersionString: "6.0.2"
-        CFBundleVersion: "73"
+        CFBundleShortVersionString: "6.5.1"
+        CFBundleVersion: "75"
         CFBundleIconFile: AppIcon
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026 Melon Tools"
@@ -79,8 +79,8 @@ targets:
         - MelonToolsTests
     settings:
       base:
-        MARKETING_VERSION: "6.0.2"
-        CURRENT_PROJECT_VERSION: "73"
+        MARKETING_VERSION: "6.5.1"
+        CURRENT_PROJECT_VERSION: "75"
         GENERATE_INFOPLIST_FILE: "NO"
         CODE_SIGN_ENTITLEMENTS: MelonTools/MelonTools.entitlements
       configs:

@@ -158,8 +158,9 @@ struct HuggingFaceCatalogView: View {
                 }
             }
             .font(MTTheme.body(12))
-            .padding(8)
-            .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 7))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.primary.opacity(0.04), in: Capsule())
             Button(L("Hugging Face API Token"), systemImage: "key") { showTokenSheet = true }
                 .labelStyle(.iconOnly).buttonStyle(.plain)
                 .help(L("Hugging Face API Token"))

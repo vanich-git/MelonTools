@@ -1,5 +1,5 @@
 //! Device login: add a new ChatGPT account to the pool without a browser
-//! callback — the code is entered at auth.openai.com/codex/device.
+//! callback: the code is entered at auth.openai.com/codex/device.
 //! Ported from CodexService.swift (startDeviceLogin / pollDeviceLogin).
 
 use serde_json::{json, Value};
@@ -80,22 +80,27 @@ pub async fn poll(
                 .get("code_verifier")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "в ответе нет code_verifier".to_string())?;
-            exchange_code(client, code, verifier).await.map(Some)
+            exchange_code(client, code, verifier, REDIRECT_URI)
+                .await
+                .map(Some)
         }
         403 | 404 => Ok(None),
         other => Err(format!("{}: {}", other, short(&text))),
     }
 }
 
-async fn exchange_code(
+/// Exchanges an authorization code for tokens. The browser flow uses its own
+/// loopback redirect, so the URI is a parameter instead of the device constant.
+pub async fn exchange_code(
     client: &reqwest::Client,
     code: &str,
     verifier: &str,
+    redirect_uri: &str,
 ) -> Result<Tokens, String> {
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
-        ("redirect_uri", REDIRECT_URI),
+        ("redirect_uri", redirect_uri),
         ("client_id", CLIENT_ID),
         ("code_verifier", verifier),
     ];

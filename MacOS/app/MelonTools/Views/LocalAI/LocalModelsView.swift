@@ -54,10 +54,9 @@ struct LocalModelsView: View {
                         .accessibilityLabel(L("Clear search"))
                     }
                 }
-                .padding(.horizontal, MTTheme.s3)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.04))
-                .cornerRadius(8)
+                .background(Color.primary.opacity(0.04), in: Capsule())
                 .frame(maxWidth: 300)
 
                 Spacer()
@@ -436,7 +435,7 @@ struct LocalModelsView: View {
                 if isStartingThis {
                     ProgressView()
                         .progressViewStyle(.linear)
-                        .tint(MTTheme.amber)
+                        .tint(MTTheme.cyan)
                 }
 
                 if let failure = failureMessage(for: model) {

@@ -442,13 +442,11 @@ private struct SchedulerEditorSheet: View {
                             .font(MTTheme.mono(11))
                             .scrollContentBackground(.hidden)
                             .frame(height: 140)
-                            .padding(MTTheme.s2)
-                            .background(
-                                MTTheme.cardSoft,
-                                in: RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
-                            )
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(MTTheme.cardSoft, in: Capsule())
                             .overlay(
-                                RoundedRectangle(cornerRadius: MTTheme.rSmall, style: .continuous)
+                                Capsule()
                                     .strokeBorder(MTTheme.borderColor.opacity(0.7), lineWidth: 0.75)
                             )
                     }
@@ -489,7 +487,7 @@ private struct SchedulerEditorSheet: View {
 
                     Toggle(L("Include git status, log and diff in the prompt"), isOn: $includeGitContext)
                         .toggleStyle(.switch)
-                        .tint(MTTheme.amber)
+                        .tint(MTTheme.cyan)
                         .font(MTTheme.body(11))
 
                     HStack(spacing: MTTheme.s3) {
@@ -626,7 +624,7 @@ private struct SchedulerEditorSheet: View {
             HStack(spacing: MTTheme.s2) {
                 Spacer()
                 MTGlassButton(title: L("Cancel"), tint: MTTheme.textSecondary) { dismiss() }
-                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.amber, prominent: true, isLoading: false) {
+                MTGlassButton(title: L("Save"), systemImage: "checkmark", tint: MTTheme.cyan, prominent: true, isLoading: false) {
                     save()
                 }
                 .disabled(!canSave)
@@ -893,16 +891,15 @@ private struct SchedulerResultSheet: View {
             Divider().overlay(MTTheme.borderColor)
 
             if let error, !error.isEmpty {
-                ScrollView {
-                    Text(error)
-                        .font(MTTheme.mono(10))
-                        .foregroundStyle(MTTheme.danger)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(MTTheme.s3)
-                }
-                .frame(maxHeight: 110)
-                .background(MTTheme.danger.opacity(0.08))
+                // Not a scroller: a capped inner one swallowed the wheel and
+                // the sheet below it never moved.
+                Text(error)
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.danger)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(MTTheme.s3)
+                    .background(MTTheme.danger.opacity(0.08))
             }
 
             ScrollView {
@@ -935,9 +932,8 @@ private struct SchedulerResultSheet: View {
                         .font(MTTheme.mono(10))
                         .foregroundStyle(MTTheme.textSecondary)
                 } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
                                 Button {
                                     selectedIndex = index
                                 } label: {
@@ -977,11 +973,9 @@ private struct SchedulerResultSheet: View {
                                     )
                                     .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
-                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .frame(maxHeight: 110)
                 }
             }
             .padding(MTTheme.s3)

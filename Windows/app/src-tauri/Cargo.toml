@@ -1,6 +1,6 @@
 [package]
 name = "melontools"
-version = "6.0.2"
+version = "6.5.1"
 description = "Melon Tools for Windows — Codex account pool and local API gateway"
 edition = "2021"
 rust-version = "1.90"
@@ -48,6 +48,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
+    "Win32_System_Registry",
 ] }
 
 [profile.release]

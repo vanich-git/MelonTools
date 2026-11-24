@@ -1,3 +1,80 @@
+# Melon Tools 6.5.1
+
+Patch release for macOS and Windows. It unifies the visible controls and removes
+the remaining amber primary accents.
+
+## What changed in 6.5.1
+
+- **Pill controls.** Buttons, select triggers, text and number fields, segmented
+  controls and their hover, focus and disabled states share one capsule shape in
+  both apps.
+- **Cyan primary.** Prominent actions, selected filters and toggles use cyan on
+  both platforms. Amber stays for warnings and melon branding only.
+- **Windows parity.** The Windows port follows the same control shapes and
+  primary colour, including the light theme select chevron and agent fields.
+- **Build metadata.** macOS build 75; both apps report version 6.5.1.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.5.1.dmg` (arm64 + x86_64, build 75)
+- Windows portable: `MelonTools-6.5.1-win-x64-portable.exe`
+- Windows installer: `MelonTools-6.5.1-setup.exe`
+
+# Melon Tools 6.5.0
+
+Feature release for macOS that brings the app in line with the Magpie workflow:
+providers open their own settings page, routing has a screen of its own, agents
+are a managed catalog, and usage is recorded for every request the local
+gateway serves. The sidebar follows the same grouping without changing the
+existing page design.
+
+## What changed in 6.5.0
+
+- **Providers open a settings page.** The providers screen is a card board; a
+  click on a provider opens its page with connection, models, routing, accounts
+  and balance sections, and a "Back to providers" action. Adding a custom
+  OpenAI-compatible provider uses the same page shell.
+- **Routing screen.** The engine strategy (weighted, round robin, fill first),
+  session affinity and its window, retries per request and the transient
+  cooldown are editable in the app. Model groups give one alias to several
+  providers, so a failing upstream is replaced inside the same request. The
+  screen states the engine limitation honestly: the order between providers is
+  chosen by the engine, not by the group list.
+- **Agents.** A catalog of 29 known agent CLIs and editors, grouped into
+  terminal, editors and desktop apps, with search. Each agent page shows the
+  model, the config path, the backup list and a revert action. JSON and env
+  configs are written in place, never wholesale: other keys survive. Agents
+  without a stable config format get an honest manual snippet instead of a
+  fake "connected" state. Custom agents can be added with dotted JSON paths or
+  an env file.
+- **Usage.** Every `[usage]` telemetry line from the gateway is stored in daily
+  JSONL files for 90 days and shown as totals, a day or hour chart, top models,
+  top providers, a priced cost estimate and the provider balances. The screen
+  says how many calls the estimate covers instead of inventing a number.
+- **Sidebar.** Overview, Work, Models, Insights, Automation, Accounts and App
+  groups. Existing pages keep their design.
+- **Russian and English.** Every new screen, label and message is localized.
+- **Build metadata.** macOS build 74; version metadata is aligned at 6.5.0.
+
+## What this release does not prove
+
+- **Windows carries the same version number, not the same screens.** The
+  Windows sources are bumped to 6.5.0 so the manifests stay consistent; the new
+  provider, routing, agent and usage screens are macOS-only in this release.
+- **No Developer ID, no notarization.** The macOS DMG is ad-hoc signed and the
+  `spctl` checks stay skipped without certificates.
+- **No live gateway run was part of this build.** Provider groups and the usage
+  store are covered by unit tests that build the YAML and aggregate records in
+  memory; applying agents to real `~/.codex` or `~/.claude` files is left to the
+  user, with backups taken by the app.
+- **Plugins are not included.** They stay deferred as agreed.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.5.0.dmg` (arm64 + x86_64, build 74)
+- Digests: `SHA256SUMS` in the release assets, plus a `.sha256` sibling for
+  every file.
+
 # Melon Tools 6.0.2
 
 Patch release for macOS and Windows that restores the Codex model catalog after

@@ -74,6 +74,16 @@ struct ModelSource: Identifiable, Codable, Equatable {
     var models: [SourceModel]
     /// Set for `.custom` sources; empty for built-ins.
     var apiProtocol: APIProtocol? = nil
+    /// Engine selection tier for this provider. Higher wins: the engine picks
+    /// the highest tier that still has a healthy credential before it falls
+    /// back to a lower one, so a fast provider can be preferred over a slow
+    /// neighbour without removing the neighbour from the failover chain. Zero
+    /// means "no preference" and is left out of the file.
+    var priority: Int? = nil
+    /// Extra headers sent upstream. Some providers sit behind Cloudflare and
+    /// refuse the engine's default Go user agent with `error code: 1010`, and
+    /// others need a protocol version pinned. Empty means "send nothing extra".
+    var headers: [String: String]? = nil
 
     var selectedModels: [SourceModel] { models.filter(\.enabled) }
 
@@ -627,6 +637,7 @@ final class ModelSourcesStore: ObservableObject {
         baseURL rawBaseURL: String,
         apiProtocol: ModelSource.APIProtocol,
         apiKey rawKey: String,
+        priority: Int? = nil,
         models: [SourceModel]
     ) -> String? {
         let identifier = rawIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -656,7 +667,8 @@ final class ModelSourcesStore: ObservableObject {
             apiKey: key,
             enabled: existingIndex.map { sources[$0].enabled } ?? true,
             models: normalizedModels,
-            apiProtocol: apiProtocol
+            apiProtocol: apiProtocol,
+            priority: priority
         )
         if let index = existingIndex {
             sources[index] = source
@@ -1929,6 +1941,17 @@ final class ModelSourcesStore: ObservableObject {
     /// themselves with their own user agent instead of a generic one.
     static let openCodeHeaders = ["x-opencode-session": "melon-tools", "user-agent": "MelonTools/1.4"]
 
+    /// Baseline headers for every OpenAI-compatible provider that does not set
+    /// its own. Several upstreams sit behind Cloudflare and score the request
+    /// by its user-agent signature: the engine's default `Go-http-client` and
+    /// Python's `Python-urllib` both land on `error code: 1010`, while a
+    /// product-like agent string passes. Sending one costs nothing and stops
+    /// an otherwise healthy provider from failing every request.
+    static let defaultProviderHeaders = [
+        "User-Agent": "MelonTools/1.4 (macOS)",
+        "Accept": "application/json",
+    ]
+
     /// Builds the gateway `api-keys` block from the current sources.
     ///
     /// OpenRouter/OpenCode ride `openai-compatibility`; the Claude API-key
@@ -1936,13 +1959,20 @@ final class ModelSourcesStore: ObservableObject {
     /// (a second root would break the config). A Claude OAuth source carries
     /// no key and emits nothing: the engine serves it from its own account.
     /// Antigravity is OAuth-only and likewise emits nothing.
-    nonisolated static func gatewayYAML(sources: [ModelSource]) -> String {
+    nonisolated static func gatewayYAML(
+        sources: [ModelSource],
+        groupAliases: [String: [SourceModel]] = [:]
+    ) -> String {
         var compatBlocks: [String] = []
         var codexBlocks: [String] = []
         var claudeBlocks: [String] = []
         var geminiBlocks: [String] = []
         for source in sources where source.enabled {
-            let selected = source.selectedModels
+            // A routing group adds the same alias to every member provider, so
+            // one model name is served by several upstreams and the engine can
+            // fail over between them.
+            var selected = source.selectedModels
+            selected.append(contentsOf: groupAliases[source.id] ?? [])
             guard !selected.isEmpty else { continue }
             if source.kind == .antigravity {
                 // OAuth-only: the engine serves the models from its Google
@@ -1982,14 +2012,16 @@ final class ModelSourcesStore: ObservableObject {
                                               baseURL: baseURL,
                                               key: key,
                                               models: selected,
-                                              headers: nil,
+                                              headers: source.headers ?? Self.defaultProviderHeaders,
+                                              priority: source.priority,
                                               openRouterVariants: false))
                 case .openAIResponses:
                     codexBlocks.append(block(name: source.id,
                                              baseURL: baseURL,
                                              key: key,
                                              models: selected,
-                                             headers: nil,
+                                             headers: source.headers ?? Self.defaultProviderHeaders,
+                                             priority: source.priority,
                                              openRouterVariants: false))
                 case .anthropic:
                     claudeBlocks.append(claudeBlock(source: source,
@@ -2001,7 +2033,8 @@ final class ModelSourcesStore: ObservableObject {
                                               baseURL: baseURL,
                                               key: key,
                                               models: selected,
-                                              headers: nil,
+                                              headers: source.headers ?? Self.defaultProviderHeaders,
+                                              priority: source.priority,
                                               openRouterVariants: false))
                 }
                 continue
@@ -2019,7 +2052,8 @@ final class ModelSourcesStore: ObservableObject {
                                               baseURL: source.baseURL,
                                               key: key,
                                               models: openAIModels,
-                                              headers: nil,
+                                              headers: source.headers ?? Self.defaultProviderHeaders,
+                                              priority: source.priority,
                                               openRouterVariants: false))
                 }
                 if !anthropicModels.isEmpty {
@@ -2059,7 +2093,8 @@ final class ModelSourcesStore: ObservableObject {
                                       baseURL: source.baseURL,
                                       key: key,
                                       models: selected,
-                                      headers: nil,
+                                      headers: source.headers ?? Self.defaultProviderHeaders,
+                                      priority: source.priority,
                                       openRouterVariants: source.kind == .openRouter))
         }
         var yaml = ""
@@ -2089,7 +2124,11 @@ final class ModelSourcesStore: ObservableObject {
     }
 
     func gatewayYAML() -> String {
-        Self.gatewayYAML(sources: effectiveSources)
+        let sources = effectiveSources
+        return Self.gatewayYAML(
+            sources: sources,
+            groupAliases: RoutingGroupsStore.shared.aliasModels(sources: sources)
+        )
     }
 
     /// One `api-keys.claude` entry (Anthropic API-key fallback): same model
@@ -2104,8 +2143,23 @@ final class ModelSourcesStore: ObservableObject {
         var lines: [String] = []
         lines.append("    - name: \"\(yamlEscape(name ?? source.id))\"")
         lines.append("      base-url: \"\(yamlEscape(baseURL ?? source.baseURL))\"")
+        // Applied after the engine's own user-agent default, so a value here
+        // wins. A provider behind Cloudflare refuses the default.
+        let headers = source.headers ?? Self.defaultProviderHeaders
+        if !headers.isEmpty {
+            lines.append("      headers:")
+            for header in headers.keys.sorted() {
+                lines.append("        \(header): \"\(yamlEscape(headers[header]!))\"")
+            }
+        }
         lines.append("      keys:")
         lines.append("        - api-key: \"\(yamlEscape(key))\"")
+        // A Claude key carries `priority` on the key, not on the provider
+        // entry, so it has to be emitted one level deeper than the
+        // openai-compatibility block does.
+        if let priority = source.priority, priority != 0 {
+            lines.append("          priority: \(priority)")
+        }
         lines.append("      models:")
         for model in models {
             lines.append("        - name: \"\(yamlEscape(model.id))\"")
@@ -2128,11 +2182,18 @@ final class ModelSourcesStore: ObservableObject {
         models: [SourceModel],
         headers: [String: String]?,
         proxyURL: String? = nil,
+        priority: Int? = nil,
         openRouterVariants: Bool = false
     ) -> String {
         var lines: [String] = []
         lines.append("    - name: \"\(Self.yamlEscape(name))\"")
         lines.append("      base-url: \"\(Self.yamlEscape(baseURL))\"")
+        // Selection tier. The engine prefers the highest tier that still has a
+        // healthy credential and only then falls back, which is how a fast
+        // provider gets picked first without leaving the failover chain.
+        if let priority, priority != 0 {
+            lines.append("      priority: \(priority)")
+        }
         if let headers, !headers.isEmpty {
             lines.append("      headers:")
             for header in headers.keys.sorted() {

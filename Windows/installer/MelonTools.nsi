@@ -170,6 +170,13 @@ Section "Melon Tools" SEC_APP
   WriteRegStr HKCU "${UNINSTALL_REG_KEY}" "HelpLink" "${PRODUCT_URL}"
   WriteRegDWORD HKCU "${UNINSTALL_REG_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_REG_KEY}" "NoRepair" 1
+
+  ; melon:// handler. The app writes the same keys on start (a portable build
+  ; has no installer), so this only makes the link work before the first run.
+  WriteRegStr HKCU "Software\Classes\melon" "" "URL:Melon Tools Protocol"
+  WriteRegStr HKCU "Software\Classes\melon" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\melon\DefaultIcon" "" "$INSTDIR\MelonTools.exe,0"
+  WriteRegStr HKCU "Software\Classes\melon\shell\open\command" "" '"$INSTDIR\MelonTools.exe" "%1"'
 SectionEnd
 
 Section "Uninstall"
@@ -192,6 +199,7 @@ Section "Uninstall"
 
   Delete "$DESKTOP\Melon Tools.lnk"
 
+  DeleteRegKey HKCU "Software\Classes\melon"
   DeleteRegKey HKCU "${UNINSTALL_REG_KEY}"
   DeleteRegKey HKCU "${APP_REG_KEY}"
 

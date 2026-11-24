@@ -20,6 +20,7 @@ struct MelonToolsApp: App {
                     .environmentObject(appState)
                     .frame(minWidth: 1060, minHeight: 680)
                     .id(l10n.code) // full re-render on language switch
+                    .buttonStyle(MTGlassButtonStyle())
             }
         }
         .windowStyle(.titleBar)
@@ -47,6 +48,7 @@ struct MelonToolsApp: App {
                 SettingsView()
                     .environmentObject(appState)
                     .id(l10n.code)
+                    .buttonStyle(MTGlassButtonStyle())
             }
         }
     }

@@ -2723,6 +2723,33 @@ pub async fn local_ai_set_binary_path(
     state.local_runtime.set_custom_binary_path(pb).await
 }
 
+/// Engine scheduling, matching the three controls macOS keeps in the Local AI
+/// settings tab. The values are applied on the next engine start, so this only
+/// persists them; the UI offers a restart next to the card.
+#[tauri::command]
+pub fn local_ai_set_scheduling(
+    state: State<'_, AppState>,
+    parallel: u32,
+    idle_unload_seconds: u32,
+    models_max: u32,
+) -> Result<serde_json::Value, String> {
+    let parallel = parallel.clamp(1, 16);
+    let models_max = models_max.clamp(1, 3);
+    let mut guard = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock".to_string())?;
+    guard.local_parallel_requests = parallel;
+    guard.local_idle_unload_seconds = idle_unload_seconds;
+    guard.local_models_max = models_max;
+    crate::settings::save(&guard)?;
+    Ok(serde_json::json!({
+        "parallel": parallel,
+        "idleUnloadSeconds": idle_unload_seconds,
+        "modelsMax": models_max,
+    }))
+}
+
 /// Uses the explicit token when the caller has one, otherwise the stored one.
 /// The UI no longer holds the secret, so `None` is the normal case.
 fn resolve_hf_token(token: Option<String>) -> Option<String> {

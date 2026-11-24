@@ -67,14 +67,15 @@ struct LocalAIView: View {
                                     .frame(width: 6, height: 6)
                             }
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 7)
                         .background(
-                            selectedTab == tab
-                            ? Color.primary.opacity(0.1)
-                            : Color.primary.opacity(0.02)
+                            Capsule().fill(
+                                selectedTab == tab
+                                ? Color.primary.opacity(0.1)
+                                : Color.primary.opacity(0.02)
+                            )
                         )
-                        .cornerRadius(8)
                         .foregroundStyle(selectedTab == tab ? MTTheme.textPrimary : MTTheme.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -112,10 +113,9 @@ struct LocalAIView: View {
                             .foregroundStyle(MTTheme.textTertiary)
                     }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.03))
-                .cornerRadius(6)
+                .background(Color.primary.opacity(0.03), in: Capsule())
             }
             .padding(.horizontal, MTTheme.s4)
             .padding(.vertical, MTTheme.s3)

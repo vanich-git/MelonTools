@@ -5,15 +5,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account_import;
+mod agents;
 mod antigravity;
 mod antigravity_identity;
 mod backup;
 mod bridge;
+mod browser_login;
 mod catalog;
 mod claude;
 mod codex_models;
 mod codex_route;
 mod custom;
+mod deep_link;
 mod device_login;
 mod dpapi;
 mod engine;
@@ -29,11 +32,13 @@ mod providers;
 mod proxy;
 mod quota;
 mod routing;
+mod routing_groups;
 mod scheduler;
 mod schema;
 mod settings;
 mod taskbar_widget;
 mod updater;
+mod usage;
 mod vault;
 
 use serde_json::{json, Value};
@@ -193,6 +198,17 @@ async fn settings_get(state: State<'_, AppState>) -> Result<Value, String> {
 /// Renderer-facing settings. The management secret is app-internal (the engine
 /// config and management calls need the plaintext value) and must not cross the
 /// IPC boundary: it is redacted, the other fields pass through unchanged.
+/// The native frame follows the same three-way choice as the page. Passing
+/// `None` hands the decision back to Windows for "system".
+fn apply_window_theme(window: &tauri::WebviewWindow, theme: &str) {
+    let value = match theme {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    let _ = window.set_theme(value);
+}
+
 fn settings_view(settings: &settings::Settings) -> Result<Value, String> {
     let mut value = serde_json::to_value(settings).map_err(|e| e.to_string())?;
     if let Some(object) = value.as_object_mut() {
@@ -222,11 +238,14 @@ async fn settings_set(
     if !(1024..=65535).contains(&payload.port) {
         return Err("порт должен быть в диапазоне 1024–65535".to_string());
     }
-    if !(60..=86_400).contains(&payload.quota_interval) {
-        return Err("интервал квот: от 60 до 86400 секунд".to_string());
+    if payload.quota_interval != 0 && !(60..=86_400).contains(&payload.quota_interval) {
+        return Err("интервал квот: 0 (выключено) или от 60 до 86400 секунд".to_string());
     }
     if payload.lang != "ru" && payload.lang != "en" {
         return Err("неизвестный язык".to_string());
+    }
+    if payload.theme != "system" && payload.theme != "light" && payload.theme != "dark" {
+        return Err("неизвестная тема".to_string());
     }
     if !settings::ISLAND_AUTO_COLLAPSE_CHOICES.contains(&payload.island_auto_collapse_seconds) {
         return Err("автосворачивание островка: 0, 5, 10, 15 или 20 секунд".to_string());
@@ -254,6 +273,9 @@ async fn settings_set(
     }
     if before.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        apply_window_theme(&window, &merged.theme);
     }
     set_island_visible(&app, merged.island_visible);
     taskbar_widget::set_visible(&app, merged.taskbar_widget_visible);
@@ -332,8 +354,10 @@ async fn support_bundle(state: State<'_, AppState>) -> Result<Value, String> {
         },
         "settings": {
             "lang": settings.lang,
+            "theme": settings.theme,
             "quotaInterval": settings.quota_interval,
             "routingStrategy": settings.routing_strategy,
+            "gatewayStrategy": settings.gateway_strategy,
             "notifications": settings.notifications,
             "schemaVersion": settings.schema_version,
         },
@@ -406,6 +430,32 @@ async fn gateway_stop(state: State<'_, AppState>) -> Result<String, String> {
     stop_gateway(state.inner()).await
 }
 
+/// Mint a new gateway key and rewrite everything that holds the old one.
+///
+/// The engine authenticates clients against `config.yaml`, and the Codex route
+/// writes the key into its own config, so both are refreshed while the gateway
+/// is stopped. A live engine keeps the old key until the next start, which is
+/// what the macOS app does too: it never restarts silently on rotation.
+#[tauri::command]
+async fn gateway_rotate_key(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let key = settings::generate_api_key();
+    mutate_settings(&state, |s| s.api_key = key.clone())?;
+    if let Err(error) = gateway::write_config_current(|| state.settings()) {
+        eprintln!("[gateway] config write failed after rotation: {error}");
+    }
+    let settings = state.settings();
+    if gateway::health(settings.port, &settings.api_key).await {
+        // The running engine still holds the previous key: point Codex at the
+        // service instead of at a key that no longer matches.
+        let _ = codex_route::apply(settings.port, &settings.api_key);
+    }
+    let _ = app.emit("settings-changed", ());
+    settings_view(&settings)
+}
+
 /// Rewrites config.yaml + gateway auth files from the vault.
 #[tauri::command]
 async fn gateway_sync(state: State<'_, AppState>) -> Result<Value, String> {
@@ -424,6 +474,120 @@ async fn gateway_check(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn gateway_recent_calls(limit: Option<usize>) -> Result<Value, String> {
     Ok(gateway::recent_calls(limit.unwrap_or(10)))
+}
+
+#[tauri::command]
+async fn agents_state() -> Result<Value, String> {
+    Ok(agents::snapshot())
+}
+
+#[tauri::command]
+async fn agent_apply(
+    id: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<Value, String> {
+    agents::apply(
+        &id,
+        model.as_deref().unwrap_or(""),
+        effort.as_deref().unwrap_or(""),
+    )
+}
+
+#[tauri::command]
+async fn agent_revert(id: String) -> Result<Value, String> {
+    agents::revert(&id)
+}
+
+/// Opens Explorer with the file selected. Used by the agent backup list; a
+/// missing path is an error instead of opening the default folder.
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    let target = std::path::PathBuf::from(&path);
+    if !target.exists() {
+        return Err("pathNotFound".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("explorer")
+            .arg(format!("/select,\"{}\"", target.display()))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&target)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = target;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn custom_agent_save(agent: Value) -> Result<Value, String> {
+    agents::save_custom(&agent)
+}
+
+#[tauri::command]
+async fn custom_agent_remove(id: String) -> Result<Value, String> {
+    agents::remove_custom(&id)
+}
+
+/// Hands the renderer the page the app was asked to open. The window is shown
+/// before the answer, so a link from a shortcut never leaves a hidden window.
+#[tauri::command]
+async fn deep_link_target(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    let target = deep_link::from_args(std::env::args());
+    if target.is_some() {
+        show_main_window(&app);
+    }
+    serde_json::to_value(target)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn routing_groups(state: State<'_, AppState>) -> Result<Value, String> {
+    Ok(routing_groups::snapshot(&state.settings()))
+}
+
+#[tauri::command]
+async fn routing_group_save(group: Value) -> Result<Value, String> {
+    routing_groups::upsert(group)
+}
+
+#[tauri::command]
+async fn routing_group_delete(id: String) -> Result<Value, String> {
+    routing_groups::remove(&id)
+}
+
+#[tauri::command]
+async fn routing_group_toggle(id: String, enabled: bool) -> Result<Value, String> {
+    routing_groups::set_enabled(&id, enabled)
+}
+
+#[tauri::command]
+async fn usage_load(limit: Option<usize>) -> Result<Value, String> {
+    serde_json::to_value(usage::load(limit)).map_err(|error| error.to_string())
+}
+
+/// Explicit "Clear history" action of the Usage screen: removes the day files
+/// and reports how many went away, so the UI can refresh in one round trip.
+#[tauri::command]
+async fn usage_clear() -> Result<Value, String> {
+    let removed = usage::clear()?;
+    let snapshot = usage::load(None);
+    serde_json::to_value(serde_json::json!({ "removed": removed, "usage": snapshot }))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -954,6 +1118,35 @@ async fn device_login_poll(
     }
 }
 
+// MARK: - Browser login (PKCE + loopback)
+
+/// Starts a PKCE login and returns the authorize URL the UI opens. The exchange
+/// runs in the background; `browser_login_status` reports the outcome.
+#[tauri::command]
+async fn browser_login_start() -> Result<Value, String> {
+    browser_login::start()
+}
+
+#[tauri::command]
+async fn browser_login_status(state: State<'_, AppState>) -> Result<Value, String> {
+    let snapshot = browser_login::status();
+    // A finished login changed the vault outside the renderer, so refresh the
+    // engine's account table here instead of waiting for the next poll tick.
+    if snapshot.get("status").and_then(Value::as_str) == Some("done") {
+        let settings = state.settings();
+        if gateway::health(settings.port, &settings.api_key).await {
+            let _ = gateway::sync_accounts(&settings);
+        }
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn browser_login_cancel() -> Result<Value, String> {
+    browser_login::cancel();
+    Ok(browser_login::status())
+}
+
 // MARK: - Routing
 
 #[tauri::command]
@@ -974,6 +1167,23 @@ async fn routing_state(state: State<'_, AppState>) -> Result<Value, String> {
     }))
 }
 
+/// Gateway strategy: the three engine values macOS exposes on the Routing
+/// screen. `routing_strategy` orders accounts inside the pool; this one tells
+/// the engine how to pick among the ordered credentials.
+pub const GATEWAY_STRATEGIES: [&str; 3] = ["weighted", "roundRobin", "fillFirst"];
+
+#[tauri::command]
+async fn set_gateway_strategy(
+    state: State<'_, AppState>,
+    strategy: String,
+) -> Result<Value, String> {
+    if !GATEWAY_STRATEGIES.contains(&strategy.as_str()) {
+        return Err(format!("неизвестная стратегия шлюза: {}", strategy));
+    }
+    mutate_settings(&state, |s| s.gateway_strategy = strategy)?;
+    resync(&state).await
+}
+
 #[tauri::command]
 async fn set_routing_strategy(
     state: State<'_, AppState>,
@@ -983,6 +1193,29 @@ async fn set_routing_strategy(
         return Err(format!("неизвестная стратегия: {}", strategy));
     }
     mutate_settings(&state, |s| s.routing_strategy = strategy)?;
+    resync(&state).await
+}
+
+#[tauri::command]
+async fn set_routing_tuning(
+    state: State<'_, AppState>,
+    affinity: bool,
+    affinity_ttl: u32,
+    retry: u32,
+    cooldown: u32,
+) -> Result<Value, String> {
+    mutate_settings(&state, |s| {
+        s.session_affinity = affinity;
+        s.session_affinity_ttl = affinity_ttl.clamp(30, 86_400);
+        s.request_retry = retry.min(5);
+        s.transient_cooldown = cooldown.min(600);
+    })?;
+    // The tuning lives in `config.yaml`, so the file is replaced even when the
+    // health probe is about to fail: a stopped engine still needs the newest
+    // document on disk before its next start.
+    if let Err(error) = gateway::write_config_current(|| state.settings()) {
+        eprintln!("[gateway] config write failed: {error}");
+    }
     resync(&state).await
 }
 
@@ -1365,12 +1598,20 @@ async fn apply_codex_models(state: State<'_, AppState>) -> Result<Value, String>
 
 #[tauri::command]
 async fn bridge_status(state: State<'_, AppState>) -> Result<Value, String> {
-    let value = state
+    let mut value = state
         .bridge
         .status
         .lock()
         .map(|v| v.clone())
         .unwrap_or_else(|_| json!({"attached": false}));
+    // The card also shows whether the auto-continue fallback has fired, which
+    // the chips report through the page binding rather than through the probe.
+    let (actions, kind, at) = bridge::auto_retry_log(&state.bridge);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("autoRetryActions".to_string(), json!(actions));
+        object.insert("lastAutoRetryKind".to_string(), json!(kind));
+        object.insert("lastAutoRetryAt".to_string(), json!(at));
+    }
     Ok(value)
 }
 
@@ -2610,14 +2851,19 @@ fn main() {
     local_ai::migration::run_if_needed();
     let initial_settings = settings::load();
     let initial_lang = initial_settings.lang.clone();
+    let initial_theme = initial_settings.theme.clone();
     let island_visible = initial_settings.island_visible;
     let taskbar_widget_visible = initial_settings.taskbar_widget_visible;
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A desktop shortcut or a tray double-click while the app is
             // hidden must show the existing window, not start a second app.
+            // A link in the second launch is forwarded instead of dropped.
             show_main_window(app);
+            if let Some(target) = deep_link::from_args(args) {
+                let _ = app.emit("deep-link", target);
+            }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2635,6 +2881,12 @@ fn main() {
             download_manager: std::sync::Arc::new(local_ai::ModelDownloadManager::new()),
         })
         .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                apply_window_theme(&window, &initial_theme);
+            }
+            // Idempotent: the portable build has no installer to write the
+            // protocol keys, so a link works as soon as the app has run once.
+            deep_link::register_protocol();
             // System tray: window, scheduler navigation, run-next, API
             // pause/resume and quit. Labels follow the saved UI language and
             // are rebuilt by `settings_set` when it changes.
@@ -2677,7 +2929,11 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 {
                     let state = handle.state::<AppState>();
-                    if gateway::start(&state.gw, || state.settings()).await.is_ok() {
+                    // `gateway_auto_start` mirrors the macOS switch of the same
+                    // name: without it the app opens the window and leaves the
+                    // engine alone until the user starts it.
+                    let auto_start = state.settings().gateway_auto_start;
+                    if auto_start && gateway::start(&state.gw, || state.settings()).await.is_ok() {
                         let settings = state.settings();
                         if let Ok(client) = quota::local_client() {
                             let _ = codex_route::sync_catalog(
@@ -2786,6 +3042,11 @@ fn main() {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     let state = quota_handle.state::<AppState>();
                     let settings = state.settings();
+                    // 0 is the explicit "Off" choice in Settings. The loop keeps
+                    // ticking so turning it back on needs no restart.
+                    if settings.quota_interval == 0 {
+                        continue;
+                    }
                     if !gateway::health(settings.port, &settings.api_key).await {
                         continue;
                     }
@@ -2865,9 +3126,22 @@ fn main() {
             gateway_start,
             gateway_stop,
             gateway_sync,
+            gateway_rotate_key,
             gateway_check,
             gateway_recent_calls,
             gateway_recent_usage,
+            agents_state,
+            agent_apply,
+            agent_revert,
+            reveal_path,
+            custom_agent_save,
+            custom_agent_remove,
+            routing_groups,
+            routing_group_save,
+            routing_group_delete,
+            routing_group_toggle,
+            usage_load,
+            usage_clear,
             gateway_models,
             vault_list,
             quota_refresh,
@@ -2882,10 +3156,16 @@ fn main() {
             accounts_wake_sleeping,
             save_reserves,
             delete_account,
+            browser_login_start,
+            browser_login_status,
+            browser_login_cancel,
             device_login_start,
             device_login_poll,
             routing_state,
             set_routing_strategy,
+            set_gateway_strategy,
+            set_routing_tuning,
+            deep_link_target,
             move_priority,
             reset_priority,
             set_account_role,
@@ -2976,6 +3256,7 @@ fn main() {
             local_ai::local_ai_runtime_install_status,
             local_ai::local_ai_runtime_install_cancel,
             local_ai::local_ai_set_binary_path,
+            local_ai::local_ai_set_scheduling,
             local_ai::local_ai_hf_search,
             local_ai::local_ai_hf_model_details,
             local_ai::local_ai_hf_avatars,
@@ -3007,6 +3288,9 @@ fn main() {
                 if let Err(error) = gateway::write_config_current(|| state.settings()) {
                     eprintln!("[gateway] final config write failed: {error}");
                 }
+                // Always explicit: the job object would kill the engine at
+                // process exit anyway, so a "keep it running" switch could not
+                // be honored on Windows and is not offered.
                 let _ = gateway::stop(&state.gw);
                 // Bounded: a stuck model must not hold the exit (§2.2, W6).
                 let _ = stop_runtime_bounded(state.inner());

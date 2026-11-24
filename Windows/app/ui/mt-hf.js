@@ -55,7 +55,8 @@ function hfAvatarSave() {
 
 function hfAvatar(repo, large = false) {
   const author = repo.author || String(repo.id || "").split("/")[0];
-  const hue = Array.from(author).reduce((sum, c) => sum + c.charCodeAt(0), 0) % 360;
+  // Keep fallback avatars inside the app palette: teal, cyan, blue, violet.
+  const hue = 175 + (Array.from(author).reduce((sum, c) => sum + c.charCodeAt(0), 0) % 95);
   const entry = hfAvatarStore()[author];
   if (entry) {
     return `<img class="hf-avatar image${large ? " large" : ""}" src="${esc(entry.url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="--avatar-hue:${hue}">`;
@@ -111,7 +112,8 @@ function hfDate(value) {
   return value && Number.isFinite(date.getTime()) ? date.toLocaleDateString(S.lang === "ru" ? "ru-RU" : "en-US", { year: "numeric", month: "short", day: "numeric" }) : "";
 }
 function hfStats(repo) {
-  return `<span>${localAiIcon("download", 11)} ${Number(repo.downloads || 0).toLocaleString()}</span><span>${localAiIcon("heart", 11)} ${Number(repo.likes || 0).toLocaleString()}</span>${hfDate(repo.lastModified) ? `<span>${esc(hfDate(repo.lastModified))}</span>` : ""}`;
+  const locale = S.lang === "en" ? "en-US" : "ru-RU";
+  return `<span>${localAiIcon("download", 11)} ${Number(repo.downloads || 0).toLocaleString(locale)}</span><span>${localAiIcon("heart", 11)} ${Number(repo.likes || 0).toLocaleString(locale)}</span>${hfDate(repo.lastModified) ? `<span>${esc(hfDate(repo.lastModified))}</span>` : ""}`;
 }
 function hfFits(file) { return file.size > 0 && !/-\d{5}-of-\d{5}\.gguf$/i.test(file.name || "") && ["Recommended", "Fits with limitations"].includes(file.estimation && file.estimation.recommendation); }
 function hfDownloadIssue(file) {

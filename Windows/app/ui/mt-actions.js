@@ -155,8 +155,443 @@ const A = {
   // actions re-render the page.
   onboardingGo(section) {
     dismissOnboarding();
+    if (section === "api") {
+      S.section = "api";
+      sectionLoads("api");
+      return render();
+    }
     S.section = section;
     sectionLoads(section);
+    render();
+  },
+
+  /// Loads the recorded gateway telemetry once per session; the Usage screen
+  /// owns its own refresh so a status tick never re-reads every JSONL file.
+  // ---------- Routing tuning ----------
+
+  /// One round trip for the three engine fields: the settings object is
+  /// patched locally and the whole tuning is re-sent, so a fast second click
+  /// cannot leave the backend half-updated.
+  async routingTuning(patch) {
+    const settings = Object.assign({}, S.settings || {});
+    Object.assign(settings, patch);
+    S.settings = settings;
+    try {
+      await inv("set_routing_tuning", {
+        affinity: settings.sessionAffinity !== false,
+        affinityTtl: Number(settings.sessionAffinityTtl) || 7200,
+        retry: Number(settings.requestRetry) || 0,
+        cooldown: Number(settings.transientCooldown) || 0,
+      });
+      toast(t("routingApplied"));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    render();
+  },
+
+  affinityToggle(el) {
+    A.routingTuning({ sessionAffinity: !!el.checked });
+  },
+
+  affinityTtl(el) {
+    A.routingTuning({ sessionAffinityTtl: Number(el.value) || 7200 });
+  },
+
+  requestRetry(el) {
+    const value = Math.max(0, Math.min(5, Number(el.value) || 0));
+    A.routingTuning({ requestRetry: value });
+  },
+
+  transientCooldown(el) {
+    const value = Math.max(0, Math.min(600, Number(el.value) || 0));
+    A.routingTuning({ transientCooldown: value });
+  },
+
+  // ---------- Model groups ----------
+
+  async routingGroupsLoad(force) {
+    if (S.routingGroupLoaded && !force) return;
+    try {
+      const snapshot = await inv("routing_groups");
+      S.routingGroups = snapshot && typeof snapshot === "object" ? snapshot : { groups: [], sources: [] };
+      S.routingGroupLoaded = true;
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    if (S.section === "routing") render();
+  },
+
+  groupNew() {
+    S.routingGroupDraft = { id: "", alias: "", note: "", enabled: true, members: [] };
+    render();
+  },
+
+  groupEdit(id) {
+    const groups = (S.routingGroups && S.routingGroups.groups) || [];
+    const group = groups.find((entry) => entry.id === id);
+    if (!group) return;
+    S.routingGroupDraft = {
+      id: group.id,
+      alias: group.alias,
+      note: group.note || "",
+      enabled: group.enabled !== false,
+      members: (group.members || []).map((member) => Object.assign({}, member)),
+    };
+    render();
+  },
+
+  groupClose() {
+    S.routingGroupDraft = null;
+    render();
+  },
+
+  /// Checkbox in the editor: the visible alias and note are read back before
+  /// the list re-renders, otherwise typing would be lost on every click.
+  groupMember(el) {
+    const draft = S.routingGroupDraft;
+    if (!draft) return;
+    const aliasInput = document.getElementById("group-alias");
+    const noteInput = document.getElementById("group-note");
+    if (aliasInput) draft.alias = aliasInput.value;
+    if (noteInput) draft.note = noteInput.value;
+    const source = el.dataset.source || "";
+    const model = el.dataset.model || "";
+    const members = Array.isArray(draft.members) ? draft.members : [];
+    const index = members.findIndex((member) => member.sourceId === source && member.modelId === model);
+    if (el.checked && index < 0) members.push({ sourceId: source, modelId: model });
+    if (!el.checked && index >= 0) members.splice(index, 1);
+    draft.members = members;
+    render();
+  },
+
+  async groupToggle(el) {
+    const id = el.dataset.id || "";
+    el.disabled = true;
+    try {
+      const result = await inv("routing_group_toggle", { id, enabled: !!el.checked });
+      if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
+      await inv("gateway_sync").catch(() => {});
+      render();
+    } catch (error) {
+      toast(errorText(error), true);
+      el.checked = !el.checked;
+    } finally {
+      el.disabled = false;
+    }
+  },
+
+  async groupSave() {
+    const draft = S.routingGroupDraft;
+    if (!draft) return;
+    const aliasInput = document.getElementById("group-alias");
+    const noteInput = document.getElementById("group-note");
+    const alias = (aliasInput ? aliasInput.value : draft.alias || "").trim();
+    const note = (noteInput ? noteInput.value : draft.note || "").trim();
+    if (!alias) {
+      toast(t("groupErrAliasEmpty"), true);
+      return;
+    }
+    if (!Array.isArray(draft.members) || !draft.members.length) {
+      toast(t("groupErrMembersEmpty"), true);
+      return;
+    }
+    S.busy.group = true;
+    render();
+    try {
+      const payload = {
+        id: draft.id || "",
+        alias,
+        note,
+        enabled: draft.enabled !== false,
+        members: draft.members,
+      };
+      const result = await inv("routing_group_save", { group: payload });
+      if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
+      S.routingGroupDraft = null;
+      await inv("gateway_sync").catch(() => {});
+      toast(t("groupSaved"));
+    } catch (error) {
+      const code = String(errorText(error));
+      const known = ["aliasEmpty", "aliasChars", "aliasDuplicate", "membersEmpty"].find((key) => code.includes(key));
+      toast(known ? t(`groupErr${known.charAt(0).toUpperCase()}${known.slice(1)}`) : code, true);
+    } finally {
+      S.busy.group = false;
+      render();
+    }
+  },
+
+  async groupDelete(id) {
+    const groups = (S.routingGroups && S.routingGroups.groups) || [];
+    const group = groups.find((entry) => entry.id === id);
+    if (!group) return;
+    if (!window.confirm(fmt(t("groupDeleteConfirm"), { name: group.alias }))) return;
+    try {
+      const result = await inv("routing_group_delete", { id });
+      if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
+      await inv("gateway_sync").catch(() => {});
+      toast(t("groupDeleted"));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    render();
+  },
+
+  // ---------- Agents ----------
+
+  async agentsLoad(force) {
+    if (S.agentLoaded && !force) return;
+    try {
+      S.agents = await inv("agents_state");
+      S.agentLoaded = true;
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    render();
+  },
+
+  agentSearch(value) {
+    S.agentQuery = value || "";
+    const board = document.getElementById("agents-board");
+    if (board) board.innerHTML = agentsBoard();
+    const input = document.getElementById("agent-search");
+    if (input) searchClearSync(input, S.agentQuery);
+  },
+
+  agentClearSearch() {
+    S.agentQuery = "";
+    const input = document.getElementById("agent-search");
+    if (input) input.value = "";
+    this.agentSearch("");
+  },
+
+  agentGroupFilter(group) {
+    S.agentGroup = group || "all";
+    render();
+  },
+
+  agentSelect(id) {
+    const store = S.agents || {};
+    const agent = (store.agents || []).find((entry) => entry.id === id);
+    if (!agent) return;
+    S.agentSelected = id;
+    const applied = store.applications && store.applications[id];
+    S.agentModel = (applied && applied.model) || "";
+    S.agentEffort = (applied && applied.effort) || "";
+    S.agentRevealKey = false;
+    render();
+  },
+
+  agentClose() {
+    S.agentSelected = null;
+    render();
+  },
+
+  agentAdd() {
+    S.agentSelected = null;
+    S.agentDraft = { title: "", configPath: "~/", format: "json", baseUrlKey: "", apiKeyKey: "", modelKey: "" };
+    render();
+  },
+
+  agentEditCustom(id) {
+    const store = S.agents || {};
+    const custom = (store.customAgents || []).find((entry) => entry.id === id);
+    if (!custom) return;
+    S.agentSelected = null;
+    S.agentDraft = Object.assign({}, custom);
+    render();
+  },
+
+  agentCloseEditor() {
+    S.agentDraft = null;
+    render();
+  },
+
+  agentCopySnippet(text) {
+    return this.copy(text);
+  },
+
+  agentRevealKey() {
+    S.agentRevealKey = !S.agentRevealKey;
+    render();
+  },
+
+  agentToggleNotSetUp() {
+    S.agentShowNotSetUp = !S.agentShowNotSetUp;
+    render();
+  },
+
+  agentGetStartedToggle() {
+    S.agentGetStartedCollapsed = !S.agentGetStartedCollapsed;
+    render();
+  },
+
+  agentGoProviders() {
+    A.go("providers");
+  },
+
+  agentGoRouting() {
+    A.go("routing");
+  },
+
+  async agentRevealPath(path) {
+    if (!path) return;
+    try {
+      await inv("reveal_path", { path });
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+  },
+
+  async agentSaveCustom() {
+    const value = (id) => {
+      const node = document.getElementById(`agent-field-${id}`);
+      return node ? node.value.trim() : "";
+    };
+    const agent = {
+      id: (S.agentDraft && S.agentDraft.id) || "",
+      title: value("title"),
+      configPath: value("configPath"),
+      format: value("format") || "json",
+      baseUrlKey: value("baseUrlKey"),
+      apiKeyKey: value("apiKeyKey"),
+      modelKey: value("modelKey"),
+    };
+    if (!agent.title || !agent.configPath || !agent.baseUrlKey || !agent.apiKeyKey) {
+      toast(t("customAgentIncomplete"), true);
+      return;
+    }
+    S.busy.agent = true;
+    render();
+    try {
+      S.agents = await inv("custom_agent_save", { agent });
+      S.agentDraft = null;
+      toast(t("agentCustomSaved"));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    S.busy.agent = false;
+    render();
+  },
+
+  async agentApply() {
+    const id = S.agentSelected;
+    if (!id) return;
+    const node = document.getElementById("agent-model");
+    const model = node ? node.value.trim() : S.agentModel || "";
+    const effortNode = document.getElementById("agent-effort");
+    const effort = effortNode ? effortNode.value : S.agentEffort || "";
+    S.agentModel = model;
+    S.agentEffort = effort;
+    S.busy.agent = true;
+    render();
+    try {
+      S.agents = await inv("agent_apply", { id, model, effort });
+      toast(t("agentApplied"));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    S.busy.agent = false;
+    render();
+  },
+
+  async agentRevert(id) {
+    const agentId = id || S.agentSelected;
+    if (!agentId) return;
+    S.busy.agent = true;
+    render();
+    try {
+      S.agents = await inv("agent_revert", { id: agentId });
+      toast(t("agentReverted"));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    S.busy.agent = false;
+    render();
+  },
+
+  async agentRemoveCustom(id) {
+    const store = S.agents || {};
+    const custom = (store.customAgents || []).find((entry) => entry.id === id);
+    const name = custom ? custom.title : id;
+    if (!window.confirm(fmt(t("customAgentDeleteConfirm"), { name }))) return;
+    S.busy.agent = true;
+    render();
+    try {
+      S.agents = await inv("custom_agent_remove", { id });
+      S.agentSelected = null;
+      S.agentDraft = null;
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    S.busy.agent = false;
+    render();
+  },
+
+  async usageLoad(force) {
+    if (S.usageLoaded && !force) return;
+    try {
+      const snapshot = await inv("usage_load", { limit: 20000 });
+      S.usageEvents = Array.isArray(snapshot && snapshot.events) ? snapshot.events : [];
+      S.usageTotal = (snapshot && snapshot.total) || S.usageEvents.length;
+      S.usageLoaded = true;
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    render();
+  },
+
+  usageRefresh() {
+    S.usageLoaded = false;
+    return A.usageLoad(true);
+  },
+
+  /// Reload the history files without touching the provider balances.
+  usageReload() {
+    S.usageLoaded = false;
+    return A.usageLoad(true);
+  },
+
+  /// Explicit "Clear history": the backend deletes the day files and answers
+  /// with the fresh snapshot, so one round trip empties the screen.
+  async usageClear() {
+    if (!window.confirm(t("clearHistoryConfirm"))) return;
+    try {
+      const result = await inv("usage_clear");
+      const snapshot = result && result.usage;
+      S.usageEvents = Array.isArray(snapshot && snapshot.events) ? snapshot.events : [];
+      S.usageTotal = (snapshot && snapshot.total) || 0;
+      S.usageLoaded = true;
+      toast(fmt(t("historyCleared"), { n: formatTokens((result && result.removed) || 0) }));
+    } catch (error) {
+      toast(errorText(error), true);
+    }
+    render();
+  },
+
+  /// Balances sit on the provider cards too; Usage only re-reads them.
+  usageBalancesRefresh() {
+    const settings = S.settings || {};
+    const calls = [];
+    calls.push(A.historyLoad().catch(() => {}));
+    if (String(settings.openrouterKey || "").trim()) calls.push(A.openrouterRefresh());
+    if (String(settings.vercelKey || "").trim()) calls.push(A.vercelLoad());
+    if (!S.claudeLogin) calls.push(A.claudeUsageLoad().catch(() => {}));
+    return Promise.all(calls).then(() => {
+      if (S.section === "usage") render();
+    });
+  },
+
+  /// Deep link used by the dashboard, onboarding and accounts: the API service
+  /// is its own sidebar section now, not a tab on the Routing page.
+  openApi() {
+    S.section = "api";
+    sectionLoads("api");
+    render();
+  },
+
+  usagePeriod(period) {
+    S.usagePeriod = period;
     render();
   },
 
@@ -572,6 +1007,10 @@ const A = {
         protocol: existing.protocol || "openai-chat",
         apiKey: existing.apiKey || "",
         enabled: existing.enabled !== false,
+        // Null reads as "no preference" in the form, which is what an
+        // unset tier means; a stored one is shown as it is.
+        priority: existing.priority === null || existing.priority === undefined ? "" : String(existing.priority),
+        headers: existing.headers || {},
         models: (existing.models || []).map((model) => ({
           id: model.id || "",
           display: model.display || "",
@@ -590,6 +1029,8 @@ const A = {
         protocol: "openai-chat",
         apiKey: "",
         enabled: true,
+        priority: "",
+        headers: {},
         models: [],
         error: "",
         status: "",
@@ -725,6 +1166,18 @@ const A = {
       protocol: draft.protocol,
       apiKey: String(draft.apiKey).trim(),
       enabled: draft.enabled !== false,
+      // The tier the engine prefers: a number, or null for no preference.
+      // Kept out of the file when empty, so the field stays optional.
+      priority: (() => {
+        const raw = String(draft.priority ?? "").trim();
+        if (!raw) return null;
+        const value = Number(raw);
+        return Number.isFinite(value) && value !== 0 ? Math.trunc(value) : null;
+      })(),
+      // No UI of its own yet: a provider keeps whatever headers it had, and
+      // the store fills in the baseline user-agent when it has none.
+      headers: draft.headers && typeof draft.headers === "object" ? draft.headers : {},
+
       models: (draft.models || [])
         .filter((model) => String(model.id || "").trim())
         .map((model) => {
@@ -1032,6 +1485,16 @@ const A = {
       S.accounts = await inv("delete_account", { id });
       S.routing = await inv("routing_state");
       if (S.routing.accounts) S.accounts = S.routing.accounts;
+      toast(t("done"));
+    });
+  },
+
+  /// Rotation lives in Rust: the key format, the YAML rewrite and the Codex
+  /// route all live on that side, so the renderer only confirms and re-reads.
+  apiKeyRotate() {
+    if (!window.confirm(t("rotateKeyConfirm"))) return;
+    run("rotate", async () => {
+      S.settings = await inv("gateway_rotate_key");
       toast(t("done"));
     });
   },
@@ -1720,6 +2183,18 @@ const A = {
     });
   },
 
+  // Engine-side strategy: the account order is untouched, only config.yaml
+  // changes, so the gateway reloads the routing block.
+  setGatewayStrategy(value) {
+    run("routing", async () => {
+      await inv("set_gateway_strategy", { strategy: value });
+      S.settings = Object.assign({}, S.settings || {}, { gatewayStrategy: value });
+      if (S.routing && S.routing.accounts) S.accounts = S.routing.accounts;
+      render();
+      toast(t("done"));
+    });
+  },
+
   movePriority(id, up) {
     run("order", async () => {
       S.routing = await inv("move_priority", { id, up });
@@ -1742,6 +2217,103 @@ const A = {
     run("role-" + id, async () => {
       S.routing = await inv("set_account_role", { id, preferred, backup });
       if (S.routing.accounts) S.accounts = S.routing.accounts;
+    });
+  },
+
+  /// Browser OAuth: the backend binds a loopback port, this opens the URL and
+  /// polls until the exchange finishes. Mirrors `startBrowserLogin` on macOS.
+  browserLoginStart() {
+    run("browser-login", async () => {
+      const session = await inv("browser_login_start");
+      S.browserLogin = { id: session.id, status: "waiting", url: session.url };
+      render();
+      inv("open_url", { url: session.url }).catch(() => {});
+      clearInterval(A._browserTimer);
+      const startedAt = Date.now();
+      A._browserTimer = setInterval(async () => {
+        if (Date.now() - startedAt > 10 * 60 * 1000) {
+          clearInterval(A._browserTimer);
+          S.browserLogin = null;
+          toast(t("browserLoginTimeout"), true);
+          render();
+          return;
+        }
+        try {
+          const result = await inv("browser_login_status");
+          if (result.status === "waiting" || result.status === "idle") return;
+          clearInterval(A._browserTimer);
+          S.browserLogin = null;
+          if (result.status === "done") {
+            S.accounts = await inv("vault_list");
+            S.routing = await inv("routing_state").catch(() => S.routing);
+            toast(`${t("browserLoginDone")}: ${result.account || ""}`);
+          } else if (result.status === "error") {
+            toast(result.error || t("browserLoginFailed"), true);
+          }
+          render();
+        } catch (error) {
+          clearInterval(A._browserTimer);
+          S.browserLogin = null;
+          toast(String(error), true);
+          render();
+        }
+      }, 1000);
+    });
+  },
+
+  browserLoginCancel() {
+    clearInterval(A._browserTimer);
+    S.browserLogin = null;
+    inv("browser_login_cancel").catch(() => {});
+    render();
+  },
+
+  /// Opens the paste sheet. The clipboard read is a convenience only: keeping
+  /// it inside the sheet means a blocked clipboard never dead-ends the flow.
+  async loginJsonPaste() {
+    S.pasteLogin = { text: "" };
+    render();
+    let content = "";
+    try {
+      content = await navigator.clipboard.readText();
+    } catch {
+      content = "";
+    }
+    if (content.trim() && S.pasteLogin) {
+      S.pasteLogin.text = content;
+      render();
+    }
+  },
+
+  loginJsonPasteClose() {
+    S.pasteLogin = null;
+    render();
+  },
+
+  loginJsonPasteImport() {
+    const area = document.getElementById("paste-login-text");
+    const content = area ? area.value : (S.pasteLogin ? S.pasteLogin.text : "");
+    if (!content || !content.trim()) {
+      toast(t("pasteEmpty"), true);
+      return;
+    }
+    run("import-json", async () => {
+      const result = await inv("import_json_accounts", { content });
+      S.accounts = result.accounts;
+      S.models = null;
+      S.pool = null;
+      S.claude = null;
+      S.antigravity = null;
+      const counts = result.result || {};
+      toast(fmt(t("importJsonDone"), {
+        n: counts.imported ?? 0,
+        added: counts.added ?? 0,
+        updated: counts.updated ?? 0,
+        skipped: counts.skipped ?? 0,
+        claude: counts.claude ?? 0,
+        antigravity: counts.antigravity ?? 0,
+      }));
+      S.pasteLogin = null;
     });
   },
 
@@ -2529,6 +3101,66 @@ const A = {
     run("notify", async () => {
       S.settings = await inv("settings_set", {
         settings: { ...S.settings, notifications: enabled },
+      });
+    });
+  },
+
+  /// Providers board: open one provider's own page, or go back to the list.
+  /// `localAI` is its own section, so the row navigates instead of opening a
+  /// provider page.
+  providerOpen(id) {
+    if (id === "localAI") {
+      S.section = "local_ai";
+      sectionLoads(S.section);
+      render();
+      return;
+    }
+    S.providerRoute = id || null;
+    render();
+  },
+
+  providerBack() {
+    S.providerRoute = null;
+    S.providerSection = null;
+    render();
+  },
+
+  /// Chip picker on a provider page. The cards are one scroll, so a chip
+  /// scrolls to its card instead of swapping the content out.
+  providerSection(key) {
+    S.providerSection = key ? `${key}Section` : null;
+    render();
+    const target = document.querySelector(`[data-provider-section="${key}"]`);
+    if (target && target.scrollIntoView) target.scrollIntoView({ block: "start" });
+  },
+
+  /// First-token failover switch. Off stores 0, which the engine reads as
+  /// "never fail over"; on restores the default window.
+  firstTokenFailoverToggle(enabled) {
+    const seconds = enabled ? 180 : 0;
+    run("first-token", async () => {
+      S.settings = await inv("settings_set", {
+        settings: { ...S.settings, streamBootstrapTimeoutSeconds: seconds },
+      });
+    });
+  },
+
+  /// Auto-continue after a capacity error. The chips read it from the status
+  /// payload, so the next bridge tick picks a change up without a restart.
+  autoRetryToggle(enabled) {
+    run("auto-retry", async () => {
+      S.settings = await inv("settings_set", {
+        settings: { ...S.settings, autoRetryEnabled: enabled },
+      });
+    });
+  },
+
+  /// Start the API service together with the app. macOS keeps this in
+  /// `gatewayAutoStart`; the two must stay named the same way in settings.
+  gatewayAutoStartToggle(enabled) {
+    run("gateway-auto-start", async () => {
+      S.settings = await inv("settings_set", {
+        settings: { ...S.settings, gatewayAutoStart: enabled },
       });
     });
   },
@@ -3673,6 +4305,35 @@ const A = {
     try {
       await window.api.localAi.setBinaryPath(path || null);
       if (S.localAi.hardware) S.localAi.hardware.binaryPath = path;
+      toast(t("saved"));
+      render();
+    } catch (e) {
+      toast(errorText(e), true);
+    }
+  },
+
+  // Engine scheduling mirrors the three selects macOS keeps in the Local AI
+  // settings tab. Values are persisted now and picked up on the next start.
+  async localAiSaveScheduling() {
+    const read = (id, fallback) => {
+      const node = document.getElementById(id);
+      const value = node ? Number(node.value) : NaN;
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const parallel = read("local-ai-parallel", 1);
+    const idle = read("local-ai-idle", 0);
+    const modelsMax = read("local-ai-models-max", 1);
+    try {
+      const saved = await inv("local_ai_set_scheduling", {
+        parallel,
+        idleUnloadSeconds: idle,
+        modelsMax,
+      });
+      S.settings = Object.assign({}, S.settings || {}, {
+        localParallelRequests: saved ? saved.parallel : parallel,
+        localIdleUnloadSeconds: saved ? saved.idleUnloadSeconds : idle,
+        localModelsMax: saved ? saved.modelsMax : modelsMax,
+      });
       toast(t("saved"));
       render();
     } catch (e) {

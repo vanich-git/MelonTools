@@ -5,11 +5,88 @@
 function fmt(text, values) {
   return text.replace(/\{(\w+)\}/g, (_, k) => (values[k] !== undefined ? values[k] : "{" + k + "}"));
 }
+
+/// Locale-aware date and time for timestamps stored in seconds. The browser
+/// locale is not the app language, so the UI must choose the format itself.
+function dateTimeText(seconds, options) {
+  const at = new Date(Number(seconds) * 1000);
+  if (!Number.isFinite(at.getTime())) return "";
+  const locale = typeof S !== "undefined" && S.lang === "en" ? "en-US" : "ru-RU";
+  return at.toLocaleString(locale, options || {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+// Theme: the saved choice is `system`, `light` or `dark`. The resolved value
+// lands on <html data-theme> so CSS owns the palette and the choice stays
+// separate for the system listener.
+let themeMedia = null;
+function applyTheme(theme, persist) {
+  const choice = theme === "light" || theme === "dark" ? theme : "system";
+  if (persist !== false) {
+    try { localStorage.setItem("melon-theme", choice); } catch { /* private mode */ }
+  }
+  const systemLight = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
+  const resolved = choice === "system" ? (systemLight ? "light" : "dark") : choice;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themeChoice = choice;
+  if (!themeMedia && window.matchMedia) {
+    themeMedia = window.matchMedia("(prefers-color-scheme: light)");
+    themeMedia.addEventListener("change", () => {
+      if ((document.documentElement.dataset.themeChoice || "system") === "system") {
+        applyTheme("system", false);
+      }
+    });
+  }
+}
+
 function esc(value) {
   return String(value === null || value === undefined ? "" : value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
     // Ids and paths land inside single-quoted onclick attributes.
     .replace(/'/g, "&#39;");
+}
+
+/// A model id as vendors agree on it, so two spellings of one model are
+/// recognised as one. Mirrors `canonical_model` in routing_groups.rs: the
+/// editor has to group and dedupe by the same rule the store saves by, or a
+/// row it offers as new is one the store then drops.
+function canonicalModel(id) {
+  let key = String(id === null || id === undefined ? "" : id).trim().toLowerCase();
+  // A vendor path prefix names the route, not the model.
+  const slash = key.lastIndexOf("/");
+  if (slash >= 0) key = key.slice(slash + 1);
+  // A run of spaces, underscores and dashes is one dash.
+  key = key.replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
+  // The version dot, and Fireworks' "p" for it, between two digits.
+  key = key.replace(/(\d)[.p](\d)/g, "$1-$2");
+  // A trailing snapshot date, only in the spellings that carry a year. A bare
+  // four digit tail stays: kimi-k2-0905 and qwen3-2507 are models of their own.
+  const cut = Math.max(key.lastIndexOf("-"), key.lastIndexOf("@"));
+  if (cut > 0) {
+    const tail = key.slice(cut + 1);
+    if (/^\d{8}$/.test(tail) && tail.startsWith("20")) key = key.slice(0, cut);
+    else if (/^\d{6}$/.test(tail)) {
+      const year = Number(tail.slice(0, 2));
+      const month = Number(tail.slice(2, 4));
+      const day = Number(tail.slice(4, 6));
+      if (year >= 23 && year <= 39 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        key = key.slice(0, cut);
+      }
+    }
+  }
+  return key;
+}
+
+/// Whether every member serves the same canonical model, and the model names
+/// that disagree. A group is one model that several upstreams serve.
+function mixedGroupModel(members) {
+  const names = [];
+  (members || []).forEach((member) => {
+    const canonical = canonicalModel(member.modelId);
+    if (canonical && !names.includes(canonical)) names.push(canonical);
+  });
+  if (names.length <= 1) return null;
+  return names.sort();
 }
 
 // Tauri rejects with a string, but keep the message for Error-like values.
@@ -95,8 +172,8 @@ function ageText(unixTs) {
 
 function quotaTint(percent) {
   if (percent === null || percent === undefined) return "";
-  if (percent <= 5) return "danger";
-  if (percent <= 25) return "warn";
+  if (percent <= 15) return "danger";
+  if (percent <= 40) return "warn";
   return "ok";
 }
 

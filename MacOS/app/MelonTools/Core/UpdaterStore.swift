@@ -195,7 +195,7 @@ final class UpdaterStore: ObservableObject {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 throw UpdaterError.message(L("The update server answered with an unexpected status."))
             }
-            // Only a successful check counts toward the daily throttle.
+            // Only a successful check counts toward the hourly throttle.
             UserDefaults.standard.set(Date(), forKey: "updaterLastCheck")
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw UpdaterError.message(L("Malformed update response."))

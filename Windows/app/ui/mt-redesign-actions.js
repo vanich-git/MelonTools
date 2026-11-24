@@ -38,9 +38,11 @@ function statusSignature() {
 // Replace the old flat navigation with the macOS group order.
 NAV.splice(0, NAV.length,
   { group: "overview", items: ["dashboard"] },
-  { group: "schedulerGroup", items: ["scheduler"] },
-  { group: "local_ai", items: ["local_ai"] },
-  { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
+  { group: "work", items: ["agents"] },
+  { group: "models", items: ["api", "routing", "providers", "local_ai"] },
+  { group: "insights", items: ["usage"] },
+  { group: "automation", items: ["scheduler"] },
+  { group: "accountsGroup", items: ["accounts"] },
   { group: "general", items: ["settings", "donate"] },
 );
 
@@ -525,6 +527,18 @@ Object.assign(A, {
           toast(code, true);
         }
       }
+    });
+  },
+
+  setTheme(theme) {
+    if (theme !== "system" && theme !== "light" && theme !== "dark") return;
+    if (theme === ((S.settings && S.settings.theme) || "system")) return;
+    run("settings", async () => {
+      S.settings = await inv("settings_set", {
+        settings: { ...(S.settings || {}), theme },
+      });
+      applyTheme((S.settings && S.settings.theme) || theme, false);
+      render();
     });
   },
 

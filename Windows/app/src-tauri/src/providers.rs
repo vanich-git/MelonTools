@@ -807,6 +807,24 @@ pub async fn antigravity(settings: &Settings) -> Result<Value, String> {
     }))
 }
 
+/// Baseline headers for every provider that sets none of its own.
+///
+/// Several upstreams sit behind Cloudflare and score a request by its
+/// user-agent signature: the engine's default `Go-http-client` lands on
+/// `error code: 1010`, while a product-like agent string passes. Sending one
+/// costs nothing and stops an otherwise healthy provider from failing every
+/// request. The engine applies configured headers after its own default, so
+/// these win, and a provider that names its own `User-Agent` keeps it.
+pub fn default_headers() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([
+        (
+            "User-Agent".to_string(),
+            "MelonTools/1.4 (Windows)".to_string(),
+        ),
+        ("Accept".to_string(), "application/json".to_string()),
+    ])
+}
+
 /// Assembles the Antigravity metrics object. Pure, so the nil-tolerance is
 /// testable without a gateway. Test-only: the Tauri command in `main.rs`
 /// builds the shipped object from the live pool.

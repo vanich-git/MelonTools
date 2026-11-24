@@ -51,6 +51,13 @@ function demoPoolSnapshot() {
 const DEMO_POOL_ENABLED = new Map();
 
 // Browser preview data (used only outside Tauri).
+//// Browser preview: poll counter for the fake OAuth session.
+let DEMO_BROWSER_LOGIN_POLLS = 0;
+
+// Browser preview: one mutable mock table survives every call, so a rotation
+/// or a settings save is visible to the next render.
+let DEMO_MOCKS = null;
+
 function mock(cmd, args) {
   const nowSec = Date.now() / 1000;
   const demoAccounts = [
@@ -99,9 +106,19 @@ function mock(cmd, args) {
     ...historySeries("claude", 72, 41),
     ...historySeries("openrouter", 60, 30),
   ];
-  const mocks = {
+  // Function-scoped so `settings_get` can be reassigned on rotation; the
+  // literal below is the initial snapshot, not a frozen table.
+  const mocks = DEMO_MOCKS || (DEMO_MOCKS = {
     app_info: { name: "Melon Tools", version: "4.0.1", platform: "windows", dataDir: "C:\\Users\\you\\AppData\\Roaming\\MelonTools", codexHome: "C:\\Users\\you\\.codex" },
-    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", commandcodeKey: "", opencodeEnabled: true, commandcodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], opencodeModels: [], commandcodeModels: [], claudeEnabled: false, claudeApiKey: "", notifications: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowAntigravityPool: true, dashboardShowSpend: true, dashboardShowScheduler: true, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
+    settings_get: { port: 18317, apiKey: "sk-melon-demo-7f3c2a91", lang: S.lang, quotaInterval: 300, openrouterKey: "", opencodeKey: "", deepinfraKey: "", vercelKey: "", zaiKey: "", commandcodeKey: "", opencodeEnabled: true, commandcodeEnabled: true, openrouterEnabled: true, deepinfraEnabled: true, vercelEnabled: true, zaiEnabled: true, deepinfraModels: [], vercelModels: [], zaiModels: [], opencodeModels: [], commandcodeModels: [],
+      // Prices for the four models the demo history uses, so the Usage cost
+      // card shows a real number instead of the "no prices" caption.
+      openrouterModels: [
+        { id: "openai/gpt-6.2-sol", display: "GPT-6.2 Sol", promptPerToken: 0.0000012, completionPerToken: 0.0000048, contextWindow: 400000 },
+        { id: "anthropic/claude-sonnet-4.6", display: "Claude Sonnet 4.6", promptPerToken: 0.000003, completionPerToken: 0.000015, contextWindow: 200000 },
+        { id: "x-ai/grok-4.7", display: "Grok 4.7", promptPerToken: 0.000002, completionPerToken: 0.000006, contextWindow: 256000 },
+        { id: "google/gemini-3-pro", display: "Gemini 3 Pro", promptPerToken: 0.00000125, completionPerToken: 0.000005, contextWindow: 1000000 },
+      ], claudeEnabled: false, claudeApiKey: "", notifications: true, gatewayAutoStart: true, autoRetryEnabled: true, notifyLowQuota: true, notifyScheduler: true, notifyQuotaReset: true, dashboardShowPoolHealth: true, dashboardShowAntigravityPool: true, dashboardShowSpend: true, dashboardShowScheduler: true, sessionAffinity: true, sessionAffinityTtl: 7200, requestRetry: 1, transientCooldown: 60, quotaResetNotified: [], proxyEnabled: false, proxyUrl: "", proxyBypass: "127.0.0.1,localhost", codexExePath: "" },
     settings_set: (a) => a.settings,
     vault_list: () => demoAccounts.map((account) => Object.assign({}, account, { modelAvailability: DEMO_AVAILABILITY[account.id] || null })),
     codex_pool_models: () => demoPoolSnapshot(),
@@ -249,7 +266,7 @@ function mock(cmd, args) {
       ? { path: DEMO_CODEX_PATH, source: "manual", debugPort: 55660, restarted: false, elevated: false, route: { provider: "melon_local_access", ours: true, catalogExists: true } }
       : Promise.reject("codex_not_found"),
     "plugin:dialog|open": "C:\\Users\\you\\AppData\\Local\\Programs\\ChatGPT\\ChatGPT.exe",
-    bridge_status: { attached: true, debugPort: 55660, model: "GPT-6.1 Sol", targets: 3, reason: null, session: { total: { total: 2730 }, cost: { total: 0.42, providers: { openai: { usd: 0.32 }, opencode: { usd: 0.10 }, deepinfra: { usd: 0.014 }, vercel: { usd: 0.021 } } } } },
+    bridge_status: { attached: true, debugPort: 55660, model: "GPT-6.1 Sol", targets: 3, reason: null, autoRetryActions: 2, lastAutoRetryKind: "continue", lastAutoRetryAt: Date.now() / 1000 - 300, session: { total: { total: 2730 }, cost: { total: 0.42, providers: { openai: { usd: 0.32 }, opencode: { usd: 0.10 }, deepinfra: { usd: 0.014 }, vercel: { usd: 0.021 } } } } },
     routing_state: { strategy: "auto", strategies: ["auto", "quotaHighFirst", "quotaLowFirst", "planHighFirst", "planLowFirst", "expirySoonFirst", "custom"], priorityOrder: [], orderedIds: ["demo-1", "demo-2"], blockedIds: ["demo-2"] },
     set_routing_strategy: (a) => ({ strategy: a.strategy, orderedIds: ["demo-1", "demo-2"], blockedIds: ["demo-2"], accounts: demoAccounts }),
     move_priority: { strategy: "custom", orderedIds: ["demo-2", "demo-1"], blockedIds: [], accounts: demoAccounts },
@@ -260,7 +277,97 @@ function mock(cmd, args) {
     gateway_models: [{ id: "gpt-6.1-sol", owned_by: "openai" }, { id: "opencode/grok-4.7", owned_by: "opencode-go" }],
     gateway_recent_calls: [{ time: "19:19:41", status: "200", duration: "9.743s", method: "POST", path: "/v1/responses" }],
     gateway_recent_usage: [{ timestamp: "2026-11-10T19:19:41Z", model: "claude-3-7-sonnet", provider: "anthravity", auth: "demo-account", input: 120, output: 450, mode: "stream", status: 200 }],
+    gateway_rotate_key: () => {
+      const key = `melon-${Array.from({ length: 24 }, (_, i) => "0123456789ABCDEF"[(i * 7 + 3) % 16]).join("")}`;
+      mocks.settings_get = { ...mocks.settings_get, apiKey: key };
+      return { ...mocks.settings_get };
+    },
+    usage_load: () => demoUsageSnapshot(),
+    // Mirrors the Rust reset: the day files go away and the answer carries the
+    // empty snapshot, so "Clear history" is testable without Tauri.
+    usage_clear: () => demoUsageClear(),
+    agents_state: () => demoAgentsState(),
+    agent_apply: (a) => demoAgentApply(a && a.id, a && a.model),
+    agent_revert: (a) => demoAgentRevert(a && a.id),
+    custom_agent_save: (a) => demoCustomAgentSave(a && a.agent),
+    custom_agent_remove: (a) => demoCustomAgentRemove(a && a.id),
+    deep_link_target: () => null,
+    /// The demo has no OAuth: the start answers with a session the poll then
+    /// reports as finished, so the button path is clickable in the preview.
+    browser_login_start: () => ((DEMO_BROWSER_LOGIN_POLLS = 0), {
+      id: "demo-browser-login",
+      url: "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann",
+      redirectURI: "http://localhost:1455/auth/callback",
+      port: 1455,
+      expiresAt: Date.now() / 1000 + 600,
+    }),
+    browser_login_status: () => ({
+      id: "demo-browser-login",
+      // The preview has no browser callback: report a finished login after a
+      // couple of polls, so the waiting row and the success toast both show.
+      status: DEMO_BROWSER_LOGIN_POLLS++ < 2 ? "waiting" : "done",
+      port: 1455,
+      error: null,
+      account: "demo-1@example.invalid",
+    }),
+    browser_login_cancel: () => ({ id: "demo-browser-login", status: "idle", port: 1455, error: null, account: null }),
+    routing_groups: () => demoRoutingGroups(),
+    routing_group_save: (a) => demoRoutingGroupSave(a && a.group),
+    routing_group_delete: (a) => demoRoutingGroupDelete(a && a.id),
+    routing_group_toggle: (a) => demoRoutingGroupToggle(a && a.id, !!(a && a.enabled)),
+    set_routing_tuning: (a) => {
+      // The demo keeps no writable settings store: the UI patches its own
+      // copy, so the values shown after the call are the ones just sent.
+      const settings = mocks.settings_get;
+      settings.sessionAffinity = !!a.affinity;
+      settings.sessionAffinityTtl = a.affinityTtl;
+      settings.requestRetry = a.retry;
+      settings.transientCooldown = a.cooldown;
+      return { syncedAccounts: 2 };
+    },
     scheduler_list: () => demoScheduler(),
+    /// The page reads the split commands (`tasks` + `history` page + per-entry
+    /// `result`), exactly like the Rust scheduler; `scheduler_list` stays only
+    /// as the compatibility fallback.
+    scheduler_tasks: () => demoScheduler().tasks.map((task) => ({ ...task, lastResult: undefined })),
+    scheduler_summary: () => {
+      const demo = demoScheduler();
+      const now = nowSec;
+      const enabled = demo.tasks.filter((task) => task.enabled);
+      return {
+        path: demo.path,
+        taskCount: demo.tasks.length,
+        enabledCount: enabled.length,
+        dueCount: enabled.filter((task) => task.nextRunAt && task.nextRunAt <= now).length,
+        nextRunAt: enabled.map((task) => task.nextRunAt).filter(Boolean).sort((a, b) => a - b)[0] ?? null,
+        lastStatus: demo.tasks.map((task) => task.lastStatus).pop() || "never",
+        historyCount: demo.history.length,
+        running: DEMO_QUEUE.running,
+        cancelling: DEMO_QUEUE.cancelling,
+        queued: DEMO_QUEUE.queued.slice(),
+        tasks: demo.tasks.map((task) => ({ ...task, lastResult: undefined })),
+        history: demo.history.map((entry) => ({ ...entry, hasError: !!entry.error })),
+      };
+    },
+    scheduler_history: (a) => {
+      const rows = demoHistoryRows();
+      const page = Math.max(1, (a && a.page) || 1);
+      const limit = Math.min(100, Math.max(1, (a && a.limit) || 50));
+      const start = (page - 1) * limit;
+      return {
+        items: rows.slice(start, start + limit),
+        page,
+        limit,
+        total: rows.length,
+        hasMore: start + limit < rows.length,
+      };
+    },
+    scheduler_result: (a) => {
+      const row = demoHistoryRows().find((item) => item.id === (a && a.id));
+      if (!row) return Promise.reject("history entry not found");
+      const entry = demoScheduler().history.find((item) => item.at === row.at && item.taskId === row.taskId) || {};
+      return { ...row, result: entry.result, error: entry.error };
+    },
     scheduler_save: (a) => {
       const demo = demoScheduler();
       const input = (a && a.task) || {};
@@ -357,7 +464,7 @@ function mock(cmd, args) {
       return null;
     },
     local_ai_runtime_status: () => ({ ...DEMO_LOCAL_AI_RUNTIME }),
-    local_ai_api_catalogue: () => ({ models: [], verified: false, error: "demo" }),
+    local_ai_api_catalogue: () => ({ models: [], verified: false, error: "" }),
     local_ai_runtime_logs: () => [],
     local_ai_runtime_logs_clear: () => null,
     local_ai_runtime_catalog: () => demoRuntimeCatalog(),
@@ -408,7 +515,7 @@ function mock(cmd, args) {
     local_ai_import_file: (a) => demoImportFile((a && a.path) || ""),
     local_ai_estimate_memory: (a) => demoMemoryEstimate((a && a.params) || {}),
     open_url: null,
-  };
+  });
   const entry = mocks[cmd];
   return Promise.resolve(typeof entry === "function" ? entry(args) : entry);
 }
@@ -418,6 +525,53 @@ function mock(cmd, args) {
 let DEMO_SCHEDULER = null;
 let DEMO_BACKUP_LAST = null;
 let DEMO_CODEX_PATH = "";
+/// Browser preview: three days of gateway telemetry so the Usage screen has
+/// something to aggregate without Tauri. The snapshot is generated once and
+/// cached, so reloading the page keeps the numbers and clearing really empties
+/// the screen.
+let DEMO_USAGE = null;
+
+function demoUsageClear() {
+  const removed = DEMO_USAGE ? DEMO_USAGE.files : 0;
+  DEMO_USAGE = { events: [], total: 0, files: 0, truncated: false };
+  return { removed, usage: DEMO_USAGE };
+}
+
+function demoUsageSnapshot() {
+  if (DEMO_USAGE) return DEMO_USAGE;
+  const models = [
+    { model: "gpt-6.2-sol", provider: "codex", auth: "codex-demo.json", weight: 5 },
+    { model: "claude-sonnet-4.6", provider: "anthropic", auth: "claude-demo.json", weight: 3 },
+    { model: "grok-4.7", provider: "opencode", auth: "opencode-demo.json", weight: 2 },
+    { model: "gemini-3-pro", provider: "antigravity", auth: "antigravity-demo.json", weight: 2 },
+  ];
+  const events = [];
+  const now = Date.now();
+  let seed = 7;
+  const next = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let index = 0; index < 120; index += 1) {
+    const pick = models[Math.floor(next() * models.length)];
+    const at = new Date(now - Math.floor(next() * 3 * 24 * 3600 * 1000) - index * 60_000);
+    const failed = next() < 0.06;
+    const input = 400 + Math.floor(next() * 9000);
+    const output = 60 + Math.floor(next() * 900);
+    events.push({
+      id: `${at.getTime()}|${pick.model}|${pick.provider}|${input}|${output}|${failed ? 500 : 200}`,
+      at: at.toISOString(),
+      model: pick.model,
+      provider: pick.provider,
+      auth: pick.auth,
+      input,
+      output,
+      mode: next() < 0.5 ? "stream" : "buffer",
+      status: failed ? 500 : 200,
+    });
+  }
+  events.sort((a, b) => (a.at < b.at ? -1 : 1));
+  DEMO_USAGE = { events, total: events.length, files: 3, truncated: false };
+  return DEMO_USAGE;
+}
+
 function demoCodexStatus() {
   return {
     found: true,
@@ -433,28 +587,50 @@ function demoCodexStatus() {
 const DEMO_RUN_MS = 4000;
 let DEMO_QUEUE = { queued: [], running: null, cancelling: false };
 function demoScheduler() {
-  if (!DEMO_SCHEDULER) {
-    const now = Date.now() / 1000;
-    const task = {
-      id: "demo-task-1", name: "Ночной отчёт", prompt: "Собери отчёт по изменениям за сутки.",
-      model: "gpt-6.1-sol", reasoningEffort: null,
-      scheduleKind: "cron", cronExpression: "0 9 * * 1-5", timeZone: null,
-      intervalMinutes: 60, enabled: true, dailyTokenLimit: 150000,
-      createdAt: now - 7200, nextRunAt: now + 1800, lastRunAt: now - 1800,
-      lastStatus: "ok", lastError: null, lastResult: "Отчёт готов: 3 изменения, 2 предупреждения.",
-      lastDurationMs: 4200, lastTokens: 1530,
-    };
-    DEMO_SCHEDULER = {
-      path: "C:\\Users\\you\\AppData\\Roaming\\MelonTools\\scheduler.json",
-      tasks: [task],
-      history: [
-        { taskId: task.id, at: now - 1800, status: "ok", model: task.model, durationMs: 4200, tokens: 1530, result: task.lastResult, error: null },
-        { taskId: task.id, at: now - 3600, status: "ok", model: "opencode/grok-4.7", durationMs: 3100, tokens: 820, result: "ok", error: null },
-        { taskId: task.id, at: now - 5400, status: "ok", model: "claude-opus-5-5", durationMs: 2800, tokens: 380, result: "ok", error: null },
-      ],
-    };
-  }
+  // Keyed by language: the preview applies `?lang=` after the first load, so a
+  // single cached table would keep the Russian demo text on an English board.
+  const ru = (S && S.lang) !== "en";
+  const lang = ru ? "ru" : "en";
+  if (DEMO_SCHEDULER && DEMO_SCHEDULER.lang === lang) return DEMO_SCHEDULER;
+  const now = Date.now() / 1000;
+  const task = {
+    id: "demo-task-1",
+    name: ru ? "Ночной отчёт" : "Nightly report",
+    prompt: ru ? "Собери отчёт по изменениям за сутки." : "Summarize the changes made in the last day.",
+    model: "gpt-6.1-sol", reasoningEffort: null,
+    scheduleKind: "cron", cronExpression: "0 9 * * 1-5", timeZone: null,
+    intervalMinutes: 60, enabled: true, dailyTokenLimit: 150000,
+    createdAt: now - 7200, nextRunAt: now + 1800, lastRunAt: now - 1800,
+    lastStatus: "ok", lastError: null,
+    lastResult: ru ? "Отчёт готов: 3 изменения, 2 предупреждения." : "Report ready: 3 changes, 2 warnings.",
+    lastDurationMs: 4200, lastTokens: 1530,
+  };
+  DEMO_SCHEDULER = {
+    lang,
+    path: "C:\\Users\\you\\AppData\\Roaming\\MelonTools\\scheduler.json",
+    tasks: [task],
+    history: [
+      { taskId: task.id, at: now - 1800, status: "ok", model: task.model, durationMs: 4200, tokens: 1530, result: task.lastResult, error: null },
+      { taskId: task.id, at: now - 3600, status: "ok", model: "opencode/grok-4.7", durationMs: 3100, tokens: 820, result: "ok", error: null },
+      { taskId: task.id, at: now - 5400, status: "ok", model: "claude-opus-5-5", durationMs: 2800, tokens: 380, result: "ok", error: null },
+    ],
+  };
   return DEMO_SCHEDULER;
+}
+
+/// History rows with the stable synthetic id the page uses to fetch a result
+/// body; the Rust side derives the same shape from the entry content.
+function demoHistoryRows() {
+  return demoScheduler().history.map((entry) => ({
+    id: `${entry.taskId}-${Math.round(entry.at)}`,
+    taskId: entry.taskId,
+    at: entry.at,
+    status: entry.status,
+    model: entry.model,
+    durationMs: entry.durationMs,
+    tokens: entry.tokens,
+    hasError: !!entry.error,
+  }));
 }
 
 function demoMarkRunning(id) {
@@ -993,4 +1169,203 @@ const api = {
 };
 if (typeof window !== "undefined") {
   window.api = api;
+}
+
+// ---------- Agents (browser preview) ----------
+
+let demoAgentStore = null;
+
+function demoAgentsSeed() {
+  const rows = [
+    ["codex", "Codex CLI", "agentCodexSub", "terminal", "~/.codex/config.toml", false, null, "agentCodexNote", "connected"],
+    ["claude", "Claude Code", "agentClaudeSub", "terminal", "~/.claude/settings.json", false, null, "agentClaudeNote", "ready"],
+    ["gemini", "Gemini CLI", "agentGeminiSub", "terminal", "~/.gemini/.env", false, null, "agentGeminiNote", "notDetected"],
+    ["opencode", "OpenCode", "agentOpencodeSub", "terminal", "~/.config/opencode/opencode.json", false, null, "agentOpencodeNote", "connected"],
+    ["crush", "Crush", "agentCrushSub", "terminal", "~/.config/crush/crush.json", false, null, "agentCrushNote", "notDetected"],
+    ["aider", "Aider", "agentAiderSub", "terminal", null, true, "OPENAI_API_BASE", "agentAiderNote", "manual"],
+    ["continue", "Continue", "agentContinueSub", "editors", "~/.continue/config.json", false, null, "agentContinueNote", "ready"],
+    ["cursor", "Cursor", "agentCursorSub", "editors", null, true, "OPENAI_BASE_URL", "agentCursorNote", "manual"],
+    ["cline", "Cline", "agentClineSub", "editors", null, true, "OPENAI_BASE_URL", "agentClineNote", "manual"],
+    ["openwebui", "Open WebUI", "agentOpenwebuiSub", "desktop", null, true, "OPENAI_API_BASE_URL", "agentOpenwebuiNote", "manual"],
+    ["cherry", "Cherry Studio", "agentCherrySub", "desktop", null, true, "OPENAI_BASE_URL", "agentCherryNote", "manual"],
+  ];
+  const restarts = {
+    codex: "agentRestartCodex", claude: "agentRestartClaude", gemini: "agentRestartGemini",
+    opencode: "agentRestartOpencode", crush: "agentRestartCrush", continue: "agentRestartContinue",
+  };
+  const installs = {
+    codex: "npm install -g @openai/codex", claude: "npm install -g @anthropic-ai/claude-code",
+    gemini: "npm install -g @google/gemini-cli", opencode: "npm install -g opencode-ai",
+    crush: "go install github.com/charmbracelet/crush@latest",
+  };
+  return rows.map(([id, title, subtitleKey, group, configPath, manual, manualKey, noteKey, status]) => ({
+    id, title, subtitleKey, group, configPath, managed: !manual, manualKey, noteKey, status, custom: false,
+    restartHint: restarts[id] || null,
+    installCommand: installs[id] || null,
+    applied: status === "connected"
+      ? { agentId: id, appliedAt: "2026-11-20T12:00:00Z", configPath: configPath || "", backupPath: null, createdFile: false, model: "gpt-6.2-sol" }
+      : null,
+  }));
+}
+
+function demoAgentsState() {
+  if (!demoAgentStore) {
+    const agents = demoAgentsSeed();
+    demoAgentStore = {
+      agents,
+      applications: agents.filter((agent) => agent.applied).reduce((map, agent) => {
+        map[agent.id] = agent.applied;
+        return map;
+      }, {}),
+      customAgents: [{
+        id: "custom-demo", title: "My Agent", configPath: "~/.myagent/config.json", format: "json",
+        baseUrlKey: "base_url", apiKeyKey: "api_key", modelKey: "model", note: "",
+      }],
+      backups: [{ agentId: "codex", path: "C:\\Users\\demo\\AppData\\Roaming\\MelonTools\\agent-backups\\codex-20261120-120000.bak", appliedAt: "2026-11-20T12:00:00Z" }],
+      baseUrl: "http://127.0.0.1:18317/v1",
+      apiKey: (S.settings && S.settings.apiKey) || "sk-melon-demo",
+      backupDirectory: "C:\\Users\\demo\\AppData\\Roaming\\MelonTools\\agent-backups",
+    };
+    syncDemoCustomAgent();
+  }
+  return demoAgentStore;
+}
+
+function syncDemoCustomAgent() {
+  const store = demoAgentStore;
+  if (!store) return;
+  const existing = store.agents.find((agent) => agent.custom);
+  if (existing) store.agents = store.agents.filter((agent) => !agent.custom);
+  store.customAgents.forEach((custom) => {
+    store.agents.push({
+      id: custom.id, title: custom.title, subtitleKey: "agentCustomSub", group: "custom",
+      configPath: custom.configPath, managed: true, manualKey: null, noteKey: "agentCustomNote",
+      status: store.applications[custom.id] ? "connected" : "ready", custom: true,
+      applied: store.applications[custom.id] || null,
+    });
+  });
+}
+
+function demoAgentApply(id, model) {
+  const store = demoAgentsState();
+  const agent = store.agents.find((entry) => entry.id === id);
+  if (agent && !agent.managed) throw new Error("manualAgent");
+  const stamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  store.applications[id] = { agentId: id, appliedAt: stamp, configPath: (agent && agent.configPath) || "", backupPath: null, createdFile: false, model: model || "gpt-6.2-sol" };
+  if (agent) {
+    agent.status = "connected";
+    agent.applied = store.applications[id];
+  }
+  return store;
+}
+
+function demoAgentRevert(id) {
+  const store = demoAgentsState();
+  delete store.applications[id];
+  const agent = store.agents.find((entry) => entry.id === id);
+  if (agent) {
+    agent.applied = null;
+    agent.status = agent.managed ? "ready" : "manual";
+  }
+  return store;
+}
+
+function demoCustomAgentSave(input) {
+  const store = demoAgentsState();
+  const payload = Object.assign({}, input || {});
+  if (!payload.id) payload.id = "custom-" + Math.random().toString(36).slice(2, 8);
+  const index = store.customAgents.findIndex((entry) => entry.id === payload.id);
+  if (index >= 0) store.customAgents[index] = payload;
+  else store.customAgents.push(payload);
+  syncDemoCustomAgent();
+  return store;
+}
+
+function demoCustomAgentRemove(id) {
+  const store = demoAgentsState();
+  delete store.applications[id];
+  store.customAgents = store.customAgents.filter((entry) => entry.id !== id);
+  syncDemoCustomAgent();
+  return store;
+}
+
+// Model groups: the demo keeps one group so the routing card is never empty.
+let demoRoutingGroupStore = null;
+
+const DEMO_ROUTING_SOURCES = [
+  {
+    id: "opencode",
+    title: "OpenCode",
+    models: [
+      { id: "gpt-5", title: "gpt-5" },
+      { id: "claude-sonnet-4-6", title: "claude-sonnet-4-6" },
+      { id: "deepseek-v4-pro", title: "deepseek-v4-pro" },
+    ],
+  },
+  {
+    id: "openrouter",
+    title: "OpenRouter",
+    models: [
+      { id: "openai/gpt-4o", title: "openai/gpt-4o" },
+      { id: "anthropic/claude-sonnet-4.6", title: "anthropic/claude-sonnet-4.6" },
+    ],
+  },
+  {
+    id: "zai",
+    title: "Z.ai",
+    models: [{ id: "glm-5.3", title: "glm-5.3" }],
+  },
+];
+
+function demoRoutingGroups() {
+  if (!demoRoutingGroupStore) {
+    demoRoutingGroupStore = [
+      {
+        id: "group-demo",
+        alias: "smart",
+        note: "",
+        enabled: true,
+        members: [
+          { sourceId: "opencode", modelId: "gpt-5" },
+          { sourceId: "openrouter", modelId: "openai/gpt-4o" },
+        ],
+      },
+    ];
+  }
+  return {
+    groups: demoRoutingGroupStore,
+    sources: DEMO_ROUTING_SOURCES,
+    path: "%APPDATA%\\MelonTools\\routing-groups.json",
+  };
+}
+
+function demoGroupAlias(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function demoRoutingGroupSave(input) {
+  const store = demoRoutingGroups();
+  const payload = Object.assign({}, input || {});
+  payload.alias = demoGroupAlias(payload.alias);
+  payload.members = Array.isArray(payload.members) ? payload.members : [];
+  if (!payload.alias) throw new Error("aliasEmpty");
+  if (!payload.members.length) throw new Error("membersEmpty");
+  if (!payload.id) payload.id = "group-" + Math.random().toString(36).slice(2, 8);
+  const index = store.groups.findIndex((entry) => entry.id === payload.id);
+  if (index >= 0) store.groups[index] = payload;
+  else store.groups.push(payload);
+  return { groups: store.groups };
+}
+
+function demoRoutingGroupDelete(id) {
+  const store = demoRoutingGroups();
+  store.groups = store.groups.filter((entry) => entry.id !== id);
+  return { groups: store.groups };
+}
+
+function demoRoutingGroupToggle(id, enabled) {
+  const store = demoRoutingGroups();
+  const group = store.groups.find((entry) => entry.id === id);
+  if (group) group.enabled = enabled;
+  return { groups: store.groups };
 }

@@ -462,15 +462,13 @@ struct LocalModelTestSheet: View {
                 .font(.system(size: 12))
                 .foregroundStyle(MTTheme.textPrimary)
                 .scrollContentBackground(.hidden)
-                .padding(6)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
                 .frame(height: 82)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(MTTheme.cardSoft)
-                )
+                .background(MTTheme.cardSoft, in: Capsule())
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    Capsule()
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                 )
                 .disabled(isBusy)
         }

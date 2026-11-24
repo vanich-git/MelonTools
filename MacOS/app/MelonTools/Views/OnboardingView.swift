@@ -190,7 +190,7 @@ struct OnboardingView: View {
                 id: "gateway",
                 verdict: .warn,
                 title: L("Local API service"),
-                detail: L("Not running — start it from the Codex API page."),
+                detail: L("Not running - start it from the Codex API page."),
                 section: .codexAPI
             )
         }
@@ -405,7 +405,11 @@ struct OnboardingView: View {
     }
 
     private func go(to section: MTSection) {
-        selection = section
+        if section == .codexAPI {
+            GatewayDeepLink.openAPI(selection: $selection)
+        } else {
+            selection = section
+        }
         dismiss()
     }
 }

@@ -3,6 +3,28 @@ import AppKit
 
 /// Codex CLI multi-instances: isolated CODEX_HOME per instance, bound to an account.
 struct CodexInstancesView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: MTTheme.s5) {
+                MTPageHeader(
+                    kicker: "codex",
+                    title: L("Instances"),
+                    subtitle: L("Instances subtitle")
+                )
+                InstancesCard()
+            }
+            .padding(MTTheme.s5)
+            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .mtScrollMemory("scroll.instances")
+        }
+        .background(MTTheme.background)
+    }
+}
+
+/// Settings embed and page body for isolated Codex homes: create, launch,
+/// reveal and delete live in one card.
+struct InstancesCard: View {
     @ObservedObject private var store = CodexStore.shared
     @ObservedObject private var instances = CodexInstanceStore.shared
     @State private var showCreate = false
@@ -12,52 +34,44 @@ struct CodexInstancesView: View {
     @State private var pendingDelete: CodexInstance?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: MTTheme.s5) {
-                MTPageHeader(
-                    kicker: "codex",
-                    title: L("Instances"),
-                    subtitle: L("Instances subtitle")
-                )
-
-                HStack(spacing: MTTheme.s3) {
-                    MTGlassButton(title: L("New instance"), systemImage: "plus", tint: MTTheme.cyan, prominent: true) {
+        MTCard(title: L("Instances"), systemImage: "square.on.square", accent: MTTheme.amber, isBento: true) {
+            VStack(alignment: .leading, spacing: MTTheme.s3) {
+                HStack(alignment: .top, spacing: MTTheme.s3) {
+                    Text(L("An instance keeps its own login, settings and history. Launch opens it in Terminal."))
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: MTTheme.s2)
+                    MTGlassButton(title: L("New instance"), systemImage: "plus", tint: MTTheme.amber) {
                         showCreate = true
-                    }
-                    Spacer()
-                    if let message = instances.lastMessage {
-                        Text(message)
-                            .font(MTTheme.mono(10))
-                            .foregroundStyle(MTTheme.textSecondary)
-                            .lineLimit(1)
                     }
                 }
 
                 if instances.instances.isEmpty {
-                    MTCard(accent: MTTheme.cyan, isBento: true) {
-                        MTEmptyState(
-                            systemImage: "square.on.square",
-                            title: L("No instances"),
-                            subtitle: L("Create an instance to run a Codex CLI session under a specific account.")
-                        )
-                        .frame(height: 160)
-                    }
+                    Text(L("Create an instance to run a Codex CLI session under a specific account."))
+                        .font(MTTheme.body(12))
+                        .foregroundStyle(MTTheme.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, MTTheme.s2)
                 } else {
-                    ForEach(instances.instances) { instance in
-                        instanceRow(instance)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(instances.instances) { instance in
+                            instanceRow(instance)
+                            if instance.id != instances.instances.last?.id {
+                                Divider().opacity(0.35)
+                            }
+                        }
                     }
                 }
 
-                Text(L("An instance keeps its own login, settings and history. Launch opens it in Terminal."))
-                    .font(MTTheme.mono(10))
-                    .foregroundStyle(MTTheme.textSecondary)
+                if let message = instances.lastMessage {
+                    Text(message)
+                        .font(MTTheme.mono(10))
+                        .foregroundStyle(MTTheme.textSecondary)
+                        .lineLimit(2)
+                }
             }
-            .padding(MTTheme.s5)
-            .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-        .mtScrollMemory("scroll.instances")
         }
-        .background(MTTheme.background)
         .onAppear {
             store.load()
             instances.load()
@@ -86,35 +100,34 @@ struct CodexInstancesView: View {
     }
 
     private func instanceRow(_ instance: CodexInstance) -> some View {
-        MTCard(accent: MTTheme.cyan, isBento: true) {
-            HStack(spacing: MTTheme.s3) {
-                MTStatusDot(status: instance.accountId == store.currentAccountId ? .ok : .idle)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(instance.name)
-                        .font(MTTheme.body(13, weight: .semibold))
-                        .foregroundStyle(MTTheme.textPrimary)
-                    Text(accountLabel(instance.accountId))
-                        .font(MTTheme.mono(10))
-                        .foregroundStyle(MTTheme.textSecondary)
-                }
-                Spacer()
-                MTGlassButton(title: L("Launch"), systemImage: "play.fill", tint: MTTheme.emerald) {
-                    instances.launch(instance, accounts: store.accounts)
-                }
-                MTGlassButton(title: L("Reveal"), systemImage: "folder", tint: MTTheme.cyan) {
-                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: instance.homePath)
-                }
-                Button {
-                    pendingDelete = instance
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(MTTheme.ruby)
-                }
-                .buttonStyle(.plain)
-                .help(L("Delete"))
+        HStack(spacing: MTTheme.s3) {
+            MTStatusDot(status: instance.accountId == store.currentAccountId ? .ok : .idle)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(instance.name)
+                    .font(MTTheme.body(13, weight: .semibold))
+                    .foregroundStyle(MTTheme.textPrimary)
+                Text(accountLabel(instance.accountId))
+                    .font(MTTheme.mono(10))
+                    .foregroundStyle(MTTheme.textSecondary)
             }
+            Spacer()
+            MTGlassButton(title: L("Launch"), systemImage: "play.fill", tint: MTTheme.emerald) {
+                instances.launch(instance, accounts: store.accounts)
+            }
+            MTGlassButton(title: L("Reveal"), systemImage: "folder", tint: MTTheme.cyan) {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: instance.homePath)
+            }
+            Button {
+                pendingDelete = instance
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MTTheme.ruby)
+            }
+            .buttonStyle(.plain)
+            .help(L("Delete"))
         }
+        .padding(.vertical, MTTheme.s2)
     }
 
     private func accountLabel(_ accountId: String?) -> String {

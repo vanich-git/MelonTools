@@ -521,13 +521,18 @@ const ICONS = {
   donate: '<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.5-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.5-9 9-9 9Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h5l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1Z"/></svg>',
   local_ai: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  agents: '<svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="10" rx="2"/><path d="M12 5v3M9 13h.01M15 13h.01M9 18v2M15 18v2"/></svg>',
+  routing: '<svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="M6 7v3a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3"/></svg>',
+  usage: '<svg viewBox="0 0 24 24"><path d="M4 20V4M4 20h16M8 16l4-5 3 3 5-7"/></svg>',
 };
 
 const NAV = [
   { group: "overview", items: ["dashboard"] },
-  { group: "schedulerGroup", items: ["scheduler"] },
-  { group: "local_ai", items: ["local_ai"] },
-  { group: "codex", items: ["accounts", "api", "providers", "composer", "instances"] },
+  { group: "work", items: ["agents"] },
+  { group: "models", items: ["api", "routing", "providers", "local_ai"] },
+  { group: "insights", items: ["usage"] },
+  { group: "automation", items: ["scheduler"] },
+  { group: "accountsGroup", items: ["accounts"] },
   { group: "general", items: ["settings", "donate"] },
 ];
 
@@ -572,11 +577,12 @@ function render(force) {
   const main = document.getElementById("main");
   const pages = {
     dashboard: dashboardPage,
+    agents: agentsPage,
+    routing: routingPage,
     accounts: accountsPage,
     api: apiPage,
     providers: providersPage,
-    composer: composerPage,
-    instances: instancesPage,
+    usage: usagePage,
     scheduler: schedulerPage,
     local_ai: typeof localAiPage === "function" ? localAiPage : () => "",
     donate: donatePage,
@@ -594,6 +600,28 @@ function render(force) {
 /// render triggered scheduler/models/pool/provider IPC and another render.
 function sectionLoads(section) {
   if (section === "scheduler" && !S.scheduler && !S.schedulerError) A.schedulerLoad();
+  if (section === "usage" && !S.usageLoaded) A.usageLoad();
+  // The Balances card reads the same provider snapshots as Providers, so both
+  // screens share one set of IPC calls instead of duplicating the probes.
+  if (section === "usage" && !S.providers && String((S.settings && S.settings.openrouterKey) || "").trim()) {
+    A.openrouterRefresh();
+  }
+  if (section === "usage" && !S.vercelLoaded
+      && String((S.settings && S.settings.vercelKey) || "").trim()) {
+    A.vercelLoad();
+  }
+  // The demo build serves all three from mt-api, so no IS_TAURI guard: the
+  // screen must look the same in the browser preview.
+  if (section === "usage" && !S.claude && !S.claudeLogin) {
+    A.claudeUsageLoad().then(() => {
+      if (S.section === "usage") render();
+    }).catch(() => {});
+  }
+  if (section === "agents" && !S.agentLoaded) A.agentsLoad();
+  if (section === "routing" && !S.routingGroupLoaded) A.routingGroupsLoad();
+  // The API service is its own section now, so it loads its own data: the
+  // route, the Codex app status and the account order live on that page.
+  if (section === "api" && !S.codexApp && !S.codexAppError) A.codexAppLoad();
   if (section === "providers" && !S.models && !S.modelsError) A.modelsLoad();
   // The Codex pool snapshot backs the pool card and both picker modes.
   if ((section === "accounts" || section === "providers") && !S.pool && !S.poolError) A.poolLoad();
@@ -617,6 +645,7 @@ function sectionLoads(section) {
   if (section === "instances" && !S.instancesData) A.instancesLoad();
   if (section === "local_ai") A.localAiLoad();
   if (section === "settings" && !S.backupLastLoaded) A.backupLastLoad();
+  if (section === "settings" && !S.instancesData) A.instancesLoad();
 }
 
 function renderNav() {
@@ -705,6 +734,9 @@ function actionArgs(action, el) {
       return [el.dataset.id, !!el.checked];
     case "islandToggle":
     case "taskbarWidgetToggle":
+    case "autoRetryToggle":
+    case "gatewayAutoStartToggle":
+    case "firstTokenFailoverToggle":
       return [!!el.checked];
     case "islandAutoCollapse":
       return [Number(el.value)];
@@ -717,6 +749,20 @@ function actionArgs(action, el) {
     case "instanceBind":
     case "schedulerVarInput":
       return [el.dataset.id, el.value];
+    case "agentSearch":
+      return [el.value];
+    case "agentCopySnippet":
+      return [el.dataset.text || ""];
+    case "groupToggle":
+    case "groupMember":
+    case "affinityToggle":
+    case "affinityTtl":
+    case "requestRetry":
+    case "transientCooldown":
+      return [el];
+    case "groupEdit":
+    case "groupDelete":
+      return [el.dataset.id || ""];
     case "setStrategy":
     case "schedulerKindChanged":
     case "schedulerTemplateApply":
@@ -788,6 +834,11 @@ document.addEventListener("click", (event) => {
   });
   const el = event.target.closest("[data-action]");
   if (!el || el.dataset.on) return;
+  // A group row opens its editor, but its switch is a label without an action
+  // of its own: without this guard flipping it would also open the sheet.
+  if (el.classList.contains("group-row")
+      && event.target !== el
+      && event.target.closest("button, input, label, select, a")) return;
   dispatchAction(el);
   document.querySelectorAll("details.local-ai-menu[open], details.hf-select[open]").forEach((menu) => {
     menu.open = false;
@@ -801,7 +852,34 @@ document.addEventListener("input", (event) => {
   const el = event.target.closest('[data-action][data-on="input"]');
   if (el) dispatchAction(el);
 });
+// Ctrl+1..9 follows the sidebar order, the same shortcut the macOS app maps
+// to Cmd+1..9. Typing in a field and working in a dialog keep the number.
 document.addEventListener("keydown", (event) => {
+  if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+  const match = /^[1-9]$/.exec(event.key);
+  if (!match) return;
+  const target = event.target;
+  if (target && target.closest && target.closest("input, textarea, select, [contenteditable='true']")) return;
+  if (document.querySelector(".modal")) return;
+  const items = NAV.flatMap((group) => group.items);
+  const section = items[Number(match[0]) - 1];
+  if (!section) return;
+  event.preventDefault();
+  A.go(section);
+});
+
+document.addEventListener("keydown", (event) => {
+  // The group row is a role="button" div so the whole row can be clicked; it
+  // must also answer Enter and Space from the keyboard.
+  if ((event.key === "Enter" || event.key === " ")) {
+    const row = event.target && event.target.closest
+      ? event.target.closest('.group-row[data-action]') : null;
+    if (row && event.target === row) {
+      event.preventDefault();
+      dispatchAction(row);
+      return;
+    }
+  }
   if (event.key === "Enter" && event.target && event.target.id === "set-proxy-url") {
     event.preventDefault();
     A.saveProxyUrl();
@@ -873,6 +951,16 @@ document.addEventListener("keydown", (event) => {
     first.focus();
   }
 });
+
+/// A link from a shortcut or a second launch: `{ section, tab? }` as parsed by
+/// the Rust side. Unknown names are already dropped there, so this only has to
+/// apply the request and keep the routing tab in range.
+function applyDeepLink(target) {
+  if (!target || !target.section) return;
+  S.section = target.section;
+  sectionLoads(S.section);
+  render();
+}
 
 // Tray events arrive as `tray-action`: navigation and run-next are owned by the
 // renderer, gateway pause/resume only asks for a status refresh.
@@ -957,6 +1045,10 @@ let onboardingPrevOverflow = "";
 
 function onboardingSeen() {
   if (onboardingDismissed) return true;
+  // Browser preview: `?onboarding=off` keeps the modal out of design reviews.
+  try {
+    if (!IS_TAURI && new URLSearchParams(location.search).get("onboarding") === "off") return true;
+  } catch { /* older engine without URLSearchParams */ }
   try {
     return window.localStorage.getItem(ONBOARDING_KEY) === "1";
   } catch {
@@ -1067,7 +1159,7 @@ function onboardingHealthRows() {
     .filter((task) => task && task.enabled && task.nextRunAt)
     .map((task) => task.nextRunAt)
     .sort((a, b) => a - b)[0];
-  const backup = S.backupLast ? new Date(S.backupLast * 1000).toLocaleString() : "";
+  const backup = S.backupLast ? dateTimeText(S.backupLast) : "";
   const row = (state, title, detail, action, actionKey) => `
     <div class="row" style="align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border)">
       <span class="pill ${state === "ok" ? "ok" : state === "warn" ? "warn" : "danger"}">${esc(t(state === "ok" ? "onboardingPass" : state === "warn" ? "onboardingWarn" : "onboardingFail"))}</span>
@@ -1082,7 +1174,7 @@ function onboardingHealthRows() {
     row(accounts > 0 ? "ok" : "fail", t("onboardingAccount"), accounts > 0 ? fmt(t("onboardingAccountsCount"), { n: accounts }) : t("onboardingNoAccounts"), "accounts", "onboardingOpen"),
     row(models > 0 ? "ok" : "warn", t("onboardingModels"), models > 0 ? fmt(t("onboardingModelsCount"), { n: models }) : t("onboardingNoModels"), "providers", "onboardingOpen"),
     row(tasks.length > 0 ? "ok" : "warn", t("onboardingScheduler"), tasks.length > 0
-      ? (next ? fmt(t("onboardingNextRun"), { time: new Date(next * 1000).toLocaleString() }) : fmt(t("onboardingTasksCount"), { n: tasks.length }))
+      ? (next ? fmt(t("onboardingNextRun"), { time: dateTimeText(next) }) : fmt(t("onboardingTasksCount"), { n: tasks.length }))
       : t("onboardingNoTasks"), "scheduler", "onboardingOpen"),
     row(backup ? "ok" : "warn", t("onboardingBackup"), backup ? fmt(t("onboardingBackupAt"), { time: backup }) : t("onboardingNoBackup"), "settings", "onboardingOpen"),
   ].join("");
@@ -1180,10 +1272,40 @@ async function statusPoll() {
 }
 
 (async function boot() {
+  // Browser preview only: `?section=usage` opens a page without clicking the
+  // sidebar. Tauri keeps its own persisted section.
+  if (!IS_TAURI) {
+    const requested = new URLSearchParams(location.search).get("section");
+    // `local_ai` is the state id, `localAiPage` the renderer: the snake_case
+    // name never resolves on its own.
+    const previewPage = requested === "local_ai" ? "localAi" : requested;
+    if (requested === "composer" || requested === "instances") S.section = "settings";
+    if (requested && typeof window[`${previewPage}Page`] === "function") S.section = requested;
+    const tab = new URLSearchParams(location.search).get("tab");
+    // Local AI keeps its own tab state; the same `?tab=` preview hook drives it.
+    const localTabs = ["models", "catalog", "downloads", "runtime", "settings"];
+    if (S.section === "local_ai" && localTabs.includes(tab)) S.localAi.tab = tab;
+    const agent = new URLSearchParams(location.search).get("agent");
+    if (requested === "agents" && agent) S.agentSelected = agent;
+    // `?provider=openRouter` opens one provider page of the board.
+    const provider = new URLSearchParams(location.search).get("provider");
+    if (requested === "providers" && provider) S.providerRoute = provider;
+    // `?modal=paste` opens the paste-login sheet for design review.
+    if (requested === "accounts" && new URLSearchParams(location.search).get("modal") === "paste") {
+      S.pasteLogin = { text: "" };
+    }
+    // `?modal=group` opens the model-group editor, the tallest sheet.
+    if (requested === "routing" && new URLSearchParams(location.search).get("modal") === "group") {
+      S.routingGroupDraft = { id: "", alias: "", note: "", enabled: true, members: [] };
+    }
+  }
   if (window.melon && typeof window.melon.listen === "function") {
     try {
       window.melon.listen("tray-action", (event) => {
         handleTrayAction(event && event.payload);
+      }).catch(() => {});
+      window.melon.listen("deep-link", (event) => {
+        applyDeepLink(event && event.payload);
       }).catch(() => {});
     } catch {
       // Older webview without the event API: tray navigation degrades to
@@ -1195,12 +1317,30 @@ async function statusPoll() {
   try {
     S.settings = await inv("settings_get");
     S.lang = (S.settings && S.settings.lang) === "en" ? "en" : "ru";
+    applyTheme((S.settings && S.settings.theme) || "system", false);
+
     if (S.settings && S.settings.schemaError) toast(S.settings.schemaError, true);
   } catch {
     // Use the default language and keep booting if settings are unavailable.
   }
   showOnboarding();
   await A.loadAll();
+  // Browser preview only: `?lang=en` renders the English dictionary without
+  // touching the saved settings, which loadAll has just applied.
+  if (!IS_TAURI) {
+    const previewLang = new URLSearchParams(location.search).get("lang");
+    if (previewLang === "en" || previewLang === "ru") S.lang = previewLang;
+  }
+  if (IS_TAURI) {
+    try {
+      const target = await inv("deep_link_target");
+      if (target && target.section) {
+        S.section = target.section;
+      }
+    } catch {
+      // No link on the command line: keep the saved section.
+    }
+  }
   sectionLoads(S.section);
   // Update check at launch: turn the sidebar control gold and show a toast
   // when a newer release exists.

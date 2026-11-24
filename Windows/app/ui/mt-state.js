@@ -9,6 +9,10 @@ const S = {
   settings: null,
   proxyUrlDraft: null,
   providers: null,
+  /// Providers board: null shows the list, a route id shows that provider's
+  /// own sub-page. Mirrors the macOS `route: ProviderRoute?` state.
+  providerRoute: null,
+  providerSection: null,
   vercel: null,
   vercelLoaded: false,
   providerModelsError: {},
@@ -31,6 +35,23 @@ const S = {
   routing: null,
   calls: [],
   usage: [],
+  // Usage screen: every recorded telemetry line plus the selected period.
+  usageEvents: [],
+  usageTotal: 0,
+  usageLoaded: false,
+  usagePeriod: "week",
+  // Merged Routing page: "routing" or "api".
+  // Agents screen: catalog snapshot, search and the selected entry.
+  agents: null,
+  agentLoaded: false,
+  agentQuery: "",
+  agentGroup: "all",
+  agentSelected: null,
+  agentDraft: null,
+  agentModel: "gpt-5",
+  routingGroups: null,
+  routingGroupLoaded: false,
+  routingGroupDraft: null,
   models: null,
   modelsQuery: "",
   // Codex model pool: shared OpenAI model catalog, its picker modal and the
@@ -57,6 +78,10 @@ const S = {
   queue: null,
   instancesData: null,
   deviceLogin: null,
+  /// Pending browser OAuth session: `{ id, status, url }` or null.
+  browserLogin: null,
+  /// Paste-login sheet state: `{ text }` or null.
+  pasteLogin: null,
   autostart: false,
   // Unix seconds of the last successful export; null = none yet (or unknown).
   backupLast: null,

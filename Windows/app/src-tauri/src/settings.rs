@@ -47,6 +47,17 @@ pub struct CustomProvider {
     pub api_key: String,
     pub enabled: bool,
     pub models: Vec<CustomProviderModel>,
+    /// Selection tier for this provider. The engine prefers the highest tier
+    /// that still has a healthy credential and only then falls back, so a
+    /// faster provider can be picked first without leaving the failover
+    /// chain. Zero, the engine's default, means no preference; the value is
+    /// omitted from the config rather than written as a zero.
+    pub priority: Option<i64>,
+    /// Extra headers for every request to this provider. A value starting
+    /// with `$` is resolved from the client's own headers. The engine applies
+    /// these after its own user-agent default, so `User-Agent` here wins,
+    /// which is what gets past a Cloudflare front that refuses `Go-http-client`.
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -107,6 +118,9 @@ pub struct Settings {
     pub port: u16,
     pub api_key: String,
     pub lang: String,
+    /// `system`, `light` or `dark`. The window chrome and the WebView palette
+    /// follow it; `system` leaves both to the OS.
+    pub theme: String,
     pub quota_interval: u32,
     pub openrouter_key: String,
     pub openrouter_enabled: bool,
@@ -153,8 +167,25 @@ pub struct Settings {
     /// Routing: auto | quotaHighFirst | quotaLowFirst | planHighFirst |
     /// planLowFirst | expirySoonFirst | custom
     pub routing_strategy: String,
+    /// Gateway strategy written to `config.yaml`: weighted | roundRobin |
+    /// fillFirst. Separate from `routing_strategy`, which orders the accounts
+    /// inside the pool before the engine ever sees them.
+    pub gateway_strategy: String,
     /// Manual order of account ids (for the custom strategy).
     pub priority_order: Vec<String>,
+    /// Keep one conversation on one account so the upstream cache is reused.
+    pub session_affinity: bool,
+    /// How long the engine keeps that binding, in seconds.
+    pub session_affinity_ttl: u32,
+    /// Extra attempts on another credential before the client sees an error.
+    pub request_retry: u32,
+    /// Seconds a credential rests after a transient stream error.
+    pub transient_cooldown: u32,
+    /// Auto-continue in the Codex composer after a model-capacity error:
+    /// press Codex "Retry" and, when that control disappears, send a short
+    /// continuation. macOS stores this as `composer.autoRetryEnabled`.
+    #[serde(default = "default_true")]
+    pub auto_retry_enabled: bool,
     /// Master switch for every toast notification.
     pub notifications: bool,
     /// Toast when an hourly/weekly window crosses below its account reserve
@@ -164,6 +195,11 @@ pub struct Settings {
     pub notify_scheduler: bool,
     /// Toast when a blocked account becomes usable after a refresh.
     pub notify_quota_reset: bool,
+    /// Start the local API service together with the app. macOS exposes the
+    /// same switch as `gatewayAutoStart`. A user who stops the service keeps
+    /// that decision for the session; this only decides the next launch.
+    #[serde(default = "default_true")]
+    pub gateway_auto_start: bool,
     /// Status island above the screen. Default on.
     #[serde(default = "default_island_visible")]
     pub island_visible: bool,
@@ -199,6 +235,14 @@ pub struct Settings {
     /// User-selected path to `ChatGPT.exe`. Empty means automatic discovery.
     /// The environment override stays available as a hidden fallback.
     pub codex_exe_path: String,
+    /// Parallel slots served by the local engine. macOS stores the same value
+    /// as `localAIParallel`; 1 keeps the whole context for one request.
+    pub local_parallel_requests: u32,
+    /// Seconds an idle local model stays loaded. 0 keeps it resident.
+    pub local_idle_unload_seconds: u32,
+    /// Models the local engine may keep loaded at once. macOS stores it as
+    /// `localAIModelsMax`.
+    pub local_models_max: u32,
     /// Persisted format version. Missing in files written before 2.4.1.
     pub schema_version: u32,
     /// Set when a newer build owns the file; never serialized.
@@ -207,6 +251,11 @@ pub struct Settings {
 }
 
 fn default_island_visible() -> bool {
+    true
+}
+
+/// Serde default for switches that are on unless a saved file says otherwise.
+fn default_true() -> bool {
     true
 }
 
@@ -222,6 +271,7 @@ impl Default for Settings {
             port: 18317,
             api_key: String::new(),
             lang: "ru".to_string(),
+            theme: "system".to_string(),
             quota_interval: 300,
             openrouter_key: String::new(),
             openrouter_enabled: true,
@@ -250,8 +300,15 @@ impl Default for Settings {
             custom_providers: Vec::new(),
             management_secret: String::new(),
             routing_strategy: "auto".to_string(),
+            gateway_strategy: "weighted".to_string(),
             priority_order: Vec::new(),
+            session_affinity: true,
+            session_affinity_ttl: 7200,
+            request_retry: 2,
+            transient_cooldown: 60,
             notifications: true,
+            auto_retry_enabled: true,
+            gateway_auto_start: true,
             notify_low_quota: true,
             notify_scheduler: true,
             notify_quota_reset: true,
@@ -270,6 +327,9 @@ impl Default for Settings {
             stream_bootstrap_timeout_seconds: 180,
             stream_timeout_migrated_180: false,
             codex_exe_path: String::new(),
+            local_parallel_requests: 1,
+            local_idle_unload_seconds: 0,
+            local_models_max: 1,
             schema_version: crate::schema::CURRENT,
             schema_error: None,
         }
@@ -416,14 +476,14 @@ pub fn load_from(path: &std::path::Path) -> Settings {
     if s.port == 0 {
         s.port = 18317;
     }
-    if s.quota_interval == 0 {
-        s.quota_interval = 300;
-    }
     if s.lang.is_empty() {
         s.lang = "ru".to_string();
     }
     if s.routing_strategy.is_empty() {
         s.routing_strategy = "auto".to_string();
+    }
+    if s.gateway_strategy.is_empty() {
+        s.gateway_strategy = "weighted".to_string();
     }
     if s.api_key.is_empty() {
         s.api_key = generate_api_key();
@@ -511,7 +571,9 @@ fn unprotect_secrets(s: &mut Settings) {
     }
 }
 
-fn generate_api_key() -> String {
+/// Issued to the renderer so "Rotate" can mint a new key without duplicating
+/// the format here. The prefix matters: clients treat `melon-` keys as ours.
+pub fn generate_api_key() -> String {
     let bytes: [u8; 12] = rand::random();
     let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
     format!("melon-{}", hex)
@@ -821,6 +883,8 @@ mod tests {
                 enabled: true,
                 alias: "acme/gpt-5".to_string(),
             }],
+            priority: None,
+            headers: std::collections::BTreeMap::new(),
         };
         let settings = Settings {
             custom_providers: vec![provider],
@@ -884,5 +948,33 @@ mod tests {
         let merged = super::merge_user_payload(payload, &before, &current);
         assert_eq!(merged.routing_strategy, "expirySoonFirst");
         assert_eq!(merged.codex_exe_path, "new");
+    }
+    /// The Local AI scheduling controls were UI-less on Windows: the engine
+    /// read `MELON_LOCAL_*` environment variables and nothing persisted them.
+    /// These fields must round-trip and stay optional for older files.
+    #[test]
+    fn local_ai_scheduling_settings_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("mt-sched-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut s = super::Settings::default();
+        assert_eq!(s.local_parallel_requests, 1);
+        assert_eq!(s.local_idle_unload_seconds, 0);
+        assert_eq!(s.local_models_max, 1);
+        s.local_parallel_requests = 4;
+        s.local_idle_unload_seconds = 1800;
+        s.local_models_max = 2;
+        super::save_to(&path, &s).unwrap();
+        let back = super::load_from(&path);
+        assert_eq!(back.local_parallel_requests, 4);
+        assert_eq!(back.local_idle_unload_seconds, 1800);
+        assert_eq!(back.local_models_max, 2);
+        // A file written before these fields existed keeps the defaults.
+        std::fs::write(&path, r#"{"port":18317,"lang":"ru"}"#).unwrap();
+        let old = super::load_from(&path);
+        assert_eq!(old.local_parallel_requests, 1);
+        assert_eq!(old.local_idle_unload_seconds, 0);
+        assert_eq!(old.local_models_max, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
