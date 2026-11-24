@@ -78,7 +78,18 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 6.0.2 (latest published)
+## What's new in 6.5.1 (latest published)
+
+> **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
+> block the first launch, so check the SHA-256 before opening the file. The full
+> notes are in [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **One capsule shape.** Buttons, select triggers, text and number fields, segmented controls and their hover, focus and disabled states now share the same pill geometry on both platforms.
+- **Cyan is the primary action colour.** Prominent buttons, selected filters and toggles use cyan on macOS and Windows; amber remains for warnings and melon branding.
+- **Windows reaches the same control language.** The light theme keeps its select chevron, and agent fields, steppers and menus use the same capsule treatment as macOS.
+- **Build metadata.** macOS build 75 and Windows 6.5.1.
+
+## Earlier: 6.0.2
 
 > **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
 > block the first launch, so check the SHA-256 before opening the file. No GGUF

@@ -3,13 +3,12 @@
 This directory holds **draft** Homebrew/winget metadata generated from real
 built artifacts. It is not published and it is not a source of truth.
 
-`packaging/staging/6.0.0/` currently contains only a placeholder README for the
-**stable** 6.0.0 promotion: the source tree is 6.0.0, but no release build of
-it has been published yet. No stable 6.0.0 artifacts have been built, verified
-and published, so the directory holds no Cask, winget manifest, `SHA256SUMS`,
-or digest. Do not create generated files by hand
-and do not put a placeholder SHA-256 in them. `docs_lint.py` rejects staged
-digests that are not real 64-hex values, and
+`packaging/staging/6.5.1/` contains the Homebrew Cask, winget manifests,
+`SHA256SUMS` and `RELEASE_METADATA.json` generated from the 6.5.1 CI artifacts.
+The hashes are real, the staged metadata is what the promotion workflow compares
+against the draft release, and the source tree is ready for that promotion.
+Do not create generated files by hand and do not put a placeholder SHA-256 in
+them. `docs_lint.py` rejects staged digests that are not real 64-hex values, and
 `verify_release_checksums.py --stage` refuses to run without the complete
 artifact set and its `.sha256` siblings.
 
@@ -17,7 +16,7 @@ Generate it after both platforms are built from the release commit:
 
 ```bash
 python3 scripts/verify_release_checksums.py \
-  --stage 6.0.0 \
+  --stage 6.5.1 \
   --artifacts /path/to/release-assets
 ```
 

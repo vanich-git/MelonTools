@@ -16,7 +16,17 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 6.0.2 (latest published)
+## What's new in 6.5.1 (latest published)
+
+> **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
+> is allowed in System Settings, so verify the SHA-256 first. The full notes are
+> in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **One capsule shape.** Buttons, select triggers, text and number fields, segmented controls and their hover, focus and disabled states now share the same pill geometry.
+- **Cyan is the primary action colour.** Prominent buttons, selected filters and toggles use cyan; amber remains for warnings and melon branding.
+- **Build metadata.** macOS build 75; version metadata is aligned at 6.5.1.
+
+## Earlier: 6.0.2
 
 > **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
 > is allowed in System Settings, so verify the SHA-256 first. No GGUF model is
