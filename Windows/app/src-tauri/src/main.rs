@@ -27,6 +27,8 @@ mod instances;
 mod live_quota;
 pub mod local_ai;
 mod paths;
+mod plugin_settings;
+mod plugins;
 mod provider_import;
 mod providers;
 mod proxy;
@@ -3123,6 +3125,16 @@ fn main() {
             settings_get,
             settings_set,
             gateway_status,
+            plugins::plugins_store,
+            plugins::plugins_installed,
+            plugins::plugins_install,
+            plugins::plugins_remove,
+            plugins::plugins_set_enabled,
+            plugins::plugins_config,
+            plugins::plugins_save_config,
+            plugins::plugins_prefs,
+            plugins::plugins_set_host,
+            plugins::plugins_restart,
             gateway_start,
             gateway_stop,
             gateway_sync,

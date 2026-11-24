@@ -1883,6 +1883,108 @@ final class L10n: ObservableObject {
         "GitHub Copilot Chat with a custom endpoint": "GitHub Copilot Chat с собственным эндпоинтом",
 
 
+        // Melon Plugins: native store, consent, config and conflict states.
+        "%d": "%d",
+        "%d plugins": "Плагинов: %d",
+        "%d settings exposed by the plugin.": "Плагин открывает настроек: %d.",
+        "A loaded plugin cannot be replaced while the gateway runs. Restart it, then retry the update.":
+            "Загруженный плагин нельзя заменить, пока работает шлюз. Перезапустите его и повторите обновление.",
+        "A loaded plugin cannot be replaced. Restart the gateway and retry.":
+            "Загруженный плагин нельзя заменить. Перезапустите шлюз и повторите.",
+        "All plugins": "Все плагины",
+        "Browse plugins": "Открыть каталог",
+        "Choice": "Выбор",
+        "Clear filters": "Сбросить фильтры",
+        "Configure": "Настроить",
+        "Dashboards": "Панели",
+        "Disabling keeps the file and its settings on disk.":
+            "При выключении файл и настройки остаются на диске.",
+        "Discover": "Обзор",
+        "Extend Melon with native plugins from the community store.":
+            "Расширяйте Melon нативными плагинами из каталога сообщества.",
+        "Gateway is off": "Шлюз выключен",
+        "Host is off": "Хост выключен",
+        "Host is on": "Хост включён",
+        "I trust this publisher and understand that the plugin runs as native code.":
+            "Я доверяю этому издателю и понимаю, что плагин выполняется как нативный код.",
+        "Install native plugin?": "Установить нативный плагин?",
+        "Install type": "Тип установки",
+        "Interceptors": "Перехватчики",
+        "Invalid JSON: %@": "Некорректный JSON: %@",
+        "It may read its configuration from another file or its own menu.":
+            "Возможно, он читает настройки из другого файла или собственного меню.",
+        "JSON": "JSON",
+        "List": "Список",
+        "Loading the plugin store...": "Загружаем каталог плагинов...",
+        "Melon Picks": "Выбор Melon",
+        "Melon Registry": "Реестр Melon",
+        "Native libraries load inside the gateway process. Install only plugins you trust.":
+            "Нативные библиотеки загружаются в процесс шлюза. Устанавливайте только те плагины, которым доверяете.",
+        "Native plugin host": "Хост нативных плагинов",
+        "Native plugins run as trusted code inside the gateway process. A plugin can read the same files and network the gateway can reach. Install only publishers you trust.":
+            "Нативные плагины выполняются как доверенный код внутри процесса шлюза. Плагин может читать те же файлы и сеть, что и шлюз. Устанавливайте только тех издателей, которым доверяете.",
+        "No plugins found": "Плагины не найдены",
+        "No plugins installed": "Плагины не установлены",
+        "Not a number: %@": "Не число: %@",
+        "Not loaded": "Не загружен",
+        "Number": "Число",
+        "Official": "Официальный",
+        "Open Discover to install a native plugin.":
+            "Откройте «Обзор», чтобы установить нативный плагин.",
+        "Platforms": "Платформы",
+        "Plugin enabled": "Плагин включён",
+        "Plugin folder": "Папка плагинов",
+        "Plugin not found": "Плагин не найден",
+        "Plugin store": "Каталог плагинов",
+        "Plugins": "Плагины",
+        "Plugins are disabled. Installed files stay on disk and no plugin code runs.":
+            "Плагины отключены. Установленные файлы остаются на диске, код плагинов не выполняется.",
+        "Publisher": "Издатель",
+        "Reading plugin settings...": "Читаем настройки плагина...",
+        "Registry": "Реестр",
+        "Remove %@": "Удалить %@",
+        "Remove plugin": "Удалить плагин",
+        "Remove this plugin?": "Удалить этот плагин?",
+        "Restart required": "Нужен перезапуск",
+        "Safe": "Безопасно",
+        "Safe Mode": "Безопасный режим",
+        "Saving reloads the plugin. A running stream may finish before the new settings apply.":
+            "Сохранение перезагружает плагин. Текущий поток может завершиться до применения новых настроек.",
+        "Scheduling": "Планировщик",
+        "Search plugins": "Поиск плагинов",
+        "Source": "Источник",
+        "Start the gateway to load the plugin store.":
+            "Запустите шлюз, чтобы загрузить каталог плагинов.",
+        "Text": "Строка",
+        "The gateway did not answer.": "Шлюз не ответил.",
+        "The gateway did not return the model list.": "Шлюз не вернул список моделей.",
+        "The gateway restarts without the plugin host. Installed files stay on disk and can be enabled again.":
+            "Шлюз перезапустится без хоста плагинов. Установленные файлы останутся на диске, их можно включить снова.",
+        "The gateway returned an unexpected response.": "Шлюз вернул неожиданный ответ.",
+        "The plugin could not be installed.": "Не удалось установить плагин.",
+        "The plugin file and its saved config are deleted from this Mac.":
+            "Файл плагина и сохранённый конфиг будут удалены с этого Mac.",
+        "The plugin is installed but not loaded. Restart the gateway to load it.":
+            "Плагин установлен, но не загружен. Перезапустите шлюз, чтобы загрузить его.",
+        "The plugin store uses the gateway management API. Start the gateway to browse and install.":
+            "Каталог плагинов работает через management API шлюза. Запустите шлюз, чтобы смотреть и устанавливать плагины.",
+        "The registry changed. Refresh the store and try again.":
+            "Реестр изменился. Обновите каталог и попробуйте снова.",
+        "This downloads a dynamic library and loads it inside the gateway. Install only code you trust.":
+            "Будет скачана динамическая библиотека и загружена в шлюз. Устанавливайте только тот код, которому доверяете.",
+        "This plugin declares no settings.": "Плагин не объявляет настроек.",
+        "This plugin is a native library. It runs inside the gateway with the same access as Melon Tools: it can read requests, credentials and files the gateway can reach.":
+            "Это нативная библиотека. Она выполняется внутри шлюза с теми же правами, что и Melon Tools: может читать запросы, учётные данные и файлы, доступные шлюзу.",
+        "Try another search or clear the filter.":
+            "Измените запрос или сбросьте фильтр.",
+        "Turn off all plugins?": "Выключить все плагины?",
+        "Turn off and restart": "Выключить и перезапустить",
+        "Turn on": "Включить",
+        "Update available": "Доступно обновление",
+        "Updates": "Обновления",
+        "Value": "Значение",
+
+
     ]
 }
 

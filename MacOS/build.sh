@@ -31,9 +31,11 @@ mkdir -p build
 (
   cd _sources/CLIProxyAPI
   # Both slices: the app binary itself is universal, and the embedded gateway
-  # must be too — an arm64-only sidecar cannot start on Intel Macs.
+  # must be too — an arm64-only sidecar cannot start on Intel Macs. Native
+  # plugins are dynamic libraries, and the plugin host refuses to dlopen them
+  # when the engine was built without cgo, so both slices keep cgo on.
   for ARCH in arm64 amd64; do
-    CGO_ENABLED=0 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-s -w" \
+    CGO_ENABLED=1 GOOS=darwin GOARCH="$ARCH" go build -trimpath -ldflags "-s -w" \
       -o "$ROOT/build/cliproxyapi-$ARCH" ./cmd/server
   done
   lipo -create -output "$ROOT/build/cliproxyapi" \

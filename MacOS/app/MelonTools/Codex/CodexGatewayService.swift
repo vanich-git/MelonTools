@@ -546,6 +546,7 @@ final class CodexGatewayService: ObservableObject {
         requests:
           proxy-url: "\(ModelSourcesStore.yamlEscape(NetworkProxy.activeURL() ?? ""))"
         """
+        yaml += PluginSettings.gatewayYAML()
         // The overlay adds the Antigravity ids the official catalog misses.
         // Only referenced once the file exists: a dangling path is refused.
         yaml += ModelCatalogOverlay.gatewayYAML()
@@ -916,6 +917,7 @@ final class CodexGatewayService: ObservableObject {
                 auditLog(L("Adopted the running gateway."))
                 startHealthCheck()
                 startLogTail(replayLastBytes: true)
+                Task { await PluginModelCatalog.shared.refresh() }
                 return
             case .unauthorized:
                 finishWithFailure(L("Port is busy: another service owns it with a different API key. Stop it first or change the port."))
@@ -1406,6 +1408,7 @@ final class CodexGatewayService: ObservableObject {
                 if case .ok = await self.probeHealth() {
                     self.status = .running(baseURL: self.baseURL)
                     if self.lastError != nil { self.lastError = nil }
+                    Task { await PluginModelCatalog.shared.refresh() }
                     return
                 }
             }

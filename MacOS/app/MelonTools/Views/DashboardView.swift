@@ -646,6 +646,7 @@ struct DashboardView: View {
         case .antigravity: return MTTheme.cyan
         case .localAI: return MTTheme.emerald
         case .custom: return MTTheme.violet
+        case .plugin: return MTTheme.violet
         }
     }
 

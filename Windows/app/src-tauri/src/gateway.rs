@@ -313,6 +313,7 @@ fn render_publication(settings: &Settings) -> Result<ConfigPublication, String> 
             strategy: engine_strategy(&settings.gateway_strategy),
         },
     );
+    yaml.push_str(&crate::plugin_settings::gateway_yaml());
     yaml.push_str(&crate::catalog::config_block());
     let (local_block, local_models) = local_api_keys_yaml(settings);
     yaml.push_str(&local_block);

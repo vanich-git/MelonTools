@@ -63,6 +63,10 @@ struct ModelSource: Identifiable, Codable, Equatable {
         /// User-defined provider: any endpoint speaking one of the four
         /// supported protocols. The identifier doubles as the model prefix.
         case custom
+        /// Native plugin provider. These rows are synthetic: they give the
+        /// Codex picker the models a plugin executor registered, but they are
+        /// never persisted and never emitted into `api-keys`.
+        case plugin
     }
 
     var id: String
@@ -457,7 +461,7 @@ final class ModelSourcesStore: ObservableObject {
                     images = Self.antigravitySupportsImages(id)
                 case .zai:
                     images = Self.zaiSupportsImages(id)
-                case .openRouter, .openCode, .commandCode, .deepInfra, .nvidia, .vercel, .custom:
+                case .openRouter, .openCode, .commandCode, .deepInfra, .nvidia, .vercel, .custom, .plugin:
                     images = nil
                 case .localAI:
                     images = false
@@ -2295,7 +2299,7 @@ final class ModelSourcesStore: ObservableObject {
         do {
             let ownsRoute = CodexGatewayService.shared.codexRoute == .melon
             let count = try CodexModelCatalog.sync(
-                sources: effectiveSources,
+                sources: effectiveSources + PluginModelCatalog.shared.sources,
                 updateConfig: ownsRoute,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
@@ -2324,7 +2328,7 @@ final class ModelSourcesStore: ObservableObject {
             try gateway.flushConfigWrite(reason: "model sources applied")
             gateway.auditLog("model sources applied (\(selectedCount) model(s) selected)")
             let count = try CodexModelCatalog.sync(
-                sources: effectiveSources,
+                sources: effectiveSources + PluginModelCatalog.shared.sources,
                 selectedPoolSlugs: Self.currentPoolUnion()
             )
             lastApply = String(format: L("Applied: %d models for Codex."), count)

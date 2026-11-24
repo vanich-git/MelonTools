@@ -1,0 +1,23 @@
+name: Plugin registry
+
+on:
+  push:
+    paths:
+      - "registry/**"
+      - "scripts/validate_plugin_registry.py"
+      - ".github/workflows/plugin-registry.yml"
+  pull_request:
+    paths:
+      - "registry/**"
+      - "scripts/validate_plugin_registry.py"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate registry
+        run: python3 scripts/validate_plugin_registry.py

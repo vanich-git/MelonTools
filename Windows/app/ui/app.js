@@ -524,11 +524,13 @@ const ICONS = {
   agents: '<svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="10" rx="2"/><path d="M12 5v3M9 13h.01M15 13h.01M9 18v2M15 18v2"/></svg>',
   routing: '<svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="M6 7v3a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3"/></svg>',
   usage: '<svg viewBox="0 0 24 24"><path d="M4 20V4M4 20h16M8 16l4-5 3 3 5-7"/></svg>',
+  plugins: '<svg viewBox="0 0 24 24"><path d="M9 4h6v3a3 3 0 1 0 3 3h2v6h-3a3 3 0 1 0-3 3v1H9v-2a3 3 0 1 0-3-3H4V9h2a3 3 0 1 0 3-3V4Z"/></svg>',
 };
 
 const NAV = [
   { group: "overview", items: ["dashboard"] },
   { group: "work", items: ["agents"] },
+  { group: "extend", items: ["plugins"] },
   { group: "models", items: ["api", "routing", "providers", "local_ai"] },
   { group: "insights", items: ["usage"] },
   { group: "automation", items: ["scheduler"] },
@@ -585,12 +587,13 @@ function render(force) {
     usage: usagePage,
     scheduler: schedulerPage,
     local_ai: typeof localAiPage === "function" ? localAiPage : () => "",
+    plugins: typeof pluginsPage === "function" ? pluginsPage : () => "",
     donate: donatePage,
     settings: settingsPage,
   };
   // The Local AI page is a working surface: its split panes and model grid
   // use the full window width, unlike the centred reading column elsewhere.
-  main.classList.toggle("board-fluid", S.section === "local_ai");
+  main.classList.toggle("board-fluid", S.section === "local_ai" || S.section === "plugins");
   main.innerHTML = (pages[S.section] || dashboardPage)();
   if (S.section === "donate") renderDonateQr();
 }
@@ -618,6 +621,7 @@ function sectionLoads(section) {
     }).catch(() => {});
   }
   if (section === "agents" && !S.agentLoaded) A.agentsLoad();
+  if (section === "plugins" && !(S.plugins && (S.plugins.loaded || S.plugins.loading))) A.pluginLoad();
   if (section === "routing" && !S.routingGroupLoaded) A.routingGroupsLoad();
   // The API service is its own section now, so it loads its own data: the
   // route, the Codex app status and the account order live on that page.
@@ -750,6 +754,7 @@ function actionArgs(action, el) {
     case "schedulerVarInput":
       return [el.dataset.id, el.value];
     case "agentSearch":
+    case "pluginSearch":
       return [el.value];
     case "agentCopySnippet":
       return [el.dataset.text || ""];

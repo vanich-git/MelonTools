@@ -39,6 +39,7 @@ function statusSignature() {
 NAV.splice(0, NAV.length,
   { group: "overview", items: ["dashboard"] },
   { group: "work", items: ["agents"] },
+  { group: "extend", items: ["plugins"] },
   { group: "models", items: ["api", "routing", "providers", "local_ai"] },
   { group: "insights", items: ["usage"] },
   { group: "automation", items: ["scheduler"] },

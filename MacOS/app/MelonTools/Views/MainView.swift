@@ -7,6 +7,7 @@ enum MTSection: String, CaseIterable, Identifiable {
     case codexInstances
     case codexComposer
     case providers
+    case plugins
     case routing
     case usage
     case codexAPI
@@ -25,6 +26,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexInstances: return L("Instances")
         case .codexComposer: return L("Composer Chips")
         case .providers: return L("Providers")
+        case .plugins: return L("Plugins")
         case .routing: return L("Routing")
         case .usage: return L("Usage")
         case .codexAPI: return L("Codex API")
@@ -43,6 +45,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexInstances: return "square.on.square"
         case .codexComposer: return "capsule"
         case .providers: return "square.stack.3d.up"
+        case .plugins: return "puzzlepiece.extension"
         case .routing: return "arrow.triangle.branch"
         case .usage: return "chart.bar.xaxis"
         case .codexAPI: return "network"
@@ -62,6 +65,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         case .codexInstances: return MTTheme.amber
         case .codexComposer: return MTTheme.cyan
         case .providers: return MTTheme.emerald
+        case .plugins: return MTTheme.violet
         case .routing: return MTTheme.cyan
         case .usage: return MTTheme.emerald
         case .codexAPI: return MTTheme.cyan
@@ -84,6 +88,7 @@ enum MTSection: String, CaseIterable, Identifiable {
         [
             Group(title: L("Overview"), sections: [.dashboard]),
             Group(title: L("Work"), sections: [.agents]),
+            Group(title: L("Extend"), sections: [.plugins]),
             Group(title: L("Models"), sections: [.codexAPI, .routing, .providers, .localAI]),
             Group(title: L("Insights"), sections: [.usage]),
             Group(title: L("Automation"), sections: [.scheduler]),
@@ -406,6 +411,7 @@ private struct GatewayFooter: View {
         case .codexInstances: CodexInstancesView()
         case .codexComposer: CodexComposerView()
         case .providers: CodexProvidersView(selection: $selection)
+        case .plugins: PluginsView()
         case .routing: RoutingView(selection: $selection)
         case .usage: UsageView(selection: $selection)
         case .codexAPI: CodexAPIView()

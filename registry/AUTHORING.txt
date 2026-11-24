@@ -1,0 +1,112 @@
+Melon Plugins: publishing a third-party plugin
+==============================================
+
+Melon Plugins is a curated source for native CLIProxyAPI plugins. A plugin is
+a dynamic library with the standard CLIProxyAPI C ABI, so it also works with a
+plain CLIProxyAPI build.
+
+1. Build the library
+--------------------
+
+Export the standard entry point and build a C shared library:
+
+  cliproxy_plugin_init
+
+Go example:
+
+  go build -buildmode=c-shared -o my-plugin.dylib .
+
+Rust and C examples live in the CLIProxyAPI repository under
+examples/plugin. Every macOS architecture needs its own build. A universal
+binary is not required, but darwin/arm64 and darwin/amd64 must both be
+published for Intel Macs to use the plugin.
+
+File names on disk:
+
+  macOS    my-plugin.dylib
+  Windows  my-plugin.dll
+  Linux    my-plugin.so
+
+2. Package a release
+--------------------
+
+Create one zip per platform named exactly:
+
+  <id>_<version>_<goos>_<goarch>.zip
+
+Examples:
+
+  my-plugin_1.0.0_darwin_arm64.zip
+  my-plugin_1.0.0_darwin_amd64.zip
+  my-plugin_1.0.0_windows_amd64.zip
+
+The zip must contain the library at its root, named either:
+
+  my-plugin.dylib
+  my-plugin-v1.0.0.dylib
+
+Subdirectories are rejected. Publish a checksums.txt next to the zips with one
+SHA-256 line per archive:
+
+  <sha256>  my-plugin_1.0.0_darwin_arm64.zip
+
+Publish a GitHub release, tag it v1.0.0, mark it latest, and attach every zip
+plus checksums.txt. The latest release is the source of truth; the registry
+version is only a display fallback.
+
+3. Add a registry entry
+-----------------------
+
+Copy registry/example-entry.json, replace the placeholders, and keep the tags
+from this list so the Melon filters work:
+
+  Provider, Interceptor, Scheduler, Usage, Dashboard, Quota
+
+Minimal GitHub release entry:
+
+  {
+    "id": "my-plugin",
+    "name": "My Plugin",
+    "description": "One sentence about what the plugin does.",
+    "author": "your-github-handle",
+    "version": "1.0.0",
+    "repository": "https://github.com/your-github-handle/my-plugin",
+    "tags": ["Interceptor"],
+    "license": "MIT"
+  }
+
+Add the object to the plugins array in registry/registry.json, then run:
+
+  python3 scripts/validate_plugin_registry.py
+
+The pull request must keep the schema valid and must not contain credentials,
+private URLs, or a plugin id that already exists in the official store. Melon
+Picks is curated separately; a merged entry appears in the full catalog.
+
+For a direct artifact URL instead of a GitHub release, use schema_version 2 and
+an install object with one artifact per platform:
+
+  "install": {
+    "type": "direct",
+    "artifacts": [
+      {
+        "goos": "darwin",
+        "goarch": "arm64",
+        "url": "https://example.com/my-plugin_1.0.0_darwin_arm64.zip",
+        "sha256": "<64 hex characters>"
+      }
+    ]
+  }
+
+Direct URLs must be HTTPS and the zip layout is the same as above.
+
+4. Before you submit
+--------------------
+
+- The plugin must load with the current CLIProxyAPI release and declare its
+  metadata and config_fields through the C ABI.
+- A plugin runs as trusted in-process code. Do not ask for more file or network
+  access than the feature needs.
+- State the license and link a public repository or homepage.
+- Test install, enable, configure, disable, update, and remove through Melon
+  Tools on at least one platform.

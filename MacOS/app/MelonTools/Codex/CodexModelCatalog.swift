@@ -335,6 +335,7 @@ enum CodexModelCatalog {
         case .antigravity: return 700
         case .localAI: return 800
         case .custom: return 900
+        case .plugin: return 950
         }
     }
 
@@ -352,6 +353,7 @@ enum CodexModelCatalog {
         case .antigravity: return "Antigravity"
         case .localAI: return "Local AI"
         case .custom: return "Custom"
+        case .plugin: return "Plugin"
         }
     }
 
