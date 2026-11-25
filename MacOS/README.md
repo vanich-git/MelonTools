@@ -16,7 +16,19 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 6.5.1 (latest published)
+## What's new in 6.5.2 (latest published)
+
+> **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
+> is allowed in System Settings, so verify the SHA-256 first. The full notes are
+> in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **Plugin store.** Melon Picks ships curated native CLIProxyAPI plugins, backed by the project's own signed registry.
+- **Search field frame.** The models filter now draws one crisp frame in both themes.
+- **Model pool dialog.** The Models button on the provider screen opens the pool again.
+- **Build metadata.** macOS build 76; version metadata is aligned at 6.5.2.
+
+## Earlier: 6.5.1
+
 
 > **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
 > is allowed in System Settings, so verify the SHA-256 first. The full notes are

@@ -25,27 +25,24 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 6.5.1
+## Release artifacts for 6.5.2
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-6.5.1.dmg` | `f2b92902fa375433f94a18d89a56ffcde0e067c9df935544f529bb6fbc968b7b` |
-| Windows installer | `MelonTools-6.5.1-setup.exe` | `9b23c23626a7d0b437eb1f2bf8cfc41856e805533f927d6c31965b8d3d54ed12` |
-| Windows portable | `MelonTools-6.5.1-win-x64-portable.exe` | `1ee5ccd1f63c3a36d56ae9619b02202e1150c0eeeedeb877316d457021efdf5c` |
+| macOS DMG | `MelonTools-6.5.2.dmg` | `eb4c3a027e1532cf51204be499bb19382a9c3ef307515538b9709888a246c501` |
+| Windows installer | `MelonTools-6.5.2-setup.exe` | `d724d6d567e2ee520f863348e7800b0b8432f1df95529700151db6da9075c2b8` |
+| Windows portable | `MelonTools-6.5.2-win-x64-portable.exe` | `d3c6a67bb8745057a164ca767b1925af8d8259ca1e407e20322935d76eb31972` |
 
-6.5.1 is a patch release that unifies the visible controls in the macOS and
-Windows apps. Buttons, select triggers, text and number fields, segmented
-controls and their hover, focus and disabled states share one capsule shape.
-Cyan is the primary action colour on both platforms; amber remains for warnings
-and melon branding. The Windows port follows the same shapes and colour in the
-light theme, including the select chevron and the agent fields.
+6.5.2 is a patch release that adds the curated native plugin store to both
+apps, draws the models filter as a single frame, and mounts the model pool
+dialog on the provider screen where its button lives.
 
-The macOS DMG carries `CFBundleShortVersionString` 6.5.1 with build 75 and is
+The macOS DMG carries `CFBundleShortVersionString` 6.5.2 with build 76 and is
 ad-hoc signed, so Gatekeeper needs a manual first launch. The Windows binaries
 are unsigned, so SmartScreen needs "More info" then "Run anyway".
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v6.5.1`. The staged copy lives in [`staging/6.5.1/`](staging/6.5.1).
+tag `v6.5.2`. The staged copy lives in [`staging/6.5.2/`](staging/6.5.2).
 
 ## 6.0.0-rc.6 (local build)
 

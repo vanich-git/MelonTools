@@ -78,7 +78,19 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 6.5.1 (latest published)
+## What's new in 6.5.2 (latest published)
+
+> **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
+> block the first launch, so check the SHA-256 before opening the file. The full
+> notes are in [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **Plugin store.** Melon Picks ships curated native CLIProxyAPI plugins on both platforms, backed by the project's own signed registry.
+- **Search field frame.** The models filter now draws one crisp frame in both themes; the native WebKit search glyph no longer stacks on top of the app's own.
+- **Model pool dialog.** The Models button on the provider screen opens the pool again; the dialog was only mounted on the accounts screen.
+- **Build metadata.** macOS build 76 and Windows 6.5.2.
+
+## Earlier: 6.5.1
+
 
 > **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
 > block the first launch, so check the SHA-256 before opening the file. The full
