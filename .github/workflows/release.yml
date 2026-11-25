@@ -331,7 +331,7 @@ jobs:
             # The Chocolatey feed returns 504 under load; without a retry a
             # transient outage fails the release build.
             for ($attempt = 1; $attempt -le 3; $attempt++) {
-              choco install nsis --version=3.11 -y --no-progress
+              choco install nsis --version=3.11.0 -y --no-progress
               $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
               if (Test-Path $makensis) { break }
               Write-Warning "NSIS install attempt $attempt failed; retrying in 20s"
