@@ -31,22 +31,102 @@ SOURCE_STATUS="$(git -C "$SRC" status --porcelain --untracked-files=normal)" || 
   echo "Cannot inspect engine source; refusing to reset or clean it." >&2
   exit 1
 }
+
+# A checkout prepared by MacOS/scripts/fetch-sources.sh is intentionally dirty:
+# it carries the dependency bump plus every MacOS/patches/*.patch. That state is
+# the one the embedded blob was built from, so rebuild it in place instead of
+# resetting. Anything else in the tree is somebody's work, and is left alone.
+EXPECTED_DIRTY=0
 if [ -n "$SOURCE_STATUS" ]; then
-  echo "Engine source has local changes; refusing to reset or clean it." >&2
-  exit 1
+  # `comm` only works when both inputs use the same collation, so every sort
+  # below runs under LC_ALL=C. Mixing locales reports matching paths as
+  # unexpected and blocks an otherwise valid build.
+  CHANGED="$(printf '%s\n' "$SOURCE_STATUS" | cut -c4- | sed 's/.* -> //' | LC_ALL=C sort -u)"
+  PATCHED="$(
+    { for patch in "$ROOT"/MacOS/patches/*.patch; do
+        git -C "$SRC" apply --numstat "$patch" 2>/dev/null | cut -f3
+      done
+      printf 'go.mod\ngo.sum\n'
+    } | LC_ALL=C sort -u
+  )"
+  UNEXPECTED="$(LC_ALL=C comm -23 <(printf '%s\n' "$CHANGED") <(printf '%s\n' "$PATCHED"))"
+  if [ -n "$UNEXPECTED" ]; then
+    echo "Engine source has local changes outside the pinned patch set:" >&2
+    printf '%s\n' "$UNEXPECTED" | sed 's/^/  /' >&2
+    echo "Refusing to reset or clean it; commit or stash those files first." >&2
+    exit 1
+  fi
+  for patch in "$ROOT"/MacOS/patches/*.patch; do
+    if ! git -C "$SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then
+      echo "Engine source is missing $(basename "$patch"); run MacOS/scripts/fetch-sources.sh." >&2
+      exit 1
+    fi
+  done
+  if ! grep -q 'klauspost/compress v1.18.7' "$SRC/go.mod"; then
+    echo "Engine source is missing the klauspost/compress bump; run MacOS/scripts/fetch-sources.sh." >&2
+    exit 1
+  fi
+  EXPECTED_DIRTY=1
 fi
+
+# The provenance pins go.mod and go.sum as well, because the same commit built
+# against a different dependency graph is not the same binary. verify-engine.py
+# can only check the digest format: it runs without the engine sources. Here
+# the tree is on disk, so compare the real bytes before spending minutes on a
+# build that would silently produce a different engine.
+check_dependencies() {
+python3 - "$SRC" "$PROVENANCE" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+provenance = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+failed = False
+for field, name in (("goModSha256", "go.mod"), ("goSumSha256", "go.sum")):
+    expected = provenance.get(field, "")
+    path = src / name
+    if not path.is_file():
+        print(f"engine source is missing {name}", file=sys.stderr)
+        failed = True
+        continue
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        print(
+            f"{name} does not match provenance: got {actual}, expected {expected}",
+            file=sys.stderr,
+        )
+        failed = True
+if failed:
+    raise SystemExit("engine source does not match the pinned dependencies")
+PY
+}
+
+
+
+
+if [ "$EXPECTED_DIRTY" = "0" ]; then
+  (
+    cd "$SRC"
+    git checkout --quiet --force "$(python3 -c "import json;print(json.load(open('$PROVENANCE'))['sourceCommit'])")"
+    # The QoS patch adds files that `git checkout` leaves untracked; remove them
+    # so the patch can be applied to a clean tree instead of colliding with a
+    # previous application.
+    git clean --quiet -ffd
+    GOTOOLCHAIN=go1.26.10 go get github.com/klauspost/compress@v1.18.7 >/dev/null
+    GOTOOLCHAIN=go1.26.10 go mod tidy >/dev/null
+    "$ROOT/MacOS/scripts/apply-engine-patches.sh"
+  )
+fi
+
+# Checked after both preparation paths have settled the tree, so a stale or
+# half-prepared checkout fails here instead of producing a different binary.
+check_dependencies
 
 echo "==> building pinned engine"
 (
   cd "$SRC"
-  git checkout --quiet --force "$(python3 -c "import json;print(json.load(open('$PROVENANCE'))['sourceCommit'])")"
-  # The QoS patch adds files that `git checkout` leaves untracked; remove them
-  # so the patch can be applied to a clean tree instead of colliding with a
-  # previous application.
-  git clean --quiet -ffd
-  GOTOOLCHAIN=go1.26.10 go get github.com/klauspost/compress@v1.18.7 >/dev/null
-  GOTOOLCHAIN=go1.26.10 go mod tidy >/dev/null
-  "$ROOT/MacOS/scripts/apply-engine-patches.sh"
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
     go build -trimpath -ldflags "-s -w" -o "$TMP/cliproxyapi.exe" ./cmd/server
 )

@@ -6,7 +6,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${1:-$ROOT/_sources/CLIProxyAPI}"
 PATCH_DIR="$ROOT/patches"
 
-if [ ! -d "$SRC/.git" ]; then
+# A linked worktree has no .git directory: .git is a file pointing at the
+# real git dir. Ask git instead of probing the path.
+if [ ! -d "$SRC" ] || ! git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1; then
   echo "engine source is missing: $SRC" >&2
   exit 1
 fi

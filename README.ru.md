@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="MacOS/Logo.png" alt="Melon Tools" width="120">
+  <img src="MacOS/app/Resources/Logo.png" alt="Melon Tools" width="120">
   <h1>Melon Tools</h1>
   <p><strong>Аккаунты Codex, модели-провайдеры и задачи по расписанию — в одном локальном приложении для macOS и Windows.</strong></p>
   <p>

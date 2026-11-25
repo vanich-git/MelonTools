@@ -3,22 +3,22 @@
   "sourceCommit": "1f917e77c4562623aa49e9804d999524151a2f96",
   "sourceTag": "v8.0.44",
   "goToolchain": "go1.26.10",
-  "goModSha256": "9a18ffa05c4f8020ff467b69e8cff5daa4b346c26a1fab7b7d9883e715742f0e",
-  "goSumSha256": "f6703ae6ffe59571c5beaed93165308ba1b50f67492a5e85487ef27f9241c570",
+  "goModSha256": "d1f8a503d1a038c2c7cdb083317ab3f13d05bf72e4c75c8f1dc668e23ded4ba3",
+  "goSumSha256": "de5646044e8e71e3d06e42e22c502e115a33e096b95b3bf5b5b5797798bfb4fe",
   "build": {
     "command": "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags \"-s -w\" -o <out> ./cmd/server",
     "compression": "zlib level 9",
     "dependencyBump": "github.com/klauspost/compress v1.17.4 -> v1.18.7",
-    "sourceState": "existing modified checkout with NVIDIA limiter applied through Go overlay"
+    "sourceState": "pinned checkout with MacOS/patches/*.patch applied and klauspost/compress bumped to v1.18.7"
   },
   "compressed": {
     "file": "cliproxyapi.exe.z",
-    "bytes": 24270343,
-    "sha256": "8571ac8504f8fe82d4f52c6dd9fa135c1b1b51de07a9ad887e8404537b611f1e"
+    "bytes": 24261207,
+    "sha256": "01e1a7634d7db57425636567a1334773cc1e641a5f4b69afe8f16f566ffa3eb0"
   },
   "payload": {
     "file": "cliproxyapi.exe",
-    "bytes": 74511360,
-    "sha256": "edb50ab19b1ac5e844efb7135029fed60ecf49c066f644c8b90233336a0758ec"
+    "bytes": 74508800,
+    "sha256": "a3a3574cbe9e9d589cf28e16bc71ca169721ad94c4914a35f880e4cef1b27a1d"
   }
 }
