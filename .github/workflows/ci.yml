@@ -193,9 +193,17 @@ jobs:
           Copy-Item app/src-tauri/target/release/melontools.exe "dist/MelonTools-$version-win-x64-portable.exe"
           $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
-            choco install nsis --version=3.11 -y --no-progress
-            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+            # The Chocolatey feed returns 504 under load; without a retry a
+            # transient outage fails the whole job.
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install nsis --version=3.11 -y --no-progress
+              $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+              if (Test-Path $makensis) { break }
+              Write-Warning "NSIS install attempt $attempt failed; retrying in 20s"
+              Start-Sleep -Seconds 20
+            }
           }
+          if (-not (Test-Path $makensis)) { throw "makensis not found" }
           $source = (Resolve-Path "dist/MelonTools-$version-win-x64-portable.exe").Path
           & $makensis /V2 "/DVERSION=$version" "/DSOURCE_EXE=$source" "installer/MelonTools.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
