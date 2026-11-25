@@ -54,8 +54,8 @@ Publish a GitHub release, tag it v1.0.0, mark it latest, and attach every zip
 plus checksums.txt. The latest release is the source of truth; the registry
 version is only a display fallback.
 
-3. Add a registry entry
------------------------
+3. Publish a registry
+---------------------
 
 Copy registry/example-entry.json, replace the placeholders, and keep the tags
 from this list so the Melon filters work:
@@ -75,13 +75,24 @@ Minimal GitHub release entry:
     "license": "MIT"
   }
 
-Add the object to the plugins array in registry/registry.json, then run:
+Melon's own registry/registry.json stays empty on purpose: it is curated, and
+adding an entry there is a decision by the Melon maintainers, not a step in a
+plugin pull request. Host your own registry file instead, following
+registry/schema.json with the same schema_version and plugins array, and make
+it reachable over https.
 
-  python3 scripts/validate_plugin_registry.py
+Validate your file before publishing:
 
-The pull request must keep the schema valid and must not contain credentials,
-private URLs, or a plugin id that already exists in the official store. Melon
-Picks is curated separately; a merged entry appears in the full catalog.
+  python3 scripts/validate_plugin_registry.py path/to/your/registry.json
+
+Without an argument the script checks the bundled registry/registry.json. It
+fails on an unknown field, a duplicate id or tag, a non-GitHub repository, a
+bad version, an unsupported platform, or a missing sha256.
+
+Users add your registry as an extra source in Melon Tools on the Plugins page,
+next to the official CLIProxyAPI store. A plugin that you only publish in your
+own registry appears in the full catalog of everyone who added that source; it
+does not appear in Melon Picks.
 
 For a direct artifact URL instead of a GitHub release, use schema_version 2 and
 an install object with one artifact per platform:
@@ -100,8 +111,8 @@ an install object with one artifact per platform:
 
 Direct URLs must be HTTPS and the zip layout is the same as above.
 
-4. Before you submit
---------------------
+4. Before you publish
+---------------------
 
 - The plugin must load with the current CLIProxyAPI release and declare its
   metadata and config_fields through the C ABI.
@@ -110,3 +121,7 @@ Direct URLs must be HTTPS and the zip layout is the same as above.
 - State the license and link a public repository or homepage.
 - Test install, enable, configure, disable, update, and remove through Melon
   Tools on at least one platform.
+- A plugin that needs a private store credential cannot install in Melon yet,
+  because there is no screen for that credential. Ship a public artifact
+  instead, or leave auth_required out of the entry.
+

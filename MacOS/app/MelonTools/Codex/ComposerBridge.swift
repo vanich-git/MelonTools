@@ -157,7 +157,15 @@ final class ComposerBridge: ObservableObject {
             session.evaluate("window.__melonChipsSetOffline && window.__melonChipsSetOffline();")
         }
         if !sessions.isEmpty {
-            usleep(150_000) // let the fire-and-forget evaluates flush before the sockets close
+            // The evaluates are fire-and-forget writes on their own sockets, so
+            // the sockets must stay open briefly. Sleep with the run loop
+            // pumped instead of usleep: this path runs on the main thread at
+            // quit, and a hard sleep there delays the rest of the shutdown for
+            // no benefit.
+            let flushUntil = Date().addingTimeInterval(0.15)
+            while Date() < flushUntil {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
         }
         for session in sessions.values { session.close() }
         sessions.removeAll()

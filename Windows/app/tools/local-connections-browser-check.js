@@ -36,7 +36,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core')
       window.api.localAi.modelsList = async () => window.__browserLocalModels;
       window.api.localAi.runtimeStatus = async () => window.__browserRuntime;
       S.lang = 'en';
+      // The redesign moved the local AI card behind the provider detail screen;
+      // S.section alone renders the board, which has no check button.
       S.section = 'providers';
+      S.providerRoute = 'localAI';
+      S.providerSection = 'connection';
       S.localAi.connectionCheck = null;
       await A.modelsLoad();
       render();

@@ -36,6 +36,13 @@ final class PluginStore: ObservableObject {
 
     private let api = PluginAPIClient()
     private var didLoad = false
+    private var lastRefresh: Date?
+
+    /// Several views are created and torn down while the user moves around the
+    /// app, and each one asks for a refresh on appear. Without a floor that
+    /// turns into a burst of identical store fetches. An explicit refresh after
+    /// a mutation passes `force: true` and always goes out.
+    private static let minimumRefreshInterval: TimeInterval = 5
 
     var picks: [PluginStoreEntry] {
         let byID = Dictionary(catalog.map { ($0.pluginID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -79,9 +86,16 @@ final class PluginStore: ObservableObject {
     /// tells the user why refresh did nothing.
     func refresh(force: Bool = false) async {
         guard !isLoading else { return }
+        if !force, let lastRefresh, Date().timeIntervalSince(lastRefresh) < Self.minimumRefreshInterval {
+            return
+        }
         guard CodexGatewayService.shared.isRunning else {
             loadCache()
-            if didLoad { lastError = L("Start the gateway to load the plugin store.") }
+            // The page must say why nothing loads even when a cache hit leaves
+            // `didLoad` false: otherwise Discover silently shows an empty grid.
+            if lastError == nil {
+                lastError = L("Start the gateway to load the plugin store.")
+            }
             return
         }
         isLoading = true
@@ -94,11 +108,21 @@ final class PluginStore: ObservableObject {
             catalog = Self.dedupe(store.plugins)
             sources = store.sources
             sourceErrors = store.sourceErrors
-            hostEnabled = store.pluginsEnabled
-            PluginSettings.isEnabled = store.pluginsEnabled
+            // The engine reports the config it booted with. That value is a
+            // seed for a fresh profile only: an adopted or stale gateway must
+            // not flip the switch the user set here, or a restart would fight
+            // the toggle on every refresh.
+            if !PluginSettings.hasHostPreference {
+                PluginSettings.isEnabled = store.pluginsEnabled
+            }
+            hostEnabled = PluginSettings.isEnabled
             usingCache = false
             lastUpdated = Date()
             didLoad = true
+            // Only a successful fetch starts the quiet window. Stamping it
+            // before the request made the retry button a no-op for five
+            // seconds after every failure.
+            lastRefresh = Date()
             saveCache(store)
         } catch {
             loadCache()
@@ -140,6 +164,10 @@ final class PluginStore: ObservableObject {
 
     func install(_ entry: PluginStoreEntry) async {
         guard installingID == nil else { return }
+        if let blocker = entry.installBlocker {
+            lastError = blocker
+            return
+        }
         installingID = entry.pluginID
         lastError = nil
         defer { installingID = nil }
@@ -222,10 +250,46 @@ final class PluginStore: ObservableObject {
         await PluginModelCatalog.shared.refresh()
     }
 
+    /// The registry URL lives in the gateway config, so a change is only real
+    /// after that config is written again. The official source is always
+    /// prepended by the engine, so this URL is an additional source.
+    func setRegistryURL(_ raw: String) async {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = trimmed.isEmpty ? PluginSettings.defaultRegistryURL : trimmed
+        guard value != PluginSettings.registryURL else { return }
+        guard let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              url.host() != nil
+        else {
+            lastError = L("The registry URL must be an http or https address.")
+            return
+        }
+        let previous = PluginSettings.registryURL
+        PluginSettings.registryURL = value
+        hostEnabled = PluginSettings.isEnabled
+        lastError = nil
+        do {
+            try CodexGatewayService.shared.writeConfig(reason: "plugin registry", force: true)
+            if CodexGatewayService.shared.isRunning {
+                await restartGateway()
+            }
+            await refresh(force: true)
+        } catch {
+            PluginSettings.registryURL = previous
+            lastError = friendly(error)
+        }
+    }
+
     func restartGatewayNow() async {
         guard CodexGatewayService.shared.isRunning else { return }
-        restartNeeded = false
         await restartGateway()
+        // The restart is the fix for an update that could not replace a loaded
+        // library. Clearing the flag only after the child answered keeps the
+        // banner alive when the restart failed and the ask is still valid.
+        if CodexGatewayService.shared.isRunning {
+            restartNeeded = false
+        }
         await refresh(force: true)
         await PluginModelCatalog.shared.refresh()
     }

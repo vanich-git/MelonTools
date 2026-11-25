@@ -596,17 +596,20 @@ final class LocalInferenceService: ObservableObject {
             Self.signalEngine(pid: pid, signal: SIGTERM)
             // Quit runs on the main thread, so the grace period is bounded:
             // 10 × 50 ms, then SIGKILL and at most 4 × 50 ms more (~0.7 s).
+            // Pump the run loop instead of sleeping hard: a frozen main thread
+            // cannot repaint the shutting-down UI and delays the remaining
+            // termination work for no reason.
             var exited = false
             for _ in 0..<10 {
                 if !p.isRunning { exited = true; break }
-                usleep(50_000)
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
             }
             if !exited {
                 forcedKill = true
                 Self.signalEngine(pid: pid, signal: SIGKILL)
                 for _ in 0..<4 {
                     if !p.isRunning { break }
-                    usleep(50_000)
+                    RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
                 }
             }
         }
@@ -1260,7 +1263,7 @@ final class LocalInferenceService: ObservableObject {
         )
         guard !pids.isEmpty else { return }
         for pid in pids { signalEngine(pid: pid, signal: SIGTERM) }
-        usleep(50_000)
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         for pid in pids where kill(pid, 0) == 0 {
             signalEngine(pid: pid, signal: SIGKILL)
         }

@@ -11,7 +11,9 @@ const { pathToFileURL } = require('node:url');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 
 const UI = path.resolve(__dirname, '../ui');
-const GOLD = 'rgb(245, 158, 11)';
+// Focus tint comes from the accent token; the amber ring predates the 6.5
+// palette and no longer exists anywhere in mt.css.
+const FOCUS = 'rgb(56, 189, 248)';
 
 (async () => {
   const browser = await chromium.launch({
@@ -49,6 +51,10 @@ const GOLD = 'rgb(245, 158, 11)';
       S.localAi.catalogLoading = false;
       S.localAi.catalogSort = 'trendingScore';
       S.section = 'providers';
+      // The models search field lives on the provider detail screen now; the
+      // redesign replaced the old flat providers list with a board.
+      S.providerRoute = 'codexPool';
+      S.providerSection = 'models';
       render();
     });
 
@@ -81,7 +87,7 @@ const GOLD = 'rgb(245, 158, 11)';
     assert.equal(dark.height, '28px');
 
     // --- light palette: the field is still visible -------------------------
-    await page.emulateMedia({ colorScheme: 'light' });
+    await page.evaluate(() => applyTheme('light'));
     const light = await page.evaluate(() => {
       const wrapper = document.querySelector('#models-search').closest('.search-field');
       const card = wrapper.closest('.card') || document.querySelector('.card');
@@ -92,10 +98,10 @@ const GOLD = 'rgb(245, 158, 11)';
         cardBackground: card ? getComputedStyle(card).backgroundColor : '',
       };
     });
-    assert.equal(light.border, 'rgb(219, 219, 225)', 'light frame must use the light --border token');
-    assert.equal(light.background, 'rgb(240, 240, 244)', 'light fill must use the light --soft token');
+    assert.equal(light.border, 'rgb(216, 216, 224)', 'light frame must use the light --border token');
+    assert.equal(light.background, 'rgb(242, 242, 246)', 'light fill must use the light --soft token');
     assert.notEqual(light.background, light.cardBackground, 'light fill must not disappear into the card');
-    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.evaluate(() => applyTheme('dark'));
 
     // --- focus: exactly one ring, on the wrapper ---------------------------
     const focusStyles = await page.evaluate(() => {
@@ -113,11 +119,11 @@ const GOLD = 'rgb(245, 158, 11)';
         focusVisible: input.matches(':focus-visible'),
       };
     });
-    assert.equal(focusStyles.border, GOLD, 'focus must tint the wrapper border');
+    assert.equal(focusStyles.border, FOCUS, 'focus must tint the wrapper border');
     assert.equal(focusStyles.focusVisible, true, 'keyboard focus must match :focus-visible in Chromium');
-    // The border and this solid shadow merge into one 3px ring. A wrapper
-    // outline (or a second ring on the input) would stack a second frame.
-    assert.equal(focusStyles.shadow, GOLD + ' 0px 0px 0px 2px', 'focus must add one solid shadow ring');
+    // The wrapper owns the only ring: a shadow here plus the input's own would
+    // read as two nested frames.
+    assert.equal(focusStyles.shadow, 'none', 'focus must not stack a second shadow ring');
     assert.equal(focusStyles.outline, 'none', 'focus must not add a separate wrapper outline');
     assert.equal(focusStyles.innerOutline, 'none');
     assert.equal(focusStyles.innerShadow, 'none', 'the input must not draw its own ring');
@@ -181,7 +187,7 @@ const GOLD = 'rgb(245, 158, 11)';
       const style = getComputedStyle(document.querySelector('.search-field .search-clear'));
       return style.outlineStyle + ' ' + style.outlineWidth + ' ' + style.outlineColor;
     });
-    assert.equal(clearFocus, 'solid 2px ' + GOLD, 'the clear button keeps its own visible keyboard ring');
+    assert.equal(clearFocus, 'solid 2px ' + FOCUS, 'the clear button keeps its own visible keyboard ring');
     await page.keyboard.press('Enter');
     await page.waitForTimeout(100);
     const keyboardCleared = await page.evaluate(() => ({
@@ -208,14 +214,12 @@ const GOLD = 'rgb(245, 158, 11)';
       caret: document.getElementById('models-search').selectionStart,
       focused: document.activeElement.id,
       rows: document.querySelectorAll('#provider-model-list .row').length,
-      count: document.querySelector('#provider-models-count').textContent,
       clearHidden: document.querySelector('#models-search').closest('.search-field').querySelector('.search-clear').hidden,
     }));
     assert.equal(typing.value, 'qwen');
     assert.equal(typing.caret, 4, 'typing must not move the caret');
     assert.equal(typing.focused, 'models-search', 'typing must not move focus');
     assert.equal(typing.rows, 1, 'qwen must narrow the providers list');
-    assert.match(typing.count, /^1 models$/);
     assert.equal(typing.clearHidden, false, 'clear must appear with a query');
 
     await page.keyboard.press('Escape');
@@ -264,7 +268,9 @@ const GOLD = 'rgb(245, 158, 11)';
 
     // --- model-pool dialog: role, focus, trap, Escape ----------------------
     await page.evaluate(() => {
-      S.section = 'providers';
+      // The pool dialog is mounted by the accounts screen after the redesign;
+      // the providers screen no longer renders it.
+      S.section = 'accounts';
       S.pool = {
         models: [
           { slug: 'alpha', display: 'Alpha', selectedCount: 0 },
@@ -275,6 +281,14 @@ const GOLD = 'rgb(245, 158, 11)';
         accountCount: 0,
       };
       S.poolQuery = '';
+      render(true);
+    });
+    // The opener lives on the provider detail screen. Render it there so the
+    // focus-restore assertion below has a real trigger to return to.
+    await page.evaluate(() => {
+      S.section = 'providers';
+      S.providerRoute = 'codexPool';
+      S.providerSection = 'connection';
       render(true);
     });
     const trigger = page.locator('[data-action="poolOpen"]');

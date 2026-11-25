@@ -66,8 +66,6 @@
   --panel-2: rgba(0, 0, 0, 0.035);
 }
 :root[data-theme="light"] .nav-row:hover,
-:root[data-theme="light"] .search-field,
-:root[data-theme="light"] .search-field:focus-within,
 :root[data-theme="light"] .agent-row:hover,
 :root[data-theme="light"] .group-row:hover,
 :root[data-theme="light"] .provider-board .provider-row:hover {
@@ -1560,23 +1558,46 @@ table.usage th:last-child, table.usage td:last-child { text-align: right; paddin
   max-width: 300px;
   flex: 0 1 300px;
   padding: 0 8px 0 9px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--soft);
   color: var(--text3);
 }
-.search-field:focus-within { border-color: var(--border); background: rgba(255, 255, 255, 0.06); }
-.search-field input {
+.search-field:focus-within { border-color: var(--accent); background: var(--soft); }
+/* The wrapper above owns the frame and the focus ring. The generic field rule
+   matches six :not() pseudo-classes, so it outranks this plain descendant
+   selector and would paint a second border, shadow and a 30px min-height
+   inside the pill. Matching that specificity keeps the input flat. */
+.search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]) {
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
+  min-height: 0;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   outline: 0;
+  box-shadow: none;
   background: transparent;
   color: var(--text);
   font-size: 12px;
+  /* WebKit paints its own search glyph and cancel button inside the pill. The
+     wrapper already draws the glyph, so both native decorations must go. */
+  appearance: none;
+  -webkit-appearance: none;
+}
+.search-field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover:not(:focus) {
+  border-color: transparent;
 }
 .search-field input::placeholder { color: var(--text3); }
+/* The wrapper draws its own glyph and clear button, so the native ones must be
+   suppressed: otherwise WebView2 shows two of each inside the pill. */
+.search-field input::-webkit-search-cancel-button,
+.search-field input::-webkit-search-decoration,
+.search-field input::-webkit-search-results-button {
+  display: none;
+  -webkit-appearance: none;
+}
 .search-field .search-clear {
   display: inline-flex;
   padding: 0;
@@ -2670,6 +2691,9 @@ select.agent-input {
 .plugin-tags { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-height: 18px; }
 .plugin-tag { font-size: 9.5px; padding: 2px 6px; border-radius: 99px; background: var(--soft); color: var(--text2); }
 .plugin-source { font-size: 9.5px; color: var(--text3); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+.plugin-blocker { color: var(--warn); line-height: 1.4; }
+.plugin-source-errors { color: var(--warn); line-height: 1.5; }
+.plugin-source-errors b { display: block; }
 .plugin-card-actions { display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 4px; }
 .plugin-card-actions .btn, .plugin-card-actions .ghost { padding: 4px 9px; font-size: 10.5px; }
 .plugin-picks { margin-bottom: var(--s5); }

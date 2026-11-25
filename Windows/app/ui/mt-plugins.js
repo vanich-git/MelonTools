@@ -96,6 +96,15 @@ function pluginIsInstalled(entry) {
   return !!(entry && (entry.installed || pluginInstalledFind(entry.id)));
 }
 
+// The engine can only download from a publisher whose store credential is in
+// the gateway config. Melon has no screen for that credential, so an entry
+// that needs it can never install here. Matches the macOS installBlocker rule.
+function pluginInstallBlocker(entry) {
+  if (!entry || pluginIsInstalled(entry)) return "";
+  if (entry.auth_required && !entry.auth_configured) return t("pluginAuthBlocker");
+  return "";
+}
+
 function pluginStatus(entry) {
   if (entry && entry.update_available) return { cls: "warn", text: t("pluginUpdate") };
   if (entry && entry.effective_enabled) return { cls: "ok", text: t("pluginActive") };
@@ -132,6 +141,7 @@ function pluginCard(entry) {
   const tags = pluginTags(entry).slice(0, 4);
   const source = pluginSourceLabel(entry);
   const version = entry.version ? `v${entry.version}` : "";
+  const blocker = pluginInstallBlocker(entry);
   return `<div class="card plugin-card">
     <div class="plugin-card-head">
       ${pluginLogo(entry.logo, entry.name || entry.id)}
@@ -146,10 +156,11 @@ function pluginCard(entry) {
       ${tags.map((tag) => `<span class="plugin-tag">${esc(pluginTagLabel(tag))}</span>`).join("")}
       ${source ? `<span class="plugin-source">${esc(source)}</span>` : ""}
     </div>
+    ${blocker ? `<div class="footnote plugin-blocker">${esc(blocker)}</div>` : ""}
     <div class="plugin-card-actions">
       ${installed
         ? `<button class="btn small" data-action="pluginConfigure" data-id="${esc(entry.id)}">${esc(t("pluginConfigure"))}</button>`
-        : `<button class="btn small" data-action="pluginInstall" data-id="${esc(entry.id)}" ${pluginState().installing ? "disabled" : ""}>${esc(entry.update_available ? t("pluginUpdate") : t("pluginInstall"))}</button>`}
+        : `<button class="btn small" data-action="pluginInstall" data-id="${esc(entry.id)}" ${blocker || pluginState().installing ? "disabled" : ""} title="${esc(blocker)}">${esc(entry.update_available ? t("pluginUpdate") : t("pluginInstall"))}</button>`}
       ${entry.update_available && installed
         ? `<button class="ghost small" data-action="pluginInstall" data-id="${esc(entry.id)}" ${pluginState().installing ? "disabled" : ""}>${esc(t("pluginUpdate"))}</button>`
         : ""}
@@ -277,6 +288,7 @@ function pluginDetailsModal() {
   if (!entry) return "";
   const installed = pluginIsInstalled(entry);
   const status = pluginStatus(entry);
+  const blocker = pluginInstallBlocker(entry);
   const platforms = Array.isArray(entry.platforms)
     ? entry.platforms.map((p) => `${p.goos || ""} ${p.goarch || ""}`.trim()).filter(Boolean)
     : [];
@@ -285,7 +297,7 @@ function pluginDetailsModal() {
       <div class="plugin-card-head">${pluginLogo(entry.logo, entry.name || entry.id)}
         <div class="plugin-card-title"><h3>${esc(entry.name || entry.id)}</h3><div class="plugin-id mono">${esc(entry.id)}</div></div>
       </div>
-      <button class="ghost small" data-action="pluginClose">✕</button>
+      <button class="ghost small" data-action="pluginClose" aria-label="${esc(t("close"))}">✕</button>
     </div>
     <div class="stack plugin-detail-body">
       <div class="row"><span class="pill ${status.cls}">${esc(status.text)}</span>${entry.version ? `<span class="pill">v${esc(entry.version)}</span>` : ""}${entry.installed_version ? `<span class="pill">${esc(t("pluginVersionInstalled"))}: ${esc(entry.installed_version)}</span>` : ""}</div>
@@ -297,10 +309,11 @@ function pluginDetailsModal() {
         <div><span>${esc(t("pluginPlatforms"))}</span><b>${esc(platforms.join(", ") || "n/a")}</b></div>
       </div>
       <div class="plugin-tags">${pluginTags(entry).map((tag) => `<span class="plugin-tag">${esc(pluginTagLabel(tag))}</span>`).join("")}</div>
+      ${blocker ? `<div class="footnote plugin-blocker">${esc(blocker)}</div>` : ""}
       <div class="row plugin-modal-actions">
         ${installed
           ? `<button class="btn small" data-action="pluginConfigure" data-id="${esc(entry.id)}">${esc(t("pluginConfigure"))}</button>`
-          : `<button class="btn small" data-action="pluginInstall" data-id="${esc(entry.id)}">${esc(t("pluginInstall"))}</button>`}
+          : `<button class="btn small" data-action="pluginInstall" data-id="${esc(entry.id)}" ${blocker ? "disabled" : ""} title="${esc(blocker)}">${esc(t("pluginInstall"))}</button>`}
         ${entry.homepage ? `<button class="ghost small" data-action="pluginOpenUrl" data-id="${esc(entry.homepage)}">${esc(t("pluginHomepage"))}</button>` : ""}
         <span class="spacer"></span>
         <button class="ghost small" data-action="pluginClose">${esc(t("pluginClose"))}</button>
@@ -313,20 +326,22 @@ function pluginConsentModal() {
   const st = pluginState();
   const entry = st.consent ? pluginFind(st.consent) : null;
   if (!entry) return "";
+  const blocker = pluginInstallBlocker(entry);
   return `<div class="modal-backdrop"><div class="modal-card plugin-modal" role="dialog" aria-modal="true" aria-label="${esc(t("pluginConsentTitle"))}">
-    <div class="card-header-row"><h3>${esc(t("pluginConsentTitle"))}</h3><button class="ghost small" data-action="pluginClose">✕</button></div>
+    <div class="card-header-row"><h3>${esc(t("pluginConsentTitle"))}</h3><button class="ghost small" data-action="pluginClose" aria-label="${esc(t("close"))}">✕</button></div>
     <div class="stack plugin-detail-body">
       <div class="plugin-card-head">${pluginLogo(entry.logo, entry.name || entry.id)}
         <div class="plugin-card-title"><div class="plugin-name">${esc(entry.name || entry.id)}</div><div class="plugin-id mono">${esc(entry.id)}${entry.version ? ` · v${esc(entry.version)}` : ""}</div></div>
       </div>
       <div class="plugin-warning"><b>${esc(t("pluginNativeWarning"))}</b><p>${esc(t("pluginConsentBody"))}</p></div>
+      ${blocker ? `<div class="footnote plugin-blocker">${esc(blocker)}</div>` : ""}
       <div class="footnote">${esc(t("pluginInstallSource"))}: ${esc(pluginSourceLabel(entry))}</div>
       <label class="row plugin-consent-check"><input id="plugin-consent-check" type="checkbox"> <span>${esc(t("pluginConsentTrust"))}</span></label>
       ${st.error ? `<div class="footnote" style="color:var(--danger)">${esc(st.error)}</div>` : ""}
       <div class="row plugin-modal-actions">
         <span class="spacer"></span>
         <button class="ghost" data-action="pluginClose">${esc(t("pluginCancel"))}</button>
-        <button class="btn" data-action="pluginConfirmInstall" ${st.installing ? "disabled" : ""}>${esc(st.installing ? t("pluginInstalling") : t("pluginConsentInstall"))}</button>
+        <button class="btn" data-action="pluginConfirmInstall" ${blocker || st.installing ? "disabled" : ""}>${esc(st.installing ? t("pluginInstalling") : t("pluginConsentInstall"))}</button>
       </div>
     </div>
   </div></div>`;
@@ -337,7 +352,7 @@ function pluginRemoveModal() {
   if (!st.removeId) return "";
   const entry = pluginFind(st.removeId);
   return `<div class="modal-backdrop"><div class="modal-card plugin-modal" role="dialog" aria-modal="true" aria-label="${esc(t("pluginRemoveTitle"))}">
-    <div class="card-header-row"><h3>${esc(t("pluginRemoveTitle"))}</h3><button class="ghost small" data-action="pluginClose">✕</button></div>
+    <div class="card-header-row"><h3>${esc(t("pluginRemoveTitle"))}</h3><button class="ghost small" data-action="pluginClose" aria-label="${esc(t("close"))}">✕</button></div>
     <div class="stack plugin-detail-body">
       <p><b>${esc((entry && (entry.name || entry.id)) || st.removeId)}</b></p>
       <p class="footnote">${esc(t("pluginRemoveBody"))}</p>
@@ -355,7 +370,7 @@ function pluginHostModal() {
   if (!st.hostConfirm) return "";
   const enable = st.hostConfirm === "enable";
   return `<div class="modal-backdrop"><div class="modal-card plugin-modal" role="dialog" aria-modal="true" aria-label="${esc(t(enable ? "pluginEnableHostTitle" : "pluginDisableHostTitle"))}">
-    <div class="card-header-row"><h3>${esc(t(enable ? "pluginEnableHostTitle" : "pluginDisableHostTitle"))}</h3><button class="ghost small" data-action="pluginClose">✕</button></div>
+    <div class="card-header-row"><h3>${esc(t(enable ? "pluginEnableHostTitle" : "pluginDisableHostTitle"))}</h3><button class="ghost small" data-action="pluginClose" aria-label="${esc(t("close"))}">✕</button></div>
     <div class="stack plugin-detail-body">
       <p>${esc(t(enable ? "pluginEnableHostBody" : "pluginDisableHostBody"))}</p>
       ${st.error ? `<div class="footnote" style="color:var(--danger)">${esc(st.error)}</div>` : ""}
@@ -378,7 +393,7 @@ function pluginConfigModal() {
       <div class="plugin-card-head">${pluginLogo(entry && entry.logo, (entry && (entry.name || entry.id)) || cfg.id)}
         <div class="plugin-card-title"><h3>${esc((entry && (entry.name || entry.id)) || cfg.id)}</h3><div class="plugin-id mono">${esc(cfg.id)}</div></div>
       </div>
-      <button class="ghost small" data-action="pluginClose">✕</button>
+      <button class="ghost small" data-action="pluginClose" aria-label="${esc(t("close"))}">✕</button>
     </div>
     ${cfg.loading ? `<div class="empty-state plugin-empty"><b>${esc(t("pluginConfig"))}</b><p>${esc(t("pluginSaving"))}</p></div>` : `
     <div class="stack plugin-detail-body">
@@ -427,7 +442,13 @@ function pluginsPage() {
     ? `<div class="card plugin-banner"><b>${esc(t("pluginGatewayOff"))}</b><span>${esc(t("pluginGatewayOffBody"))}</span><span class="spacer"></span><button class="btn small" data-action="gatewayStart">${esc(t("pluginTurnOn"))}</button></div>`
     : "";
   const sourceErrors = st.sourceErrors && st.sourceErrors.length
-    ? `<div class="footnote">${esc(t("pluginSourceErrors"))}: ${st.sourceErrors.map((error) => esc(error.source_name || error.source_url || error.message || "")).join(", ")}</div>`
+    ? `<div class="footnote plugin-source-errors"><b>${esc(t("pluginSourceErrors"))}</b>${st.sourceErrors
+        .map((error) => {
+          const name = error.source_name || error.source_url || error.source_id || "";
+          const message = error.message || "";
+          return `<div>${esc(name)}${message ? `: ${esc(message)}` : ""}</div>`;
+        })
+        .join("")}</div>`
     : "";
   return `
   ${pageHead("melon tools", t("plugins"), t("pluginsSub"))}
@@ -554,6 +575,14 @@ Object.assign(A, {
     const entry = pluginFind(st.consent);
     const check = document.getElementById("plugin-consent-check");
     if (!entry) return;
+    // The button is disabled for a blocked entry, but keep the guard here so a
+    // stale render or a keyboard path cannot start a download that will fail.
+    const blocker = pluginInstallBlocker(entry);
+    if (blocker) {
+      st.error = blocker;
+      render();
+      return;
+    }
     if (!check || !check.checked) {
       st.error = t("pluginConsentTrust");
       render();
@@ -585,24 +614,31 @@ Object.assign(A, {
     }
   },
 
-  pluginToggle(id) {
+  async pluginToggle(id) {
     const st = pluginState();
     const input = document.querySelector(`[data-action="pluginToggle"][data-id="${CSS.escape(id)}"]`);
     const enabled = !!(input && input.checked);
-    inv("plugins_set_enabled", { id, enabled })
-      .then(() => {
-        const entry = pluginInstalledFind(id);
-        if (entry) {
-          entry.enabled = enabled;
-          entry.effective_enabled = enabled;
-        }
-        toast(t(enabled ? "pluginEnabledToast" : "pluginDisabledToast"));
-        return A.pluginLoad();
-      })
-      .catch((error) => {
-        st.error = errorText(error);
-        render();
-      });
+    try {
+      await inv("plugins_set_enabled", { id, enabled });
+    } catch (error) {
+      // The click already flipped the checkbox, so a rejected PATCH would leave
+      // the switch showing a state the engine never accepted. Revert it and
+      // drop focus (render() skips repaints while a form field is focused).
+      if (input) {
+        input.checked = !enabled;
+        if (input === document.activeElement) input.blur();
+      }
+      st.error = errorText(error);
+      render();
+      return;
+    }
+    const entry = pluginInstalledFind(id);
+    if (entry) {
+      entry.enabled = enabled;
+      entry.effective_enabled = enabled;
+    }
+    toast(t(enabled ? "pluginEnabledToast" : "pluginDisabledToast"));
+    await A.pluginLoad();
   },
 
   pluginRemove(id) {

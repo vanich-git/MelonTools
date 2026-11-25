@@ -39,6 +39,13 @@ enum PluginSettings {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
+    /// `false` on a profile where the switch was never touched. A stored
+    /// `false` and an absent key both read as "disabled", but only the absent
+    /// key means "no local decision yet", so the store may seed it.
+    static var hasHostPreference: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) != nil
+    }
+
     /// Absolute path handed to the engine. `CodexGatewayService.spawn` starts
     /// the sidecar without a working directory, so a relative `plugins` path
     /// would resolve against `/` and discovery would come up empty.
@@ -55,8 +62,8 @@ enum PluginSettings {
     /// enabling native code execution.
     @MainActor
     static func gatewayYAML(enabled: Bool = isEnabled) -> String {
-        let dir = pluginsDir.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let source = registryURL.replacingOccurrences(of: "\"", with: "\\\"")
+        let dir = yamlScalar(pluginsDir.path)
+        let source = yamlScalar(registryURL)
         return """
 
         # Native plugins. The host loads signed-by-trust dynamic libraries in
@@ -68,5 +75,26 @@ enum PluginSettings {
             - "\(source)"
 
         """
+    }
+
+    /// Double-quoted YAML scalars treat `\` as an escape character, so a path
+    /// or URL containing a backslash, quote or control byte would otherwise
+    /// produce a config the engine cannot parse. Mirrors the Windows
+    /// `gateway::yaml_escape`.
+    static func yamlScalar(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            default:
+                // Rust drops every control scalar (C0, DEL and C1), so match
+                // that here or the two platforms emit different YAML.
+                if CharacterSet.controlCharacters.contains(scalar) { continue }
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
     }
 }

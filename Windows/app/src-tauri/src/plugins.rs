@@ -14,6 +14,11 @@ use crate::{gateway, plugin_settings, AppState};
 
 const PLUGIN_TIMEOUT: Duration = Duration::from_secs(20);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// The store response carries a few hundred entries and the largest config is
+/// a handful of kilobytes, so 8 MiB is far above any real answer. Without a
+/// cap a broken or hostile local listener could stream until the process ran
+/// out of memory.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 fn client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -65,6 +70,30 @@ fn management_secret(state: &AppState) -> String {
     state.settings().management_secret
 }
 
+async fn read_body(response: reqwest::Response) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "the gateway response is larger than {} MiB",
+            MAX_RESPONSE_BYTES / (1024 * 1024)
+        ));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(format!(
+                "the gateway response is larger than {} MiB",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|e| format!("the gateway response is not UTF-8: {e}"))
+}
+
 async fn request(
     state: &AppState,
     method: reqwest::Method,
@@ -86,7 +115,7 @@ async fn request(
     }
     let response = builder.send().await.map_err(|e| e.to_string())?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
+    let text = read_body(response).await?;
     if !status.is_success() {
         let (code, message) = serde_json::from_str::<Value>(&text)
             .ok()
@@ -277,10 +306,7 @@ pub async fn plugins_prefs() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn plugins_set_host(
-    state: State<'_, AppState>,
-    enabled: bool,
-) -> Result<Value, String> {
+pub async fn plugins_set_host(state: State<'_, AppState>, enabled: bool) -> Result<Value, String> {
     let previous = plugin_settings::load();
     let mut prefs = previous.clone();
     prefs.host_enabled = enabled;

@@ -2,8 +2,8 @@
 
 This document describes what Melon Tools protects, what it does not protect,
 and where trust is anchored. It covers the published 5.5.8 macOS and Windows
-builds and the 6.0.0 development tree. No 6.0.0 artifact has been published;
-the 6.0.0 bundle adds a nested llama.cpp runtime, which is covered by the same
+builds and the 6.5.1 development tree. No 6.5.1 artifact has been published;
+the 6.x bundle adds a nested llama.cpp runtime, which is covered by the same
 signing/notarization rules once Developer ID credentials exist.
 
 ## Design summary

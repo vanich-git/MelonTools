@@ -2545,12 +2545,11 @@ const A = {
       render();
       return;
     }
-    // Repaint the rows and the count only: a full render() tore the focused
-    // input out from under the caret on every keystroke and needed a timeout
-    // to put it back.
+    // Repaint the rows only: a full render() tore the focused input out from
+    // under the caret on every keystroke and needed a timeout to put it back.
+    // There is no count element on the redesigned screen, so the guard below
+    // keeps this working if one returns.
     list.innerHTML = providerModelRowsMarkup();
-    const count = document.getElementById("provider-models-count");
-    if (count) count.textContent = `${providerFilteredModels().length} ${t("modelsCount")}`;
     searchClearSync(input, value);
   },
 

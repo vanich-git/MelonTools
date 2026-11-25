@@ -1,24 +1,28 @@
-# Melon Tools 6.5.1
+# Melon Tools 6.5.2
 
-Patch release for macOS and Windows. It unifies the visible controls and removes
-the remaining amber primary accents.
+Patch release for macOS and Windows. It adds the curated plugin store and fixes
+three defects in the redesigned Windows screens.
 
-## What changed in 6.5.1
+## What changed in 6.5.2
 
-- **Pill controls.** Buttons, select triggers, text and number fields, segmented
-  controls and their hover, focus and disabled states share one capsule shape in
-  both apps.
-- **Cyan primary.** Prominent actions, selected filters and toggles use cyan on
-  both platforms. Amber stays for warnings and melon branding only.
-- **Windows parity.** The Windows port follows the same control shapes and
-  primary colour, including the light theme select chevron and agent fields.
-- **Build metadata.** macOS build 75; both apps report version 6.5.1.
+- **Plugin store.** Melon Picks ships curated native CLIProxyAPI plugins on both
+  platforms, backed by the project's own signed registry.
+- **Search field frame.** The models filter now draws one crisp frame in both
+  themes. A generic input rule outranked the field rule, so a second border, a
+  shadow and a 30px min-height were painted inside the 28px pill. The native
+  WebKit search glyph and cancel button are suppressed as well.
+- **Model pool dialog.** The Models button on the provider screen opens the pool
+  again. The dialog was only mounted on the accounts screen, so the click set
+  the state and rendered nothing.
+- **Dead count node.** The models filter no longer looks for a count element
+  that the redesigned markup does not render.
+- **Build metadata.** macOS build 76; both apps report version 6.5.2.
 
 ## Builds
 
-- macOS universal DMG: `MelonTools-6.5.1.dmg` (arm64 + x86_64, build 75)
-- Windows portable: `MelonTools-6.5.1-win-x64-portable.exe`
-- Windows installer: `MelonTools-6.5.1-setup.exe`
+- macOS universal DMG: `MelonTools-6.5.2.dmg` (arm64 + x86_64, build 76)
+- Windows portable: `MelonTools-6.5.2-win-x64-portable.exe`
+- Windows installer: `MelonTools-6.5.2-setup.exe`
 
 # Melon Tools 6.5.0
 

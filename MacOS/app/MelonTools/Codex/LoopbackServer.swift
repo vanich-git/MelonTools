@@ -174,6 +174,15 @@ final class LoopbackServer: @unchecked Sendable {
         }
         let target = String(parts[1])
 
+        // A DNS-rebinding page can point its own hostname at 127.0.0.1 and then
+        // read the callback. The browser sends that hostname in `Host`, so only
+        // accept the loopback names this server actually binds.
+        guard Self.loopbackHost(request) else {
+            respond(client, html: "<h2>Melon Tools</h2><p>Not found.</p>", status: "404 Not Found")
+            close(client)
+            return
+        }
+
         guard target.hasPrefix("/auth/callback") else {
             respond(client, html: "<h2>Melon Tools</h2><p>Not found.</p>", status: "404 Not Found")
             close(client)
@@ -201,6 +210,30 @@ final class LoopbackServer: @unchecked Sendable {
         respond(client, html: Self.successHTML())
         close(client)
         finish(.success(code))
+    }
+
+    /// Accepts `localhost`, `127.0.0.1` and `[::1]` with or without a port.
+    /// Anything else means the request did not come from a loopback origin.
+    static func loopbackHost(_ request: String) -> Bool {
+        // `Character` keeps CRLF as one grapheme, so compare against newline
+        // characters as a class instead of listing "\r" and "\n" separately.
+        let lines = request.split(whereSeparator: { $0.isNewline })
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            guard line[line.startIndex..<colon].lowercased() == "host" else { continue }
+            var value = line[line.index(after: colon)...]
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+            if value.hasPrefix("[") {
+                guard let close = value.firstIndex(of: "]") else { return false }
+                value = String(value[value.startIndex...close])
+            } else if let port = value.lastIndex(of: ":") {
+                value = String(value[value.startIndex..<port])
+            }
+            return value == "localhost" || value == "127.0.0.1" || value == "[::1]"
+        }
+        // No Host header: HTTP/1.1 requires one, so treat it as foreign.
+        return false
     }
 
     private func respond(_ client: Int32, html: String, status: String = "200 OK") {

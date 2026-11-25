@@ -1967,6 +1967,7 @@ function providersBoard() {
     <button class="btn" data-action="customProviderOpen">${t("customProviderAdd")}</button>
   </div>
   ${diagnosticsCard()}
+  ${poolModal()}
   ${customProviderModal()}`;
 }
 
@@ -2033,6 +2034,7 @@ function providerDetail(id) {
   ${chips}
   ${poolPauseBanner()}
   ${body}
+  ${poolModal()}
   ${customProviderModal()}`;
 }
 

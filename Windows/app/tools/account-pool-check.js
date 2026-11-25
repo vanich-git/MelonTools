@@ -35,7 +35,12 @@ const app = source("app.js");
 const preflight = app.slice(app.indexOf("function percentLabel("), app.indexOf("function poolPauseWindows("));
 vm.runInContext(preflight, sandbox);
 vm.runInContext(app.slice(app.indexOf("function historySamples("), app.indexOf("// MARK: - Dashboard 2.0")), sandbox);
-sandbox.S.history = [{ key: "disabled", hourlyLeft: 72, weeklyLeft: 88 }];
+// accountHistoryStrip returns "" below two samples per series, so the strip
+// assertion below needs a second point or it fails on an empty string.
+sandbox.S.history = [
+  { key: "disabled", hourlyLeft: 70, weeklyLeft: 86 },
+  { key: "disabled", hourlyLeft: 72, weeklyLeft: 88 },
+];
 vm.runInContext(source("mt-redesign.js"), sandbox);
 vm.runInContext(source("mt-redesign-actions.js"), sandbox);
 const disabled = {

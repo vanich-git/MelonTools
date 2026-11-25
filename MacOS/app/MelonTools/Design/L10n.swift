@@ -1650,6 +1650,7 @@ final class L10n: ObservableObject {
         "Env file": "Файл env",
         "Env keys are plain names, for example OPENAI_BASE_URL. Existing lines are replaced in place.": "В env-файле ключи обычные, например OPENAI_BASE_URL. Существующие строки заменяются на месте.",
         "Estimate from list prices and the tokens this app saw.": "Оценка по прайс-листу и токенам, которые видело приложение.",
+        "Extend": "Расширения",
         "Extra attempts on another credential before the client sees an error.": "Дополнительные попытки на другом ключе, прежде чем клиент увидит ошибку.",
         "Factory terminal agent": "Терминальный агент Factory",
         "Format": "Формат",
@@ -1893,6 +1894,7 @@ final class L10n: ObservableObject {
             "Загруженный плагин нельзя заменить. Перезапустите шлюз и повторите.",
         "All plugins": "Все плагины",
         "Browse plugins": "Открыть каталог",
+        "Change registry": "Изменить реестр",
         "Choice": "Выбор",
         "Clear filters": "Сбросить фильтры",
         "Configure": "Настроить",
@@ -1936,12 +1938,16 @@ final class L10n: ObservableObject {
         "Plugin folder": "Папка плагинов",
         "Plugin not found": "Плагин не найден",
         "Plugin store": "Каталог плагинов",
+        "Plugin sources": "Источники плагинов",
         "Plugins": "Плагины",
         "Plugins are disabled. Installed files stay on disk and no plugin code runs.":
             "Плагины отключены. Установленные файлы остаются на диске, код плагинов не выполняется.",
+        "Plugins from a failing source are missing from this list. The other sources still load.":
+            "Плагины из недоступного источника отсутствуют в списке. Остальные источники загружаются.",
         "Publisher": "Издатель",
         "Reading plugin settings...": "Читаем настройки плагина...",
         "Registry": "Реестр",
+        "Registry URL": "Адрес реестра",
         "Remove %@": "Удалить %@",
         "Remove plugin": "Удалить плагин",
         "Remove this plugin?": "Удалить этот плагин?",
@@ -1962,6 +1968,7 @@ final class L10n: ObservableObject {
             "Шлюз перезапустится без хоста плагинов. Установленные файлы останутся на диске, их можно включить снова.",
         "The gateway returned an unexpected response.": "Шлюз вернул неожиданный ответ.",
         "The plugin could not be installed.": "Не удалось установить плагин.",
+        "The plugin id is not valid.": "Идентификатор плагина некорректен.",
         "The plugin file and its saved config are deleted from this Mac.":
             "Файл плагина и сохранённый конфиг будут удалены с этого Mac.",
         "The plugin is installed but not loaded. Restart the gateway to load it.":
@@ -1970,11 +1977,15 @@ final class L10n: ObservableObject {
             "Каталог плагинов работает через management API шлюза. Запустите шлюз, чтобы смотреть и устанавливать плагины.",
         "The registry changed. Refresh the store and try again.":
             "Реестр изменился. Обновите каталог и попробуйте снова.",
+        "The registry URL must be an http or https address.":
+            "Адрес реестра должен начинаться с http или https.",
         "This downloads a dynamic library and loads it inside the gateway. Install only code you trust.":
             "Будет скачана динамическая библиотека и загружена в шлюз. Устанавливайте только тот код, которому доверяете.",
         "This plugin declares no settings.": "Плагин не объявляет настроек.",
         "This plugin is a native library. It runs inside the gateway with the same access as Melon Tools: it can read requests, credentials and files the gateway can reach.":
             "Это нативная библиотека. Она выполняется внутри шлюза с теми же правами, что и Melon Tools: может читать запросы, учётные данные и файлы, доступные шлюзу.",
+        "This publisher requires store credentials. Melon cannot register them yet, so the plugin cannot be installed here.":
+            "Этот издатель требует учётные данные каталога. Melon пока не умеет их добавлять, поэтому плагин нельзя установить здесь.",
         "Try another search or clear the filter.":
             "Измените запрос или сбросьте фильтр.",
         "Turn off all plugins?": "Выключить все плагины?",

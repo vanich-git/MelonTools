@@ -20,6 +20,8 @@ struct PluginsView: View {
     @State private var configID: String?
     @State private var pendingRemoveID: String?
     @State private var confirmSafeMode = false
+    @State private var editingRegistry = false
+    @State private var registryDraft = PluginSettings.registryURL
 
     private enum PluginTab: Hashable {
         case discover
@@ -66,6 +68,9 @@ struct PluginsView: View {
                 hostCard
                 if let error = store.lastError {
                     errorCard(error)
+                }
+                if !store.sourceErrors.isEmpty {
+                    sourceErrorsCard
                 }
                 if store.restartNeeded {
                     restartCard
@@ -263,19 +268,17 @@ struct PluginsView: View {
                         .textSelection(.enabled)
                 }
                 Spacer(minLength: 0)
-                if let source = store.sources.first(where: {
-                    $0.url.localizedCaseInsensitiveContains("vanich-git/MelonTools")
-                }) ?? store.sources.first {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(L("Registry"))
-                            .font(MTTheme.mono(9))
-                            .foregroundStyle(MTTheme.textTertiary)
-                        Text(source.displayName)
-                            .font(MTTheme.mono(9))
-                            .foregroundStyle(MTTheme.textSecondary)
-                            .lineLimit(1)
+                RegistryRow(
+                    isEditing: $editingRegistry,
+                    draft: $registryDraft,
+                    current: PluginSettings.registryURL,
+                    onCommit: { value in
+                        Task {
+                            await store.setRegistryURL(value)
+                            registryDraft = PluginSettings.registryURL
+                        }
                     }
-                }
+                )
             }
         }
     }
@@ -559,15 +562,34 @@ struct PluginsView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(L("Dismiss"))
             }
-            if !store.sourceErrors.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(store.sourceErrors.enumerated()), id: \.offset) { _, item in
-                        Text("\(item.sourceName.isEmpty ? item.sourceURL : item.sourceName): \(item.message)")
+        }
+    }
+
+    /// A failing source is a partial outage, not a store error: the rest of
+    /// the catalog still works. It used to render only inside `errorCard`,
+    /// which meant a dead extra registry stayed invisible while the primary
+    /// one answered.
+    private var sourceErrorsCard: some View {
+        MTCard(title: L("Plugin sources"), systemImage: "antenna.radiowaves.left.and.right.slash", accent: MTTheme.amber) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(store.sourceErrors.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .top, spacing: MTTheme.s2) {
+                        Text(item.sourceName.isEmpty ? item.sourceURL : item.sourceName)
+                            .font(MTTheme.mono(9.5))
+                            .foregroundStyle(MTTheme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(item.message)
                             .font(MTTheme.mono(9))
                             .foregroundStyle(MTTheme.textTertiary)
                             .lineLimit(2)
+                        Spacer(minLength: 0)
                     }
                 }
+                Text(L("Plugins from a failing source are missing from this list. The other sources still load."))
+                    .font(MTTheme.body(10))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -595,6 +617,73 @@ struct PluginsView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 180)
         .background(MTTheme.cardBackground, in: RoundedRectangle(cornerRadius: MTTheme.rCard, style: .continuous))
+    }
+}
+
+// MARK: - Registry
+
+/// The store URL is an extra source: the engine always fetches its official
+/// registry first, so this row only adds Melon's own list on top. Editing it
+/// rewrites the gateway config and restarts the child, so the row keeps the
+/// text field hidden until the user asks for it.
+private struct RegistryRow: View {
+    @Binding var isEditing: Bool
+    @Binding var draft: String
+    let current: String
+    let onCommit: (String) -> Void
+
+    private var host: String {
+        URL(string: current)?.host() ?? current
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(L("Registry"))
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textTertiary)
+                if !isEditing {
+                    Button {
+                        draft = current
+                        isEditing = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L("Change registry"))
+                }
+            }
+            if isEditing {
+                HStack(spacing: 4) {
+                    TextField(L("Registry URL"), text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(MTTheme.mono(9))
+                        .frame(width: 260)
+                        .onSubmit {
+                            isEditing = false
+                            onCommit(draft)
+                        }
+                    Button {
+                        isEditing = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(MTTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L("Cancel"))
+                }
+            } else {
+                Text(host)
+                    .font(MTTheme.mono(9))
+                    .foregroundStyle(MTTheme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+        }
     }
 }
 
@@ -688,10 +777,25 @@ private struct PluginCard: View {
                         systemImage: "arrow.down.circle",
                         size: .small,
                         tint: MTTheme.violet,
-                        prominent: true,
+                        prominent: entry.installBlocker == nil,
                         isLoading: isInstalling,
                         action: onInstall
                     )
+                    .disabled(entry.installBlocker != nil)
+                    .opacity(entry.installBlocker == nil ? 1 : 0.45)
+                    .help(entry.installBlocker ?? "")
+                }
+            }
+
+            if let blocker = entry.installBlocker {
+                HStack(alignment: .top, spacing: 4) {
+                    Image(systemName: "key.slash")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(MTTheme.amber)
+                    Text(blocker)
+                        .font(MTTheme.body(9.5))
+                        .foregroundStyle(MTTheme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -858,6 +962,18 @@ private struct PluginDetailSheet: View {
                             .font(MTTheme.body(10))
                             .foregroundStyle(MTTheme.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
+
+                        if let blocker = entry.installBlocker {
+                            HStack(alignment: .top, spacing: 5) {
+                                Image(systemName: "key.slash")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(MTTheme.amber)
+                                Text(blocker)
+                                    .font(MTTheme.body(10.5))
+                                    .foregroundStyle(MTTheme.amber)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                     .padding(MTTheme.s5)
                 }
@@ -883,11 +999,14 @@ private struct PluginDetailSheet: View {
                             systemImage: "arrow.down.circle",
                             size: .small,
                             tint: MTTheme.violet,
-                            prominent: true,
+                            prominent: entry.installBlocker == nil,
                             isLoading: store.installingID == entry.pluginID
                         ) {
                             onInstall(entry.pluginID)
                         }
+                        .disabled(entry.installBlocker != nil)
+                        .opacity(entry.installBlocker == nil ? 1 : 0.45)
+                        .help(entry.installBlocker ?? "")
                     }
                 }
                 .padding(MTTheme.s4)
@@ -971,6 +1090,18 @@ private struct PluginConsentSheet: View {
                 }
             }
 
+            if let blocker = entry?.installBlocker {
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "key.slash")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MTTheme.amber)
+                    Text(blocker)
+                        .font(MTTheme.body(10.5))
+                        .foregroundStyle(MTTheme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Toggle(isOn: $accepted) {
                 Text(L("I trust this publisher and understand that the plugin runs as native code."))
                     .font(MTTheme.body(10.5))
@@ -1010,7 +1141,7 @@ private struct PluginConsentSheet: View {
                         }
                     }
                 }
-                .disabled(!accepted || store.installingID != nil)
+                .disabled(!accepted || store.installingID != nil || entry?.installBlocker != nil)
             }
         }
         .padding(MTTheme.s5)

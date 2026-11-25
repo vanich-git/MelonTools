@@ -291,68 +291,12 @@ function dashboardCardToggles(settings) {
   </div>`;
 }
 
-function dashboardPoolCard(health) {
-  const stat = (label, value, cls) => `<div class="stat ${cls || ""}">
-    <span class="value">${value}</span><span class="label">${esc(label)}</span></div>`;
-  return `<div class="card" data-dashboard-card="pool-health">
-    <h2>${t("dashPoolHealth")} <span class="hint">${health.total} ${t("accountsCount")}</span></h2>
-    <div class="stat-grid">
-      ${stat(t("dashTotal"), health.total, "")}
-      ${stat(t("dashUsable"), health.usable, "ok")}
-      ${stat(t("dashPaused"), health.paused, "warn")}
-      ${stat(t("dashErrors"), health.errors, "danger")}
-      ${stat(t("dashAvgFive"), health.averageHourly === null ? "—" : `${Math.round(health.averageHourly)}%`, "")}
-      ${stat(t("dashAvgWeek"), health.averageWeekly === null ? "—" : `${Math.round(health.averageWeekly)}%`, "")}
-    </div>
-  </div>`;
-}
-
 function dashboardTrendsCard(trends) {
   return `<div class="card" data-dashboard-card="quota-trends">
     <h2>${t("dashQuotaTrends")} <span class="hint">${t("dashTrendHint")}</span></h2>
     <div class="trend-grid">
       ${trendChart(trends.hourly, t("dashLast24h"))}
       ${trendChart(trends.weekly, t("dashLast7d"))}
-    </div>
-  </div>`;
-}
-
-function dashboardSpendCard(usage) {
-  const rows = usage.rows.map((row) => `<tr>
-    <td>${esc(providerName(row.provider))}</td>
-    <td>${formatTokens(row.tokens)}</td>
-    <td>${row.priced && row.usd !== null ? formatMoney(row.usd) : "—"}</td>
-    <td>${row.turns}</td>
-  </tr>`).join("");
-  return `<div class="card" data-dashboard-card="spend">
-    <h2>${t("dashSpend")}</h2>
-    <div class="usage-totals">
-      <div class="stat"><span class="value">${formatMoney(usage.sessionSpend)}</span><span class="label">${esc(t("dashSessionSpend"))}</span></div>
-      <div class="stat"><span class="value">${formatTokens(usage.sessionTokens)}</span><span class="label">${esc(t("dashSessionTokens"))}</span></div>
-    </div>
-    ${usage.rows.length ? `<div class="usage-title">${esc(t("dashTopProviders"))}</div>
-      <table class="usage">
-        <thead><tr><th>${t("dashProvider")}</th><th>${t("dashTokens")}</th><th>${t("dashSpendShort")}</th><th>${t("dashTurns")}</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>` : `<div class="footnote">${t("dashNoUsage")}</div>`}
-  </div>`;
-}
-
-function dashboardSchedulerCard(summary) {
-  const next = summary.next;
-  const last = summary.last;
-  return `<div class="card" data-dashboard-card="scheduler">
-    <h2>${t("dashScheduler")}</h2>
-    <div class="stat-grid">
-      <div class="stat ${summary.due ? "warn" : ""}"><span class="value">${summary.due}</span><span class="label">${esc(t("dashDue"))}</span></div>
-      <div class="stat"><span class="value">${next ? esc(schedulerNextText(next.nextRunAt)) : "—"}</span><span class="label">${esc(t("dashNextRun"))}</span></div>
-      <div class="stat"><span class="value">${last ? esc(ageText(last.lastRunAt)) : "—"}</span><span class="label">${esc(t("dashLastRun"))}</span></div>
-    </div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn small" data-action="schedulerRunNext" ${next && !S.busy["sched-run-next"] ? "" : "disabled"}>${t("dashRunNext")}</button>
-      <button class="ghost small" data-action="go" data-id="scheduler">${t("dashOpenScheduler")}</button>
-      ${last ? schedulerStatusPill(last) : ""}
-      ${last ? `<span class="footnote" style="margin:0">${esc(last.name || "")}</span>` : `<span class="footnote" style="margin:0">${t("dashNoTasks")}</span>`}
     </div>
   </div>`;
 }

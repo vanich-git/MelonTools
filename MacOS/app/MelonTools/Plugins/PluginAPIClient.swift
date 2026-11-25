@@ -56,11 +56,9 @@ actor PluginAPIClient {
         sourceID: String?,
         at endpoint: PluginEndpoint
     ) async throws -> PluginInstallResult {
-        var components = URLComponents()
-        components.path = "/v8/management/plugins/store/\(id)/install"
-        if let sourceID, !sourceID.isEmpty {
-            components.queryItems = [URLQueryItem(name: "source", value: sourceID)]
-        }
+        // Installing downloads a native library, which can legitimately take
+        // minutes on a slow link; the other routes are local IPC.
+        let components = try Self.installComponents(id: id, sourceID: sourceID)
         let path = components.string ?? "/v8/management/plugins/store/\(id)/install"
         var body: [String: Any] = [:]
         if let version, !version.isEmpty { body["version"] = version }
@@ -68,27 +66,28 @@ actor PluginAPIClient {
             endpoint,
             path: path,
             method: "POST",
-            body: body.isEmpty ? nil : try JSONSerialization.data(withJSONObject: body)
+            body: body.isEmpty ? nil : try JSONSerialization.data(withJSONObject: body),
+            timeout: Self.installTimeout
         )
         return try decode(data)
     }
 
     func remove(id: String, at endpoint: PluginEndpoint) async throws {
-        _ = try await request(endpoint, path: "/v8/management/plugins/\(id)", method: "DELETE")
+        _ = try await request(endpoint, path: "/v8/management/plugins/\(try Self.pathSegment(id))", method: "DELETE")
     }
 
     func setEnabled(id: String, enabled: Bool, at endpoint: PluginEndpoint) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["enabled": enabled])
         _ = try await request(
             endpoint,
-            path: "/v0/management/plugins/\(id)/enabled",
+            path: "/v0/management/plugins/\(try Self.pathSegment(id))/enabled",
             method: "PATCH",
             body: body
         )
     }
 
     func config(id: String, at endpoint: PluginEndpoint) async throws -> [String: PluginJSON] {
-        let data = try await request(endpoint, path: "/v0/management/plugins/\(id)/config")
+        let data = try await request(endpoint, path: "/v0/management/plugins/\(try Self.pathSegment(id))/config")
         return try decode(data)
     }
 
@@ -100,10 +99,40 @@ actor PluginAPIClient {
         let body = try JSONEncoder().encode(values)
         _ = try await request(
             endpoint,
-            path: "/v0/management/plugins/\(id)/config",
+            path: "/v0/management/plugins/\(try Self.pathSegment(id))/config",
             method: "PUT",
             body: body
         )
+    }
+
+    // MARK: - Validation
+
+    /// Requests take minutes when they download a native library and stay
+    /// local otherwise. A single short timeout would kill installs mid-write.
+    static let installTimeout: TimeInterval = 300
+
+    /// Plugin ids travel inside URL paths and later become file names. Accept
+    /// only the engine alphabet (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`) so a
+    /// corrupted registry response cannot smuggle `..`, `/` or a query into
+    /// the request path.
+    static func pathSegment(_ id: String) throws -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        guard let first = id.first, first.isLetter || first.isNumber,
+              id.count <= 128,
+              id.unicodeScalars.allSatisfy({ allowed.contains($0) })
+        else {
+            throw PluginAPIError(status: 0, code: "invalid_plugin_id", message: L("The plugin id is not valid."))
+        }
+        return id
+    }
+
+    private static func installComponents(id: String, sourceID: String?) throws -> URLComponents {
+        var components = URLComponents()
+        components.path = "/v8/management/plugins/store/\(try pathSegment(id))/install"
+        if let sourceID, !sourceID.isEmpty {
+            components.queryItems = [URLQueryItem(name: "source", value: sourceID)]
+        }
+        return components
     }
 
     // MARK: - Transport
@@ -112,14 +141,15 @@ actor PluginAPIClient {
         _ endpoint: PluginEndpoint,
         path: String,
         method: String = "GET",
-        body: Data? = nil
+        body: Data? = nil,
+        timeout: TimeInterval = 45
     ) async throws -> Data {
         guard let url = URL(string: path, relativeTo: endpoint.baseURL) else {
             throw PluginAPIError(status: 0, code: "invalid_url", message: "Invalid management URL")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 45
+        request.timeoutInterval = timeout
         request.setValue("Bearer \(endpoint.secret)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {

@@ -506,6 +506,18 @@ struct PluginStoreEntry: Identifiable, Codable, Hashable {
         return L("Available")
     }
 
+    /// The engine can only download an artifact when the publisher's store
+    /// auth is registered in the gateway config. Melon has no screen for that
+    /// credential, so an entry that needs it can never install here. Say so up
+    /// front instead of failing halfway through the download.
+    var installBlocker: String? {
+        guard !installed else { return nil }
+        if authRequired && !authConfigured {
+            return L("This publisher requires store credentials. Melon cannot register them yet, so the plugin cannot be installed here.")
+        }
+        return nil
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pluginID = try c.decodeIfPresent(String.self, forKey: .pluginID) ?? ""

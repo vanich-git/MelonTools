@@ -64,4 +64,15 @@ final class PluginStoreTests: XCTestCase {
         XCTAssertThrowsError(try PluginJSON.parseEditorText("{\"a\": 1}", type: .array))
         XCTAssertThrowsError(try PluginJSON.parseEditorText("not a number", type: .integer))
     }
+
+    /// The engine parses the plugin block as YAML, so a quote or backslash in a
+    /// path has to be escaped, and control scalars have to be dropped. The
+    /// Windows `gateway::yaml_escape` produces the same output.
+    func testYAMLScalarEscapesLikeTheWindowsWriter() {
+        XCTAssertEqual(PluginSettings.yamlScalar("C:\\Melon\\plugins"), "C:\\\\Melon\\\\plugins")
+        XCTAssertEqual(PluginSettings.yamlScalar("/tmp/a\"b"), "/tmp/a\\\"b")
+        XCTAssertEqual(PluginSettings.yamlScalar("line\nbreak"), "linebreak")
+        XCTAssertEqual(PluginSettings.yamlScalar("bell\u{07}del\u{7F}c1\u{85}"), "belldelc1")
+        XCTAssertEqual(PluginSettings.yamlScalar("/plain/path"), "/plain/path")
+    }
 }

@@ -992,7 +992,14 @@ final class CodexGatewayService: ObservableObject {
             kill(pid, SIGTERM)
             let deadline = Date().addingTimeInterval(2.5)
             while Date() < deadline, Self.processAlive(pid) {
-                usleep(100_000)
+                // Quit runs on the main thread, and the gateway's termination
+                // handler is scheduled on this same run loop. A plain usleep
+                // froze the UI for up to 2.5s and also kept that handler from
+                // running, so the loop below waited for a process it was
+                // itself preventing from reporting. Pumping the loop in
+                // millisecond slices lets the app stay responsive and the
+                // notification arrive.
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
             }
             if Self.processAlive(pid) {
                 kill(pid, SIGKILL)

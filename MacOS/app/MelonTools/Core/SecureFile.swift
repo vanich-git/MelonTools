@@ -46,6 +46,20 @@ enum SecureFile {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         renamed = true
+        // The rename itself lives in the directory inode, so a power loss right
+        // after it can still roll the file back to the previous version. Sync
+        // the directory to make the new name durable.
+        syncDirectory(directory)
+    }
+
+    /// Best effort: an fsync failure on the directory means the rename may not
+    /// survive a power cut, but the file is already in place and readable, so
+    /// this must not turn a successful save into an error.
+    private static func syncDirectory(_ url: URL) {
+        let fd = Darwin.open(url.path, O_RDONLY)
+        guard fd >= 0 else { return }
+        _ = fsync(fd)
+        close(fd)
     }
 
     static func write(_ string: String, to url: URL) throws {

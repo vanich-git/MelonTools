@@ -59,6 +59,7 @@
 		36449344BED8B6424B755E45 /* agent-openwebui.png in Resources */ = {isa = PBXBuildFile; fileRef = A9C39ADB2D2B5AA9BDE4AF84 /* agent-openwebui.png */; };
 		38233C48D95D9A80A80DCDE6 /* agent-claude.png in Resources */ = {isa = PBXBuildFile; fileRef = 0D15509E4234B9D34842DBBA /* agent-claude.png */; };
 		392C20CC175FC1C13A31ECD3 /* LocalDownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3666D500EFEC5436E53A0126 /* LocalDownloadsView.swift */; };
+		3A591B3E1E8362DA39420CB3 /* LoopbackServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048FB6CB5AE418B9C1D82AD0 /* LoopbackServerTests.swift */; };
 		3DEFB14E9053148102B0EFDE /* CodexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC0ED55431DF119F7A8C5174 /* CodexStore.swift */; };
 		3EC5FC54DCC7A79071678844 /* AntigravityAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94A12DE6C0489C0163639BCE /* AntigravityAuthTests.swift */; };
 		3FBECA6C84EB77CD07597C04 /* LocalModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB8232C15820A1B98D94C7EB /* LocalModel.swift */; };
@@ -213,6 +214,7 @@
 /* Begin PBXFileReference section */
 		007CAC5D046D7B902A606042 /* LocalRuntimeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalRuntimeView.swift; sourceTree = "<group>"; };
 		04490AC630226FE15D046E45 /* LocalKeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalKeychainHelper.swift; sourceTree = "<group>"; };
+		048FB6CB5AE418B9C1D82AD0 /* LoopbackServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopbackServerTests.swift; sourceTree = "<group>"; };
 		0743C522162285FF400C341E /* ProviderUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderUsage.swift; sourceTree = "<group>"; };
 		09A2F2F1B47F5293A84E8487 /* MelonToolsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MelonToolsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A2A8AAC2BF0375B020220D7 /* agent-crush.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "agent-crush.png"; sourceTree = "<group>"; };
@@ -672,6 +674,7 @@
 				775F617D1FA391AD6509E734 /* LocalAIUITests.swift */,
 				F0BD89B3984A9EA9369FB4FE /* LocalDownloadRecoveryTests.swift */,
 				713C67E4DCFB4904D6AB820F /* LocalRegistryRecoveryTests.swift */,
+				048FB6CB5AE418B9C1D82AD0 /* LoopbackServerTests.swift */,
 				16524E006E12A82B5002AFF9 /* LowQuotaNotificationTests.swift */,
 				1A57F6766E6BB16A3A9B2BA1 /* ModelCatalogOverlayTests.swift */,
 				F6FAC673CFE80F57C88AF964 /* ModelMigrationIntegrationTests.swift */,
@@ -984,6 +987,7 @@
 				B5E0D233CE0CA955700576FE /* LocalAIUITests.swift in Sources */,
 				93FBD9D03E30895002EE3B41 /* LocalDownloadRecoveryTests.swift in Sources */,
 				421661799C60A9775A50A57A /* LocalRegistryRecoveryTests.swift in Sources */,
+				3A591B3E1E8362DA39420CB3 /* LoopbackServerTests.swift in Sources */,
 				42EDEB334BB512C1AA88C37F /* LowQuotaNotificationTests.swift in Sources */,
 				28E8DBB8E6BBAA563AEAD636 /* ModelCatalogOverlayTests.swift in Sources */,
 				03640F21CC61B25E98269835 /* ModelMigrationIntegrationTests.swift in Sources */,
@@ -1306,14 +1310,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 75;
+				CURRENT_PROJECT_VERSION = 76;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 6.5.1;
+				MARKETING_VERSION = 6.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app.debug;
 				SDKROOT = macosx;
 			};
@@ -1325,14 +1329,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MelonTools/MelonTools.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 75;
+				CURRENT_PROJECT_VERSION = 76;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MelonTools/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 6.5.1;
+				MARKETING_VERSION = 6.5.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.melontools.app;
 				SDKROOT = macosx;
 			};
