@@ -193,15 +193,29 @@ jobs:
           Copy-Item app/src-tauri/target/release/melontools.exe "dist/MelonTools-$version-win-x64-portable.exe"
           $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
-            # The Chocolatey feed returns 504 under load; without a retry a
-            # transient outage fails the whole job.
+            # The Chocolatey community feed answers 504 for minutes at a time and
+            # does not always match the bare `3.11` pin, so install from the
+            # upstream release archive and keep Chocolatey as the fallback.
+            $zip = Join-Path $env:RUNNER_TEMP "nsis-3.11.zip"
             for ($attempt = 1; $attempt -le 3; $attempt++) {
-              choco install nsis --version=3.11.0 -y --no-progress
-              $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+              try {
+                curl.exe -sSL --retry 5 --retry-connrefused --max-time 300 -o $zip `
+                  "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.11/nsis-3.11.zip"
+                Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+              } catch {
+                Write-Warning "NSIS archive attempt $attempt failed: $_"
+              }
+              # The archive is flat inside an `nsis-3.11` directory, so the
+              # installed layout needs that extra path segment.
+              $makensis = Join-Path $env:RUNNER_TEMP "nsis-3.11\makensis.exe"
               if (Test-Path $makensis) { break }
-              Write-Warning "NSIS install attempt $attempt failed; retrying in 20s"
+              Write-Warning "NSIS download attempt $attempt failed; retrying in 20s"
               Start-Sleep -Seconds 20
             }
+          }
+          if (-not (Test-Path $makensis)) {
+            choco install nsis --version=3.11.0 -y --no-progress
+            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
           }
           if (-not (Test-Path $makensis)) { throw "makensis not found" }
           $source = (Resolve-Path "dist/MelonTools-$version-win-x64-portable.exe").Path
