@@ -16,7 +16,21 @@ Built with SwiftUI, macOS 14+, universal (Apple Silicon + Intel).
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## What's new in 6.5.2 (latest published)
+## What's new in 6.5.3 (latest published)
+
+> **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
+> is allowed in System Settings, so verify the SHA-256 first. The full notes are
+> in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+- **Groups accept any model.** A group alias can combine providers, families and protocols, and a model that is disabled on its own can still be used through a group.
+- **Pool failover.** A group alias backed by one API key rotates across its models and stays available while at least one member is healthy.
+- **Stream watchdog.** Empty heartbeats no longer count as a successful stream, and watchdog races are removed.
+- **Settings safety.** Unreadable routing settings fail closed, a failed save keeps the previous state, and the gateway config is not rewritten from an unknown state.
+- **Compatibility.** The app reads the Windows routing-group JSON and preserves notes and timestamps it does not own.
+- **Agents.** Removing a managed agent entry no longer swallows the YAML that follows it.
+- **Build metadata.** macOS build 77; version metadata is aligned at 6.5.3.
+
+## Earlier: 6.5.2
 
 > **Ad-hoc signed, not notarized.** Gatekeeper blocks the first launch until it
 > is allowed in System Settings, so verify the SHA-256 first. The full notes are

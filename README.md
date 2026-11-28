@@ -78,7 +78,21 @@ shasum -a 256 -c MelonTools.dmg.sha256          # macOS
 certutil -hashfile MelonTools-setup.exe SHA256  # Windows
 ```
 
-## What's new in 6.5.2 (latest published)
+## What's new in 6.5.3 (latest published)
+
+> **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
+> block the first launch, so check the SHA-256 before opening the file. The full
+> notes are in [MacOS/RELEASE_NOTES.md](MacOS/RELEASE_NOTES.md).
+
+- **Groups accept any model.** A group alias can combine providers, families and protocols; one source can contribute several models, and one model can belong to several groups.
+- **Pool failover.** A group alias backed by one API key rotates across its models, each model cools down on its own, and the group stays available while at least one member is healthy.
+- **Stream watchdog.** Empty heartbeats no longer count as a successful stream, and watchdog races are removed.
+- **Settings safety.** macOS fails closed on unreadable routing settings and keeps the previous state after a failed save; Windows serializes group writes and never reports a partial save as success.
+- **Compatibility.** Both apps read the other platform's routing-group JSON and preserve notes and timestamps they do not own.
+- **Agents.** Removing a managed agent entry no longer swallows the YAML that follows it.
+- **Build metadata.** macOS build 77 and Windows 6.5.3.
+
+## Earlier: 6.5.2
 
 > **macOS is ad-hoc signed and Windows is unsigned.** Gatekeeper and SmartScreen
 > block the first launch, so check the SHA-256 before opening the file. The full

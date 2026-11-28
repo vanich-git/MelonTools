@@ -25,24 +25,24 @@ secrets below are absent. It never fails because a signing secret is missing.
 When the secrets exist, the signing steps run and a genuine signing failure
 does fail the release.
 
-## Release artifacts for 6.5.2
+## Release artifacts for 6.5.3
 
 | Artifact | File name | SHA-256 |
 |----------|-----------|---------|
-| macOS DMG | `MelonTools-6.5.2.dmg` | `eb4c3a027e1532cf51204be499bb19382a9c3ef307515538b9709888a246c501` |
-| Windows installer | `MelonTools-6.5.2-setup.exe` | `d724d6d567e2ee520f863348e7800b0b8432f1df95529700151db6da9075c2b8` |
-| Windows portable | `MelonTools-6.5.2-win-x64-portable.exe` | `d3c6a67bb8745057a164ca767b1925af8d8259ca1e407e20322935d76eb31972` |
+| macOS DMG | `MelonTools-6.5.3.dmg` | `df688ec660b6e26263a5856561a4826ed1f97deac133f42814ee24205f1a13f2` |
+| Windows installer | `MelonTools-6.5.3-setup.exe` | `66bc815ddb485965d651692a7190d3840ce5794ea1999613d1acaccd10eee9f6` |
+| Windows portable | `MelonTools-6.5.3-win-x64-portable.exe` | `fc3eea0eb66dca340ca8fd5e4b6a483c67365485beef1dd1ed7c3f680c53d3c1` |
 
-6.5.2 is a patch release that adds the curated native plugin store to both
-apps, draws the models filter as a single frame, and mounts the model pool
-dialog on the provider screen where its button lives.
+6.5.3 is a patch release that lets routing groups mix arbitrary models, adds
+API-key pool failover and a stream watchdog in the local gateway, and hardens
+routing settings on both platforms.
 
-The macOS DMG carries `CFBundleShortVersionString` 6.5.2 with build 76 and is
+The macOS DMG carries `CFBundleShortVersionString` 6.5.3 with build 77 and is
 ad-hoc signed, so Gatekeeper needs a manual first launch. The Windows binaries
 are unsigned, so SmartScreen needs "More info" then "Run anyway".
 
 All files and their `.sha256` siblings are attached to the GitHub release for
-tag `v6.5.2`. The staged copy lives in [`staging/6.5.2/`](staging/6.5.2).
+tag `v6.5.3`. The staged copy lives in [`staging/6.5.3/`](staging/6.5.3).
 
 ## 6.0.0-rc.6 (local build)
 
