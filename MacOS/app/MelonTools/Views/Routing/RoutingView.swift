@@ -86,8 +86,7 @@ struct RoutingContent: View {
             titleVisibility: .visible
         ) {
             Button(L("Delete"), role: .destructive) {
-                if let group = pendingDelete {
-                    groups.remove(id: group.id)
+                if let group = pendingDelete, groups.remove(id: group.id) == nil {
                     Task { await sources.apply() }
                 }
                 pendingDelete = nil
@@ -302,8 +301,9 @@ struct RoutingContent: View {
                 Toggle("", isOn: Binding(
                     get: { group.enabled },
                     set: { value in
-                        groups.setEnabled(id: group.id, enabled: value)
-                        Task { await sources.apply() }
+                        if groups.setEnabled(id: group.id, enabled: value) == nil {
+                            Task { await sources.apply() }
+                        }
                     }
                 ))
                 .labelsHidden()

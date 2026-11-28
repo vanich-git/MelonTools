@@ -4085,7 +4085,8 @@ mod runtime_tests {
                 &[],
                 0,
                 "",
-            );
+            )
+            .expect("routing groups are readable");
             assert!(!yaml.contains("local/stale"), "{yaml}");
             assert!(!yaml.contains("melon-local-ai"), "{yaml}");
         });

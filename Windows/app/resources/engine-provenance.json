@@ -6,19 +6,32 @@
   "goModSha256": "d1f8a503d1a038c2c7cdb083317ab3f13d05bf72e4c75c8f1dc668e23ded4ba3",
   "goSumSha256": "de5646044e8e71e3d06e42e22c502e115a33e096b95b3bf5b5b5797798bfb4fe",
   "build": {
-    "command": "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags \"-s -w\" -o <out> ./cmd/server",
+    "command": "CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags \"-s -w\" -o <out> ./cmd/server",
     "compression": "zlib level 9",
     "dependencyBump": "github.com/klauspost/compress v1.17.4 -> v1.18.7",
-    "sourceState": "pinned checkout with MacOS/patches/*.patch applied and klauspost/compress bumped to v1.18.7"
+    "sourceState": "d7538b89c6682670afcfc9ea9f17787502efa533872641b82405f5c2fc8591e2",
+    "patchSha256": {
+      "0001-stream-bootstrap-qos.patch": "d3a92a322856cfa923725dffc58edc5c1448fe1cab208454eae5368436584c4a",
+      "0002-sanitize-upstream-errors.patch": "2deb1da681cf57a425029cd0a3480ec029d9a3c3d8da1963490a4fc576a53945",
+      "0003-config-startup-reconcile.patch": "eae497f2844a34375aa1bfbdb14251368f24fab1b6a885a1e17af36af9460480",
+      "0004-v8-reload-status.patch": "30eaad7ef576fb2b16b77f826073b19b9b2930539dc1387d50ce03c5e8a2c19c",
+      "0005-antigravity-fingerprint.patch": "20224faa8defea83d36d1b45be3a867315239a6fc5efbe338c27f764bcc86056",
+      "0006-usage-telemetry.patch": "1f26437674d96e8763cb71d831c2ca9e1ca81b837f99519e52a2c396df212dbd",
+      "0007-nvidia-rate-limit.patch": "d25ea82e39c08b08ac6d957a46b48280cb6b24310fc57c70e6b106a39e71b8fe",
+      "0008-credential-model-gate-failover.patch": "d34e0d35e433528f82acdff75421ea6e76957c5c248c5cbcb6c646237cc25320",
+      "0009-stream-watchdog-races.patch": "af8b723abba068e4b44c86a78d1d9ec80141d46107decf92c61de5bf8824c5f6",
+      "0010-apikey-alias-pool.patch": "fb119844de5956fa74b3326ae7cf563504321dab6f4a24dc955d050c9e967aee"
+    },
+    "sourceStateAlgorithm": "sha256(concat(name + \"\\n\" + patchSha256))"
   },
   "compressed": {
     "file": "cliproxyapi.exe.z",
-    "bytes": 24261207,
-    "sha256": "01e1a7634d7db57425636567a1334773cc1e641a5f4b69afe8f16f566ffa3eb0"
+    "bytes": 24264594,
+    "sha256": "1011684323bfc153290c9538fd465e9b8facc76083fbab8c3d05c36c79f2afba"
   },
   "payload": {
     "file": "cliproxyapi.exe",
-    "bytes": 74508800,
-    "sha256": "a3a3574cbe9e9d589cf28e16bc71ca169721ad94c4914a35f880e4cef1b27a1d"
+    "bytes": 74515968,
+    "sha256": "b37e25052a1adea9ae23943052da2c289da931a049be7aad1bd5b7c71e6b5ff0"
   }
 }

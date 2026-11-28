@@ -6,6 +6,33 @@ struct RoutingGroupMember: Codable, Identifiable, Hashable {
     var id = UUID()
     var sourceID: String
     var modelID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceID, modelID
+        case sourceId, modelId
+    }
+
+    init(id: UUID = UUID(), sourceID: String, modelID: String) {
+        self.id = id
+        self.sourceID = sourceID
+        self.modelID = modelID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        sourceID = try container.decodeIfPresent(String.self, forKey: .sourceID)
+            ?? container.decode(String.self, forKey: .sourceId)
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+            ?? container.decode(String.self, forKey: .modelId)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(sourceID, forKey: .sourceID)
+        try container.encode(modelID, forKey: .modelID)
+    }
 }
 
 /// A routing group: one model name that several upstreams can serve.
@@ -24,6 +51,46 @@ struct RoutingGroup: Codable, Identifiable, Hashable {
     var enabled: Bool = true
     var members: [RoutingGroupMember] = []
     var createdAt = Date()
+
+    private enum CodingKeys: String, CodingKey {
+        case id, alias, note, enabled, members, createdAt
+    }
+
+    init(
+        id: UUID = UUID(),
+        alias: String,
+        note: String = "",
+        enabled: Bool = true,
+        members: [RoutingGroupMember] = [],
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.alias = alias
+        self.note = note
+        self.enabled = enabled
+        self.members = members
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        alias = try container.decode(String.self, forKey: .alias)
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        members = try container.decodeIfPresent([RoutingGroupMember].self, forKey: .members) ?? []
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(alias, forKey: .alias)
+        try container.encode(note, forKey: .note)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(members, forKey: .members)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 /// Persisted store for routing groups: `routing-groups.json` (0600) next to
@@ -37,12 +104,24 @@ final class RoutingGroupsStore: ObservableObject {
     @Published private(set) var groups: [RoutingGroup] = []
     @Published private(set) var error: String?
     @Published private(set) var isLoaded = false
+    /// A load failure is never overwritten by a later save: the stored file
+    /// may still hold the user's groups and must stay intact until they act.
+    private(set) var hasLoadFailure = false
+    /// Config generation must not run while the persisted groups are unknown.
+    /// Config generation must not run while groups are unknown, including the
+    /// window before the first load.
+    var isSafeToWrite: Bool { isLoaded && !hasLoadFailure }
 
     private let fileURL: URL
 
-    private init() {
+    /// Injectable for tests only. Production always uses the shared store.
+    static func testStore(fileURL: URL) -> RoutingGroupsStore {
+        RoutingGroupsStore(fileURL: fileURL)
+    }
+
+    private init(fileURL: URL? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        fileURL = base
+        self.fileURL = fileURL ?? base
             .appendingPathComponent("MelonTools", isDirectory: true)
             .appendingPathComponent("routing-groups.json")
         load()
@@ -50,49 +129,95 @@ final class RoutingGroupsStore: ObservableObject {
 
     // MARK: - Load / save
 
+    /// Retries a failed load on the next call. The user can repair or delete the
+    /// file without relaunching the app; until that read succeeds, writes stay
+    /// blocked (`isSafeToWrite`).
     func loadIfNeeded() {
-        if !isLoaded { load() }
+        if !isLoaded || hasLoadFailure { load() }
     }
 
     private func load() {
         defer { isLoaded = true }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            groups = []
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            // Only a missing file means "fresh install". A permission problem
+            // on the file or its parent leaves the stored groups unknown:
+            // `fileExists` would report false there too, which used to let an
+            // empty list overwrite groups the app simply could not read.
+            if Self.isMissingFile(error) {
+                groups = []
+                self.error = nil
+                hasLoadFailure = false
+            } else {
+                failLoad(error)
+            }
             return
         }
         do {
-            let data = try Data(contentsOf: fileURL)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             groups = try decoder.decode([RoutingGroup].self, from: data)
             error = nil
+            hasLoadFailure = false
         } catch {
-            self.error = String(format: L("The routing groups could not be read: %@"), error.localizedDescription)
-            Self.logger.error("routing groups load failed: \(error.localizedDescription, privacy: .public)")
-            groups = []
+            failLoad(error)
         }
     }
 
-    private func save() {
+    private func failLoad(_ error: Error) {
+        hasLoadFailure = true
+        self.error = String(format: L("The routing groups could not be read: %@"), error.localizedDescription)
+        Self.logger.error("routing groups load failed: \(error.localizedDescription, privacy: .public)")
+        groups = []
+    }
+
+    private static func isMissingFile(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSFileReadNoSuchFileError {
+            return true
+        }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == NSPOSIXErrorDomain {
+            return underlying.code == ENOENT
+        }
+        return nsError.domain == NSPOSIXErrorDomain && nsError.code == ENOENT
+    }
+
+    /// Returns nil on success or a visible error message. The in-memory list is
+    /// restored when a write fails, so the UI never shows groups that were not
+    /// persisted. A failed load blocks all writes until the file is recovered.
+    @discardableResult
+    private func save(rollingBackFrom previous: [RoutingGroup]) -> String? {
+        if hasLoadFailure {
+            groups = previous
+            let message = L("Fix or remove the unreadable routing groups file before saving.")
+            error = message
+            return message
+        }
+        // SecureFile writes the sibling temp file with 0600 from creation and
+        // renames it atomically, so no failing step remains after the rename.
         do {
-            let directory = fileURL.deletingLastPathComponent()
-            if !FileManager.default.fileExists(atPath: directory.path) {
-                try FileManager.default.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-            }
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(groups).write(to: fileURL, options: [.atomic])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+            try SecureFile.write(try encoder.encode(groups), to: fileURL)
             error = nil
+            return nil
         } catch {
-            self.error = String(format: L("The routing groups could not be saved: %@"), error.localizedDescription)
+            groups = previous
+            let message = String(format: L("The routing groups could not be saved: %@"), error.localizedDescription)
+            self.error = message
             Self.logger.error("routing groups save failed: \(error.localizedDescription, privacy: .public)")
+            return message
         }
+    }
+
+    private func persist(_ mutate: () -> Void) -> String? {
+        let previous = groups
+        mutate()
+        return save(rollingBackFrom: previous)
     }
 
     // MARK: - Mutation
@@ -106,9 +231,9 @@ final class RoutingGroupsStore: ObservableObject {
         }
         guard !members.isEmpty else { return L("Add at least one model to the group.") }
         let unique = Self.uniqueMembers(members)
-        groups.append(RoutingGroup(alias: alias, note: note, members: unique))
-        save()
-        return nil
+        return persist {
+            groups.append(RoutingGroup(alias: alias, note: note, members: unique))
+        }
     }
 
     @discardableResult
@@ -120,30 +245,86 @@ final class RoutingGroupsStore: ObservableObject {
         }
         guard !group.members.isEmpty else { return L("Add at least one model to the group.") }
         let unique = Self.uniqueMembers(group.members)
-        guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return nil }
-        var updated = group
-        updated.alias = alias
-        updated.members = unique
-        groups[index] = updated
-        save()
-        return nil
+        guard groups.contains(where: { $0.id == group.id }) else { return nil }
+        return persist {
+            guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
+            var updated = group
+            updated.alias = alias
+            updated.members = unique
+            groups[index] = updated
+        }
     }
 
-    func remove(id: UUID) {
-        groups.removeAll { $0.id == id }
-        save()
+    @discardableResult
+    func remove(id: UUID) -> String? {
+        guard groups.contains(where: { $0.id == id }) else { return nil }
+        return persist {
+            groups.removeAll { $0.id == id }
+        }
     }
 
-    func setEnabled(id: UUID, enabled: Bool) {
-        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
-        groups[index].enabled = enabled
-        save()
+    @discardableResult
+    func setEnabled(id: UUID, enabled: Bool) -> String? {
+        guard let index = groups.firstIndex(where: { $0.id == id }), groups[index].enabled != enabled else { return nil }
+        return persist {
+            groups[index].enabled = enabled
+        }
     }
 
-    func moveMember(groupID: UUID, from offsets: IndexSet, to destination: Int) {
-        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return }
-        groups[index].members.move(fromOffsets: offsets, toOffset: destination)
-        save()
+    @discardableResult
+    func moveMember(groupID: UUID, from offsets: IndexSet, to destination: Int) -> String? {
+        guard let index = groups.firstIndex(where: { $0.id == groupID }) else { return nil }
+        return persist {
+            groups[index].members.move(fromOffsets: offsets, toOffset: destination)
+        }
+    }
+
+    // MARK: - Member diagnostics
+
+    /// How one member resolves against the current sources. A disabled model is
+    /// not a problem: the group alias turns it on for this route, which is the
+    /// whole point of a group. A missing or disabled source is.
+    enum MemberStatus: Equatable {
+        /// Source exists and is on, model exists: the member can serve.
+        case active
+        /// The model is off individually; the group still serves it.
+        case enabledByGroup
+        case sourceMissing
+        case sourceDisabled
+        case modelMissing
+        /// The source never reaches `api-keys` (OAuth-only Antigravity, a
+        /// plugin row), so its alias would be silently lost.
+        case notPublishable
+    }
+
+    nonisolated static func memberStatus(
+        _ member: RoutingGroupMember,
+        sources: [ModelSource]
+    ) -> MemberStatus {
+        guard let source = sources.first(where: { $0.id == member.sourceID }) else {
+            return .sourceMissing
+        }
+        guard source.enabled else { return .sourceDisabled }
+        guard let model = source.models.first(where: { $0.id == member.modelID }) else {
+            return .modelMissing
+        }
+        guard canCarryAlias(source) else { return .notPublishable }
+        return model.enabled ? .active : .enabledByGroup
+    }
+
+    /// True when `gatewayYAML` writes a provider block that can carry a model
+    /// alias for this source. Antigravity is OAuth-only and plugin rows are
+    /// synthetic: neither is emitted into `api-keys`. A provider without a key
+    /// is skipped by `gatewayYAML` as well, so an alias there would be lost.
+    nonisolated static func canCarryAlias(_ source: ModelSource) -> Bool {
+        switch source.kind {
+        case .antigravity, .plugin:
+            return false
+        case .localAI:
+            return true
+        default:
+            return !source.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     // MARK: - YAML contribution
@@ -164,10 +345,11 @@ final class RoutingGroupsStore: ObservableObject {
         var out: [String: [SourceModel]] = [:]
         for group in groups where group.enabled && !group.members.isEmpty {
             for member in group.members {
-                guard let source = sources.first(where: { $0.id == member.sourceID && $0.enabled }),
+                let status = Self.memberStatus(member, sources: sources)
+                guard status == .active || status == .enabledByGroup,
+                      let source = sources.first(where: { $0.id == member.sourceID }),
                       let model = source.models.first(where: { $0.id == member.modelID })
                 else { continue }
-                guard model.anthropicOnly != true || source.kind == .claude else { continue }
                 var aliasModel = model
                 aliasModel.alias = group.alias
                 aliasModel.display = group.alias

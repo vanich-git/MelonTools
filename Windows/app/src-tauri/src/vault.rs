@@ -228,10 +228,14 @@ pub fn protect_tokens(value: &mut Value) -> Result<(), String> {
 /// Decrypt every account token after reading the file. Legacy plaintext
 /// passes through. A token that cannot be decoded/decrypted is cleared (never
 /// used as ciphertext) and the account is marked for re-login.
-pub fn unprotect_tokens(value: &mut Value) {
+pub fn unprotect_tokens(value: &mut Value) -> bool {
+    // The account keeps its `needsRelogin` mark, so the UI still sees a broken
+    // token. The return value is an additional refusal signal for destructive
+    // callers: a cleared token must never authorize pruning its auth file.
     let Some(accounts) = value.get_mut("accounts").and_then(|a| a.as_array_mut()) else {
-        return;
+        return false;
     };
+    let mut failed_any = false;
     for account in accounts {
         let mut needs_relogin = false;
         {
@@ -250,6 +254,7 @@ pub fn unprotect_tokens(value: &mut Value) {
                     if failed {
                         tokens.insert(key.to_string(), Value::Null);
                         needs_relogin = true;
+                        failed_any = true;
                     }
                 }
             }
@@ -261,6 +266,7 @@ pub fn unprotect_tokens(value: &mut Value) {
             }
         }
     }
+    failed_any
 }
 
 pub fn load_raw() -> Value {
@@ -299,7 +305,7 @@ pub fn load_raw_at(path: &Path) -> Value {
             }
             json!({"accounts": [], "currentAccountId": Value::Null})
         });
-    unprotect_tokens(&mut value);
+    let _ = unprotect_tokens(&mut value);
     value
 }
 
@@ -344,6 +350,52 @@ pub fn save_raw_at(path: &Path, value: &Value) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     invalidate_accounts_cache();
     Ok(())
+}
+
+/// A fully validated vault snapshot for destructive callers (auth-file sync).
+///
+/// Unlike [`accounts`], this returns `None` when the file is missing, cannot be
+/// read, is not valid JSON, has no `accounts` array, or has an entry that does
+/// not deserialize. A partial list must never authorize pruning auth files:
+/// the previous `filter_map` dropped malformed rows and the caller then deleted
+/// the corresponding credentials. No quarantine happens here; a broken file is
+/// left untouched for the user and the read error path.
+pub fn verified_accounts() -> Option<Vec<Account>> {
+    verified_accounts_at(&vault_file())
+}
+
+fn verified_accounts_at(path: &Path) -> Option<Vec<Account>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    if crate::schema::file_version(path).is_some_and(|found| found > crate::schema::CURRENT) {
+        return None;
+    }
+    let mut value: Value = serde_json::from_str(&raw).ok()?;
+    value.get("accounts")?.as_array()?;
+    if unprotect_tokens(&mut value) {
+        return None;
+    }
+    let items = value.get("accounts")?.as_array()?;
+    let mut accounts = Vec::with_capacity(items.len());
+    for item in items {
+        let account = serde_json::from_value::<Account>(item.clone()).ok()?;
+        // An account without a usable access token cannot produce an auth
+        // file. It must refuse the whole snapshot: otherwise its existing
+        // auth file looks stale and the prune deletes it.
+        if account
+            .tokens
+            .access_token
+            .as_deref()
+            .map_or(true, str::is_empty)
+        {
+            return None;
+        }
+        accounts.push(account);
+    }
+    Some(accounts)
+}
+
+pub fn file_exists() -> bool {
+    vault_file().is_file()
 }
 
 pub fn accounts() -> Vec<Account> {
@@ -973,7 +1025,7 @@ fn uuid_like() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{protect_tokens, unprotect_tokens};
+    use super::{protect_tokens, unprotect_tokens, verified_accounts_at};
     use serde_json::{json, Value};
 
     fn vault_with_tokens() -> Value {
@@ -1101,7 +1153,7 @@ mod tests {
             );
         }
 
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         let tokens = &raw["accounts"][0]["tokens"];
         assert_eq!(tokens["id_token"], "id-secret");
         assert_eq!(tokens["access_token"], "access-secret");
@@ -1115,7 +1167,7 @@ mod tests {
     #[test]
     fn legacy_plaintext_vault_is_read_unchanged() {
         let mut raw = vault_with_tokens();
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         assert_eq!(
             raw["accounts"][0]["tokens"]["access_token"],
             "access-secret"
@@ -1139,7 +1191,7 @@ mod tests {
                 }
             }]
         });
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         let account = &raw["accounts"][0];
         assert!(account["tokens"]["id_token"].is_null());
         assert!(account["tokens"]["refresh_token"].is_null());
@@ -1156,12 +1208,44 @@ mod tests {
                 "tokens": {"access_token": "dpapi2:AAAA"}
             }]
         });
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         protect_tokens(&mut raw).unwrap();
         let account = &raw["accounts"][0];
         assert!(account["tokens"]["access_token"].is_null());
         assert_eq!(account["needsRelogin"], true);
         assert_eq!(account["quotaError"], "Re-login required");
+    }
+
+    #[test]
+    fn verified_snapshot_refuses_an_undecryptable_token() {
+        let dir =
+            std::env::temp_dir().join(format!("melon-vault-verified-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("accounts.json");
+        std::fs::write(
+            &file,
+            json!({
+                "accounts": [{"id": "acc-1", "tokens": {"access_token": "dpapi2:AAAA"}}]
+            })
+            .to_string(),
+        )
+        .expect("write broken token");
+        assert!(
+            verified_accounts_at(&file).is_none(),
+            "an undecryptable token must refuse prune"
+        );
+        std::fs::write(
+            &file,
+            json!({"accounts": [{"id": "acc-1", "tokens": {}}]}).to_string(),
+        )
+        .expect("write tokenless account");
+        assert!(
+            verified_accounts_at(&file).is_none(),
+            "a missing access token must refuse prune"
+        );
+        std::fs::write(&file, json!({"accounts": []}).to_string()).expect("write empty vault");
+        assert_eq!(verified_accounts_at(&file).map(|a| a.len()), Some(0));
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
@@ -1184,7 +1268,7 @@ mod tests {
                 || stored.starts_with(crate::dpapi::PREFIX_V2),
             "reserved token was stored raw: {stored}"
         );
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         assert_eq!(
             raw["accounts"][0]["tokens"]["access_token"],
             "dpapi:literal"
@@ -1209,7 +1293,7 @@ mod tests {
         let before = raw.clone();
         protect_tokens(&mut raw).unwrap();
         assert_eq!(raw, before);
-        unprotect_tokens(&mut raw);
+        let _ = unprotect_tokens(&mut raw);
         assert_eq!(raw, before);
     }
 
@@ -1222,7 +1306,7 @@ mod tests {
         ] {
             let before = raw.clone();
             protect_tokens(&mut raw).unwrap();
-            unprotect_tokens(&mut raw);
+            let _ = unprotect_tokens(&mut raw);
             assert_eq!(raw, before);
         }
     }

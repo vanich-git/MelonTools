@@ -538,7 +538,10 @@ function render(force) {
   // The Local AI page is a working surface: its split panes and model grid
   // use the full window width, unlike the centred reading column elsewhere.
   main.classList.toggle("board-fluid", S.section === "local_ai" || S.section === "plugins");
-  main.innerHTML = (pages[S.section] || dashboardPage)();
+  const configWarning = S.gatewayConfigWarning
+    ? `<div class="card" role="alert"><strong>${esc(t("gatewayConfigWarning"))}</strong><div>${esc(S.gatewayConfigWarning)}</div><button class="btn small" data-action="dismissGatewayConfigWarning">${esc(t("close"))}</button></div>`
+    : "";
+  main.innerHTML = configWarning + (pages[S.section] || dashboardPage)();
   if (S.section === "donate") renderDonateQr();
 }
 

@@ -78,7 +78,14 @@ final class CodexGatewayService: ObservableObject {
     @Published private(set) var usageHistory: [UsageRecord] = []
     @Published private(set) var isStarting = false
     @Published private(set) var checkResult: String?
+    /// Whether the last check proved the gateway end to end. A reachable
+    /// gateway whose upstream model probe failed is not a working route, so
+    /// this stays false and the result line says which part failed.
     @Published private(set) var checkPassed = false
+    /// True when `/v1/models` answered: the local gateway itself is healthy and
+    /// only the upstream model probe failed. Kept apart from `checkPassed` so
+    /// an upstream 429/402 is never reported as a broken gateway.
+    @Published private(set) var checkGatewayReachable = false
     @Published private(set) var isChecking = false
 
     private var process: Process?
@@ -566,12 +573,21 @@ final class CodexGatewayService: ObservableObject {
                     guard ModelSourcesStore.shared.isLoaded else {
                         throw Self.ConfigError.modelSourcesUnavailable
                     }
+                    // Unreadable routing groups would generate an empty alias
+                    // list and silently drop every group from the config.
+                    guard RoutingGroupsStore.shared.isSafeToWrite else {
+                        throw Self.ConfigError.routingGroupsUnavailable
+                    }
                 }
             )
         } catch {
             if let configError = error as? CodexGatewayService.ConfigError,
                case .modelSourcesUnavailable = configError {
                 auditLog("config write refused (\(reason)): model sources store is not loaded")
+            }
+            if let configError = error as? CodexGatewayService.ConfigError,
+               case .routingGroupsUnavailable = configError {
+                auditLog("config write refused (\(reason)): routing groups file is unreadable")
             }
             throw error
         }
@@ -589,9 +605,17 @@ final class CodexGatewayService: ObservableObject {
         /// `model-sources.json` exists but decodes to neither known shape, so
         /// the generated provider list would be empty.
         case modelSourcesUnavailable
+        /// `routing-groups.json` is unreadable: the alias list is unknown and
+        /// writing now would drop every group from the config.
+        case routingGroupsUnavailable
 
         var errorDescription: String? {
-            L("Model sources could not be read — the gateway config was not written.")
+            switch self {
+            case .modelSourcesUnavailable:
+                return L("Model sources could not be read - the gateway config was not written.")
+            case .routingGroupsUnavailable:
+                return L("Routing groups could not be read - the gateway config was not written.")
+            }
         }
     }
 
@@ -929,8 +953,9 @@ final class CodexGatewayService: ObservableObject {
 
         status = .starting
 
-        // 2. Clean up a stale child recorded in the PID file. The pid is only
-        // trusted when it still runs our binary (PID-reuse guard).
+        // 2. Clean up a stale child recorded in the PID file. Matching the
+        // binary path reduces false matches but does not prove ownership or
+        // rule out PID reuse by another process running the same binary.
         if let stale = Self.verifiedPIDFile(), stale != getpid(), Self.processAlive(stale) {
             auditLog("terminating stale gateway pid \(stale)")
             await terminateProcess(pid: stale, grace: 4)
@@ -1466,6 +1491,7 @@ final class CodexGatewayService: ObservableObject {
         defer { isChecking = false }
         checkResult = nil
         checkPassed = false
+        checkGatewayReachable = false
 
         guard isRunning else {
             checkResult = L("Service is not running")
@@ -1481,6 +1507,10 @@ final class CodexGatewayService: ObservableObject {
                 checkResult = L("Check failed") + ": HTTP \(code)"
                 return
             }
+            // The gateway answered /v1/models, so it is up. A failure below
+            // means the model request did not go through; it does not by
+            // itself prove the gateway is broken.
+            checkGatewayReachable = true
             let listObject = try? JSONSerialization.jsonObject(with: listData) as? [String: Any]
             let models = (listObject?["data"] as? [[String: Any]]) ?? []
             let ids = models.compactMap { $0["id"] as? String }
@@ -1514,7 +1544,9 @@ final class CodexGatewayService: ObservableObject {
             guard let chatHTTP = chatResponse as? HTTPURLResponse, (200..<300).contains(chatHTTP.statusCode) else {
                 let code = (chatResponse as? HTTPURLResponse)?.statusCode ?? -1
                 let snippet = String(data: chatData, encoding: .utf8).map { String($0.prefix(200)) } ?? ""
-                checkResult = L("Check failed") + ": HTTP \(code) · \(snippet)"
+                // The gateway answered /v1/models; the chat request itself
+                // failed, without saying which side is at fault.
+                checkResult = String(format: L("Gateway responded, the model request failed: HTTP %d · %@"), code, snippet)
                 return
             }
             let usage = ((try? JSONSerialization.jsonObject(with: chatData)) as? [String: Any])?["usage"] as? [String: Any]
@@ -1522,7 +1554,13 @@ final class CodexGatewayService: ObservableObject {
             checkPassed = true
             checkResult = L("Check passed") + " · \(ISODate.duration(elapsedMs)) · \(model)\(tokens)"
         } catch {
-            checkResult = L("Check failed") + ": " + error.localizedDescription
+            // The failure might be local networking or an upstream model call.
+            // Do not present it as a verdict on the whole gateway.
+            if checkGatewayReachable {
+                checkResult = String(format: L("Gateway responded, the model request failed: %@"), error.localizedDescription)
+            } else {
+                checkResult = L("Check failed") + ": " + error.localizedDescription
+            }
         }
     }
 
@@ -1751,8 +1789,9 @@ final class CodexGatewayService: ObservableObject {
         return value
     }
 
-    /// PID from the file only when it currently runs our binary — protects
-    /// against PID reuse after a reboot.
+    /// PID from the file only when it currently runs our binary. This rules
+    /// out a different process with a reused PID, but cannot prove ownership
+    /// of a shared binary path.
     private static func verifiedPIDFile() -> pid_t? {
         let path = gatewayDir.appendingPathComponent("gateway.pid").path
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
@@ -1790,20 +1829,40 @@ final class CodexGatewayService: ObservableObject {
         return errno == EPERM
     }
 
-    /// True when `pid` runs our gateway binary. Guards against PID reuse
-    /// (stale PID file after a reboot) and against killing an unrelated
-    /// process that happened to grab our port.
-    private static func isGatewayProcess(_ pid: pid_t) -> Bool {
+    /// Resolves symlinks (`/var` vs `/private/var`) before comparing binary
+    /// paths so a different file with the same basename is never mistaken for
+    /// our gateway.
+    static func sameBinaryPath(_ left: String, _ right: String) -> Bool {
+        func resolved(_ path: String) -> String {
+            let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: Int(PATH_MAX))
+            defer { buffer.deallocate() }
+            guard realpath(path, buffer) != nil else {
+                return URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+            }
+            return String(cString: buffer)
+        }
+        return resolved(left) == resolved(right)
+    }
+
+    /// True only when `pid` runs the exact binary this app would launch. The
+    /// basename alone is not enough: a different `cliproxyapi` from another
+    /// checkout must never be adopted or killed.
+    static func isGatewayProcess(
+        _ pid: pid_t,
+        binary: String? = nil,
+        pathOfPID: @MainActor (pid_t) -> String? = processPath
+    ) -> Bool {
+        guard pid != getpid(), let path = pathOfPID(pid) else { return false }
+        guard let own = binary ?? locateBinary() else { return false }
+        return sameBinaryPath(own, path)
+    }
+
+    private static func processPath(_ pid: pid_t) -> String? {
         let maxPath = 4096
         var buffer = [UInt8](repeating: 0, count: maxPath)
         let length = proc_pidpath(pid, &buffer, UInt32(maxPath))
-        guard length > 0 else { return false }
-        let path = String(cString: buffer)
-        if path.hasSuffix("/cliproxyapi") { return true }
-        // Adopted gateways may run under a different binary name on a
-        // non-standard port; the PID file is only trusted when the process
-        // path still exists at all (killed/reaped pids report no path).
-        return false
+        guard length > 0 else { return nil }
+        return String(cString: buffer)
     }
 
     /// PID of a process listening on our port that is actually our binary.

@@ -1,0 +1,271 @@
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+index 0e07554..f944c24 100644
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -569,9 +569,12 @@ func (m *Manager) ClearBootstrapCooldown(ctx context.Context, authID, model stri
+ 	updateAggregatedAvailability(auth, now)
+ 	auth.Generation++
+ 	auth.UpdatedAt = now
++	// Read the store under the manager lock: SetCooldownStateStore writes it
++	// under the same lock, so touching it after Unlock is a data race.
++	trackCooldownState := m.cooldownStore != nil
+ 	m.mu.Unlock()
+ 
+-	if m.cooldownStore != nil {
++	if trackCooldownState {
+ 		m.persistCooldownStates(ctx)
+ 	}
+ 	resetBootstrapStrikes(authID, model)
+diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
+index c558f10..7460240 100644
+--- a/sdk/cliproxy/auth/conductor_stream.go
++++ b/sdk/cliproxy/auth/conductor_stream.go
+@@ -5,7 +5,6 @@ import (
+ 	"errors"
+ 	"net/http"
+ 	"strings"
+-	"sync/atomic"
+ 	"time"
+ 
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+@@ -102,14 +101,9 @@ func executeStreamWithHeaderWatchdog(ctx context.Context, auth *Auth, req clipro
+ 		return executor.ExecuteStream(ctx, auth, req, opts)
+ 	}
+ 	watchdogCtx, cancel := context.WithCancel(ctx)
+-	var fired atomic.Bool
+-	timer := time.AfterFunc(timeout, func() {
+-		fired.Store(true)
+-		cancel()
+-	})
++	watchdog := startHeaderWatchdog(timeout, cancel)
+ 	result, err := executor.ExecuteStream(watchdogCtx, auth, req, opts)
+-	timer.Stop()
+-	if fired.Load() {
++	if watchdog.fired() {
+ 		if result != nil {
+ 			discardStreamChunks(result.Chunks)
+ 		}
+@@ -192,14 +186,20 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
+ 		// thinking, so a silent-but-healthy model must not be cut off at the
+ 		// same budget as a dead one. Extend the window, but never past the
+ 		// cap so a stuck upstream cannot pin the request indefinitely.
+-		if timer != nil && time.Now().Before(heartbeatCap) {
+-			if !timer.Stop() {
+-				select {
+-				case <-timer.C:
+-				default:
++		if timer != nil {
++			// A heartbeat extends the window by a full timeout, but never past
++			// the cap: resetting to the full timeout on the last heartbeat
++			// before the cap used to grant one extra window and hold a stuck
++			// upstream for longer than the documented grace.
++			if extend := bootstrapHeartbeatExtension(timeout, heartbeatCap, time.Now()); extend > 0 {
++				if !timer.Stop() {
++					select {
++					case <-timer.C:
++					default:
++					}
+ 				}
++				timer.Reset(extend)
+ 			}
+-			timer.Reset(timeout)
+ 		}
+ 	}
+ }
+@@ -215,11 +215,9 @@ func readStreamBootstrapForAuth(ctx context.Context, ch <-chan cliproxyexecutor.
+ 		log.Warnf("[qos] first_token_timeout provider=%s auth=%s model=%s waited_ms=%d cooldown_s=%d strike=%d", provider, authID, model, waited.Milliseconds(), int64(cooldown/time.Second), bootstrapStrikeCount(authID, model))
+ 		return nil, false, newStreamBootstrapTimeoutError(authID, model, waited, cooldown)
+ 	}
+-	if err == nil {
+-		if streamBootstrapTimeout() > 0 {
+-			if provider == "antigravity" {
+-				log.Infof("[qos] first_token provider=%s auth=%s model=%s ttft_ms=%d", provider, authID, model, time.Since(started).Milliseconds())
+-			}
++	if err == nil && streamBootstrapHasFirstPayload(buffered) {
++		if streamBootstrapTimeout() > 0 && provider == "antigravity" {
++			log.Infof("[qos] first_token provider=%s auth=%s model=%s ttft_ms=%d", provider, authID, model, time.Since(started).Milliseconds())
+ 		}
+ 		resetBootstrapStrikes(authID, model)
+ 	}
+@@ -561,7 +559,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 			return nil, preferredExecutionAttemptError(currentErr, upstreamErr)
+ 		}
+ 
+-		if closed && len(buffered) == 0 {
++		// A closed stream counts as usable only when it carried a real token.
++		// Counting buffered frames would accept a stream of empty heartbeat
++		// frames as a successful attempt and hide the silent upstream failure.
++		if closed && !streamBootstrapHasFirstPayload(buffered) {
+ 			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
+ 			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
+ 			if hasUpstreamExecutionAttempt(emptyErr) {
+diff --git a/sdk/cliproxy/auth/stream_bootstrap_guards.go b/sdk/cliproxy/auth/stream_bootstrap_guards.go
+new file mode 100644
+index 0000000..25c627d
+--- /dev/null
++++ b/sdk/cliproxy/auth/stream_bootstrap_guards.go
+@@ -0,0 +1,71 @@
++package auth
++
++import (
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// bootstrapHeartbeatExtension is how long an empty frame extends the first-token
++// timer: the full timeout, or the remaining grace when that is shorter. The cap
++// has to clamp the extension, otherwise a heartbeat arriving just before the cap
++// buys another whole timeout and a stuck upstream is held past the grace.
++func bootstrapHeartbeatExtension(timeout time.Duration, cap time.Time, now time.Time) time.Duration {
++	remaining := cap.Sub(now)
++	if remaining <= 0 {
++		return 0
++	}
++	if remaining < timeout {
++		return remaining
++	}
++	return timeout
++}
++
++// streamBootstrapHasFirstPayload reports whether the bootstrap read produced a
++// real first token. A stream that closes after only empty heartbeat frames has
++// no payload, so it must not count as a first token nor reset the strikes.
++func streamBootstrapHasFirstPayload(buffered []cliproxyexecutor.StreamChunk) bool {
++	for _, chunk := range buffered {
++		if len(chunk.Payload) > 0 {
++			return true
++		}
++	}
++	return false
++}
++
++// headerWatchdog bounds the wait for upstream response headers. The timer
++// callback runs on its own goroutine, so its bookkeeping is published through
++// the done channel: a false result from timer.Stop means the callback has
++// started or finished, and fired waits for it before deciding. Reading a flag
++// without that wait could observe the cancellation before the flag was stored
++// and report a timed-out request as a success.
++type headerWatchdog struct {
++	timer *time.Timer
++	done  chan struct{}
++}
++
++func startHeaderWatchdog(timeout time.Duration, onFire func()) *headerWatchdog {
++	watchdog := &headerWatchdog{done: make(chan struct{})}
++	watchdog.timer = time.AfterFunc(timeout, func() {
++		defer close(watchdog.done)
++		if onFire != nil {
++			onFire()
++		}
++	})
++	return watchdog
++}
++
++// fired stops the watchdog and reports whether it fired before the caller
++// reached this point. Stop prevents a callback that has not started yet, so the
++// answer is exact; when the callback already started the call waits for it to
++// finish instead of racing with it.
++func (w *headerWatchdog) fired() bool {
++	if w == nil {
++		return false
++	}
++	if w.timer.Stop() {
++		return false
++	}
++	<-w.done
++	return true
++}
+diff --git a/sdk/cliproxy/auth/stream_bootstrap_guards_test.go b/sdk/cliproxy/auth/stream_bootstrap_guards_test.go
+new file mode 100644
+index 0000000..0e9bdb8
+--- /dev/null
++++ b/sdk/cliproxy/auth/stream_bootstrap_guards_test.go
+@@ -0,0 +1,87 @@
++package auth
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func TestBootstrapHeartbeatExtensionClampsToCap(t *testing.T) {
++	timeout := 10 * time.Second
++	now := time.Unix(1_000_000, 0)
++	cap := now.Add(bootstrapHeartbeatGrace(timeout))
++
++	cases := []struct {
++		name string
++		at   time.Time
++		want time.Duration
++	}{
++		{"start", now, timeout},
++		{"inside grace", cap.Add(-5 * time.Second), 5 * time.Second},
++		{"at cap", cap, 0},
++		{"past cap", cap.Add(time.Second), 0},
++	}
++	for _, tc := range cases {
++		if got := bootstrapHeartbeatExtension(timeout, cap, tc.at); got != tc.want {
++			t.Fatalf("%s: extension = %v, want %v", tc.name, got, tc.want)
++		}
++	}
++}
++
++func TestStreamBootstrapHasFirstPayload(t *testing.T) {
++	if streamBootstrapHasFirstPayload(nil) {
++		t.Fatal("nil buffered chunks must not count as a first token")
++	}
++	heartbeats := []cliproxyexecutor.StreamChunk{{Payload: nil}, {Payload: []byte{}}}
++	if streamBootstrapHasFirstPayload(heartbeats) {
++		t.Fatal("empty heartbeat frames must not count as a first token")
++	}
++	withPayload := append(append([]cliproxyexecutor.StreamChunk{}, heartbeats...), cliproxyexecutor.StreamChunk{Payload: []byte("data")})
++	if !streamBootstrapHasFirstPayload(withPayload) {
++		t.Fatal("a real payload must count as a first token")
++	}
++}
++
++func TestHeaderWatchdogNotFiredStopsTimer(t *testing.T) {
++	watchdog := startHeaderWatchdog(time.Hour, func() {
++		t.Error("watchdog fired before its deadline")
++	})
++	if watchdog.fired() {
++		t.Fatal("fired() = true, want false before the deadline")
++	}
++}
++
++func TestHeaderWatchdogFiredWaitsForCallback(t *testing.T) {
++	callbackDone := make(chan struct{})
++	watchdog := startHeaderWatchdog(0, func() {
++		close(callbackDone)
++	})
++	<-callbackDone
++	if !watchdog.fired() {
++		t.Fatal("fired() = false, want true after the callback ran")
++	}
++}
++
++func TestReadStreamBootstrapEmptyClosedStreamKeepsStrikes(t *testing.T) {
++	SetStreamBootstrapTimeout(1)
++	t.Cleanup(func() { SetStreamBootstrapTimeout(0) })
++
++	const authID, model = "auth-empty", "model-empty"
++	resetBootstrapStrikes(authID, model)
++	nextBootstrapCooldown(authID, model, time.Now())
++	nextBootstrapCooldown(authID, model, time.Now())
++
++	ch := make(chan cliproxyexecutor.StreamChunk)
++	close(ch)
++	buffered, closed, err := readStreamBootstrapForAuth(context.Background(), ch, authID, model, "antigravity", time.Now())
++	if err != nil || !closed || len(buffered) != 0 {
++		t.Fatalf("buffered=%d closed=%v err=%v, want an empty closed stream", len(buffered), closed, err)
++	}
++	// The stream carried no token: the silent failures that already put this
++	// auth/model pair on the ladder must survive.
++	if got := bootstrapStrikeCount(authID, model); got != 2 {
++		t.Fatalf("strike count = %d, want the previous 2 strikes to survive", got)
++	}
++}

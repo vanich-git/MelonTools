@@ -7,10 +7,17 @@ const IS_TAURI = !!(window.melon && window.melon.available);
 // MARK: - Backend
 
 async function inv(cmd, args = {}) {
-  if (IS_TAURI) {
-    return window.melon.invoke(cmd, args);
+  const result = IS_TAURI ? await window.melon.invoke(cmd, args) : await mock(cmd, args);
+  if (typeof S !== "undefined" && result && typeof result === "object") {
+    if (result.configWarning) {
+      S.gatewayConfigWarning = String(result.configWarning);
+    } else if (cmd === "gateway_sync" && result.gatewayRunning === true) {
+      // Only a running gateway sync confirms both config and auth publication.
+      // It still does not confirm that the engine has reloaded the config.
+      S.gatewayConfigWarning = null;
+    }
   }
-  return mock(cmd, args);
+  return result;
 }
 
 // W5: one deadline per command, so a single hung IPC call cannot stall the

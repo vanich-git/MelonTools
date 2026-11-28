@@ -1976,7 +1976,13 @@ final class ModelSourcesStore: ObservableObject {
             // one model name is served by several upstreams and the engine can
             // fail over between them.
             var selected = source.selectedModels
-            selected.append(contentsOf: groupAliases[source.id] ?? [])
+            for aliasModel in groupAliases[source.id] ?? [] {
+                // Preserve different upstream models sharing an alias, but do
+                // not emit the same model/alias pair more than once.
+                if !selected.contains(where: { $0.id == aliasModel.id && $0.alias == aliasModel.alias }) {
+                    selected.append(aliasModel)
+                }
+            }
             guard !selected.isEmpty else { continue }
             if source.kind == .antigravity {
                 // OAuth-only: the engine serves the models from its Google
@@ -2128,10 +2134,12 @@ final class ModelSourcesStore: ObservableObject {
     }
 
     func gatewayYAML() -> String {
+        let groups = RoutingGroupsStore.shared
+        groups.loadIfNeeded()
         let sources = effectiveSources
         return Self.gatewayYAML(
             sources: sources,
-            groupAliases: RoutingGroupsStore.shared.aliasModels(sources: sources)
+            groupAliases: groups.isSafeToWrite ? groups.aliasModels(sources: sources) : [:]
         )
     }
 

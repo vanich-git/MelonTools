@@ -143,7 +143,27 @@ function customProviderProblem(draft, providers) {
   return null;
 }
 
+/// Model groups are saved by routing_group_save and reach the engine through
+/// a separate gateway_sync. The two steps fail independently: a saved group
+/// survives a failed apply, and the error stays on the card until a later sync
+/// succeeds. Returns the failure text, or null when the change was applied.
+async function applyRoutingGroups() {
+  try {
+    await inv("gateway_sync");
+    S.routingGroupApplyError = null;
+    return null;
+  } catch (error) {
+    S.routingGroupApplyError = errorText(error);
+    return S.routingGroupApplyError;
+  }
+}
+
 const A = {
+  dismissGatewayConfigWarning() {
+    S.gatewayConfigWarning = null;
+    render();
+  },
+
   go(section) {
     S.section = section;
     sectionLoads(section);
@@ -177,13 +197,13 @@ const A = {
     Object.assign(settings, patch);
     S.settings = settings;
     try {
-      await inv("set_routing_tuning", {
+      const result = await inv("set_routing_tuning", {
         affinity: settings.sessionAffinity !== false,
         affinityTtl: Number(settings.sessionAffinityTtl) || 7200,
         retry: Number(settings.requestRetry) || 0,
         cooldown: Number(settings.transientCooldown) || 0,
       });
-      toast(t("routingApplied"));
+      if (!result || !result.configWarning) toast(t("routingApplied"));
     } catch (error) {
       toast(errorText(error), true);
     }
@@ -214,12 +234,21 @@ const A = {
     if (S.routingGroupLoaded && !force) return;
     try {
       const snapshot = await inv("routing_groups");
-      S.routingGroups = snapshot && typeof snapshot === "object" ? snapshot : { groups: [], sources: [] };
+      const next = snapshot && typeof snapshot === "object" ? snapshot : { groups: [], sources: [] };
+      S.routingGroups = next;
+      // A broken routing-groups.json comes back as a snapshot with a read
+      // error and an empty list; showing only the list would claim the user
+      // has no groups when the file could not be read.
+      S.routingGroupError = next.error ? errorText(next.error) : null;
       S.routingGroupLoaded = true;
     } catch (error) {
       toast(errorText(error), true);
     }
     if (S.section === "routing") render();
+  },
+
+  routingGroupsRetry() {
+    return A.routingGroupsLoad(true);
   },
 
   groupNew() {
@@ -267,15 +296,20 @@ const A = {
 
   async groupToggle(el) {
     const id = el.dataset.id || "";
+    const wanted = !!el.checked;
     el.disabled = true;
     try {
-      const result = await inv("routing_group_toggle", { id, enabled: !!el.checked });
+      const result = await inv("routing_group_toggle", { id, enabled: wanted });
       if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
-      await inv("gateway_sync").catch(() => {});
+      // The switch is saved at this point. A failed gateway_sync must not
+      // roll it back: that would show the previous state while the file keeps
+      // the new one.
+      const failure = await applyRoutingGroups();
+      if (failure) toast(`${t("groupSaved")}. ${fmt(t("groupApplyFailed"), { error: failure })}`, true);
       render();
     } catch (error) {
       toast(errorText(error), true);
-      el.checked = !el.checked;
+      el.checked = !wanted;
     } finally {
       el.disabled = false;
     }
@@ -296,6 +330,10 @@ const A = {
       toast(t("groupErrMembersEmpty"), true);
       return;
     }
+    // Keep what the user typed: a failed save re-renders the editor from the
+    // draft, and the inputs are not read back by the renderer.
+    draft.alias = alias;
+    draft.note = note;
     S.busy.group = true;
     render();
     try {
@@ -308,12 +346,15 @@ const A = {
       };
       const result = await inv("routing_group_save", { group: payload });
       if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
+      // Saved. Close the editor before applying, so a sync failure leaves
+      // the saved group visible instead of a stale draft.
       S.routingGroupDraft = null;
-      await inv("gateway_sync").catch(() => {});
-      toast(t("groupSaved"));
+      const failure = await applyRoutingGroups();
+      if (failure) toast(`${t("groupSaved")}. ${fmt(t("groupApplyFailed"), { error: failure })}`, true);
+      else toast(t("groupSaved"));
     } catch (error) {
       const code = String(errorText(error));
-      const known = ["aliasEmpty", "aliasChars", "aliasDuplicate", "membersEmpty"].find((key) => code.includes(key));
+      const known = ["aliasEmpty", "aliasChars", "aliasDuplicate", "aliasTooLong", "membersEmpty"].find((key) => code.includes(key));
       toast(known ? t(`groupErr${known.charAt(0).toUpperCase()}${known.slice(1)}`) : code, true);
     } finally {
       S.busy.group = false;
@@ -329,8 +370,9 @@ const A = {
     try {
       const result = await inv("routing_group_delete", { id });
       if (result && Array.isArray(result.groups) && S.routingGroups) S.routingGroups.groups = result.groups;
-      await inv("gateway_sync").catch(() => {});
-      toast(t("groupDeleted"));
+      const failure = await applyRoutingGroups();
+      if (failure) toast(`${t("groupDeleted")}. ${fmt(t("groupApplyFailed"), { error: failure })}`, true);
+      else toast(t("groupDeleted"));
     } catch (error) {
       toast(errorText(error), true);
     }
@@ -783,8 +825,14 @@ const A = {
 
   gatewaySync() {
     run("sync", async () => {
-      const result = await inv("gateway_sync");
-      toast(`${t("sync")}: ${result.syncedAccounts}`);
+      try {
+        const result = await inv("gateway_sync");
+        S.routingGroupApplyError = null;
+        toast(`${t("sync")}: ${result.syncedAccounts}`);
+      } catch (error) {
+        S.routingGroupApplyError = errorText(error);
+        throw error;
+      }
     });
   },
 

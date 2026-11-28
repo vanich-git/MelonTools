@@ -23,11 +23,14 @@ struct CodexControlCard: View {
                     noteLine(error, color: MTTheme.danger, icon: "exclamationmark.triangle")
                 }
                 if let check = gateway.checkResult {
-                    noteLine(
-                        check,
-                        color: gateway.checkPassed ? MTTheme.ok : MTTheme.danger,
-                        icon: gateway.checkPassed ? "checkmark.seal" : "xmark.seal"
-                    )
+                    // A reachable gateway with a failing upstream model is a
+                    // warning about that route, not a verdict on the gateway.
+                    let tone: (color: Color, icon: String) = gateway.checkPassed
+                        ? (MTTheme.ok, "checkmark.seal")
+                        : gateway.checkGatewayReachable
+                            ? (MTTheme.amber, "exclamationmark.triangle")
+                            : (MTTheme.danger, "xmark.seal")
+                    noteLine(check, color: tone.color, icon: tone.icon)
                 }
                 Rectangle()
                     .fill(MTTheme.borderColor.opacity(0.6))

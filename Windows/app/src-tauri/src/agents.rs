@@ -1447,15 +1447,39 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let temporary = path.with_extension("melon-tmp");
+    let temporary = crate::paths::tmp_path(path);
     std::fs::write(&temporary, text).map_err(|error| error.to_string())?;
     #[cfg(target_os = "windows")]
     {
         // `std::fs::rename` refuses to replace an existing file on Windows.
-        // The temp file is freshly written and the destination is a small
-        // config, so a copy is enough.
-        std::fs::copy(&temporary, path).map_err(|error| error.to_string())?;
-        let _ = std::fs::remove_file(&temporary);
+        // MoveFileExW replaces it in one filesystem operation, so a crash
+        // cannot leave a half-copied config behind.
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let from: Vec<u16> = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let to: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let moved = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            let error = std::io::Error::last_os_error();
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]

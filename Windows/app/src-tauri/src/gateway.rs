@@ -315,7 +315,7 @@ fn render_publication(settings: &Settings) -> Result<ConfigPublication, String> 
     );
     yaml.push_str(&crate::plugin_settings::gateway_yaml());
     yaml.push_str(&crate::catalog::config_block());
-    let (local_block, local_models) = local_api_keys_yaml(settings);
+    let (local_block, local_models) = local_api_keys_yaml(settings)?;
     yaml.push_str(&local_block);
 
     Ok(ConfigPublication {
@@ -560,7 +560,7 @@ requests:
 
 /// Claude model catalogue for the API-key fallback: raw Anthropic ids used as
 /// both `name` and `alias`, so the engine lists slash-less `claude-*` ids.
-const CLAUDE_MODELS: &[(&str, &str)] = &[
+pub(crate) const CLAUDE_MODELS: &[(&str, &str)] = &[
     ("claude-opus-5-5", "Claude Opus 5.5"),
     ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
     ("claude-opus-4-6", "Claude Opus 4.6"),
@@ -578,13 +578,18 @@ pub(crate) const USER_AGENT: &str = concat!("MelonTools/", env!("CARGO_PKG_VERSI
 /// the engine config. Returns an empty string when nothing is configured.
 #[cfg(test)]
 pub fn api_keys_yaml(settings: &Settings) -> String {
-    local_api_keys_yaml(settings).0
+    // Tests never depend on the stored groups file: an unreadable store yields
+    // an empty config rather than a test that changes with the developer's
+    // appdata. The store failure itself is covered in routing_groups tests.
+    local_api_keys_yaml(settings)
+        .map(|(yaml, _)| yaml)
+        .unwrap_or_default()
 }
 
 /// Same builder, but the local alias list comes from the very snapshot the
 /// YAML was rendered from. A publication that promises a different set than
 /// the file declares can never converge.
-fn local_api_keys_yaml(settings: &Settings) -> (String, Vec<String>) {
+fn local_api_keys_yaml(settings: &Settings) -> Result<(String, Vec<String>), String> {
     let local_models = servable_local_models();
     // The relay, not the router: it forwards every call and merges the model's
     // system prompt into the request body on the way through. Only started when
@@ -600,10 +605,10 @@ fn local_api_keys_yaml(settings: &Settings) -> (String, Vec<String>) {
         .iter()
         .map(|model| local_model_alias(&model.id))
         .collect();
-    (
-        api_keys_yaml_with_local(settings, &local_models, local_port, &local_token),
+    Ok((
+        api_keys_yaml_with_local(settings, &local_models, local_port, &local_token)?,
         aliases,
-    )
+    ))
 }
 
 /// Models the local engine is serving right now.
@@ -633,10 +638,18 @@ pub fn api_keys_yaml_with_local(
     local_models: &[crate::local_ai::LocalModel],
     local_port: u16,
     local_token: &str,
-) -> String {
+) -> Result<String, String> {
     // Model groups rewrite aliases; the store is read once per config build.
-    let groups = crate::routing_groups::load();
-    api_keys_yaml_with_groups(settings, local_models, local_port, local_token, &groups)
+    // A broken store must fail the publication: the old fallback to an empty
+    // group list erased every route on the next save.
+    let groups = crate::routing_groups::load()?;
+    Ok(api_keys_yaml_with_groups(
+        settings,
+        local_models,
+        local_port,
+        local_token,
+        &groups,
+    ))
 }
 
 /// Pure variant: the same YAML for an explicit group list, so tests never
@@ -694,11 +707,12 @@ pub(crate) fn api_keys_yaml_with_groups(
         if crate::custom::valid_identifier(&provider.id).is_err() {
             continue;
         }
-        if !provider
-            .models
-            .iter()
-            .any(|model| model.enabled && !model.id.trim().is_empty())
-        {
+        if !provider.models.iter().any(|model| {
+            let id = model.id.trim();
+            !id.is_empty()
+                && (model.enabled
+                    || !crate::routing_groups::group_aliases_for(groups, &provider.id, id).is_empty())
+        }) {
             continue;
         }
         let Ok(protocol) = crate::custom::Protocol::parse(&provider.protocol) else {
@@ -763,24 +777,15 @@ pub(crate) fn api_keys_yaml_with_groups(
             yaml.push_str("      models:\n");
             for m in local_models {
                 let fallback = local_model_alias(&m.id);
-                let alias = crate::routing_groups::alias_for(groups, "local", &m.id, &fallback);
-                yaml.push_str(&format!(
-                    "        - name: \"{}\"\n          alias: \"{}\"\n",
-                    yaml_escape(&m.id),
-                    yaml_escape(&alias)
-                ));
-                if !m.display_name.trim().is_empty() && m.display_name != m.id {
-                    yaml.push_str(&format!(
-                        "          display-name: \"{}\"\n",
-                        yaml_escape(&m.display_name)
-                    ));
-                }
-                if m.user_settings.context_length > 0 {
-                    yaml.push_str(&format!(
-                        "          max-context-length: {}\n",
-                        m.user_settings.context_length
-                    ));
-                }
+                let aliases = crate::routing_groups::aliases_for(groups, "local", &m.id, &fallback);
+                push_model_aliases(
+                    &mut yaml,
+                    &m.id,
+                    &aliases,
+                    (!m.display_name.trim().is_empty() && m.display_name != m.id)
+                        .then(|| m.display_name.trim()),
+                    (m.user_settings.context_length > 0).then_some(m.user_settings.context_length as u64),
+                );
             }
         }
         if opencode {
@@ -797,12 +802,9 @@ pub(crate) fn api_keys_yaml_with_groups(
                 yaml.push_str("      models:\n");
                 for (name, display) in OPENCODE_MODELS {
                     let fallback = format!("opencode/{name}");
-                    let alias =
-                        crate::routing_groups::alias_for(groups, "opencode", name, &fallback);
-                    yaml.push_str(&format!(
-                        "        - name: \"{name}\"\n          alias: \"{}\"\n          display-name: \"{display}\"\n",
-                        yaml_escape(&alias)
-                    ));
+                    let aliases =
+                        crate::routing_groups::aliases_for(groups, "opencode", name, &fallback);
+                    push_model_aliases(&mut yaml, name, &aliases, Some(display), None);
                 }
             } else {
                 push_cached_models(&mut yaml, "opencode", &settings.opencode_models, groups);
@@ -897,11 +899,8 @@ pub(crate) fn api_keys_yaml_with_groups(
             ));
             yaml.push_str("      models:\n");
             for (name, display) in CLAUDE_MODELS {
-                let alias = crate::routing_groups::alias_for(groups, "claude", name, name);
-                yaml.push_str(&format!(
-                    "        - name: \"{name}\"\n          alias: \"{}\"\n          display-name: \"{display}\"\n",
-                    yaml_escape(&alias)
-                ));
+                let aliases = crate::routing_groups::aliases_for(groups, "claude", name, name);
+                push_model_aliases(&mut yaml, name, &aliases, Some(display), None);
             }
         }
         if commandcode_anthropic {
@@ -1020,6 +1019,34 @@ fn append_openrouter_payload(yaml: &mut String, settings: &Settings) {
     }
 }
 
+/// One model name with every alias that reaches it: the ordinary provider
+/// alias first, then each active group. Metadata is written on every entry so
+/// the engine catalog shows the same display name and context for each alias.
+fn push_model_aliases(
+    yaml: &mut String,
+    name: &str,
+    aliases: &[String],
+    display: Option<&str>,
+    context: Option<u64>,
+) {
+    for alias in aliases {
+        yaml.push_str(&format!(
+            "        - name: \"{}\"\n          alias: \"{}\"\n",
+            yaml_escape(name),
+            yaml_escape(alias)
+        ));
+        if let Some(display) = display {
+            yaml.push_str(&format!(
+                "          display-name: \"{}\"\n",
+                yaml_escape(display)
+            ));
+        }
+        if let Some(context) = context {
+            yaml.push_str(&format!("          max-context-length: {context}\n"));
+        }
+    }
+}
+
 fn push_openrouter_models(
     yaml: &mut String,
     settings: &Settings,
@@ -1043,21 +1070,15 @@ fn push_openrouter_models(
             _ => model.id.clone(),
         };
         let fallback = format!("openrouter/{}", model.id);
-        let alias = crate::routing_groups::alias_for(groups, "openrouter", &model.id, &fallback);
-        yaml.push_str(&format!(
-            "        - name: \"{}\"\n          alias: \"{}\"\n",
-            yaml_escape(&upstream),
-            yaml_escape(&alias)
-        ));
-        if !model.display.trim().is_empty() {
-            yaml.push_str(&format!(
-                "          display-name: \"{}\"\n",
-                yaml_escape(&model.display)
-            ));
-        }
-        if let Some(context) = model.context_window.filter(|value| *value > 0) {
-            yaml.push_str(&format!("          max-context-length: {}\n", context));
-        }
+        let aliases =
+            crate::routing_groups::aliases_for(groups, "openrouter", &model.id, &fallback);
+        push_model_aliases(
+            yaml,
+            &upstream,
+            &aliases,
+            (!model.display.trim().is_empty()).then(|| model.display.trim()),
+            model.context_window.filter(|value| *value > 0),
+        );
     }
 }
 
@@ -1103,28 +1124,30 @@ fn push_custom_provider(
         yaml_escape(provider.api_key.trim()),
     ));
     yaml.push_str("      models:\n");
-    for model in provider.models.iter().filter(|model| model.enabled) {
+    for model in &provider.models {
         let id = model.id.trim();
         if id.is_empty() {
             continue;
         }
-        let fallback = crate::custom::model_alias(&provider.id, id);
-        let alias = crate::routing_groups::alias_for(groups, &provider.id, id, &fallback);
-        yaml.push_str(&format!(
-            "        - name: \"{}\"\n          alias: \"{}\"\n",
-            yaml_escape(id),
-            yaml_escape(&alias),
-        ));
+        // A disabled model may still be a group member: the group alias is
+        // then its only route, so the ordinary provider alias stays hidden.
+        let aliases = if model.enabled {
+            let fallback = crate::custom::model_alias(&provider.id, id);
+            crate::routing_groups::aliases_for(groups, &provider.id, id, &fallback)
+        } else {
+            crate::routing_groups::group_aliases_for(groups, &provider.id, id)
+        };
+        if aliases.is_empty() {
+            continue;
+        }
         let display = model.display.trim();
-        if !display.is_empty() && display != id {
-            yaml.push_str(&format!(
-                "          display-name: \"{}\"\n",
-                yaml_escape(display)
-            ));
-        }
-        if let Some(context) = model.context_window.filter(|value| *value > 0) {
-            yaml.push_str(&format!("          max-context-length: {context}\n"));
-        }
+        push_model_aliases(
+            yaml,
+            id,
+            &aliases,
+            (!display.is_empty() && display != id).then_some(display),
+            model.context_window.filter(|value| *value > 0),
+        );
     }
 }
 
@@ -1137,21 +1160,14 @@ fn push_cached_models(
     yaml.push_str("      models:\n");
     for model in models {
         let fallback = format!("{provider}/{}", model.id);
-        let alias = crate::routing_groups::alias_for(groups, provider, &model.id, &fallback);
-        yaml.push_str(&format!(
-            "        - name: \"{id}\"\n          alias: \"{alias}\"\n",
-            id = yaml_escape(&model.id),
-            alias = yaml_escape(&alias),
-        ));
-        if !model.display.trim().is_empty() {
-            yaml.push_str(&format!(
-                "          display-name: \"{}\"\n",
-                yaml_escape(&model.display)
-            ));
-        }
-        if let Some(context) = model.context_window.filter(|value| *value > 0) {
-            yaml.push_str(&format!("          max-context-length: {}\n", context));
-        }
+        let aliases = crate::routing_groups::aliases_for(groups, provider, &model.id, &fallback);
+        push_model_aliases(
+            yaml,
+            &model.id,
+            &aliases,
+            (!model.display.trim().is_empty()).then(|| model.display.trim()),
+            model.context_window.filter(|value| *value > 0),
+        );
     }
 }
 
@@ -1310,12 +1326,55 @@ fn auth_payload(account: &Account, priority: usize, pool: &HashSet<String>) -> V
     payload
 }
 
+/// Whether the auths directory contains files this app owns. The state of an
+/// unreadable directory is unknown, so the caller must fail closed instead of
+/// treating it as empty.
+fn owns_auth_files(dir: &std::path::Path) -> Result<bool, String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect auth directory {}: {error}",
+                dir.display()
+            ))
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(format!("cannot read an auth directory entry: {error}"));
+            }
+        };
+        if crate::claude::is_codex_auth_file_name(&entry.file_name().to_string_lossy()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Mirrors the macOS sync: the auths directory is replaced with the current
 /// vault, ordered by the routing planner (strategy + manual order + roles),
 /// and accounts the planner paused (window exhausted or below the user's
 /// reserve) get `"disabled": true`.
 pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
-    let accounts = vault::accounts();
+    let dir = paths::auths_dir();
+    // Destructive part of the sync deletes auth files that are absent from the
+    // vault. Only a snapshot where every account was read and deserialized may
+    // authorize that. A missing file is allowed to be an empty vault only when
+    // no owned auth file exists: otherwise the file may have been lost and the
+    // credentials must stay untouched.
+    let accounts = match vault::verified_accounts() {
+        Some(accounts) => accounts,
+        None if !vault::file_exists() && !owns_auth_files(&dir)? => return Ok(0),
+        None => {
+            return Err(
+                "отказ синхронизации auth: vault accounts.json прочитан не полностью, файлы auth не изменены"
+                    .to_string(),
+            )
+        }
+    };
     let (ordered_ids, _) = crate::routing::resolve(
         &accounts,
         &settings.routing_strategy,
@@ -1334,7 +1393,6 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
     // visible set, so a quota-only sync does not read the cache twice.
     let pool = crate::codex_route::visible_pool_slugs();
 
-    let dir = paths::auths_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut desired = Vec::new();
     for (index, account) in ordered.iter().enumerate() {
@@ -1362,10 +1420,16 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
         ));
     }
 
-    // Only the files this sync owns are replaced: engine-written auth files of
-    // other providers (claude-*.json) must survive an account sync. Remove
-    // stale owned files, but leave unchanged credentials in place so the
-    // engine does not reload them during every quota poll.
+    sync_auth_files(&dir, desired)
+}
+
+/// Write every desired auth file first, then remove the stale ones. Deleting
+/// first meant a failed write left the pool with fewer credentials than before
+/// the sync; now a failure keeps every old route in place.
+fn sync_auth_files(
+    dir: &std::path::Path,
+    desired: Vec<(std::path::PathBuf, Value, bool)>,
+) -> Result<usize, String> {
     let desired_names: std::collections::HashSet<String> = desired
         .iter()
         .filter_map(|(path, _, _)| {
@@ -1373,20 +1437,25 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
                 .map(|name| name.to_string_lossy().to_string())
         })
         .collect();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if crate::claude::is_codex_auth_file_name(&name) && !desired_names.contains(&name) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-
     let mut written = 0usize;
     for (file, mut payload, preserve_legacy_pause) in desired {
-        let mut current = fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let bytes = match fs::read(&file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(format!(
+                    "cannot read existing auth file {}: {error}",
+                    file.display()
+                ));
+            }
+        };
+        let mut current = if bytes.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| {
+                format!("corrupt auth file {}: {error}", file.display())
+            })?)
+        };
         if let Some(Value::Object(object)) = current.as_mut() {
             if object.get("disabled").and_then(Value::as_bool) == Some(false) {
                 object.remove("disabled");
@@ -1405,13 +1474,44 @@ pub fn sync_accounts(settings: &Settings) -> Result<usize, String> {
             written += 1;
             continue;
         }
-        let payload = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-        // Temp + rename, like config.yaml: the engine must never hot-reload a
-        // half-written auth file.
-        let tmp = paths::tmp_path(&file);
-        fs::write(&tmp, payload).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
+        let encoded = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+        // MoveFileExW on Windows and rename on Unix: the engine must never
+        // hot-reload a half-written auth file, and an existing file must be
+        // replaced rather than rejected.
+        crate::agents::write_atomic(&file, &encoded)?;
         written += 1;
+    }
+
+    // Only the files this sync owns are pruned: engine-written auth files of
+    // other providers (claude-*.json) must survive an account sync. A stale
+    // file is a route the engine keeps serving, so a directory listing or a
+    // removal that fails must reach the caller: reporting success here left
+    // the old credentials active with no sign of the problem.
+    let entries = fs::read_dir(dir)
+        .map_err(|error| format!("cannot read auth directory {}: {error}", dir.display()))?;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push(format!("cannot read an auth directory entry: {error}"));
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !crate::claude::is_codex_auth_file_name(&name) || desired_names.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if let Err(error) = fs::remove_file(&path) {
+            failures.push(format!(
+                "cannot remove stale auth file {}: {error}",
+                path.display()
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!("auth sync left stale credentials: {}", failures.join("; ")));
     }
     Ok(written)
 }
@@ -2499,7 +2599,8 @@ mod tests {
         image_starts_with, is_listening, is_listening_blocking, last_written_config,
         local_api_keys_yaml, lock_config_generation, parse_pid, parse_recent_call,
         parse_tasklist_image, parse_tasklist_pids, parse_usage_record, priority_for, quota_weight,
-        reload_acknowledged, reload_digest, servable_local_models, tail_bytes, write_config,
+        reload_acknowledged, reload_digest, servable_local_models, sync_auth_files, tail_bytes,
+        write_config,
         write_config_forced, write_config_if_changed, write_config_if_changed_forced,
         write_config_if_changed_locked, yaml_escape, RoutingTuning, PRIORITY_TIER_BACKUP,
         USER_AGENT,
@@ -2517,10 +2618,57 @@ mod tests {
     /// GGUF would make every "no sources" assertion fail.
     fn api_keys_yaml_test(settings: &Settings) -> String {
         api_keys_yaml_with_local(settings, &[], 18318, "melon-local-test")
+            .expect("routing groups are readable")
     }
 
     fn settings() -> Settings {
         Settings::default()
+    }
+
+    #[test]
+    fn failed_auth_write_keeps_stale_files() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("sync-fail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let stale = dir.join("codex-stale.json");
+        std::fs::write(&stale, "{}").expect("stale auth");
+        // A directory where the auth file is expected makes the write fail on
+        // every host, so the prune-after-write order can be observed.
+        let blocked = dir.join("codex-blocked.json");
+        std::fs::create_dir(&blocked).expect("blocked target");
+        let desired = vec![(blocked.clone(), json!({"type": "codex"}), false)];
+        assert!(
+            sync_auth_files(&dir, desired).is_err(),
+            "writing onto a directory must fail"
+        );
+        assert!(
+            stale.exists(),
+            "a failed auth write must not prune remaining auth files"
+        );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn successful_sync_writes_first_and_prunes_last() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("sync-ok-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let stale = dir.join("codex-stale.json");
+        std::fs::write(&stale, "{}").expect("stale auth");
+        let wanted = dir.join("codex-live.json");
+        let desired = vec![(wanted.clone(), json!({"type": "codex"}), false)];
+        assert_eq!(sync_auth_files(&dir, desired).unwrap(), 1);
+        assert!(
+            !stale.exists(),
+            "a successful sync prunes files absent from the snapshot"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&wanted).expect("written auth"),
+            "{\n  \"type\": \"codex\"\n}"
+        );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
@@ -3065,7 +3213,8 @@ mod tests {
                 }
             },
         };
-        let yaml = super::api_keys_yaml_with_local(&s, &[model], 18318, "test-local-token-1234");
+        let yaml = super::api_keys_yaml_with_local(&s, &[model], 18318, "test-local-token-1234")
+            .expect("routing groups are readable");
         assert_eq!(yaml.matches("api-keys:").count(), 1);
         assert_eq!(yaml.matches("openai-compatibility:").count(), 1);
         assert!(yaml.contains("    - name: \"melon-local-ai\"\n"));
@@ -3112,7 +3261,8 @@ mod tests {
             // The publication promises exactly the aliases this YAML declares;
             // a second snapshot is what made the poll wait for a model the
             // file no longer listed.
-            let (rendered, aliases) = local_api_keys_yaml(&settings());
+            let (rendered, aliases) =
+                local_api_keys_yaml(&settings()).expect("routing groups are readable");
             assert_eq!(aliases, vec!["local/ready".to_string()]);
             assert_eq!(rendered, yaml);
             for alias in &aliases {
@@ -3186,7 +3336,8 @@ mod tests {
             &[engine_fixture_model()],
             59999,
             "__LOCAL_TOKEN__",
-        );
+        )
+        .expect("routing groups are readable");
         let tracked = include_str!("../../tools/fixtures/local-ai-gateway.yaml");
         assert_eq!(yaml.trim_end(), tracked.trim_end());
     }
@@ -3201,7 +3352,8 @@ mod tests {
             &[engine_fixture_model()],
             59999,
             "__LOCAL_TOKEN__",
-        );
+        )
+        .expect("routing groups are readable");
         let path = std::env::var_os("MELON_LOCAL_AI_FIXTURE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("melon-local-ai-windows.yaml"));
@@ -3351,6 +3503,43 @@ mod tests {
         assert!(claude_part.contains("    - name: \"commandcode-anthropic\"\n"));
         assert!(claude_part.contains("        - name: \"claude-sonnet-5-5\"\n          alias: \"commandcode/claude-sonnet-5-5\"\n"));
         assert!(!claude_part.contains("gpt-6-astra"));
+    }
+
+    #[test]
+    fn group_alias_reaches_the_anthropic_commandcode_block() {
+        use crate::routing_groups::{Group, Member};
+        let mut s = settings();
+        s.commandcode_key = "cmd-key".to_string();
+        s.commandcode_models = vec![crate::settings::ProviderModel {
+            id: "claude-sonnet-5-5".to_string(),
+            display: "Claude Sonnet 5.5".to_string(),
+            anthropic_only: Some(true),
+            ..Default::default()
+        }];
+        let groups = vec![Group {
+            id: "g1".to_string(),
+            alias: "smart".to_string(),
+            note: String::new(),
+            enabled: true,
+            members: vec![Member {
+                source_id: "commandcode".to_string(),
+                model_id: "claude-sonnet-5-5".to_string(),
+            }],
+        }];
+        let yaml = api_keys_yaml_with_groups(&s, &[], 18318, "token", &groups);
+        let split = yaml.find("  claude:\n").expect("claude section");
+        let (_, claude_part) = yaml.split_at(split);
+        assert!(
+            claude_part
+                .contains("        - name: \"claude-sonnet-5-5\"\n          alias: \"smart\"\n"),
+            "{claude_part}"
+        );
+        assert!(
+            claude_part.contains(
+                "        - name: \"claude-sonnet-5-5\"\n          alias: \"commandcode/claude-sonnet-5-5\"\n"
+            ),
+            "{claude_part}"
+        );
     }
 
     #[test]
@@ -3566,6 +3755,124 @@ mod tests {
         };
         s.custom_providers = vec![disabled, invalid_id, no_models, no_key];
         assert_eq!(api_keys_yaml_test(&s), "");
+    }
+
+    fn group(source: &str, model: &str) -> crate::routing_groups::Group {
+        crate::routing_groups::Group {
+            id: "g1".into(),
+            alias: "smart".into(),
+            note: String::new(),
+            enabled: true,
+            members: vec![crate::routing_groups::Member {
+                source_id: source.into(),
+                model_id: model.into(),
+            }],
+        }
+    }
+
+    /// A disabled custom model that a group lists still answers to the group
+    /// alias. The direct `provider/model` alias is exactly what disabling it
+    /// removes, so it must not come back through the ordinary fallback.
+    #[test]
+    fn disabled_custom_model_keeps_only_its_group_alias() {
+        let mut s = settings();
+        s.custom_providers = vec![custom_provider(
+            "acme",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("gpt-5", true), custom_model("hidden", false)],
+        )];
+        let groups = vec![group("acme", "hidden")];
+        let yaml = api_keys_yaml_with_groups(&s, &[], 18318, "token", &groups);
+
+        assert!(yaml.contains("alias: \"acme/gpt-5\""), "{yaml}");
+        assert!(yaml.contains("alias: \"smart\""), "{yaml}");
+        assert!(
+            !yaml.contains("alias: \"acme/hidden\""),
+            "a disabled model must not regain its direct alias: {yaml}"
+        );
+        let entry = yaml
+            .split("- name: \"hidden\"")
+            .nth(1)
+            .expect("disabled model entry")
+            .split("- name:")
+            .next()
+            .unwrap();
+        assert!(entry.contains("alias: \"smart\""), "{yaml}");
+    }
+
+    /// The provider check used to skip a provider whose models were all
+    /// disabled, which hid the only group alias that still routed to it.
+    #[test]
+    fn custom_provider_with_only_a_grouped_disabled_model_is_emitted() {
+        let mut s = settings();
+        s.custom_providers = vec![custom_provider(
+            "acme",
+            "openai-chat",
+            "https://relay.example/v1",
+            vec![custom_model("hidden", false)],
+        )];
+        assert_eq!(
+            api_keys_yaml_with_groups(&s, &[], 18318, "token", &[]),
+            "",
+            "without a group the provider has nothing to serve"
+        );
+        let yaml =
+            api_keys_yaml_with_groups(&s, &[], 18318, "token", &[group("acme", "hidden")]);
+        assert!(yaml.contains("    - name: \"acme\""), "{yaml}");
+        assert!(yaml.contains("- name: \"hidden\""), "{yaml}");
+        assert!(yaml.contains("alias: \"smart\""), "{yaml}");
+    }
+
+    #[test]
+    fn missing_auth_directory_is_an_error_instead_of_an_empty_success() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("sync-missing-{}", uuid::Uuid::new_v4()));
+        let error = sync_auth_files(&dir, Vec::new()).expect_err("missing directory");
+        assert!(error.contains("cannot read auth directory"), "{error}");
+    }
+
+
+    /// An auth file the app owns but cannot parse is not a blank slate:
+    /// overwriting it would lose a legacy pause flag and silently re-enable a
+    /// route the user disabled. The sync must refuse to proceed.
+    #[test]
+    fn corrupt_existing_auth_file_is_a_hard_failure() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("sync-corrupt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("codex-stale.json");
+        std::fs::write(&file, "not json").expect("corrupt auth");
+        let desired = vec![(file.clone(), json!({"type": "codex"}), true)];
+        let error = sync_auth_files(&dir, desired).expect_err("corrupt auth file");
+        assert!(error.contains("corrupt auth file"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "not json",
+            "a corrupt file must not be overwritten"
+        );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// Deterministic removal failure without chmod: the stale entry is a
+    /// directory, and unlink on a directory fails on every host. The sync
+    /// must report the failure instead of a successful count.
+    #[test]
+    fn unreposable_stale_entry_fails_the_prune() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("sync-stale-dir-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let stale = dir.join("codex-stale.json");
+        std::fs::create_dir(&stale).expect("stale dir entry");
+        let result = sync_auth_files(&dir, Vec::new());
+        assert!(result.is_err(), "a stale entry that cannot be removed must fail");
+        let error = result.unwrap_err();
+        assert!(error.contains("cannot remove stale auth file"), "{error}");
+        assert!(stale.exists(), "the stale entry is still there");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]

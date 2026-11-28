@@ -1,0 +1,566 @@
+diff --git a/sdk/cliproxy/auth/conductor_models.go b/sdk/cliproxy/auth/conductor_models.go
+index 3ac8b28..a026a9a 100644
+--- a/sdk/cliproxy/auth/conductor_models.go
++++ b/sdk/cliproxy/auth/conductor_models.go
+@@ -133,6 +133,25 @@ func (m *Manager) resolveOpenAICompatUpstreamModelPool(auth *Auth, requestedMode
+ 	return resolveOpenAICompatUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, requestedModel)
+ }
+ 
++// resolveConfiguredUpstreamModelPool returns every configured upstream model
++// that shares the requested alias for an API-key credential. A single alias can
++// name several models of the same source, so the pool is the fallback set and
++// not just the first configured entry.
++func resolveConfiguredUpstreamModelPool(cfg *internalconfig.Config, auth *Auth, requestedModel string) []string {
++	if !isConfiguredModelRoutingAuth(auth) {
++		return nil
++	}
++	requestedModel = strings.TrimSpace(requestedModel)
++	if requestedModel == "" {
++		return nil
++	}
++	models := configuredModelAliasEntries(cfg, auth)
++	if len(models) == 0 {
++		return nil
++	}
++	return resolveModelAliasPoolFromConfigModels(requestedModel, models)
++}
++
+ func resolveOpenAICompatUpstreamModelPool(cfg *internalconfig.Config, auth *Auth, requestedModel string) []string {
+ 	if !isConfiguredOpenAICompatAuth(auth) {
+ 		return nil
+@@ -169,7 +188,7 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
+ 	}
+ 	requestedModel := rewriteModelForAuth(routeModel, auth)
+ 	requestedModel = m.applyOAuthModelAlias(auth, requestedModel)
+-	if pool := m.resolveOpenAICompatUpstreamModelPool(auth, requestedModel); len(pool) > 0 {
++	if pool := resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, requestedModel); len(pool) > 0 {
+ 		if len(pool) == 1 {
+ 			return pool
+ 		}
+@@ -234,23 +253,57 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
+ 		targetKey = canonicalModelKey(targetModel)
+ 	}
+ 
+-	state := existingModelState(auth, targetKey)
+ 	isSuspended := auth.Disabled || auth.Status == StatusDisabled
+ 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+ 		isSuspended = true
+ 	}
+ 	isQuotaExceeded := false
+ 	var suspendReason string
+-	if state != nil {
+-		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
+-			isSuspended = true
++	states := []*ModelState{existingModelState(auth, targetKey)}
++	if m != nil {
++		// Pooled API-key aliases cool each upstream model separately. The alias
++		// projection must reflect the pool without rotating its selection offset.
++		// A healthy member keeps the alias schedulable, so only suspend the
++		// projection when every pooled member is unavailable.
++		poolModel := rewriteModelForAuth(targetModel, auth)
++		if strings.TrimSpace(poolModel) == "" {
++			poolModel = targetModel
+ 		}
+-		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
+-			isQuotaExceeded = true
++		if pool := resolveConfiguredUpstreamModelPool(m.loadAPIKeyModelRouting().config, auth, poolModel); len(pool) > 1 {
++			states = states[:0]
++			for _, upstreamModel := range pool {
++				states = append(states, existingModelState(auth, upstreamModel))
++			}
+ 		}
+-		if isSuspended {
+-			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
++	}
++	blockedStates := 0
++	quotaExceededStates := 0
++	for _, state := range states {
++		if state == nil {
++			continue
++		}
++		stateBlocked, _, _ := isAuthBlockedForModel(&Auth{ModelStates: map[string]*ModelState{"projection": state}}, "projection", now)
++		if stateBlocked {
++			blockedStates++
++			if suspendReason == "" {
++				suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
++			}
+ 		}
++		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
++			quotaExceededStates++
++		}
++	}
++	if len(states) > 0 && blockedStates == len(states) {
++		isSuspended = true
++	}
++	// Registry availability subtracts quota-exceeded clients separately from
++	// suspensions. Report the alias as quota-limited only when every pooled
++	// member is limited; otherwise the alias remains usable via a healthy member.
++	if len(states) > 0 && quotaExceededStates == len(states) {
++		isQuotaExceeded = true
++	}
++	if !isSuspended {
++		suspendReason = ""
+ 	}
+ 	if len(auth.ModelStates) == 0 && auth.Unavailable && auth.NextRetryAfter.After(now) {
+ 		// With no per-model states, scheduling falls back to the credential-wide
+@@ -344,7 +397,7 @@ func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel strin
+ 		}
+ 	}
+ 	if len(candidates) == 0 {
+-		if pool := resolveOpenAICompatUpstreamModelPool(routing.config, auth, upstreamModel); len(pool) > 0 {
++		if pool := resolveConfiguredUpstreamModelPool(routing.config, auth, upstreamModel); len(pool) > 0 {
+ 			if len(pool) == 1 {
+ 				candidates = pool
+ 			} else {
+diff --git a/sdk/cliproxy/auth/api_key_model_pool_test.go b/sdk/cliproxy/auth/api_key_model_pool_test.go
+new file mode 100644
+index 0000000..5f48aa0
+--- /dev/null
++++ b/sdk/cliproxy/auth/api_key_model_pool_test.go
+@@ -0,0 +1,446 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func registerAPIKeyPoolAuth(t *testing.T, manager *Manager, id, provider, model string, attributes map[string]string) *Auth {
++	t.Helper()
++	registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{ID: model}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++	auth := &Auth{
++		ID:         id,
++		Provider:   provider,
++		Status:     StatusActive,
++		Attributes: attributes,
++	}
++	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++		t.Fatalf("register auth %s: %v", id, errRegister)
++	}
++	return auth
++}
++
++func claudeModelPoolConfig(apiKey, alias string, names ...string) *internalconfig.Config {
++	models := make([]internalconfig.ClaudeModel, 0, len(names))
++	for _, name := range names {
++		models = append(models, internalconfig.ClaudeModel{Name: name, Alias: alias})
++	}
++	return &internalconfig.Config{ClaudeKey: []internalconfig.ClaudeKey{{APIKey: apiKey, Models: models}}}
++}
++
++func TestAPIKeyClaudeAliasPoolRotatesAndFallsBackAcrossModels(t *testing.T) {
++	const (
++		apiKey   = "sk-ant-pool"
++		alias    = "claude-pool"
++		first    = "claude-sonnet-4-5"
++		second   = "claude-opus-4-1"
++		provider = "claude"
++	)
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(claudeModelPoolConfig(apiKey, alias, first, second))
++	registerAPIKeyPoolAuth(t, manager, "claude-pool-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:claude[pool]",
++	})
++
++	var attempts []string
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: provider,
++		executeFn: func(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attempts = append(attempts, req.Model)
++			if req.Model == first {
++				return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusTooManyRequests, Message: "first model rate limited"}
++			}
++			return cliproxyexecutor.Response{Payload: []byte(req.Model)}, nil
++		},
++	})
++
++	response, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("first request: %v", errExecute)
++	}
++	if string(response.Payload) != second {
++		t.Fatalf("first response = %s, want fallback model %s", response.Payload, second)
++	}
++	// The rotation offset advances on every request, so the follow-up starts
++	// with the model that survived the 429 instead of walking into it again.
++	response, errExecute = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("follow-up request after 429: %v", errExecute)
++	}
++	if string(response.Payload) != second {
++		t.Fatalf("follow-up response = %s, want %s", response.Payload, second)
++	}
++	response, errExecute = manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("third request after 429: %v", errExecute)
++	}
++	if string(response.Payload) != second {
++		t.Fatalf("third response = %s, want %s", response.Payload, second)
++	}
++	wantAttempts := []string{first, second, second, second}
++	if strings.Join(attempts, ",") != strings.Join(wantAttempts, ",") {
++		t.Fatalf("attempts = %v, want %v", attempts, wantAttempts)
++	}
++	// A 429 on one pooled model must cool only that model, not the whole alias.
++	auth, okAuth := manager.GetByID("claude-pool-auth")
++	if !okAuth || auth == nil {
++		t.Fatal("pool auth disappeared")
++	}
++	if auth.ModelStates[first] == nil || !auth.ModelStates[first].Unavailable {
++		t.Fatalf("rate-limited model %s must be cooled: %+v", first, auth.ModelStates[first])
++	}
++	if auth.ModelStates[second] != nil && auth.ModelStates[second].Unavailable {
++		t.Fatalf("healthy pooled model %s must stay available: %+v", second, auth.ModelStates[second])
++	}
++}
++
++func TestAPIKeyOpenAICompatAliasPoolRotatesAndFallsBack(t *testing.T) {
++	const (
++		apiKey = "sk-compat-pool"
++		compat = "acme"
++		alias  = "compat-pool"
++		first  = "compat-model-a"
++		second = "compat-model-b"
++	)
++	provider := util.OpenAICompatibleProviderKey(compat)
++	cfg := &internalconfig.Config{
++		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
++			Name:          compat,
++			BaseURL:       "https://compat.example.test/v1",
++			APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{{APIKey: apiKey}},
++			Models: []internalconfig.OpenAICompatibilityModel{
++				{Name: first, Alias: alias},
++				{Name: second, Alias: alias},
++			},
++		}},
++	}
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(cfg)
++	registerAPIKeyPoolAuth(t, manager, "compat-pool-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		"compat_name":   compat,
++		AttributeSource: "config:openai-compatibility[pool]",
++	})
++
++	var attempts []string
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: provider,
++		executeFn: func(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attempts = append(attempts, req.Model)
++			if req.Model == first {
++				return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusInternalServerError, Message: "first model failed"}
++			}
++			return cliproxyexecutor.Response{Payload: []byte(req.Model)}, nil
++		},
++	})
++
++	response, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("openai-compat pool request: %v", errExecute)
++	}
++	if string(response.Payload) != second {
++		t.Fatalf("response = %s, want %s", response.Payload, second)
++	}
++	if len(attempts) != 2 || attempts[0] != first || attempts[1] != second {
++		t.Fatalf("attempts = %v, want [%s %s]", attempts, first, second)
++	}
++}
++
++func TestMixedProviderAliasRoutesAcrossProtocols(t *testing.T) {
++	const (
++		alias     = "mixed-pool-alias"
++		claudeKey = "sk-ant-mixed"
++		compatKey = "sk-compat-mixed"
++	)
++	claudeProvider := "claude"
++	compatProvider := util.OpenAICompatibleProviderKey("mixed")
++	registry.GetGlobalRegistry().RegisterClient("mixed-claude-client", claudeProvider, []*registry.ModelInfo{{ID: alias}})
++	registry.GetGlobalRegistry().RegisterClient("mixed-compat-client", compatProvider, []*registry.ModelInfo{{ID: alias}})
++	t.Cleanup(func() {
++		registry.GetGlobalRegistry().UnregisterClient("mixed-claude-client")
++		registry.GetGlobalRegistry().UnregisterClient("mixed-compat-client")
++	})
++
++	providers := util.GetProviderName(alias)
++	if len(providers) < 2 {
++		t.Fatalf("providers for %s = %v, want both protocols", alias, providers)
++	}
++	seen := map[string]bool{}
++	for _, provider := range providers {
++		seen[provider] = true
++	}
++	if !seen[claudeProvider] || !seen[compatProvider] {
++		t.Fatalf("providers for %s = %v, want claude and openai-compatibility", alias, providers)
++	}
++
++	cfg := claudeModelPoolConfig(claudeKey, alias, "claude-sonnet-4-5")
++	cfg.OpenAICompatibility = []internalconfig.OpenAICompatibility{{
++		Name:          "mixed",
++		BaseURL:       "https://mixed.example.test/v1",
++		APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{{APIKey: compatKey}},
++		Models:        []internalconfig.OpenAICompatibilityModel{{Name: "mixed-compat-model", Alias: alias}},
++	}}
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(cfg)
++	registerAPIKeyPoolAuth(t, manager, "mixed-claude-auth", claudeProvider, alias, map[string]string{
++		AttributeAPIKey: claudeKey,
++		AttributeSource: "config:claude[mixed]",
++	})
++	registerAPIKeyPoolAuth(t, manager, "mixed-compat-auth", compatProvider, alias, map[string]string{
++		AttributeAPIKey: compatKey,
++		"compat_name":   "mixed",
++		AttributeSource: "config:openai-compatibility[mixed]",
++	})
++
++	var attemptedProviders []string
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: claudeProvider,
++		executeFn: func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attemptedProviders = append(attemptedProviders, auth.Provider)
++			return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusBadGateway, Message: "claude upstream failed"}
++		},
++	})
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: compatProvider,
++		executeFn: func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attemptedProviders = append(attemptedProviders, auth.Provider)
++			return cliproxyexecutor.Response{Payload: []byte("compat-ok")}, nil
++		},
++	})
++
++	orderedProviders := []string{claudeProvider, compatProvider}
++	response, errExecute := manager.Execute(context.Background(), orderedProviders, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("mixed provider request: %v", errExecute)
++	}
++	if string(response.Payload) != "compat-ok" {
++		t.Fatalf("response = %s, want compat-ok", response.Payload)
++	}
++	if len(attemptedProviders) != 2 {
++		t.Fatalf("attempted providers = %v, want both protocols", attemptedProviders)
++	}
++}
++
++func TestClosedHeartbeatOnlyStreamFallsBackToPooledModel(t *testing.T) {
++	const (
++		apiKey   = "sk-ant-heartbeat"
++		alias    = "claude-heartbeat"
++		first    = "claude-silent-model"
++		second   = "claude-speaking-model"
++		provider = "claude"
++	)
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(claudeModelPoolConfig(apiKey, alias, first, second))
++	registerAPIKeyPoolAuth(t, manager, "claude-heartbeat-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:claude[heartbeat]",
++	})
++
++	var attempts []string
++	manager.RegisterExecutor(&customStreamMockExecutor{
++		identifier: provider,
++		streamFn: func(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++			attempts = append(attempts, req.Model)
++			chunks := make(chan cliproxyexecutor.StreamChunk, 3)
++			if req.Model == first {
++				// A closed stream that carried only empty heartbeat frames is not
++				// a usable response and must trigger the next pooled model.
++				chunks <- cliproxyexecutor.StreamChunk{}
++				chunks <- cliproxyexecutor.StreamChunk{Payload: []byte{}}
++			} else {
++				chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
++			}
++			close(chunks)
++			return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
++		},
++	})
++
++	stream, errStream := manager.ExecuteStream(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{Stream: true})
++	if errStream != nil {
++		t.Fatalf("execute stream: %v", errStream)
++	}
++	var payload strings.Builder
++	for chunk := range stream.Chunks {
++		if chunk.Err != nil {
++			t.Fatalf("stream chunk error: %v", chunk.Err)
++		}
++		payload.Write(chunk.Payload)
++	}
++	if payload.String() != "ok" {
++		t.Fatalf("stream payload = %q, want the fallback model payload", payload.String())
++	}
++	if len(attempts) != 2 || attempts[0] != first || attempts[1] != second {
++		t.Fatalf("attempts = %v, want [%s %s]", attempts, first, second)
++	}
++}
++
++func TestAPIKeyClaudeAliasPoolAllCooledReturnsError(t *testing.T) {
++	const (
++		apiKey   = "sk-ant-all-cooled"
++		alias    = "claude-all-cooled"
++		first    = "claude-cooled-a"
++		second   = "claude-cooled-b"
++		provider = "claude"
++	)
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(claudeModelPoolConfig(apiKey, alias, first, second))
++	registerAPIKeyPoolAuth(t, manager, "claude-all-cooled-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:claude[all-cooled]",
++	})
++
++	attempts := 0
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: provider,
++		executeFn: func(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attempts++
++			return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusTooManyRequests, Message: "all pooled models rate limited"}
++		},
++	})
++
++	for request := 1; request <= 3; request++ {
++		_, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++		if errExecute == nil {
++			t.Fatalf("request %d unexpectedly succeeded", request)
++		}
++	}
++	// Once every pooled model is cooling down, selection fails before it reaches
++	// an executor. The alias must not spin through upstream attempts forever.
++	if attempts != 2 {
++		t.Fatalf("upstream attempts = %d, want exactly two (one per pooled model)", attempts)
++	}
++	auth, okAuth := manager.GetByID("claude-all-cooled-auth")
++	if !okAuth || auth == nil {
++		t.Fatal("pool auth disappeared")
++	}
++	// The alias projection must not stay healthy once every pooled upstream
++	// model is cooling down.
++	if projection := manager.clientModelProjectionForAuth(auth, alias, time.Now()); !projection.Suspended {
++		t.Fatalf("all-pool cooldown must suspend alias projection: %+v", projection)
++	}
++	if projection := manager.clientModelProjectionForAuth(auth, alias, time.Now()); !projection.QuotaExceeded {
++		t.Fatalf("all-pool 429 must be reported as quota exhaustion: %+v", projection)
++	}
++	// Deterministic recovery: clearing the per-upstream cooldowns restores the
++	// alias projection without sleeping on wall-clock timers.
++	for _, model := range []string{first, second} {
++		if state := auth.ModelStates[model]; state != nil {
++			state.Unavailable = false
++			state.NextRetryAfter = time.Time{}
++			state.Quota.Exceeded = false
++			state.Quota.NextRecoverAt = time.Time{}
++		}
++	}
++	if projection := manager.clientModelProjectionForAuth(auth, alias, time.Now()); projection.Suspended {
++		t.Fatalf("alias projection must recover after pooled cooldowns expire: %+v", projection)
++	}
++}
++
++func TestAPIKeyClaudeAliasPoolProjectionKeepsHealthyMember(t *testing.T) {
++	const (
++		apiKey   = "sk-ant-partial-cooled"
++		alias    = "claude-partial-cooled"
++		first    = "claude-partial-a"
++		second   = "claude-partial-b"
++		provider = "claude"
++	)
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(claudeModelPoolConfig(apiKey, alias, first, second))
++	auth := registerAPIKeyPoolAuth(t, manager, "claude-partial-cooled-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:claude[partial-cooled]",
++	})
++	state := ensureModelState(auth, first)
++	state.Unavailable = true
++	state.Quota.Exceeded = true
++	state.Quota.NextRecoverAt = time.Now().Add(time.Hour)
++
++	projection := manager.clientModelProjectionForAuth(auth, alias, time.Now())
++	if projection.Suspended {
++		t.Fatalf("one cooled pooled model must not suspend the whole alias: %+v", projection)
++	}
++	if projection.QuotaExceeded {
++		t.Fatalf("one quota-limited pooled model must not mark the whole alias quota-exceeded: %+v", projection)
++	}
++}
++
++func TestAPIKeyClaudeAliasPoolProjectionUsesPrefixBeforePoolLookup(t *testing.T) {
++	const (
++		apiKey   = "sk-ant-prefix"
++		alias    = "claude-prefix"
++		first    = "claude-prefix-a"
++		second   = "claude-prefix-b"
++		provider = "claude"
++		prefix   = "team"
++	)
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(claudeModelPoolConfig(apiKey, alias, first, second))
++	auth := registerAPIKeyPoolAuth(t, manager, "claude-prefix-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:claude[prefix]",
++	})
++	auth.Prefix = prefix
++	state := ensureModelState(auth, first)
++	state.Unavailable = true
++
++	projection := manager.clientModelProjectionForAuth(auth, prefix+"/"+alias, time.Now())
++	if projection.Suspended {
++		t.Fatalf("prefix route must resolve the pool and keep the healthy member: %+v", projection)
++	}
++}
++
++func TestAPIKeyGeminiAliasPoolRotatesAndFallsBack(t *testing.T) {
++	const (
++		apiKey   = "gemini-pool-key"
++		alias    = "gemini-pool"
++		first    = "gemini-2.5-pro"
++		second   = "gemini-2.5-flash"
++		provider = "gemini"
++	)
++	cfg := &internalconfig.Config{GeminiKey: []internalconfig.GeminiKey{{
++		APIKey: apiKey,
++		Models: []internalconfig.GeminiModel{
++			{Name: first, Alias: alias},
++			{Name: second, Alias: alias},
++		},
++	}}}
++	manager := NewManager(nil, &RoundRobinSelector{}, nil)
++	manager.SetConfig(cfg)
++	registerAPIKeyPoolAuth(t, manager, "gemini-pool-auth", provider, alias, map[string]string{
++		AttributeAPIKey: apiKey,
++		AttributeSource: "config:gemini[pool]",
++	})
++
++	var attempts []string
++	manager.RegisterExecutor(&mockCustomErrorExecutor{
++		identifier: provider,
++		executeFn: func(_ context.Context, _ *Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++			attempts = append(attempts, req.Model)
++			if req.Model == first {
++				return cliproxyexecutor.Response{}, &Error{HTTPStatus: http.StatusBadGateway, Message: "first gemini model failed"}
++			}
++			return cliproxyexecutor.Response{Payload: []byte(req.Model)}, nil
++		},
++	})
++
++	response, errExecute := manager.Execute(context.Background(), []string{provider}, cliproxyexecutor.Request{Model: alias}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		t.Fatalf("gemini pool request: %v", errExecute)
++	}
++	if string(response.Payload) != second {
++		t.Fatalf("response = %s, want %s", response.Payload, second)
++	}
++	if len(attempts) != 2 || attempts[0] != first || attempts[1] != second {
++		t.Fatalf("attempts = %v, want [%s %s]", attempts, first, second)
++	}
++}

@@ -48,19 +48,22 @@ struct RoutingGroupEditor: View {
     }
 
     /// Sources that can carry an alias in `config.yaml`. Antigravity is
-    /// OAuth-only and the Codex pool lives in auth files, so neither can be a
-    /// group member.
+    /// OAuth-only, plugin rows are synthetic and the Codex pool lives in auth
+    /// files: none of them is emitted into `api-keys`, so selecting one would
+    /// silently lose the alias. This mirrors `RoutingGroupsStore.canCarryAlias`.
     private var eligibleSources: [ModelSource] {
-        sources.sources.filter { source in
-            // Antigravity is OAuth-only: its models never appear in
-            // `src/models`, so they cannot carry an alias.
-            source.kind != .antigravity && !source.models.isEmpty
+        sources.effectiveSources.filter { source in
+            RoutingGroupsStore.canCarryAlias(source) && !source.models.isEmpty
         }
     }
 
     private var currentSource: ModelSource? {
         eligibleSources.first { $0.id == selectedSourceID } ?? eligibleSources.first
     }
+
+    /// The saved groups use the same live source list as `gatewayYAML`.
+    private var liveSources: [ModelSource] { sources.effectiveSources }
+
 
     private var candidateModels: [SourceModel] {
         guard let source = currentSource else { return [] }
@@ -130,6 +133,9 @@ struct RoutingGroupEditor: View {
                                 .font(MTTheme.mono(10))
                                 .foregroundStyle(MTTheme.textSecondary)
                         } else {
+                            Text(L("A disabled model is still served through an active group."))
+                                .font(MTTheme.mono(9))
+                                .foregroundStyle(MTTheme.textTertiary)
                             MTListCard {
                                 VStack(spacing: 0) {
                                     ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
@@ -197,11 +203,22 @@ struct RoutingGroupEditor: View {
     }
 
     private func memberRow(_ member: RoutingGroupMember) -> some View {
-        let source = sources.source(id: member.sourceID)
+        let source = liveSources.first { $0.id == member.sourceID }
         let model = source?.models.first { $0.id == member.modelID }
+        let status = RoutingGroupsStore.memberStatus(member, sources: liveSources)
+        let detail: String
+        switch status {
+        case .active: detail = ""
+        case .enabledByGroup: detail = L("Enabled through this group")
+        case .sourceMissing: detail = L("Source is missing")
+        case .sourceDisabled: detail = L("Source is disabled")
+        case .modelMissing: detail = L("Model is missing")
+        case .notPublishable: detail = L("Source does not write a provider block")
+        }
+        let sourceTitle = source?.title ?? member.sourceID
         return MTRow(
             title: member.modelID,
-            subtitle: source?.title ?? member.sourceID,
+            subtitle: detail.isEmpty ? sourceTitle : "\(sourceTitle) - \(detail)",
             systemImage: "square.stack.3d.up",
             accent: MTTheme.violet
         ) {

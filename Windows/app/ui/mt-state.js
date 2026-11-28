@@ -7,6 +7,7 @@ const S = {
   history: [],
   status: null,
   settings: null,
+  gatewayConfigWarning: null,
   proxyUrlDraft: null,
   providers: null,
   /// Providers board: null shows the list, a route id shows that provider's
@@ -52,6 +53,10 @@ const S = {
   routingGroups: null,
   routingGroupLoaded: false,
   routingGroupDraft: null,
+  /// Read failure reported by the backend with the routing-groups snapshot.
+  routingGroupError: null,
+  /// Last gateway_sync failure: the group change is stored, but not applied.
+  routingGroupApplyError: null,
   models: null,
   modelsQuery: "",
   // Codex model pool: shared OpenAI model catalog, its picker modal and the

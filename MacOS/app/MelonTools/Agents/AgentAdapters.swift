@@ -502,12 +502,21 @@ enum AgentAdapters {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// Removes only one marked list entry: its marker line and the lines
+    /// indented under it. A blank line or a top-level comment ends the entry,
+    /// so unrelated YAML between two entries is never swallowed.
     private static func removingMarkedBlock(_ lines: [String], id: String) -> [String] {
-        guard let start = lines.firstIndex(where: { $0.hasPrefix("- id: \(id) # melon-tools") }) else {
+        let marker = "- id: \(id) # melon-tools"
+        guard let start = lines.firstIndex(where: { $0.hasPrefix(marker) }) else {
             return lines
         }
         var end = start + 1
-        while end < lines.count, !lines[end].hasPrefix("- ") {
+        while end < lines.count {
+            let line = lines[end]
+            if line.hasPrefix("- ") { break }
+            if line.trimmingCharacters(in: .whitespaces).isEmpty { break }
+            // Deeper indent belongs to the marked block; top-level content ends it.
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
             end += 1
         }
         var copy = lines

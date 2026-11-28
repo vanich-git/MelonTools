@@ -436,6 +436,41 @@ final class AgentAndUsageTests: XCTestCase {
         XCTAssertTrue(first.text.contains("provider: deepseek-official"))
     }
 
+    func testDSHPatchKeepsForeignCommentsAndKeys() throws {
+        let definition = try XCTUnwrap(AgentCatalog.agent(id: "dsh"))
+        let url = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"]!)
+            .appendingPathComponent("melon-dsh-foreign-\(UUID().uuidString).yml")
+        let foreign = """
+        # my own header
+        provider: my-provider # keep me
+
+        - id: llm-deepseek # melon-tools
+          baseURL: "http://old:1/v1"
+
+        # a note between managed blocks
+        other-key: keep-me-too
+
+        - id: agent-default-model # melon-tools
+          provider: old
+
+        # trailing user note
+        custom:
+          key: value
+        """
+        let edits = try AgentAdapters.edits(
+            definition: definition, urls: [url], files: [url.path: foreign], context: context
+        )
+        let text = try XCTUnwrap(edits.first?.text)
+        XCTAssertTrue(text.contains("# my own header"))
+        XCTAssertTrue(text.contains("# a note between managed blocks"))
+        XCTAssertTrue(text.contains("other-key: keep-me-too"))
+        XCTAssertTrue(text.contains("# trailing user note"))
+        XCTAssertTrue(text.contains("custom:"))
+        XCTAssertTrue(text.contains("key: value"))
+        XCTAssertEqual(text.components(separatedBy: "- id: llm-deepseek").count, 2)
+        XCTAssertEqual(text.components(separatedBy: "- id: agent-default-model").count, 2)
+    }
+
     func testAntigravityWritesGatewayBlock() throws {
         let definition = try XCTUnwrap(AgentCatalog.agent(id: "antigravity"))
         let url = URL(fileURLWithPath: "/tmp/melon-antigravity-config.json")

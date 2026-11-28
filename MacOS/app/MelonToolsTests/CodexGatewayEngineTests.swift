@@ -77,6 +77,35 @@ final class CodexGatewayEngineTests: XCTestCase {
         ))
     }
 
+    // MARK: - Gateway process identity
+
+    func testGatewayProcessRequiresTheExactBinaryPath() {
+        let own = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+        XCTAssertTrue(CodexGatewayService.sameBinaryPath(own, own))
+        // Same basename, different file: a foreign cliproxyapi must never be
+        // adopted or killed.
+        XCTAssertFalse(CodexGatewayService.sameBinaryPath(
+            "/tmp/other/cliproxyapi",
+            own
+        ))
+        let fakePID = pid_t(98_765)
+        XCTAssertTrue(CodexGatewayService.isGatewayProcess(
+            fakePID,
+            binary: own,
+            pathOfPID: { _ in own }
+        ))
+        XCTAssertFalse(CodexGatewayService.isGatewayProcess(
+            fakePID,
+            binary: "/tmp/other/cliproxyapi",
+            pathOfPID: { _ in own }
+        ))
+        XCTAssertFalse(CodexGatewayService.isGatewayProcess(
+            getpid(),
+            binary: own,
+            pathOfPID: { _ in own }
+        ))
+    }
+
     // MARK: - Config write idempotency
 
     func testConfigWriteIsSkippedForAnUnchangedGeneration() {

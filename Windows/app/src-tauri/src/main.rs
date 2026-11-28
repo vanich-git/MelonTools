@@ -223,6 +223,55 @@ fn settings_view(settings: &settings::Settings) -> Result<Value, String> {
     Ok(value)
 }
 
+/// settings.json is already durable when this runs, so a config publication
+/// failure must not be reported as a failed save: the caller would discard the
+/// new state, retry, and hit the same broken store again. The warning travels
+/// with the returned state instead.
+fn publish_config_warning(state: &State<'_, AppState>) -> Option<String> {
+    match gateway::write_config_current(|| state.settings()) {
+        Ok(()) => None,
+        Err(error) => {
+            eprintln!("[gateway] config write failed: {error}");
+            Some(error)
+        }
+    }
+}
+
+fn settings_view_with_warning(
+    settings: &settings::Settings,
+    warning: Option<String>,
+) -> Result<Value, String> {
+    let mut value = settings_view(settings)?;
+    if let (Some(object), Some(warning)) = (value.as_object_mut(), warning) {
+        object.insert("configWarning".to_string(), json!(warning));
+    }
+    Ok(value)
+}
+
+/// A saved tuning whose auth sync failed is still saved. Reporting `Err` made
+/// the UI discard a state that is already on disk, so the failure travels as a
+/// warning on a successful result.
+fn tuning_result(
+    view: Result<Value, String>,
+    config_warning: Option<String>,
+) -> Result<Value, String> {
+    match view {
+        Ok(mut view) => {
+            if let (Some(object), Some(warning)) = (view.as_object_mut(), config_warning) {
+                object.insert("configWarning".to_string(), json!(warning));
+            }
+            Ok(view)
+        }
+        Err(error) => {
+            let message = match config_warning {
+                Some(warning) => format!("{warning}; auth sync: {error}"),
+                None => format!("auth sync: {error}"),
+            };
+            Ok(json!({"saved": true, "configWarning": message}))
+        }
+    }
+}
+
 #[tauri::command]
 async fn settings_set(
     app: tauri::AppHandle,
@@ -270,9 +319,7 @@ async fn settings_set(
     // Write the config on every save, not only when the health probe said the
     // engine was up. A stopped or just-starting engine still needs the newest
     // file, and a false-negative probe must not leave the old port/key on disk.
-    if let Err(error) = gateway::write_config_current(|| state.settings()) {
-        eprintln!("[gateway] config write failed: {error}");
-    }
+    let config_warning = publish_config_warning(&state);
     if before.lang != merged.lang {
         let _ = refresh_tray_menu(&app, &merged.lang);
     }
@@ -285,7 +332,7 @@ async fn settings_set(
         let _ = stop_gateway(state.inner()).await;
         let _ = start_gateway(state.inner()).await;
     }
-    settings_view(&merged)
+    settings_view_with_warning(&merged, config_warning)
 }
 
 // MARK: - Gateway
@@ -445,9 +492,7 @@ async fn gateway_rotate_key(
 ) -> Result<Value, String> {
     let key = settings::generate_api_key();
     mutate_settings(&state, |s| s.api_key = key.clone())?;
-    if let Err(error) = gateway::write_config_current(|| state.settings()) {
-        eprintln!("[gateway] config write failed after rotation: {error}");
-    }
+    let config_warning = publish_config_warning(&state);
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
         // The running engine still holds the previous key: point Codex at the
@@ -455,16 +500,25 @@ async fn gateway_rotate_key(
         let _ = codex_route::apply(settings.port, &settings.api_key);
     }
     let _ = app.emit("settings-changed", ());
-    settings_view(&settings)
+    settings_view_with_warning(&settings, config_warning)
 }
 
 /// Rewrites config.yaml + gateway auth files from the vault.
 #[tauri::command]
 async fn gateway_sync(state: State<'_, AppState>) -> Result<Value, String> {
+    // The config is written even when the engine is stopped: its next start
+    // reads this file. Auth files are only touched while it runs, because a
+    // stopped engine cannot need them and a failed probe must not turn into a
+    // destructive sync of a stale vault.
     gateway::write_config_current(|| state.settings())?;
     let settings = state.settings();
-    let written = gateway::sync_accounts(&settings)?;
-    Ok(json!({ "syncedAccounts": written }))
+    let running = gateway::health(settings.port, &settings.api_key).await;
+    let written = if running {
+        gateway::sync_accounts(&settings)?
+    } else {
+        0
+    };
+    Ok(json!({ "syncedAccounts": written, "gatewayRunning": running }))
 }
 
 #[tauri::command]
@@ -660,7 +714,7 @@ async fn quota_refresh(
     // account state; otherwise the block lingers until the next live tick.
     live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
-        gateway::sync_accounts(&settings).unwrap_or(0)
+        gateway::sync_accounts(&settings)?
     } else {
         0
     };
@@ -730,7 +784,7 @@ async fn reset_activate(state: State<'_, AppState>, id: String) -> Result<Value,
     let settings = state.settings();
     live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
-        gateway::sync_accounts(&settings).unwrap_or(0)
+        gateway::sync_accounts(&settings)?
     } else {
         0
     };
@@ -923,7 +977,9 @@ async fn switch_account(state: State<'_, AppState>, id: String) -> Result<Value,
     vault::save_raw(&raw)?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     Ok(json!({ "authPath": path.to_string_lossy() }))
 }
@@ -935,7 +991,9 @@ async fn import_current_auth(state: State<'_, AppState>) -> Result<Value, String
     let result = vault::upsert_from_tokens(&tokens)?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     Ok(json!({ "result": result, "accounts": vault::list_views() }))
 }
@@ -948,7 +1006,9 @@ async fn import_json_accounts(
     let result = account_import::import_json(&content)?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     Ok(json!({
         "result": result,
@@ -989,7 +1049,7 @@ async fn account_wake(
     let settings = state.settings();
     live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
-        gateway::sync_accounts(&settings).unwrap_or(0)
+        gateway::sync_accounts(&settings)?
     } else {
         0
     };
@@ -1015,7 +1075,7 @@ async fn accounts_wake_selected(
     let settings = state.settings();
     live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
-        gateway::sync_accounts(&settings).unwrap_or(0)
+        gateway::sync_accounts(&settings)?
     } else {
         0
     };
@@ -1040,7 +1100,7 @@ async fn accounts_wake_sleeping(
     let settings = state.settings();
     live_quota::tick(&settings).await;
     let synced = if gateway::health(settings.port, &settings.api_key).await {
-        gateway::sync_accounts(&settings).unwrap_or(0)
+        gateway::sync_accounts(&settings)?
     } else {
         0
     };
@@ -1077,7 +1137,9 @@ async fn save_reserves(
     })?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     Ok(vault::list_views())
 }
@@ -1087,7 +1149,9 @@ async fn delete_account(state: State<'_, AppState>, id: String) -> Result<Vec<Va
     vault::delete_account(&id)?;
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     Ok(vault::list_views())
 }
@@ -1112,7 +1176,7 @@ async fn device_login_poll(
             let result = vault::upsert_from_tokens(&tokens)?;
             let settings = state.settings();
             if gateway::health(settings.port, &settings.api_key).await {
-                let _ = gateway::sync_accounts(&settings);
+                gateway::sync_accounts(&settings)?;
             }
             Ok(json!({ "done": true, "result": result, "accounts": vault::list_views() }))
         }
@@ -1137,7 +1201,7 @@ async fn browser_login_status(state: State<'_, AppState>) -> Result<Value, Strin
     if snapshot.get("status").and_then(Value::as_str) == Some("done") {
         let settings = state.settings();
         if gateway::health(settings.port, &settings.api_key).await {
-            let _ = gateway::sync_accounts(&settings);
+            gateway::sync_accounts(&settings)?;
         }
     }
     Ok(snapshot)
@@ -1214,11 +1278,14 @@ async fn set_routing_tuning(
     })?;
     // The tuning lives in `config.yaml`, so the file is replaced even when the
     // health probe is about to fail: a stopped engine still needs the newest
-    // document on disk before its next start.
-    if let Err(error) = gateway::write_config_current(|| state.settings()) {
-        eprintln!("[gateway] config write failed: {error}");
-    }
-    resync(&state).await
+    // document on disk before its next start. A failed publication is returned
+    // to the UI instead of being logged and hidden behind a successful tuning.
+    // The tuning is saved even when auth sync fails. Returning a bare error
+    // here made the UI show a failed action while settings.json had changed.
+    // Keep the warning on the partial result: the caller must see the saved
+    // state and know that neither config nor accounts were applied.
+    let config_warning = publish_config_warning(&state);
+    tuning_result(resync(&state).await, config_warning)
 }
 
 #[tauri::command]
@@ -1301,7 +1368,9 @@ fn mutate_settings(
 async fn resync(state: &State<'_, AppState>) -> Result<Value, String> {
     let settings = state.settings();
     if gateway::health(settings.port, &settings.api_key).await {
-        let _ = gateway::sync_accounts(&settings);
+        // A broken or partial vault must fail the caller and leave auth files
+        // alone; swallowing this error is how a prune used to go unnoticed.
+        gateway::sync_accounts(&settings)?;
     }
     let accounts = vault::accounts();
     let (ordered, blocked) = routing::resolve(
@@ -3070,7 +3139,9 @@ fn main() {
                     // computed; otherwise the fresh reading is masked by the
                     // persisted block until the next 1.5-second tick.
                     live_quota::tick(&settings).await;
-                    let _ = gateway::sync_accounts(&settings);
+                    if let Err(error) = gateway::sync_accounts(&settings) {
+                        eprintln!("[gateway] auth sync failed: {error}");
+                    }
                     check_low_quota(&quota_handle, &state, &previous);
                     check_quota_reset(&quota_handle, &state, &previous);
                 }
@@ -3314,8 +3385,10 @@ fn main() {
 mod tests {
     use super::{
         api_toggle_action, launcher_argv, pool_snapshot_of, pool_toggle_plan,
-        pool_toggle_selection, settings_view, tray_event_payload, ApiToggle,
+        pool_toggle_selection, settings_view, settings_view_with_warning, tray_event_payload,
+        tuning_result, ApiToggle,
     };
+    use serde_json::json;
     use std::collections::HashSet;
 
     #[test]
@@ -3414,6 +3487,34 @@ mod tests {
         assert_eq!(value["managementSecret"], "");
         assert_eq!(value["port"], 19000);
         assert!(!value.to_string().contains("melon-mgmt-"));
+    }
+
+    #[test]
+    fn saved_tuning_reports_a_failed_sync_as_a_warning() {
+        let warning = tuning_result(Err("auth sync failed".to_string()), Some("stale config".into()))
+            .expect("saved settings are a success");
+        assert_eq!(warning["saved"], true);
+        assert_eq!(
+            warning["configWarning"],
+            "stale config; auth sync: auth sync failed"
+        );
+        let no_config = tuning_result(Err("vault unreadable".to_string()), None).unwrap();
+        assert_eq!(no_config["saved"], true);
+        assert_eq!(no_config["configWarning"], "auth sync: vault unreadable");
+        let applied = tuning_result(Ok(json!({"ok": true})), None).unwrap();
+        assert_eq!(applied["ok"], true);
+        assert!(applied.get("configWarning").is_none());
+    }
+
+    #[test]
+    fn saved_settings_survive_a_config_publication_error() {
+        let settings = crate::settings::Settings::default();
+        let value =
+            settings_view_with_warning(&settings, Some("config is stale".to_string())).unwrap();
+        assert_eq!(value["configWarning"], "config is stale");
+        assert_eq!(value["lang"], settings.lang);
+        let clean = settings_view_with_warning(&settings, None).unwrap();
+        assert!(clean.get("configWarning").is_none());
     }
 
     fn pool_set(slugs: &[&str]) -> HashSet<String> {

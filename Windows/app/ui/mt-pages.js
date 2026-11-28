@@ -1586,13 +1586,26 @@ function tuningBlock() {
 function groupsCard() {
   const snapshot = S.routingGroups || {};
   const groups = Array.isArray(snapshot.groups) ? snapshot.groups : [];
+  // A read error means the list is unknown, not empty, so the empty state is
+  // suppressed and the error stands in its place.
+  const readError = S.routingGroupError
+    ? `<div class="note-line danger" id="group-read-error">${esc(fmt(t("groupReadError"), { error: S.routingGroupError }))} <button class="ghost small" data-action="routingGroupsRetry">${t("groupRetryRead")}</button></div>`
+    : "";
+  const applyError = S.routingGroupApplyError
+    ? `<div class="note-line danger" id="group-apply-error">${esc(fmt(t("groupApplyFailed"), { error: S.routingGroupApplyError }))}
+        <button class="ghost small" data-action="gatewaySync">${t("groupRetryWrite")}</button>
+      </div>`
+    : "";
   return `<div class="card">
     <h2>${t("modelGroups")}</h2>
     <div class="stack">
       <div class="footnote" style="margin:0">${t("modelGroupsHint")}</div>
+      ${readError}${applyError}
       ${groups.length
         ? `<div class="group-list">${groups.map(groupRow).join("")}</div>`
-        : `<div class="group-empty">
+        : S.routingGroupError
+          ? ""
+          : `<div class="group-empty">
             <div class="group-empty-icon">▤</div>
             <b>${t("noModelGroups")}</b>
             <span class="footnote" style="margin:0;text-align:center">${t("noModelGroupsHint")}</span>
@@ -1614,6 +1627,32 @@ function groupEditorModal() {
   // Grouped by the canonical model, not the raw id: a row for a spelling the
   // store counts as already present must not look new.
   const checked = new Set(members.map((member) => `${member.sourceId}\u0000${member.modelId}`));
+  // A stored member may no longer appear among the current sources and models.
+  // Showing it separately lets the user remove it manually before saving.
+  const availableKeys = new Set();
+  for (const source of sources) {
+    for (const model of source.models || []) availableKeys.add(`${source.id}\u0000${model.id}`);
+  }
+  const seenMissing = new Set();
+  const missingMembers = members.filter((member) => {
+    const key = `${member.sourceId}\u0000${member.modelId}`;
+    if (availableKeys.has(key) || seenMissing.has(key)) return false;
+    seenMissing.add(key);
+    return true;
+  });
+  const missing = missingMembers.length
+    ? `<details class="group-source" open>
+        <summary>${t("groupMissingMembers")} <span class="agent-count">${missingMembers.length}</span></summary>
+        <div class="group-models">
+          ${missingMembers.map((member) => `<label class="group-model">
+            <input type="checkbox" checked data-action="groupMember" data-source="${esc(member.sourceId)}" data-model="${esc(member.modelId)}" data-on="change">
+            <span>${esc(`${member.sourceId}/${member.modelId}`)}</span>
+            <span class="pill">${t("delete")}</span>
+          </label>`).join("")}
+        </div>
+        <div class="footnote" style="margin:0">${t("groupMissingMembersHint")}</div>
+      </details>`
+    : "";
   const groups = sources.length
     ? sources.map((source) => {
         const rows = (source.models || []).map((model) => {
@@ -1649,7 +1688,7 @@ function groupEditorModal() {
         </label>
       </div>
       <div class="agent-section-label">${t("groupMembers")} <span class="agent-count">${checked.size}</span></div>
-      <div class="group-sources">${groups}</div>
+      <div class="group-sources">${missing}${groups}</div>
       <div class="footnote">${t("groupMembersHint")}</div>
       <div class="modal-actions">
         <button class="ghost" data-action="groupClose">${t("cancel")}</button>

@@ -58,6 +58,10 @@ Melon_Amber_macOS*.icns
 /Windows/app/src-tauri/.cargo-target-windows/
 /Windows/app/src-tauri/check.exit
 /Windows/app/src-tauri/check.log
+/.verify-scratch/
+/MacOS/.build/
+/MacOS/.worktrees/
+/Windows/app/src-tauri/.verify-scratch/
 
 # Vendored Tauri crate snapshots used by local patch experiments
 /Windows/patches/

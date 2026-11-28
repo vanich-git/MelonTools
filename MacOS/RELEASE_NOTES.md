@@ -1,3 +1,42 @@
+# Melon Tools 6.5.3
+
+Patch release for macOS and Windows. Routing groups now accept arbitrary models
+from any provider, the local gateway fails over inside a shared API-key pool,
+and routing settings survive failed reads and writes.
+
+## What changed in 6.5.3
+
+- **Groups accept any model.** A group alias can combine models from different
+  providers and model families. One source can contribute several models, and
+  the same model can belong to several groups. A model that is disabled on its
+  own stays listed and can still be used through a group.
+- **Pool failover in the gateway.** A group alias backed by one API key rotates
+  across its models. Every upstream model cools down on its own, the group stays
+  available while at least one member is healthy, and a quota error is reported
+  only when every member is quota-limited.
+- **Stream watchdog.** The engine no longer counts a stream that produced only
+  empty heartbeats as a success, caps heartbeat-only waits, and removes races
+  around Antigravity watchdogs and cooldown bookkeeping.
+- **macOS settings safety.** Unreadable routing groups and model sources now fail
+  closed, a failed save keeps the previous state, and the gateway config is not
+  rewritten from an unknown state. The editor shows load and save errors.
+- **Windows settings safety.** Group writes are serialized, provider aliases
+  reach the generated YAML, auth files are written before stale ones are pruned,
+  and a failed sync no longer reports success. A partial save shows a warning
+  banner instead of a success toast.
+- **Compatibility.** Both apps read the other platform's routing-group JSON,
+  including camelCase member ids, and preserve notes and timestamps they do not
+  own.
+- **Agents.** Removing a managed agent entry no longer swallows unrelated YAML
+  that follows it.
+- **Build metadata.** macOS build 77; both apps report version 6.5.3.
+
+## Builds
+
+- macOS universal DMG: `MelonTools-6.5.3.dmg` (arm64 + x86_64, build 77)
+- Windows portable: `MelonTools-6.5.3-win-x64-portable.exe`
+- Windows installer: `MelonTools-6.5.3-setup.exe`
+
 # Melon Tools 6.5.2
 
 Patch release for macOS and Windows. It adds the curated plugin store and fixes
