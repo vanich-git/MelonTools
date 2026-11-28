@@ -711,7 +711,8 @@ pub(crate) fn api_keys_yaml_with_groups(
             let id = model.id.trim();
             !id.is_empty()
                 && (model.enabled
-                    || !crate::routing_groups::group_aliases_for(groups, &provider.id, id).is_empty())
+                    || !crate::routing_groups::group_aliases_for(groups, &provider.id, id)
+                        .is_empty())
         }) {
             continue;
         }
@@ -784,7 +785,8 @@ pub(crate) fn api_keys_yaml_with_groups(
                     &aliases,
                     (!m.display_name.trim().is_empty() && m.display_name != m.id)
                         .then(|| m.display_name.trim()),
-                    (m.user_settings.context_length > 0).then_some(m.user_settings.context_length as u64),
+                    (m.user_settings.context_length > 0)
+                        .then_some(m.user_settings.context_length as u64),
                 );
             }
         }
@@ -1452,9 +1454,10 @@ fn sync_auth_files(
         let mut current = if bytes.is_empty() {
             None
         } else {
-            Some(serde_json::from_slice::<Value>(&bytes).map_err(|error| {
-                format!("corrupt auth file {}: {error}", file.display())
-            })?)
+            Some(
+                serde_json::from_slice::<Value>(&bytes)
+                    .map_err(|error| format!("corrupt auth file {}: {error}", file.display()))?,
+            )
         };
         if let Some(Value::Object(object)) = current.as_mut() {
             if object.get("disabled").and_then(Value::as_bool) == Some(false) {
@@ -1511,7 +1514,10 @@ fn sync_auth_files(
         }
     }
     if !failures.is_empty() {
-        return Err(format!("auth sync left stale credentials: {}", failures.join("; ")));
+        return Err(format!(
+            "auth sync left stale credentials: {}",
+            failures.join("; ")
+        ));
     }
     Ok(written)
 }
@@ -2600,8 +2606,7 @@ mod tests {
         local_api_keys_yaml, lock_config_generation, parse_pid, parse_recent_call,
         parse_tasklist_image, parse_tasklist_pids, parse_usage_record, priority_for, quota_weight,
         reload_acknowledged, reload_digest, servable_local_models, sync_auth_files, tail_bytes,
-        write_config,
-        write_config_forced, write_config_if_changed, write_config_if_changed_forced,
+        write_config, write_config_forced, write_config_if_changed, write_config_if_changed_forced,
         write_config_if_changed_locked, yaml_escape, RoutingTuning, PRIORITY_TIER_BACKUP,
         USER_AGENT,
     };
@@ -3817,8 +3822,7 @@ mod tests {
             "",
             "without a group the provider has nothing to serve"
         );
-        let yaml =
-            api_keys_yaml_with_groups(&s, &[], 18318, "token", &[group("acme", "hidden")]);
+        let yaml = api_keys_yaml_with_groups(&s, &[], 18318, "token", &[group("acme", "hidden")]);
         assert!(yaml.contains("    - name: \"acme\""), "{yaml}");
         assert!(yaml.contains("- name: \"hidden\""), "{yaml}");
         assert!(yaml.contains("alias: \"smart\""), "{yaml}");
@@ -3832,7 +3836,6 @@ mod tests {
         let error = sync_auth_files(&dir, Vec::new()).expect_err("missing directory");
         assert!(error.contains("cannot read auth directory"), "{error}");
     }
-
 
     /// An auth file the app owns but cannot parse is not a blank slate:
     /// overwriting it would lose a legacy pause flag and silently re-enable a
@@ -3868,7 +3871,10 @@ mod tests {
         let stale = dir.join("codex-stale.json");
         std::fs::create_dir(&stale).expect("stale dir entry");
         let result = sync_auth_files(&dir, Vec::new());
-        assert!(result.is_err(), "a stale entry that cannot be removed must fail");
+        assert!(
+            result.is_err(),
+            "a stale entry that cannot be removed must fail"
+        );
         let error = result.unwrap_err();
         assert!(error.contains("cannot remove stale auth file"), "{error}");
         assert!(stale.exists(), "the stale entry is still there");

@@ -385,7 +385,7 @@ fn verified_accounts_at(path: &Path) -> Option<Vec<Account>> {
             .tokens
             .access_token
             .as_deref()
-            .map_or(true, str::is_empty)
+            .is_none_or(str::is_empty)
         {
             return None;
         }

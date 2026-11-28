@@ -3491,8 +3491,11 @@ mod tests {
 
     #[test]
     fn saved_tuning_reports_a_failed_sync_as_a_warning() {
-        let warning = tuning_result(Err("auth sync failed".to_string()), Some("stale config".into()))
-            .expect("saved settings are a success");
+        let warning = tuning_result(
+            Err("auth sync failed".to_string()),
+            Some("stale config".into()),
+        )
+        .expect("saved settings are a success");
         assert_eq!(warning["saved"], true);
         assert_eq!(
             warning["configWarning"],

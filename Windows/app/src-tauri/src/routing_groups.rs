@@ -150,7 +150,8 @@ pub fn group_aliases_for(groups: &[Group], source: &str, model: &str) -> Vec<Str
     aliases
 }
 
-/// First alias for the model, kept for the routing page and the old tests.
+/// First alias for the model, kept for the routing tests.
+#[cfg(test)]
 pub fn alias_for(groups: &[Group], source: &str, model: &str, default: &str) -> String {
     aliases_for(groups, source, model, default)
         .into_iter()
@@ -584,11 +585,13 @@ mod tests {
 
     #[test]
     fn routing_page_lists_every_custom_model_before_it_is_grouped() {
-        let mut settings = crate::settings::Settings::default();
-        settings.custom_providers = vec![custom_provider(
-            "acme",
-            vec![custom_model("live", true), custom_model("paused", false)],
-        )];
+        let settings = crate::settings::Settings {
+            custom_providers: vec![custom_provider(
+                "acme",
+                vec![custom_model("live", true), custom_model("paused", false)],
+            )],
+            ..Default::default()
+        };
 
         // The editor is where a disabled model gets added to a new group: it
         // must be selectable before any membership exists.
@@ -598,9 +601,11 @@ mod tests {
 
     #[test]
     fn routing_page_lists_claude_builtins_and_local_models() {
-        let mut settings = crate::settings::Settings::default();
-        settings.claude_enabled = true;
-        settings.claude_api_key = "sk-ant-test".into();
+        let settings = crate::settings::Settings {
+            claude_enabled: true,
+            claude_api_key: "sk-ant-test".into(),
+            ..Default::default()
+        };
         let sources = model_ids(&settings, &[]);
         assert_eq!(
             source_ids(&sources, "claude").len(),
